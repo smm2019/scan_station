@@ -15,7 +15,7 @@ import 'package:shelf_cors_headers/shelf_cors_headers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:vibration/vibration.dart';
-import 'package:excel/excel.dart';
+import 'package:share_plus/share_plus.dart';
 part 'main.g.dart';
 
 //扫码记录数据库模型，版本固定适配Isar3.1
@@ -33,6 +33,14 @@ class ScanRecord {
     required this.stationNo,
     required this.timestamp,
   });
+}
+
+//媒体扫描，通知安卓系统刷新下载目录文件
+class MediaScannerChannel {
+  static const MethodChannel _channel = MethodChannel('plugins.flutter.io/media_scanner');
+  static Future<void> scanFile(String path) async {
+    await _channel.invokeMethod("scanFile", {"path": path});
+  }
 }
 
 void main() async {
@@ -168,6 +176,13 @@ class _ScanHomePageState extends State<ScanHomePage> {
     });
   }
 
+  //【修复1：切后台立刻关停扫码，摄像头关闭】
+  @override
+  void deactivate() {
+    super.deactivate();
+    _scanCtrl.stop();
+  }
+
   Future<void> _loadAllRecords() async {
     final List<ScanRecord> rawList = await isar.scanRecords.where().findAll();
     List<ScanRecord> list = rawList.reversed.toList();
@@ -190,7 +205,7 @@ class _ScanHomePageState extends State<ScanHomePage> {
     _lastScanTime = now;
 
     try {
-        if ((await Vibration.hasVibrator()) ?? false) {
+      if ((await Vibration.hasVibrator()) ?? false) {
         Vibration.vibrate(duration: 80);
       }
     } catch (_) {}
@@ -285,21 +300,29 @@ class _ScanHomePageState extends State<ScanHomePage> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已全部复制至剪贴板，可直接粘贴WPS")));
   }
 
+  //【修复3：导出至公共Download文件夹，PDA文件管理器可识别，增加媒体扫描】
   Future<String?> _exportCsvFile() async {
     try {
       final DateTime now = DateTime.now();
-      final String fileName = "scan_${now.year}${now.month}${now.day}_${now.hour}${now.minute}${now.second}.csv";
+      final String fileName = "站台台账_${now.year}${now.month}${now.day}_${now.hour}${now.minute}${now.second}.csv";
       List<List<dynamic>> dataRows = [["站台", "条码", "备注", "采集时间"]];
       for (ScanRecord r in _records) {
         dataRows.add([r.stationNo, r.barcode, r.remark, DateTime.fromMillisecondsSinceEpoch(r.timestamp).toString()]);
       }
       final String csvText = const ListToCsvConverter().convert(dataRows);
-      final Directory? saveDir = await getExternalStorageDirectory();
-      if (saveDir == null) return null;
-      final File f = File(p.join(saveDir.path, fileName));
+      final Directory downloadDir = Directory("/storage/emulated/0/Download");
+      if (!await downloadDir.exists()) await downloadDir.create(recursive: true);
+      final File f = File(p.join(downloadDir.path, fileName));
       await f.writeAsString(csvText);
+      await MediaScannerChannel.scanFile(f.path);
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("CSV导出成功，打开下载文件夹查看")));
+      }
       return f.path;
     } catch (_) {
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("CSV导出失败")));
+      }
       return null;
     }
   }
@@ -307,31 +330,44 @@ class _ScanHomePageState extends State<ScanHomePage> {
   Future<String?> _exportXlsxFile() async {
     try {
       final DateTime now = DateTime.now();
-      final String fileName = "scan_${now.year}${now.month}${now.day}_${now.hour}${now.minute}${now.second}.xlsx";
+      final String fileName = "站台台账_${now.year}${now.month}${now.day}_${now.hour}${now.minute}${now.second}.xlsx";
       final Excel excel = Excel.createExcel();
       final Sheet sheet = excel["扫码记录"];
-  sheet.appendRow([
-  TextCellValue("站台"),
-  TextCellValue("条码"),
-  TextCellValue("备注"),
-  TextCellValue("采集时间"),
-]);
+      sheet.appendRow([
+        TextCellValue("站台"),
+        TextCellValue("条码"),
+        TextCellValue("备注"),
+        TextCellValue("采集时间"),
+      ]);
       for (ScanRecord r in _records) {
-     sheet.appendRow([
-  TextCellValue(r.stationNo.toString()),
-  TextCellValue(r.barcode),
-  TextCellValue(r.remark ?? ''),
-  TextCellValue(DateTime.fromMillisecondsSinceEpoch(r.timestamp).toString()),
-]);
+        sheet.appendRow([
+          TextCellValue(r.stationNo.toString()),
+          TextCellValue(r.barcode),
+          TextCellValue(r.remark),
+          TextCellValue(DateTime.fromMillisecondsSinceEpoch(r.timestamp).toString()),
+        ]);
       }
-      final Directory? saveDir = await getExternalStorageDirectory();
-      if (saveDir == null) return null;
-      final File f = File(p.join(saveDir.path, fileName));
+      final Directory downloadDir = Directory("/storage/emulated/0/Download");
+      if (!await downloadDir.exists()) await downloadDir.create(recursive: true);
+      final File f = File(p.join(downloadDir.path, fileName));
       await f.writeAsBytes(excel.encode()!);
+      await MediaScannerChannel.scanFile(f.path);
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("XLSX导出成功，打开下载文件夹查看")));
+      }
       return f.path;
     } catch (_) {
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("XLSX导出失败")));
+      }
       return null;
     }
+  }
+
+  //【修复4：导出后分享文件】
+  Future<void> _shareFile(String filePath) async {
+    final XFile target = XFile(filePath);
+    await Share.shareXFiles([target], subject: "站台扫码台账记录");
   }
 
   Future<void> _startWifiServer() async {
@@ -371,6 +407,8 @@ class _ScanHomePageState extends State<ScanHomePage> {
 
   @override
   void dispose() {
+    //严格顺序：先停止扫码，再销毁控制器
+    _scanCtrl.stop();
     _scanCtrl.dispose();
     _tts.stop();
     _stopWifiServer();
@@ -411,7 +449,7 @@ class _ScanHomePageState extends State<ScanHomePage> {
                 Switch(value: _continuousScan, onChanged: (v)=>setState(()=>_continuousScan=v)),
               ],
             ),
-            //扫码相机
+            //扫码相机【修复2：多次点击黑屏底层逻辑已在生命周期处理】
             SizedBox(height:220,child:MobileScanner(controller:_scanCtrl,onDetect:_onBarcodeDetect)),
             //手动录入
             TextField(controller:_manualBarcodeCtrl,decoration:const InputDecoration(labelText:"手动输入条码")),
@@ -432,9 +470,9 @@ class _ScanHomePageState extends State<ScanHomePage> {
             const SizedBox(height:10),
             Row(
               children:[
-                ElevatedButton(onPressed:()async{await _exportCsvFile();},child:const Text("导出CSV")),
+                ElevatedButton(onPressed:()async{final p=await _exportCsvFile();if(p!=null)await _shareFile(p);},child:const Text("导出CSV并分享")),
                 const SizedBox(width:8),
-                ElevatedButton(onPressed:()async{await _exportXlsxFile();},child:const Text("导出XLSX")),
+                ElevatedButton(onPressed:()async{final p=await _exportXlsxFile();if(p!=null)await _shareFile(p);},child:const Text("导出XLSX并分享")),
               ],
             ),
             const SizedBox(height:10),
