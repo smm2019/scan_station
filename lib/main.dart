@@ -79,7 +79,10 @@ class _ScanPageState extends State<ScanPage> {
       csvData.add([r.station, r.code, r.time.toString()]);
     }
     String csvStr = const ListToCsvConverter().convert(csvData);
-    await SharePlus.instance.share(text: csvStr, subject: "站台扫码记录.csv");
+    await Share.share(
+  text: csvStr,
+  subject: "站台扫码记录.csv",
+);
   }
 
   @override
