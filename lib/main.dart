@@ -15,7 +15,7 @@ import 'package:shelf_cors_headers/shelf_cors_headers.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:vibration/vibration.dart';
-
+import 'package:excel/excel.dart';
 part 'main.g.dart';
 
 //扫码记录数据库模型，版本固定适配Isar3.1
@@ -310,9 +310,19 @@ class _ScanHomePageState extends State<ScanHomePage> {
       final String fileName = "scan_${now.year}${now.month}${now.day}_${now.hour}${now.minute}${now.second}.xlsx";
       final Excel excel = Excel.createExcel();
       final Sheet sheet = excel["扫码记录"];
-      sheet.appendRow(["站台", "条码", "备注", "采集时间"]);
+  sheet.appendRow([
+  TextCellValue("站台"),
+  TextCellValue("条码"),
+  TextCellValue("备注"),
+  TextCellValue("采集时间"),
+]);
       for (ScanRecord r in _records) {
-        sheet.appendRow([r.stationNo, r.barcode, r.remark, DateTime.fromMillisecondsSinceEpoch(r.timestamp).toString()]);
+     sheet.appendRow([
+  TextCellValue(r.stationNo.toString()),
+  TextCellValue(r.barcode),
+  TextCellValue(r.remark ?? ''),
+  TextCellValue(DateTime.fromMillisecondsSinceEpoch(r.timestamp).toString()),
+]);
       }
       final Directory? saveDir = await getExternalStorageDirectory();
       if (saveDir == null) return null;
