@@ -21,8 +21,8 @@ dependencies:
   path_provider: 2.1.4
   path: 1.9.0
   vibration: 2.0.1
-  # 新增：文件分享（适配FileProvider，用于局域网导出分享）
-  share_plus: ^10.0.2
+  # 新增：文件分享，9.2.0版本兼容mobile_scanner 5.1.1 web依赖，无版本冲突
+  share_plus: ^9.2.0
   # 新增：动态权限申请（PDA安卓13以上存储、相机权限管控）
   permission_handler: ^11.1.0
 
