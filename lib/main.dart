@@ -80,7 +80,7 @@ class _ScanPageState extends State<ScanPage> {
     }
     String csvStr = const ListToCsvConverter().convert(csvData);
     await Share.share(
-  text: csvStr,
+  csvStr,
   subject: "站台扫码记录.csv",
 );
   }
