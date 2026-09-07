@@ -1,22 +1,33 @@
 name: scan_station
-description: 站台扫码工具 1‑8站台，扫码、导出剪贴板、导出表格
+description: 站台扫码工具｜1‑8站台｜PDA红外扫码｜语音播报｜局域网下载｜密码锁
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.4.0 <4.0.0'
+  sdk: '>=3.4.0 <3.6.0'
 
 dependencies:
   flutter:
     sdk: flutter
-  mobile_scanner: ^5.1.1
-  csv: ^6.0.0
-  share_plus: ^10.0.0
-  clipboard: ^0.1.3
+  mobile_scanner: 5.1.1
+  csv: 6.0.0
+  clipboard: 0.1.3
+  flutter_tts: 4.0.2
+  excel: 4.0.6
+  isar: 3.1.0+1
+  isar_flutter_libs: 3.1.0+1
+  shared_preferences: 2.3.2
+  shelf: 1.4.1
+  shelf_cors_headers: 0.1.5
+  path_provider: 2.1.4
+  path: 1.9.0
+  vibration: 2.0.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^4.0.0
+  flutter_lints: 4.0.0
+  isar_generator: 3.1.0+1
+  build_runner: 2.4.12
 
 flutter:
   uses-material-design: true
