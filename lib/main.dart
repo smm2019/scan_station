@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'dart:convert';
+import 'dart:io';
 
 // ===================== Isar数据库模型 =====================
 part 'main.g.dart';
@@ -108,12 +109,13 @@ class _MainPageState extends State<MainPage> {
     _refreshRecord();
   }
 
-  //读取最近批次 【Isar3.1.0 正确链式排序】
+  //读取最近批次：内存排序，彻底避开Isar版本API差异
   Future<void> _loadLastBatch() async {
-    final batchList = await _isar.batchInfos.where().sortByCreateTime().sort(Sort.desc).limit(1).findAll();
-    if (batchList.isNotEmpty) {
+    List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
+    if(allBatch.isNotEmpty){
+      allBatch.sort((a, b) => b.createTime.compareTo(a.createTime));
       setState(() {
-        _currentBatchId = batchList.first.batchId;
+        _currentBatchId = allBatch.first.batchId;
       });
     } else {
       await _createNewBatch();
@@ -271,17 +273,16 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-  //刷新当前批次记录列表【Isar3.1.0 链式排序】
+  //刷新当前批次记录列表，内存排序，新记录在上
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
-    final list = await _isar.scanRecords
+    List<ScanRecord> all = await _isar.scanRecords
         .filter()
         .batchIdEqualTo(_currentBatchId!)
-        .sortByScanTime()
-        .sort(Sort.desc)
         .findAll();
+    all.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
     setState(() {
-      _recordList = list;
+      _recordList = all;
     });
   }
 
@@ -337,8 +338,8 @@ class _MainPageState extends State<MainPage> {
     final handler = Pipeline().addHandler((Request req) async {
       final csvContent = _generateCsvText();
       return Response.ok(csvContent, headers: {
-        "Content‑Type": "text/csv;charset=utf‑8",
-        "Content‑Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
+        "Content-Type": "text/csv;charset=utf-8",
+        "Content-Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
       });
     });
     _webServer = await shelf_io.serve(handler, InternetAddress.anyIPv4, _webPort);
