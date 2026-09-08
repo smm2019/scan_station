@@ -184,7 +184,7 @@ class _MainPageState extends State<MainPage> {
     } catch (_) {}
   }
 
-  /// 新版逻辑：点击站台仅选中；扫码保存成功后站台才锁定占用
+  /// 新版逻辑：点击站台仅选中；扫码保存成功后站台才锁定占用并取消选中
   Future<void> _saveRecord(String code) async {
     if(_isSaving) return;
     _isSaving = true;
@@ -199,7 +199,7 @@ class _MainPageState extends State<MainPage> {
         return;
       }
 
-      //AGV模式校验：该站台是否已经登记过货物
+      //AGV模式校验：该站台是否已经登记过货物（一站一码）
       if (_workType == 0) {
         final existStationRecord = await _isar.scanRecords
             .filter()
@@ -246,9 +246,16 @@ class _MainPageState extends State<MainPage> {
       await _scanSuccessAction();
       _goodsInputCtrl.clear();
 
-      await _refreshRecord(); //新增await，等待刷新流程执行完毕
+      //AGV模式保存成功后，手动清空选中站台（核心修复点）
+      if(_workType ==0){
+        setState((){
+          _selectedStation = null;
+        });
+      }
+
+      await _refreshRecord();
     }finally{
-      _isSaving = false; //无论成败释放锁
+      _isSaving = false;
     }
   }
 
@@ -274,7 +281,7 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-//刷新当前批次记录列表，内存排序，新记录在上
+//刷新当前批次记录列表，内存排序，【移除此处清空站台选中的代码】
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     List<ScanRecord> all = await _isar.scanRecords
@@ -284,10 +291,7 @@ class _MainPageState extends State<MainPage> {
     all.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
     setState(() {
       _recordList = all;
-      //AGV模式，刷新列表完毕后清空站台选中状态，避开弹窗状态竞争
-      if(_workType == 0){
-        _selectedStation = null;
-      }
+      //删除原代码：if(_workType ==0){_selectedStation=null;}
     });
   }
 
@@ -370,7 +374,7 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //相机扫码弹窗【重点修改：移除延时，使用await等待弹窗完全关闭】
+  //相机扫码弹窗【已经移除延时，使用await等待弹窗完全关闭】
 void _openCameraScan() async {
   bool scannedHandled = false;
   final result = await showDialog(
