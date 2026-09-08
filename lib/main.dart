@@ -189,7 +189,10 @@ class _MainPageState extends State<MainPage> {
     if(_isSaving) return;
     _isSaving = true;
     try{
-      if (_currentBatchId == null) return;
+      if (_currentBatchId == null) {
+        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
+        return;
+      }
       if (await _isCodeDuplicate(code)) return;
 
       if (_workType == 0 && _selectedStation == null) {
@@ -254,12 +257,15 @@ class _MainPageState extends State<MainPage> {
       }
 
       await _refreshRecord();
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("采集保存成功")));
+    }catch(e){
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("保存异常：${e.toString()}")));
     }finally{
       _isSaving = false;
     }
   }
 
-  //【修复】修改函数签名，调整赋值顺序，解决UI与内存变量不同步
+  //【修复】调整赋值顺序，等待数据库校验完成后再变更状态，消除时序差
   Future<void> onStationTap(int stationNum) async {
     final batch = await _getCurrentBatch();
     if (batch == null) return;
@@ -269,9 +275,9 @@ class _MainPageState extends State<MainPage> {
       }
       return;
     }
-    //优先给内存变量赋值，再刷新UI
-    _selectedStation = stationNum;
-    setState(() {});
+    setState(() {
+      _selectedStation = stationNum;
+    });
   }
 
   //人工模式货位选择
@@ -556,9 +562,11 @@ void _openCameraScan() async {
                   child: TextField(
                     controller: _goodsInputCtrl,
                     decoration: const InputDecoration(hintText: "PDA红外扫码自动填入，也可手动输入货码", border: OutlineInputBorder()),
-                    onSubmitted: (txt) async {
-                      String code = txt.trim();
-                      if (code.isNotEmpty) await _saveRecord(code);
+                    onSubmitted: (txt) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) async {
+                        String code = txt.trim();
+                        if (code.isNotEmpty) await _saveRecord(code);
+                      });
                     },
                   ),
                 ),
