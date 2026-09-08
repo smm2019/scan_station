@@ -98,7 +98,7 @@ class _MainPageState extends State<MainPage> {
   HttpServer? _webServer;
   bool _webServiceRunning = false;
   String? _localIpAddress;
-  static const int _webPort = 8080; //修复：State内const改为static const
+  static const int _webPort = 8080;
 
   @override
   void initState() {
@@ -108,9 +108,9 @@ class _MainPageState extends State<MainPage> {
     _refreshRecord();
   }
 
-  //读取最近批次 【Isar3.0 用desc:true，不是sort:Sort.desc】
+  //读取最近批次 ————【已修改，适配旧版Isar，移除desc命名参数，改用链式.desc()】
   Future<void> _loadLastBatch() async {
-    final batchList = await _isar.batchInfos.where().sortByCreateTime(desc: true).limit(1).findAll();
+    final batchList = await _isar.batchInfos.where().sortByCreateTime().desc().limit(1).findAll();
     if (batchList.isNotEmpty) {
       setState(() {
         _currentBatchId = batchList.first.batchId;
@@ -279,6 +279,7 @@ class _MainPageState extends State<MainPage> {
         .filter()
         .batchIdEqualTo(_currentBatchId!)
         .sortByScanTime()
+        .desc()
         .findAll();
     setState(() {
       _recordList = list;
