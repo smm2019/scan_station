@@ -386,7 +386,7 @@ void _openCameraScan() {
               _goodsInputCtrl.text = code;
               Navigator.pop(ctx);
               //短暂延时，等待弹窗销毁完成，再执行保存
-              Future.delayed(const Duration(milliseconds:150),(){
+              Future.delayed(const Duration(milliseconds:200),(){
                 _saveRecord(code);
               });
             }
