@@ -249,6 +249,9 @@ class _MainPageState extends State<MainPage> {
       });
     }
     _refreshRecord();
+    if(mounted){
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("✅扫码保存成功")));
+    }
   }
 
   //站台选择逻辑：仅临时选中，不立刻锁定
@@ -365,7 +368,7 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //相机扫码弹窗
+  //相机扫码弹窗｜方案1：识别后自动保存
   void _openCameraScan() {
     showDialog(
       context: context,
@@ -481,7 +484,7 @@ class _MainPageState extends State<MainPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("AGV货位采集器"),
+        title: null, // 移除左上角标题文字
         actions: [
           IconButton(onPressed: _createNewBatch, icon: const Icon(Icons.add_box), tooltip: "新建批次"),
           IconButton(
