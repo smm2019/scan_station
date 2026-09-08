@@ -47,11 +47,18 @@ class BatchInfo {
   });
 }
 
+// ===================== 全局Isar实例（替代废弃Isar.instance） =====================
+late Isar _globalIsar;
+
 // ===================== 程序入口 =====================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Isar.initializeIsarCore(download: true);
-  await Isar.open([ScanRecordSchema, BatchInfoSchema]);
+  final dir = await getApplicationDocumentsDirectory();
+  _globalIsar = await Isar.open(
+    [ScanRecordSchema, BatchInfoSchema],
+    directory: dir.path,
+  );
   runApp(const MyApp());
 }
 
@@ -96,14 +103,14 @@ class _MainPageState extends State<MainPage> {
   @override
   void initState() {
     super.initState();
-    _isar = Isar.instance;
+    _isar = _globalIsar;
     _loadLastBatch();
     _refreshRecord();
   }
 
   //读取最近批次
   Future<void> _loadLastBatch() async {
-    final batchList = await _isar.batchInfos.where().sortByCreateTime(desc: true).limit(1).findAll();
+    final batchList = await _isar.batchInfos.where().sortByCreateTime(sort: Sort.desc).limit(1).findAll();
     if (batchList.isNotEmpty) {
       setState(() {
         _currentBatchId = batchList.first.batchId;
