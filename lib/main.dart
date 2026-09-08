@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
+import 'dart:convert';
 
 // ===================== Isar数据库模型 =====================
 part 'main.g.dart';
@@ -132,15 +133,16 @@ class _MainPageState extends State<MainPage> {
 
   Future<BatchInfo?> _getCurrentBatch() async {
     if (_currentBatchId == null) return null;
-    return await _isar.batchInfos.where().batchIdEqualTo(_currentBatchId!).findFirst();
+    //【修复】Isar3查询语法，移除链式batchIdEqualTo
+    return await _isar.batchInfos.query(BatchInfo_.batchIdEqualTo(_currentBatchId!)).findFirst();
   }
 
   //校验货码在本批次是否重复
   Future<bool> _isCodeDuplicate(String code) async {
+    //【修复】Isar3标准查询构造方式
     final exist = await _isar.scanRecords
-        .where()
-        .batchIdEqualTo(_currentBatchId!)
-        .goodsCodeEqualTo(code)
+        .query(ScanRecord_.batchIdEqualTo(_currentBatchId!))
+        .filter(ScanRecord_.goodsCodeEqualTo(code))
         .findFirst();
     if (exist != null) {
       String posInfo = "";
@@ -187,10 +189,10 @@ class _MainPageState extends State<MainPage> {
 
     //AGV模式校验：该站台是否已经登记过货物
     if (_workType == 0) {
+      //【修复】Isar3查询语法
       final existStationRecord = await _isar.scanRecords
-          .where()
-          .batchIdEqualTo(_currentBatchId!)
-          .stationNoEqualTo(_selectedStation)
+          .query(ScanRecord_.batchIdEqualTo(_currentBatchId!))
+          .filter(ScanRecord_.stationNoEqualTo(_selectedStation))
           .findFirst();
       if (existStationRecord != null) {
         if (mounted) {
@@ -266,9 +268,9 @@ class _MainPageState extends State<MainPage> {
   //刷新当前批次记录列表
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
+    //【修复】Isar3标准查询
     final list = await _isar.scanRecords
-        .where()
-        .batchIdEqualTo(_currentBatchId!)
+        .query(ScanRecord_.batchIdEqualTo(_currentBatchId!))
         .sortByScanTime()
         .findAll();
     setState(() {
@@ -292,14 +294,14 @@ class _MainPageState extends State<MainPage> {
     return content;
   }
 
-  //导出本地CSV文件
+  //导出本地CSV文件【修复：移除Encoding.getByName】
   Future<void> _saveCsvToFile() async {
     String csvText = _generateCsvText();
     final dir = await getExternalStorageDirectory();
     if (dir == null) return;
     String filePath = "${dir.path}/采集_${_currentBatchId}.csv";
     File file = File(filePath);
-    await file.writeAsString(csvText, encoding: Encoding.getByName("utf‑8"));
+    await file.writeAsString(csvText, encoding: utf8);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
     }
