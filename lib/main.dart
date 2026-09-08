@@ -69,13 +69,11 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: "AGV货位采集器",
-      //关闭Material3自动着色，解决图标看不见的BUG
       theme: ThemeData(
         useMaterial3: false,
         primarySwatch: Colors.blue,
         appBarTheme: AppBarTheme(
           backgroundColor: Colors.blue,
-          iconTheme: IconThemeData(color: Colors.white),
         ),
       ),
       home: const MainPage(),
@@ -192,12 +190,10 @@ class _MainPageState extends State<MainPage> {
     } catch (_) {}
   }
 
-  /// 修复：AGV模式，**保存数据库成功之后，再清空站台选中状态**
   Future<void> _saveRecord(String code) async {
     if (_currentBatchId == null) return;
     if (await _isCodeDuplicate(code)) return;
 
-    //校验选择
     if (_workType == 0 && _selectedStation == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择站台！")));
@@ -211,7 +207,6 @@ class _MainPageState extends State<MainPage> {
       return;
     }
 
-    //AGV模式：判断站台是否已经占用
     if (_workType == 0) {
       final existStationRecord = await _isar.scanRecords
           .filter()
@@ -250,10 +245,10 @@ class _MainPageState extends State<MainPage> {
     await _scanSuccessAction();
     _goodsInputCtrl.clear();
 
-    //✅关键修复：数据库写入、刷新列表完成之后，再清空选中站台
+    //时序修复：优先刷新界面展示记录，再清空站台
     await _refreshRecord();
 
-    if(_workType ==0){
+    if(_workType ==0 && mounted){
       setState((){
         _selectedStation = null;
       });
@@ -264,7 +259,6 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //站台选择逻辑：仅临时选中，不立刻锁定
   void onStationTap(int stationNum) async {
     final batch = await _getCurrentBatch();
     if (batch == null) return;
@@ -279,14 +273,12 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-  //人工模式货位选择
   void _selectGroundLoc(int num) {
     setState(() {
       _selectedGroundLoc = "${_curLocGroup}${num}";
     });
   }
 
-  //刷新当前批次记录列表，内存排序，新记录在上
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     List<ScanRecord> all = await _isar.scanRecords
@@ -299,7 +291,6 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-  //生成CSV文本
   String _generateCsvText() {
     String header = "采集时间,作业类型,站台编号,地面货位编码,货物标签,备注\n";
     String content = header;
@@ -315,7 +306,6 @@ class _MainPageState extends State<MainPage> {
     return content;
   }
 
-  //导出本地CSV文件
   Future<void> _saveCsvToFile() async {
     String csvText = _generateCsvText();
     final dir = await getExternalStorageDirectory();
@@ -328,7 +318,6 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //局域网相关函数
   Future<String?> _getLocalIp() async {
     for (var interface in await NetworkInterface.list()) {
       for (var addr in interface.addresses) {
@@ -378,7 +367,6 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //相机扫码弹窗
   void _openCameraScan() {
     _isScanningHandling = false;
     showDialog(
@@ -390,14 +378,13 @@ class _MainPageState extends State<MainPage> {
           width: 300,
           height: 350,
           child: MobileScanner(
-                        onDetect: (capture) async {
+            onDetect: (capture) async {
               final barcodes = capture.barcodes;
               if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
                 if(_isScanningHandling) return;
                 _isScanningHandling = true;
                 String code = barcodes.first.rawValue!.trim();
                 _goodsInputCtrl.text = code;
-                //先执行保存全部逻辑，完成后再关闭弹窗
                 await _saveRecord(code);
                 if(mounted) Navigator.pop(ctx);
               }
@@ -499,19 +486,24 @@ class _MainPageState extends State<MainPage> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.blue,
-        //✅每个图标强制写死白色，彻底解决图标看不见
+        //修改点：全部替换为白色文字按钮，彻底消除图标消失BUG
         actions: [
-          IconButton(onPressed: _createNewBatch, icon: const Icon(Icons.add_box,color:Colors.white), tooltip: "新建批次"),
-          IconButton(
+          TextButton(
+            onPressed: _createNewBatch,
+            child: const Text("新批次",style:TextStyle(color:Colors.white,fontSize:14)),
+          ),
+          TextButton(
             onPressed: () {
               String csv = _generateCsvText();
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已复制表格文本，可粘贴至WPS")));
             },
-            icon: const Icon(Icons.copy,color:Colors.white),
-            tooltip: "复制CSV至剪贴板",
+            child: const Text("复制",style:TextStyle(color:Colors.white,fontSize:14)),
           ),
-          IconButton(onPressed: _saveCsvToFile, icon: const Icon(Icons.file_download,color:Colors.white), tooltip: "导出CSV文件"),
-          IconButton(
+          TextButton(
+            onPressed: _saveCsvToFile,
+            child: const Text("导出文件",style:TextStyle(color:Colors.white,fontSize:14)),
+          ),
+          TextButton(
             onPressed: () async {
               if (_webServiceRunning) {
                 await stopWebService();
@@ -519,8 +511,7 @@ class _MainPageState extends State<MainPage> {
                 await startWebService();
               }
             },
-            icon: Icon(_webServiceRunning ? Icons.wifi_off : Icons.wifi,color:Colors.white),
-            tooltip: _webServiceRunning ? "关闭局域网传输" : "开启局域网传输",
+            child: Text(_webServiceRunning ? "关闭WiFi" : "开启WiFi",style:TextStyle(color:Colors.white,fontSize:14)),
           ),
         ],
       ),
