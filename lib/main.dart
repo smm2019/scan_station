@@ -366,34 +366,36 @@ class _MainPageState extends State<MainPage> {
   }
 
    //相机扫码弹窗
-  void _openCameraScan() {
-    bool scannedHandled = false; //标记：条码是否已经处理完毕，防止onDetect重复触发
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        insetPadding: EdgeInsets.zero,
-        contentPadding: EdgeInsets.zero,
-        content: SizedBox(
-          width: 300,
-          height: 350,
-          child: MobileScanner(
-            onDetect: (capture) {
-              if(scannedHandled) return; //已经处理过，直接返回，屏蔽重复帧回调
-              final barcodes = capture.barcodes;
-              if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
-                scannedHandled = true; //标记已经处理
-                Navigator.pop(ctx);
-                String code = barcodes.first.rawValue!.trim();
-                _goodsInputCtrl.text = code;
+void _openCameraScan() {
+  bool scannedHandled = false;
+  showDialog(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      insetPadding: EdgeInsets.zero,
+      contentPadding: EdgeInsets.zero,
+      content: SizedBox(
+        width: 300,
+        height: 350,
+        child: MobileScanner(
+          onDetect: (capture) {
+            if (scannedHandled) return;
+            final barcodes = capture.barcodes;
+            if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
+              scannedHandled = true;
+              final String code = barcodes.first.rawValue!.trim();
+              _goodsInputCtrl.text = code;
+              // 先关闭弹窗，【then】等待弹窗动画彻底结束之后，再执行保存
+              Navigator.pop(ctx).then((_) {
                 _saveRecord(code);
-              }
-            },
-          ),
+              });
+            }
+          },
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
       ),
-    );
-  }
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
+    ),
+  );
+}
 
   Widget _buildStationPanel() {
     return FutureBuilder<BatchInfo?>(
