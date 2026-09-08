@@ -90,6 +90,7 @@ class _MainPageState extends State<MainPage> {
   String? _selectedGroundLoc;
   final TextEditingController _goodsInputCtrl = TextEditingController();
   List<ScanRecord> _recordList = [];
+  bool _isSaving = false; //新增：保存互斥锁
 
   //地面货位分组
   final List<String> _locGroup = ["A", "B", "C", "D"];
@@ -185,65 +186,70 @@ class _MainPageState extends State<MainPage> {
 
   /// 新版逻辑：点击站台仅选中；扫码保存成功后站台才锁定占用
   Future<void> _saveRecord(String code) async {
-    if (_currentBatchId == null) return;
-    if (await _isCodeDuplicate(code)) return;
+    if(_isSaving) return;
+    _isSaving = true;
+    try{
+      if (_currentBatchId == null) return;
+      if (await _isCodeDuplicate(code)) return;
 
-    if (_workType == 0 && _selectedStation == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择站台！")));
-      }
-      return;
-    }
-
-    //AGV模式校验：该站台是否已经登记过货物
-    if (_workType == 0) {
-      final existStationRecord = await _isar.scanRecords
-          .filter()
-          .batchIdEqualTo(_currentBatchId!)
-          .stationNoEqualTo(_selectedStation)
-          .findFirst();
-      if (existStationRecord != null) {
+      if (_workType == 0 && _selectedStation == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${_selectedStation}号站台已登记货物，不可再次使用！")));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择站台！")));
         }
         return;
       }
-    }
 
-    if (_workType == 1 && _selectedGroundLoc == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
-      }
-      return;
-    }
-
-    final rec = ScanRecord(
-      scanTime: DateTime.now(),
-      workType: _workType,
-      stationNo: _workType == 0 ? _selectedStation : null,
-      groundLocation: _workType == 1 ? _selectedGroundLoc : null,
-      goodsCode: code,
-      remark: "",
-      batchId: _currentBatchId!,
-    );
-
-    await _isar.writeTxn(() async {
-      await _isar.scanRecords.put(rec);
-      //AGV模式：保存成功，站台加入占用列表
-      if(_workType ==0 && _selectedStation != null){
-        BatchInfo? batch = await _getCurrentBatch();
-        if(batch != null && !batch.usedStation.contains(_selectedStation)){
-          batch.usedStation.add(_selectedStation!);
-          await _isar.batchInfos.put(batch);
+      //AGV模式校验：该站台是否已经登记过货物
+      if (_workType == 0) {
+        final existStationRecord = await _isar.scanRecords
+            .filter()
+            .batchIdEqualTo(_currentBatchId!)
+            .stationNoEqualTo(_selectedStation)
+            .findFirst();
+        if (existStationRecord != null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${_selectedStation}号站台已登记货物，不可再次使用！")));
+          }
+          return;
         }
       }
-    });
 
-    await _scanSuccessAction();
-    _goodsInputCtrl.clear();
+      if (_workType == 1 && _selectedGroundLoc == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
+        }
+        return;
+      }
 
-    //AGV模式登记完成，清空选中站台
-       _refreshRecord();
+      final rec = ScanRecord(
+        scanTime: DateTime.now(),
+        workType: _workType,
+        stationNo: _workType == 0 ? _selectedStation : null,
+        groundLocation: _workType == 1 ? _selectedGroundLoc : null,
+        goodsCode: code,
+        remark: "",
+        batchId: _currentBatchId!,
+      );
+
+      await _isar.writeTxn(() async {
+        await _isar.scanRecords.put(rec);
+        //AGV模式：保存成功，站台加入占用列表
+        if(_workType ==0 && _selectedStation != null){
+          BatchInfo? batch = await _getCurrentBatch();
+          if(batch != null && !batch.usedStation.contains(_selectedStation)){
+            batch.usedStation.add(_selectedStation!);
+            await _isar.batchInfos.put(batch);
+          }
+        }
+      });
+
+      await _scanSuccessAction();
+      _goodsInputCtrl.clear();
+
+      await _refreshRecord(); //新增await，等待刷新流程执行完毕
+    }finally{
+      _isSaving = false; //无论成败释放锁
+    }
   }
 
   //站台选择逻辑：仅临时选中，不立刻锁定
@@ -364,10 +370,10 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //相机扫码弹窗
-void _openCameraScan() {
+  //相机扫码弹窗【重点修改：移除延时，使用await等待弹窗完全关闭】
+void _openCameraScan() async {
   bool scannedHandled = false;
-  showDialog(
+  final result = await showDialog(
     context: context,
     builder: (ctx) => AlertDialog(
       insetPadding: EdgeInsets.zero,
@@ -383,11 +389,7 @@ void _openCameraScan() {
               scannedHandled = true;
               final String code = barcodes.first.rawValue!.trim();
               _goodsInputCtrl.text = code;
-              Navigator.pop(ctx);
-              //短暂延时，等待弹窗销毁完成，再执行保存
-              Future.delayed(const Duration(milliseconds:200),(){
-                _saveRecord(code);
-              });
+              Navigator.pop(ctx, code);
             }
           },
         ),
@@ -395,6 +397,9 @@ void _openCameraScan() {
       actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
     ),
   );
+  if(result != null && result.toString().trim().isNotEmpty){
+    await _saveRecord(result.toString().trim());
+  }
 }
 
   Widget _buildStationPanel() {
@@ -549,9 +554,9 @@ void _openCameraScan() {
                   child: TextField(
                     controller: _goodsInputCtrl,
                     decoration: const InputDecoration(hintText: "PDA红外扫码自动填入，也可手动输入货码", border: OutlineInputBorder()),
-                    onSubmitted: (txt) {
+                    onSubmitted: (txt) async {
                       String code = txt.trim();
-                      if (code.isNotEmpty) _saveRecord(code);
+                      if (code.isNotEmpty) await _saveRecord(code);
                     },
                   ),
                 ),
