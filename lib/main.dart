@@ -503,9 +503,8 @@ void _openCameraScan() async {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-  title: const SizedBox.shrink(),
+  title: Container(),
   backgroundColor: Colors.blue,
-  // 重点：统一设置右上角所有action图标：白色、放大
   actionsIconTheme: const IconThemeData(
     color: Colors.white,
     size: 26,
@@ -542,6 +541,7 @@ void _openCameraScan() async {
     ),
   ],
 ),
+
 
       body: Padding(
         padding: const EdgeInsets.all(12),
