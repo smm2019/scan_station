@@ -502,44 +502,46 @@ void _openCameraScan() async {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-           appBar: AppBar(
-        title: const SizedBox.shrink(),
-        actions: [
-          IconButton(
-            color: Colors.white,
-            onPressed: _createNewBatch,
-            icon: const Icon(Icons.add_box),
-            tooltip: "新建批次"
-          ),
-          IconButton(
-            color: Colors.white,
-            onPressed: () {
-              String csv = _generateCsvText();
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已复制表格文本，可粘贴至WPS")));
-            },
-            icon: const Icon(Icons.copy),
-            tooltip: "复制CSV至剪贴板",
-          ),
-          IconButton(
-            color: Colors.white,
-            onPressed: _saveCsvToFile,
-            icon: const Icon(Icons.file_download),
-            tooltip: "导出CSV文件",
-          ),
-          IconButton(
-            color: Colors.white,
-            onPressed: () async {
-              if (_webServiceRunning) {
-                await stopWebService();
-              } else {
-                await startWebService();
-              }
-            },
-            icon: Icon(_webServiceRunning ? Icons.wifi_off : Icons.wifi),
-            tooltip: _webServiceRunning ? "关闭局域网传输" : "开启局域网传输",
-          ),
-        ],
-      ),
+      appBar: AppBar(
+  title: const SizedBox.shrink(),
+  backgroundColor: Colors.blue,
+  // 重点：统一设置右上角所有action图标：白色、放大
+  actionsIconTheme: const IconThemeData(
+    color: Colors.white,
+    size: 26,
+  ),
+  actions: [
+    IconButton(
+      onPressed: _createNewBatch,
+      icon: const Icon(Icons.add_box),
+      tooltip: "新建批次"
+    ),
+    IconButton(
+      onPressed: () {
+        String csv = _generateCsvText();
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已复制表格文本，可粘贴至WPS")));
+      },
+      icon: const Icon(Icons.copy),
+      tooltip: "复制CSV至剪贴板",
+    ),
+    IconButton(
+      onPressed: _saveCsvToFile,
+      icon: const Icon(Icons.file_download),
+      tooltip: "导出CSV文件",
+    ),
+    IconButton(
+      onPressed: () async {
+        if (_webServiceRunning) {
+          await stopWebService();
+        } else {
+          await startWebService();
+        }
+      },
+      icon: Icon(_webServiceRunning ? Icons.wifi_off : Icons.wifi),
+      tooltip: _webServiceRunning ? "关闭局域网传输" : "开启局域网传输",
+    ),
+  ],
+),
 
       body: Padding(
         padding: const EdgeInsets.all(12),
