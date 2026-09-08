@@ -69,7 +69,15 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: "AGV货位采集器",
-      theme: ThemeData(primarySwatch: Colors.blue),
+      //关闭Material3自动着色，解决图标看不见的BUG
+      theme: ThemeData(
+        useMaterial3: false,
+        primarySwatch: Colors.blue,
+        appBarTheme: AppBarTheme(
+          backgroundColor: Colors.blue,
+          iconTheme: IconThemeData(color: Colors.white),
+        ),
+      ),
       home: const MainPage(),
       debugShowCheckedModeBanner: false,
     );
@@ -90,6 +98,7 @@ class _MainPageState extends State<MainPage> {
   String? _selectedGroundLoc;
   final TextEditingController _goodsInputCtrl = TextEditingController();
   List<ScanRecord> _recordList = [];
+  bool _isScanningHandling = false; //防止扫码重复触发
 
   //地面货位分组
   final List<String> _locGroup = ["A", "B", "C", "D"];
@@ -109,7 +118,7 @@ class _MainPageState extends State<MainPage> {
     _refreshRecord();
   }
 
-  //读取最近批次：内存排序，彻底避开Isar版本API差异
+  //读取最近批次
   Future<void> _loadLastBatch() async {
     List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
     if(allBatch.isNotEmpty){
@@ -183,19 +192,26 @@ class _MainPageState extends State<MainPage> {
     } catch (_) {}
   }
 
-  /// 新版逻辑：点击站台仅选中；扫码保存成功后站台才锁定占用
+  /// 修复：AGV模式，**保存数据库成功之后，再清空站台选中状态**
   Future<void> _saveRecord(String code) async {
     if (_currentBatchId == null) return;
     if (await _isCodeDuplicate(code)) return;
 
+    //校验选择
     if (_workType == 0 && _selectedStation == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择站台！")));
       }
       return;
     }
+    if (_workType == 1 && _selectedGroundLoc == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
+      }
+      return;
+    }
 
-    //AGV模式校验：该站台是否已经登记过货物
+    //AGV模式：判断站台是否已经占用
     if (_workType == 0) {
       final existStationRecord = await _isar.scanRecords
           .filter()
@@ -210,13 +226,6 @@ class _MainPageState extends State<MainPage> {
       }
     }
 
-    if (_workType == 1 && _selectedGroundLoc == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
-      }
-      return;
-    }
-
     final rec = ScanRecord(
       scanTime: DateTime.now(),
       workType: _workType,
@@ -229,7 +238,6 @@ class _MainPageState extends State<MainPage> {
 
     await _isar.writeTxn(() async {
       await _isar.scanRecords.put(rec);
-      //AGV模式：保存成功，站台加入占用列表
       if(_workType ==0 && _selectedStation != null){
         BatchInfo? batch = await _getCurrentBatch();
         if(batch != null && !batch.usedStation.contains(_selectedStation)){
@@ -242,13 +250,15 @@ class _MainPageState extends State<MainPage> {
     await _scanSuccessAction();
     _goodsInputCtrl.clear();
 
-    //AGV模式登记完成，清空选中站台
+    //✅关键修复：数据库写入、刷新列表完成之后，再清空选中站台
+    await _refreshRecord();
+
     if(_workType ==0){
       setState((){
         _selectedStation = null;
       });
     }
-    _refreshRecord();
+
     if(mounted){
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("✅扫码保存成功")));
     }
@@ -342,7 +352,7 @@ class _MainPageState extends State<MainPage> {
       final csvContent = _generateCsvText();
       return Response.ok(csvContent, headers: {
         "Content-Type": "text/csv;charset=utf-8",
-        "Content-Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
+        "Content‑Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
       });
     });
     _webServer = await shelf_io.serve(handler, InternetAddress.anyIPv4, _webPort);
@@ -368,8 +378,9 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //相机扫码弹窗｜方案1：识别后自动保存
+  //相机扫码弹窗
   void _openCameraScan() {
+    _isScanningHandling = false;
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -379,13 +390,17 @@ class _MainPageState extends State<MainPage> {
           width: 300,
           height: 350,
           child: MobileScanner(
-            onDetect: (capture) {
+            allowDuplicates: false,
+            onDetect: (capture) async {
               final barcodes = capture.barcodes;
               if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
-                Navigator.pop(ctx);
+                if(_isScanningHandling) return;
+                _isScanningHandling = true;
                 String code = barcodes.first.rawValue!.trim();
                 _goodsInputCtrl.text = code;
-                _saveRecord(code);
+                //先执行保存全部逻辑，完成后再关闭弹窗
+                await _saveRecord(code);
+                if(mounted) Navigator.pop(ctx);
               }
             },
           ),
@@ -484,18 +499,19 @@ class _MainPageState extends State<MainPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: null, // 移除左上角标题文字
+        backgroundColor: Colors.blue,
+        //✅每个图标强制写死白色，彻底解决图标看不见
         actions: [
-          IconButton(onPressed: _createNewBatch, icon: const Icon(Icons.add_box), tooltip: "新建批次"),
+          IconButton(onPressed: _createNewBatch, icon: const Icon(Icons.add_box,color:Colors.white), tooltip: "新建批次"),
           IconButton(
             onPressed: () {
               String csv = _generateCsvText();
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已复制表格文本，可粘贴至WPS")));
             },
-            icon: const Icon(Icons.copy),
+            icon: const Icon(Icons.copy,color:Colors.white),
             tooltip: "复制CSV至剪贴板",
           ),
-          IconButton(onPressed: _saveCsvToFile, icon: const Icon(Icons.file_download), tooltip: "导出CSV文件"),
+          IconButton(onPressed: _saveCsvToFile, icon: const Icon(Icons.file_download,color:Colors.white), tooltip: "导出CSV文件"),
           IconButton(
             onPressed: () async {
               if (_webServiceRunning) {
@@ -504,7 +520,7 @@ class _MainPageState extends State<MainPage> {
                 await startWebService();
               }
             },
-            icon: Icon(_webServiceRunning ? Icons.wifi_off : Icons.wifi),
+            icon: Icon(_webServiceRunning ? Icons.wifi_off : Icons.wifi,color:Colors.white),
             tooltip: _webServiceRunning ? "关闭局域网传输" : "开启局域网传输",
           ),
         ],
@@ -547,9 +563,9 @@ class _MainPageState extends State<MainPage> {
                   child: TextField(
                     controller: _goodsInputCtrl,
                     decoration: const InputDecoration(hintText: "PDA红外扫码自动填入，也可手动输入货码", border: OutlineInputBorder()),
-                    onSubmitted: (txt) {
+                    onSubmitted: (txt) async {
                       String code = txt.trim();
-                      if (code.isNotEmpty) _saveRecord(code);
+                      if (code.isNotEmpty) await _saveRecord(code);
                     },
                   ),
                 ),
