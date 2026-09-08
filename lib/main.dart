@@ -503,11 +503,13 @@ void _openCameraScan() async {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-  title: Container(),
+  title: const Text(""),
   backgroundColor: Colors.blue,
+  toolbarHeight: 56,
+  automaticallyImplyLeading: false,
   actionsIconTheme: const IconThemeData(
     color: Colors.white,
-    size: 26,
+    size: 28,
   ),
   actions: [
     IconButton(
