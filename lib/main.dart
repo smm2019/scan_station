@@ -47,7 +47,7 @@ class BatchInfo {
   });
 }
 
-// ===================== 全局Isar实例（替代废弃Isar.instance） =====================
+// ===================== 全局Isar实例 =====================
 late Isar _globalIsar;
 
 // ===================== 程序入口 =====================
@@ -108,9 +108,9 @@ class _MainPageState extends State<MainPage> {
     _refreshRecord();
   }
 
-  //读取最近批次 ————【已修改，适配旧版Isar，移除desc命名参数，改用链式.desc()】
+  //读取最近批次 【适配Isar3.1.0 Sort枚举】
   Future<void> _loadLastBatch() async {
-    final batchList = await _isar.batchInfos.where().sortByCreateTime().desc().limit(1).findAll();
+    final batchList = await _isar.batchInfos.where().sortByCreateTime(Sort.desc).limit(1).findAll();
     if (batchList.isNotEmpty) {
       setState(() {
         _currentBatchId = batchList.first.batchId;
@@ -140,7 +140,6 @@ class _MainPageState extends State<MainPage> {
 
   Future<BatchInfo?> _getCurrentBatch() async {
     if (_currentBatchId == null) return null;
-    // Isar3.0 filter标准写法
     return await _isar.batchInfos.filter().batchIdEqualTo(_currentBatchId!).findFirst();
   }
 
@@ -272,14 +271,13 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-  //刷新当前批次记录列表
+  //刷新当前批次记录列表【适配Isar3.1.0 Sort枚举】
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     final list = await _isar.scanRecords
         .filter()
         .batchIdEqualTo(_currentBatchId!)
-        .sortByScanTime()
-        .desc()
+        .sortByScanTime(Sort.desc)
         .findAll();
     setState(() {
       _recordList = list;
