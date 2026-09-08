@@ -1,4 +1,4 @@
-name: Build-Scan-Station-APK
+name: Build‑Scan‑Station‑APK
 on:
   push:
     branches: [ main ]
@@ -6,42 +6,42 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu‑latest
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Setup Flutter 3.22.0
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter‑action@v2
         with:
-          flutter-version: '3.22.0'
+          flutter‑version: '3.22.0'
           channel: stable
           cache: true
 
       - name: Setup Android SDK, auto accept licenses
-        uses: android-actions/setup-android@v3
+        uses: android‑actions/setup‑android@v3
 
       # 修复模拟器zip解压报错，卸载emulator，仅安装打包必需SDK组件
       - name: Install minimal Android SDK packages
         run: |
           sdkmanager --uninstall emulator || true
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --install "platform‑tools" "platforms;android‑34" "build‑tools;34.0.0"
           yes | sdkmanager --licenses
 
       - name: flutter pub get
         run: flutter pub get
 
       - name: Generate Isar Database Code
-        run: flutter pub run build_runner build --delete-conflicting-outputs
+        run: flutter pub run build_runner build --delete‑conflicting‑outputs
 
       - name: disable analytics
-        run: flutter config --no-analytics
+        run: flutter config --no‑analytics
 
       - name: Build Release APK
-        run: flutter build apk --release --no-tree-shake-icons
+        run: flutter build apk --release --no‑tree‑shake‑icons
 
       - name: Upload Artifact APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload‑artifact@v4
         with:
-          name: scan-station-apk-output
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: scan‑station‑apk‑output
+          path: build/app/outputs/flutter‑apk/release/app‑release.apk

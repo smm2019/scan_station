@@ -133,16 +133,16 @@ class _MainPageState extends State<MainPage> {
 
   Future<BatchInfo?> _getCurrentBatch() async {
     if (_currentBatchId == null) return null;
-    //【修复】Isar3查询语法，移除链式batchIdEqualTo
-    return await _isar.batchInfos.query(BatchInfo_.batchIdEqualTo(_currentBatchId!)).findFirst();
+    // Isar3.1 filter标准写法
+    return await _isar.batchInfos.filter().batchIdEqualTo(_currentBatchId!).findFirst();
   }
 
   //校验货码在本批次是否重复
   Future<bool> _isCodeDuplicate(String code) async {
-    //【修复】Isar3标准查询构造方式
     final exist = await _isar.scanRecords
-        .query(ScanRecord_.batchIdEqualTo(_currentBatchId!))
-        .filter(ScanRecord_.goodsCodeEqualTo(code))
+        .filter()
+        .batchIdEqualTo(_currentBatchId!)
+        .goodsCodeEqualTo(code)
         .findFirst();
     if (exist != null) {
       String posInfo = "";
@@ -189,10 +189,10 @@ class _MainPageState extends State<MainPage> {
 
     //AGV模式校验：该站台是否已经登记过货物
     if (_workType == 0) {
-      //【修复】Isar3查询语法
       final existStationRecord = await _isar.scanRecords
-          .query(ScanRecord_.batchIdEqualTo(_currentBatchId!))
-          .filter(ScanRecord_.stationNoEqualTo(_selectedStation))
+          .filter()
+          .batchIdEqualTo(_currentBatchId!)
+          .stationNoEqualTo(_selectedStation)
           .findFirst();
       if (existStationRecord != null) {
         if (mounted) {
@@ -268,9 +268,9 @@ class _MainPageState extends State<MainPage> {
   //刷新当前批次记录列表
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
-    //【修复】Isar3标准查询
     final list = await _isar.scanRecords
-        .query(ScanRecord_.batchIdEqualTo(_currentBatchId!))
+        .filter()
+        .batchIdEqualTo(_currentBatchId!)
         .sortByScanTime()
         .findAll();
     setState(() {
@@ -294,7 +294,7 @@ class _MainPageState extends State<MainPage> {
     return content;
   }
 
-  //导出本地CSV文件【修复：移除Encoding.getByName】
+  //导出本地CSV文件
   Future<void> _saveCsvToFile() async {
     String csvText = _generateCsvText();
     final dir = await getExternalStorageDirectory();
