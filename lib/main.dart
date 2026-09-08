@@ -246,7 +246,7 @@ class _MainPageState extends State<MainPage> {
       await _scanSuccessAction();
       _goodsInputCtrl.clear();
 
-      //AGV模式保存成功后，手动清空选中站台（核心修复点）
+      //AGV模式保存成功后，手动清空选中站台
       if(_workType ==0){
         setState((){
           _selectedStation = null;
@@ -259,8 +259,8 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //站台选择逻辑：仅临时选中，不立刻锁定
-  void onStationTap(int stationNum) async {
+  //【修复】修改函数签名，调整赋值顺序，解决UI与内存变量不同步
+  Future<void> onStationTap(int stationNum) async {
     final batch = await _getCurrentBatch();
     if (batch == null) return;
     if (batch.usedStation.contains(stationNum)) {
@@ -269,9 +269,9 @@ class _MainPageState extends State<MainPage> {
       }
       return;
     }
-    setState(() {
-      _selectedStation = stationNum;
-    });
+    //优先给内存变量赋值，再刷新UI
+    _selectedStation = stationNum;
+    setState(() {});
   }
 
   //人工模式货位选择
@@ -281,7 +281,7 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-//刷新当前批次记录列表，内存排序，【移除此处清空站台选中的代码】
+//刷新当前批次记录列表，内存排序，不移除选中状态
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     List<ScanRecord> all = await _isar.scanRecords
@@ -291,7 +291,6 @@ class _MainPageState extends State<MainPage> {
     all.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
     setState(() {
       _recordList = all;
-      //删除原代码：if(_workType ==0){_selectedStation=null;}
     });
   }
 
@@ -374,7 +373,7 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //相机扫码弹窗【已经移除延时，使用await等待弹窗完全关闭】
+  //相机扫码弹窗：移除多余输入框赋值
 void _openCameraScan() async {
   bool scannedHandled = false;
   final result = await showDialog(
@@ -392,7 +391,6 @@ void _openCameraScan() async {
             if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
               scannedHandled = true;
               final String code = barcodes.first.rawValue!.trim();
-              _goodsInputCtrl.text = code;
               Navigator.pop(ctx, code);
             }
           },
