@@ -69,15 +69,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: "AGV货位采集器",
-      //关闭Material3自动着色，解决图标看不见的BUG
-      theme: ThemeData(
-        useMaterial3: false,
-        primarySwatch: Colors.blue,
-        appBarTheme: AppBarTheme(
-          backgroundColor: Colors.blue,
-          iconTheme: IconThemeData(color: Colors.white),
-        ),
-      ),
+      theme: ThemeData(primarySwatch: Colors.blue),
       home: const MainPage(),
       debugShowCheckedModeBanner: false,
     );
@@ -98,7 +90,6 @@ class _MainPageState extends State<MainPage> {
   String? _selectedGroundLoc;
   final TextEditingController _goodsInputCtrl = TextEditingController();
   List<ScanRecord> _recordList = [];
-  bool _isScanningHandling = false; //防止扫码重复触发
 
   //地面货位分组
   final List<String> _locGroup = ["A", "B", "C", "D"];
@@ -118,7 +109,7 @@ class _MainPageState extends State<MainPage> {
     _refreshRecord();
   }
 
-  //读取最近批次
+  //读取最近批次：内存排序，彻底避开Isar版本API差异
   Future<void> _loadLastBatch() async {
     List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
     if(allBatch.isNotEmpty){
@@ -154,7 +145,7 @@ class _MainPageState extends State<MainPage> {
     return await _isar.batchInfos.filter().batchIdEqualTo(_currentBatchId!).findFirst();
   }
 
-  //校验货码在本批次是否重复，自带重复弹窗
+  //校验货码在本批次是否重复
   Future<bool> _isCodeDuplicate(String code) async {
     final exist = await _isar.scanRecords
         .filter()
@@ -192,26 +183,19 @@ class _MainPageState extends State<MainPage> {
     } catch (_) {}
   }
 
-  /// 修复：AGV模式，**保存数据库成功之后，再清空站台选中状态**
+  /// 新版逻辑：点击站台仅选中；扫码保存成功后站台才锁定占用
   Future<void> _saveRecord(String code) async {
     if (_currentBatchId == null) return;
     if (await _isCodeDuplicate(code)) return;
 
-    //校验选择
     if (_workType == 0 && _selectedStation == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择站台！")));
       }
       return;
     }
-    if (_workType == 1 && _selectedGroundLoc == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
-      }
-      return;
-    }
 
-    //AGV模式：判断站台是否已经占用
+    //AGV模式校验：该站台是否已经登记过货物
     if (_workType == 0) {
       final existStationRecord = await _isar.scanRecords
           .filter()
@@ -226,6 +210,13 @@ class _MainPageState extends State<MainPage> {
       }
     }
 
+    if (_workType == 1 && _selectedGroundLoc == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
+      }
+      return;
+    }
+
     final rec = ScanRecord(
       scanTime: DateTime.now(),
       workType: _workType,
@@ -238,6 +229,7 @@ class _MainPageState extends State<MainPage> {
 
     await _isar.writeTxn(() async {
       await _isar.scanRecords.put(rec);
+      //AGV模式：保存成功，站台加入占用列表
       if(_workType ==0 && _selectedStation != null){
         BatchInfo? batch = await _getCurrentBatch();
         if(batch != null && !batch.usedStation.contains(_selectedStation)){
@@ -250,18 +242,13 @@ class _MainPageState extends State<MainPage> {
     await _scanSuccessAction();
     _goodsInputCtrl.clear();
 
-    //✅关键修复：数据库写入、刷新列表完成之后，再清空选中站台
-    await _refreshRecord();
-
+    //AGV模式登记完成，清空选中站台
     if(_workType ==0){
       setState((){
         _selectedStation = null;
       });
     }
-
-    if(mounted){
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("✅扫码保存成功")));
-    }
+    _refreshRecord();
   }
 
   //站台选择逻辑：仅临时选中，不立刻锁定
@@ -352,7 +339,7 @@ class _MainPageState extends State<MainPage> {
       final csvContent = _generateCsvText();
       return Response.ok(csvContent, headers: {
         "Content-Type": "text/csv;charset=utf-8",
-        "Content‑Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
+        "Content-Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
       });
     });
     _webServer = await shelf_io.serve(handler, InternetAddress.anyIPv4, _webPort);
@@ -378,15 +365,9 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  // ==========【仅此处做修改，其余代码完全不动】==========
-  void _openCameraScan() async {
-    //实例独立扫码控制器，可主动停止扫码数据流，杜绝多次回调
-    final MobileScannerController scannerCtrl = MobileScannerController(
-      detectionSpeed: DetectionSpeed.noDuplicates,
-    );
-    bool isProcessed = false;
-
-    await showDialog(
+  //相机扫码弹窗
+  void _openCameraScan() {
+    showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         insetPadding: EdgeInsets.zero,
@@ -395,35 +376,18 @@ class _MainPageState extends State<MainPage> {
           width: 300,
           height: 350,
           child: MobileScanner(
-            controller: scannerCtrl,
-            onDetect: (capture) async {
-              if(isProcessed) return;
-              final barcode = capture.barcodes.firstOrNull;
-              if(barcode?.rawValue == null) return;
-              isProcessed = true;
-              final String code = barcode!.rawValue!.trim();
-              //立刻停止扫码，切断后续持续推送条码
-              await scannerCtrl.stop();
-              //填入输入框
-              _goodsInputCtrl.text = code;
-              //等待弹窗上下文完全销毁、页面状态稳定后再执行业务逻辑
-              if(mounted){
-                WidgetsBinding.instance.addPostFrameCallback((_) async {
-                  //内部自带_isCodeDuplicate，重复条码自动弹出提示弹窗
-                  await _saveRecord(code);
-                });
+            onDetect: (capture) {
+              final barcodes = capture.barcodes;
+              if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
+                Navigator.pop(ctx);
+                String code = barcodes.first.rawValue!.trim();
+                _goodsInputCtrl.text = code;
+                _saveRecord(code);
               }
-              //关闭扫码弹窗
-              if(mounted) Navigator.pop(ctx);
             },
           ),
         ),
-        actions: [
-          TextButton(onPressed: () async {
-            await scannerCtrl.stop();
-            Navigator.pop(ctx);
-          }, child: const Text("关闭"))
-        ],
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
       ),
     );
   }
@@ -517,19 +481,18 @@ class _MainPageState extends State<MainPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Colors.blue,
-        //✅每个图标强制写死白色，彻底解决图标看不见
+        title: const Text("AGV货位采集器"),
         actions: [
-          IconButton(onPressed: _createNewBatch, icon: const Icon(Icons.add_box,color:Colors.white), tooltip: "新建批次"),
+          IconButton(onPressed: _createNewBatch, icon: const Icon(Icons.add_box), tooltip: "新建批次"),
           IconButton(
             onPressed: () {
               String csv = _generateCsvText();
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已复制表格文本，可粘贴至WPS")));
             },
-            icon: const Icon(Icons.copy,color:Colors.white),
+            icon: const Icon(Icons.copy),
             tooltip: "复制CSV至剪贴板",
           ),
-          IconButton(onPressed: _saveCsvToFile, icon: const Icon(Icons.file_download,color:Colors.white), tooltip: "导出CSV文件"),
+          IconButton(onPressed: _saveCsvToFile, icon: const Icon(Icons.file_download), tooltip: "导出CSV文件"),
           IconButton(
             onPressed: () async {
               if (_webServiceRunning) {
@@ -538,7 +501,7 @@ class _MainPageState extends State<MainPage> {
                 await startWebService();
               }
             },
-            icon: Icon(_webServiceRunning ? Icons.wifi_off : Icons.wifi,color:Colors.white),
+            icon: Icon(_webServiceRunning ? Icons.wifi_off : Icons.wifi),
             tooltip: _webServiceRunning ? "关闭局域网传输" : "开启局域网传输",
           ),
         ],
@@ -581,9 +544,9 @@ class _MainPageState extends State<MainPage> {
                   child: TextField(
                     controller: _goodsInputCtrl,
                     decoration: const InputDecoration(hintText: "PDA红外扫码自动填入，也可手动输入货码", border: OutlineInputBorder()),
-                    onSubmitted: (txt) async {
+                    onSubmitted: (txt) {
                       String code = txt.trim();
-                      if (code.isNotEmpty) await _saveRecord(code);
+                      if (code.isNotEmpty) _saveRecord(code);
                     },
                   ),
                 ),
