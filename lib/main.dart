@@ -236,12 +236,16 @@ class _MainPageState extends State<MainPage> {
 
       await _isar.writeTxn(() async {
         await _isar.scanRecords.put(rec);
-        //AGV模式：保存成功，站台加入占用列表
+        // ==========【核心修复】Isar读出的list是固定长度，必须toList复制可变列表 ==========
         if(_workType ==0 && _selectedStation != null){
           BatchInfo? batch = await _getCurrentBatch();
-          if(batch != null && !batch.usedStation.contains(_selectedStation)){
-            batch.usedStation.add(_selectedStation!);
-            await _isar.batchInfos.put(batch);
+          if(batch != null){
+            List<int> mutableList = batch.usedStation.toList(); //拷贝为可变列表
+            if(!mutableList.contains(_selectedStation)){
+              mutableList.add(_selectedStation!);
+              batch.usedStation = mutableList; //赋值回对象
+              await _isar.batchInfos.put(batch);
+            }
           }
         }
       });
