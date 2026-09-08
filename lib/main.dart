@@ -108,9 +108,9 @@ class _MainPageState extends State<MainPage> {
     _refreshRecord();
   }
 
-  //读取最近批次 【适配Isar3.1.0 Sort枚举】
+  //读取最近批次 【Isar3.1.0 正确链式排序】
   Future<void> _loadLastBatch() async {
-    final batchList = await _isar.batchInfos.where().sortByCreateTime(Sort.desc).limit(1).findAll();
+    final batchList = await _isar.batchInfos.where().sortByCreateTime().sort(Sort.desc).limit(1).findAll();
     if (batchList.isNotEmpty) {
       setState(() {
         _currentBatchId = batchList.first.batchId;
@@ -271,13 +271,14 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-  //刷新当前批次记录列表【适配Isar3.1.0 Sort枚举】
+  //刷新当前批次记录列表【Isar3.1.0 链式排序】
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     final list = await _isar.scanRecords
         .filter()
         .batchIdEqualTo(_currentBatchId!)
-        .sortByScanTime(Sort.desc)
+        .sortByScanTime()
+        .sort(Sort.desc)
         .findAll();
     setState(() {
       _recordList = list;
