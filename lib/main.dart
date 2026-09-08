@@ -243,12 +243,7 @@ class _MainPageState extends State<MainPage> {
     _goodsInputCtrl.clear();
 
     //AGV模式登记完成，清空选中站台
-    if(_workType ==0){
-      setState((){
-        _selectedStation = null;
-      });
-    }
-    _refreshRecord();
+       _refreshRecord();
   }
 
   //站台选择逻辑：仅临时选中，不立刻锁定
@@ -273,7 +268,7 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-  //刷新当前批次记录列表，内存排序，新记录在上
+//刷新当前批次记录列表，内存排序，新记录在上
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     List<ScanRecord> all = await _isar.scanRecords
@@ -283,6 +278,10 @@ class _MainPageState extends State<MainPage> {
     all.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
     setState(() {
       _recordList = all;
+      //AGV模式，刷新列表完毕后清空站台选中状态，避开弹窗状态竞争
+      if(_workType == 0){
+        _selectedStation = null;
+      }
     });
   }
 
