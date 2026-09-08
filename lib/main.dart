@@ -390,8 +390,7 @@ class _MainPageState extends State<MainPage> {
           width: 300,
           height: 350,
           child: MobileScanner(
-            allowDuplicates: false,
-            onDetect: (capture) async {
+                        onDetect: (capture) async {
               final barcodes = capture.barcodes;
               if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
                 if(_isScanningHandling) return;
