@@ -502,11 +502,17 @@ void _openCameraScan() async {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("AGV货位采集器"),
+           appBar: AppBar(
+        title: const SizedBox.shrink(),
         actions: [
-          IconButton(onPressed: _createNewBatch, icon: const Icon(Icons.add_box), tooltip: "新建批次"),
           IconButton(
+            color: Colors.white,
+            onPressed: _createNewBatch,
+            icon: const Icon(Icons.add_box),
+            tooltip: "新建批次"
+          ),
+          IconButton(
+            color: Colors.white,
             onPressed: () {
               String csv = _generateCsvText();
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已复制表格文本，可粘贴至WPS")));
@@ -514,8 +520,14 @@ void _openCameraScan() async {
             icon: const Icon(Icons.copy),
             tooltip: "复制CSV至剪贴板",
           ),
-          IconButton(onPressed: _saveCsvToFile, icon: const Icon(Icons.file_download), tooltip: "导出CSV文件"),
           IconButton(
+            color: Colors.white,
+            onPressed: _saveCsvToFile,
+            icon: const Icon(Icons.file_download),
+            tooltip: "导出CSV文件",
+          ),
+          IconButton(
+            color: Colors.white,
             onPressed: () async {
               if (_webServiceRunning) {
                 await stopWebService();
@@ -528,6 +540,7 @@ void _openCameraScan() async {
           ),
         ],
       ),
+
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
