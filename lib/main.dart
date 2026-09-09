@@ -346,7 +346,7 @@ class _MainPageState extends State<MainPage> {
     return null;
   }
 
-  //【修改】重写此函数，增加异常捕获，绑定本机IP
+  //【修改】绑定0.0.0.0，本机127.0.0.1与局域网电脑均可访问
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
     final ip = await _getLocalIp();
@@ -363,8 +363,8 @@ class _MainPageState extends State<MainPage> {
       });
     });
     try {
-      final bindAddress = InternetAddress(ip);
-      _webServer = await shelf_io.serve(handler, bindAddress, _webPort);
+      // 关键改动：绑定0.0.0.0，监听全部网卡，不再仅绑定局域网IP
+      _webServer = await shelf_io.serve(handler, "0.0.0.0", _webPort);
       setState(() {
         _webServiceRunning = true;
       });
