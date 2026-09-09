@@ -502,31 +502,43 @@ void _openCameraScan() async {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-     appBar: AppBar(
+    appBar: AppBar(
   backgroundColor: Colors.blue,
+  // 移除title
   actions: [
     TextButton(
       onPressed: _createNewBatch,
-      child: const Text("新批次",style:TextStyle(color:Colors.white,fontSize:14)),
+      child: const Text(
+        "新批次",
+        style: TextStyle(color: Colors.white, fontSize: 14),
+      ),
     ),
     TextButton(
-      onPressed: (){
-        final csv=_generateCsvText();
+      onPressed: () {
+        final csv = _generateCsvText();
         //复制剪贴板逻辑
       },
-      child: const Text("复制",style:TextStyle(color:Colors.white,fontSize:14)),
+      child: const Text(
+        "复制",
+        style: TextStyle(color: Colors.white, fontSize: 14),
+      ),
     ),
     TextButton(
-      onPressed:_exportCsvFile,
-      child: const Text("导出文件",style:TextStyle(color:Colors.white,fontSize:14)),
+      onPressed: _exportCsvFile,
+      child: const Text(
+        "导出文件",
+        style: TextStyle(color: Colors.white, fontSize: 14),
+      ),
     ),
     TextButton(
-      onPressed:_toggleWifiServer,
-      child: const Text("WiFi服务",style:TextStyle(color:Colors.white,fontSize:14)),
+      onPressed: _toggleWifiServer,
+      child: const Text(
+        "WiFi服务",
+        style: TextStyle(color: Colors.white, fontSize: 14),
+      ),
     ),
   ],
 ),
-
       body: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
