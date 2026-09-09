@@ -19,7 +19,7 @@ class ScanRecord {
   Id id = Isar.autoIncrement;
   DateTime scanTime;
   int workType; //0=AGV站台模式，1=人工地面摆放模式
-  int? stationNo; //站台1‑8，仅模式0使用
+  int? stationNo; //站台5‑12，仅模式0使用
   String? groundLocation; //地面货位A1‑D18，仅模式1使用
   String goodsCode;
   String remark;
@@ -357,8 +357,8 @@ class _MainPageState extends State<MainPage> {
     final handler = Pipeline().addHandler((Request req) async {
       final csvContent = _generateCsvText();
       return Response.ok(csvContent, headers: {
-        "Content-Type": "text/csv;charset=utf-8",
-        "Content-Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
+        "Content‑Type": "text/csv;charset=utf‑8",
+        "Content‑Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
       });
     });
     _webServer = await shelf_io.serve(handler, InternetAddress.anyIPv4, _webPort);
@@ -415,16 +415,17 @@ void _openCameraScan() async {
   }
 }
 
+  //修改3：站台更换为5‑12
   Widget _buildStationPanel() {
     return FutureBuilder<BatchInfo?>(
       future: _getCurrentBatch(),
       builder: (ctx, snapshot) {
         List<int> used = snapshot.data?.usedStation ?? [];
+        List<int> stationList = [5,6,7,8,9,10,11,12];
         return Wrap(
           spacing: 8,
           runSpacing: 8,
-          children: List.generate(8, (idx) {
-            int num = idx + 1;
+          children: stationList.map((num) {
             bool locked = used.contains(num);
             bool selected = _selectedStation == num;
             return SizedBox(
@@ -437,13 +438,12 @@ void _openCameraScan() async {
                 child: Text("$num号"),
               ),
             );
-          }),
+          }).toList(),
         );
       },
     );
   }
 
-  // ==========修改点1：人工货位按钮增加选中蓝色样式==========
   Widget _buildGroundLocPanel() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -472,9 +472,10 @@ void _openCameraScan() async {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: isSelected ? Colors.blue : Colors.white,
                   foregroundColor: isSelected ? Colors.white : Colors.black,
+                  elevation:2,
                 ),
                 onPressed: () => _selectGroundLoc(n),
-                child: Text("$n"),
+                child: Text("$n",style: TextStyle(fontSize:16)),
               ),
             );
           }),
@@ -485,7 +486,7 @@ void _openCameraScan() async {
     );
   }
 
-  // ==========修改点2：记录列表增加删除按钮+弹窗确认==========
+  //修改1：删除按钮改为文字【删除】；修改2：删除AGV记录自动释放站台
   Widget _buildRecordList() {
     return Expanded(
       child: ListView.builder(
@@ -502,27 +503,38 @@ void _openCameraScan() async {
           return ListTile(
             title: Text("货码：${r.goodsCode}｜$posTxt"),
             subtitle: Text("采集时间：$timeTxt"),
-            trailing: IconButton(
-              icon: const Icon(Icons.delete, color: Colors.red),
+            trailing: TextButton(
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
               onPressed: () async {
                 final confirm = await showDialog<bool>(
                   context: context,
                   builder: (ctx) => AlertDialog(
                     title: const Text("删除记录"),
-                    content: const Text("确定删除本条采集记录吗？"),
+                    content: const Text("确定删除本条采集记录？"),
                     actions: [
                       TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
-                      TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("删除")),
+                      TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认")),
                     ],
                   ),
                 );
-                if(confirm == true){
-                  await _isar.writeTxn(() async {
-                    await _isar.scanRecords.delete(r.id);
-                  });
-                  await _refreshRecord();
-                }
+                if(confirm != true) return;
+
+                await _isar.writeTxn(() async {
+                  await _isar.scanRecords.delete(r.id);
+                  // AGV记录：释放站台
+                  if(r.workType ==0 && r.stationNo != null){
+                    BatchInfo? batch = await _getCurrentBatch();
+                    if(batch != null){
+                      List<int> mutable = batch.usedStation.toList();
+                      mutable.remove(r.stationNo);
+                      batch.usedStation = mutable;
+                      await _isar.batchInfos.put(batch);
+                    }
+                  }
+                });
+                await _refreshRecord();
               },
+              child: const Text("删除",style: TextStyle(fontSize:14)),
             ),
           );
         },
@@ -549,7 +561,7 @@ void _openCameraScan() async {
     return Scaffold(
     appBar: AppBar(
   backgroundColor: Colors.blue,
-  // 移除title
+  // 移除title，全部使用文字按钮规避图标bug
   actions: [
     TextButton(
       onPressed: _createNewBatch,
