@@ -443,6 +443,7 @@ void _openCameraScan() async {
     );
   }
 
+  // ==========修改点1：人工货位按钮增加选中蓝色样式==========
   Widget _buildGroundLocPanel() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -463,9 +464,15 @@ void _openCameraScan() async {
           runSpacing: 6,
           children: List.generate(18, (i) {
             int n = i + 1;
+            String locCode = "$_curLocGroup$n";
+            bool isSelected = _selectedGroundLoc == locCode;
             return SizedBox(
               width: 42,
               child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isSelected ? Colors.blue : Colors.white,
+                  foregroundColor: isSelected ? Colors.white : Colors.black,
+                ),
                 onPressed: () => _selectGroundLoc(n),
                 child: Text("$n"),
               ),
@@ -478,6 +485,7 @@ void _openCameraScan() async {
     );
   }
 
+  // ==========修改点2：记录列表增加删除按钮+弹窗确认==========
   Widget _buildRecordList() {
     return Expanded(
       child: ListView.builder(
@@ -494,6 +502,28 @@ void _openCameraScan() async {
           return ListTile(
             title: Text("货码：${r.goodsCode}｜$posTxt"),
             subtitle: Text("采集时间：$timeTxt"),
+            trailing: IconButton(
+              icon: const Icon(Icons.delete, color: Colors.red),
+              onPressed: () async {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text("删除记录"),
+                    content: const Text("确定删除本条采集记录吗？"),
+                    actions: [
+                      TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
+                      TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("删除")),
+                    ],
+                  ),
+                );
+                if(confirm == true){
+                  await _isar.writeTxn(() async {
+                    await _isar.scanRecords.delete(r.id);
+                  });
+                  await _refreshRecord();
+                }
+              },
+            ),
           );
         },
       ),
