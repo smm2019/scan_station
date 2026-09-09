@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:isar/isar.dart';
 import 'package:isar_flutter_libs/isar_flutter_libs.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -499,6 +500,20 @@ void _openCameraScan() async {
     );
   }
 
+  //=====【新增函数，修复CI报错】=====
+  Future<void> _exportCsvFile() async {
+    await _saveCsvToFile();
+  }
+
+  Future<void> _toggleWifiServer() async {
+    if (_webServiceRunning) {
+      await stopWebService();
+    } else {
+      await startWebService();
+    }
+  }
+  //====================================
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -514,9 +529,9 @@ void _openCameraScan() async {
       ),
     ),
     TextButton(
-      onPressed: () {
+      onPressed: () async {
         final csv = _generateCsvText();
-        //复制剪贴板逻辑
+        await Clipboard.setData(ClipboardData(text: csv));
       },
       child: const Text(
         "复制",
