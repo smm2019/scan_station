@@ -359,11 +359,16 @@ class _MainPageState extends State<MainPage> {
     return null;
   }
 
-  // =========【改动3：函数开头增加Android14动态权限申请】=========
+  // =========【改动3：函数开头增加Android14动态权限申请；同时修正响应头非法减号】=========
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
-    //Android14必备权限，无权限则无法读取网卡列表
-    
+    //Android14‑16工业PDA必备附近设备权限，用于读取WiFi网卡列表
+    final wifiPermStatus = await Permission.nearbyWifiDevices.request();
+    if(!wifiPermStatus.isGranted){
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("需要附近设备权限，才能读取WiFi地址")));
+      return;
+    }
+
     final ip = await _getLocalIp();
     if (ip == null) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未获取到局域网IP，请确认已连接WiFi，并关闭移动数据")));
@@ -373,8 +378,8 @@ class _MainPageState extends State<MainPage> {
     final handler = Pipeline().addHandler((Request req) async {
       final csvContent = _generateCsvText();
       return Response.ok(csvContent, headers: {
-        "Content‑Type": "text/csv;charset=utf‑8",
-        "Content‑Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
+        "Content-Type": "text/csv;charset=utf-8",
+        "Content-Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
       });
     });
     try {
