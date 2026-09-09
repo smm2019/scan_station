@@ -363,13 +363,7 @@ class _MainPageState extends State<MainPage> {
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
     //Android14必备权限，无权限则无法读取网卡列表
-      if (!status.isGranted) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("需要网络状态权限才能获取WiFi局域网IP")));
-      }
-      return;
-    }
-
+    
     final ip = await _getLocalIp();
     if (ip == null) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未获取到局域网IP，请确认已连接WiFi，并关闭移动数据")));
