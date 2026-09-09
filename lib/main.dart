@@ -10,6 +10,8 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'dart:convert';
 import 'dart:io';
+// =========【改动1：新增权限依赖导入】=========
+import 'package:permission_handler/permission_handler.dart';
 
 // ===================== Isar数据库模型 =====================
 part 'main.g.dart';
@@ -334,24 +336,44 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //局域网相关函数
+  // =========【改动2：完全重写该函数，过滤蜂窝网卡，只读取WiFi】=========
   Future<String?> _getLocalIp() async {
-    for (var interface in await NetworkInterface.list()) {
-      for (var addr in interface.addresses) {
-        if (addr.type == InternetAddressType.IPv4 && !addr.isLoopback) {
-          return addr.address;
+    try {
+      final interfaces = await NetworkInterface.list(
+        includeLoopback: false,
+        includeLinkLocal: false,
+      );
+      for (var interface in interfaces) {
+        final name = interface.name.toLowerCase();
+        //rmnet代表移动蜂窝网络，直接跳过；仅保留wifi/wlan工业无线网卡
+        if (name.contains('rmnet') || name.contains('mobile')) continue;
+        for (var addr in interface.addresses) {
+          if (addr.type == InternetAddressType.IPv4) {
+            return addr.address;
+          }
         }
       }
+    } catch (e) {
+      debugPrint("获取网卡IP异常:$e");
     }
     return null;
   }
 
-  //【修改】绑定0.0.0.0，本机127.0.0.1与局域网电脑均可访问
+  // =========【改动3：函数开头增加Android14动态权限申请】=========
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
+    //Android14必备权限，无权限则无法读取网卡列表
+    final status = await Permission.accessNetworkState.request();
+    if (!status.isGranted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("需要网络状态权限才能获取WiFi局域网IP")));
+      }
+      return;
+    }
+
     final ip = await _getLocalIp();
     if (ip == null) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未获取到局域网IP，请确认已连接WiFi")));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未获取到局域网IP，请确认已连接WiFi，并关闭移动数据")));
       return;
     }
     _localIpAddress = ip;
