@@ -101,7 +101,7 @@ class _MainPageState extends State<MainPage> {
   HttpServer? _webServer;
   bool _webServiceRunning = false;
   String? _localIpAddress;
-  static const int _webPort = 8080;
+  static const int _webPort = 8090; //【修改】更换端口
 
   @override
   void initState() {
@@ -346,6 +346,7 @@ class _MainPageState extends State<MainPage> {
     return null;
   }
 
+  //【修改】重写此函数，增加异常捕获，绑定本机IP
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
     final ip = await _getLocalIp();
@@ -361,12 +362,20 @@ class _MainPageState extends State<MainPage> {
         "Content‑Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
       });
     });
-    _webServer = await shelf_io.serve(handler, InternetAddress.anyIPv4, _webPort);
-    setState(() {
-      _webServiceRunning = true;
-    });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("传输服务已开启，地址：http://${ip}:${_webPort}")));
+    try {
+      final bindAddress = InternetAddress(ip);
+      _webServer = await shelf_io.serve(handler, bindAddress, _webPort);
+      setState(() {
+        _webServiceRunning = true;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("传输服务已开启，地址：http://${ip}:${_webPort}")));
+      }
+    } catch (e) {
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("端口启动失败：${e.toString()}，请使用复制导出模式")));
+      }
+      return;
     }
   }
 
