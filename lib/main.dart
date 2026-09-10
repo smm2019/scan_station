@@ -101,7 +101,9 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
   final FocusNode _goodsFocusNode = FocusNode(); //【新增】货码输入框焦点控制器
+  //【修改标签列表，匹配截图标签】
   final List<String> _quickRemarkTags = ["完好", "外包装破损", "待复核", "空托"];
+  final List<String> _extraTags = ["易碎轻放", "优先入库", "需拍照留存"];
   // =========改动2‑1：单选变量替换为集合，支持多选标签=========
   final Set<String> _selectedTags = {};
 
@@ -609,23 +611,34 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       builder: (ctx, snapshot) {
         List<int> used = snapshot.data?.usedStation ?? [];
         List<int> stationList = [5,6,7,8,9,10,11,12];
-        return Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: stationList.map((num) {
-            bool locked = used.contains(num);
-            bool selected = _selectedStation == num;
-            return SizedBox(
-              width: 70,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: locked ? Colors.amber.shade600 : (selected ? Colors.blueAccent : Colors.grey.shade400)
-                ),
-                onPressed: locked ? null : () => onStationTap(num),
-                child: Text("$num号"),
-              ),
-            );
-          }).toList(),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: stationList.map((num) {
+                bool locked = used.contains(num);
+                bool selected = _selectedStation == num;
+                return SizedBox(
+                  width: 80,
+                  height: 64,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: locked ? Colors.amber.shade600 : (selected ? Color(0xFF515BD4) : Colors.white),
+                      foregroundColor: selected ? Colors.white : Colors.black87,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      elevation: 2
+                    ),
+                    onPressed: locked ? null : () => onStationTap(num),
+                    child: Text("$num号",style: TextStyle(fontSize:18)),
+                  ),
+                );
+              }).toList(),
+            ),
+            SizedBox(height: 8),
+            Text("已选货位：${_selectedStation != null ? "${_selectedStation}号" : "未选择"}",style: TextStyle(color: Colors.grey)),
+          ],
         );
       },
     );
@@ -691,45 +704,78 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
           posTxt = "货位${r.groundLocation}";
         }
         String timeTxt = r.scanTime.toString().substring(0, 19);
-        return ListTile(
-          title: Text("货码：${r.goodsCode}｜$posTxt"),
-          subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty ? r.remark : "无"}｜${r.isCancel?"⚠️已作废":"✅正常"}"),
-          //新增1判断：作废记录移除删除按钮，不可删除，仅归档
-          trailing: r.isCancel
-              ? null
-              : TextButton(
-                  style: TextButton.styleFrom(foregroundColor: Colors.red),
-                  onPressed: () async {
-                    final confirm = await showDialog<bool>(
-                      context: context,
-                      builder: (ctx) => AlertDialog(
-                        title: const Text("删除记录"),
-                        content: const Text("确定删除本条采集记录？"),
-                        actions: [
-                          TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
-                          TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认")),
-                        ],
-                      ),
-                    );
-                    if(confirm != true) return;
-
-                    await _isar.writeTxn(() async {
-                      await _isar.scanRecords.delete(r.id);
-                      if(r.workType ==0 && r.stationNo != null){
-                        BatchInfo? batch = await _getCurrentBatch();
-                        if(batch != null){
-                          List<int> mutable = batch.usedStation.toList();
-                          mutable.remove(r.stationNo);
-                          batch.usedStation = mutable;
-                          await _isar.batchInfos.put(batch);
-                        }
-                      }
-                    });
-                    await _refreshRecord();
-                    await _refreshBatchStat();
-                  },
-                  child: const Text("删除",style: TextStyle(fontSize:14)),
+        return Container(
+          margin: EdgeInsets.symmetric(vertical: 6),
+          padding: EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [BoxShadow(color: Colors.black12, blurRadius:2)]
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text("${r.goodsCode}",style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)),
+                    SizedBox(height:4),
+                    Text("📍 $posTxt  ⏱ $timeTxt"),
+                    SizedBox(height:4),
+                    Text("📝 ${r.remark.isNotEmpty ? r.remark : "无"}"),
+                  ],
                 ),
+              ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Container(
+                    padding: EdgeInsets.symmetric(horizontal:8,vertical:3),
+                    decoration: BoxDecoration(
+                      color: r.isCancel ? Colors.red.shade100 : Colors.green.shade100,
+                      borderRadius: BorderRadius.circular(8)
+                    ),
+                    child: Text(r.isCancel?"作废":"正常",style: TextStyle(color: r.isCancel?Colors.red:Colors.green)),
+                  ),
+                  if(!r.isCancel)
+                    TextButton(
+                      style: TextButton.styleFrom(foregroundColor: Colors.red),
+                      onPressed: () async {
+                        final confirm = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text("删除记录"),
+                            content: const Text("确定删除本条采集记录？"),
+                            actions: [
+                              TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
+                              TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认")),
+                            ],
+                          ),
+                        );
+                        if(confirm != true) return;
+
+                        await _isar.writeTxn(() async {
+                          await _isar.scanRecords.delete(r.id);
+                          if(r.workType ==0 && r.stationNo != null){
+                            BatchInfo? batch = await _getCurrentBatch();
+                            if(batch != null){
+                              List<int> mutable = batch.usedStation.toList();
+                              mutable.remove(r.stationNo);
+                              batch.usedStation = mutable;
+                              await _isar.batchInfos.put(batch);
+                            }
+                          }
+                        });
+                        await _refreshRecord();
+                        await _refreshBatchStat();
+                      },
+                      child: const Text("删除",style: TextStyle(fontSize:14)),
+                    ),
+                ],
+              )
+            ],
+          ),
         );
       },
     );
@@ -799,234 +845,109 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     );
   }
 
-  //====【完全重构：适配截图样式的历史批次页面，业务逻辑不变，仅UI】====
+  //====本次新增：历史批次页面====
   Widget _buildHistoryBatchPage(){
     return FutureBuilder<List<BatchInfo>>(
       future: _isar.batchInfos.where().findAll(),
       builder: (ctx,snap){
         if(!snap.hasData) return const Center(child: CircularProgressIndicator());
         final batches = snap.data!;
-        int selectedCount = _selectedBatchIds.length;
-
-        //状态标签组件
-        Widget buildStatusLabel(String statusText){
-          late Color bg;
-          late Color text;
-          switch(statusText){
-            case "进行中":
-              bg = const Color(0xFFE8E4FF);
-              text = const Color(0xFF6048D8);
-              break;
-            case "已完成":
-              bg = const Color(0xFFE6F9E9);
-              text = const Color(0xFF28A745);
-              break;
-            case "已归档":
-              bg = const Color(0xFFF0F0F2);
-              text = const Color(0xFF707074);
-              break;
-            default:
-              bg = Colors.grey.shade200;
-              text = Colors.black54;
-          }
-          return Container(
-            padding: const EdgeInsets.symmetric(horizontal:8, vertical:3),
-            decoration: BoxDecoration(color:bg, borderRadius:BorderRadius.circular(12)),
-            child: Text(statusText,style:TextStyle(color:text,fontSize:13)),
-          );
-        }
-
         return Column(
           children: [
-            //全选+已选计数行
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal:16,vertical:8),
+              padding: const EdgeInsets.all(8.0),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(children: [
-                    Checkbox(
-                      value: selectedCount>0 && selectedCount == batches.length,
-                      onChanged: (val){
-                        setState(() {
-                          if(val == true){
-                            _selectedBatchIds = batches.map((b)=>b.batchId).toList();
-                          }else{
-                            _selectedBatchIds.clear();
-                          }
-                        });
-                      },
-                    ),
-                    const Text("全选",style:TextStyle(fontSize:15)),
-                  ]),
-                  Text("已选：$selectedCount 个",style:const TextStyle(fontSize:15,color:Colors.black54)),
+                  ElevatedButton(
+                    onPressed: ()async{
+                      await _saveCsvToFile(batchIds: _selectedBatchIds);
+                      setState(()=>_selectedBatchIds.clear());
+                    },
+                    child: const Text("批量导出选中批次"),
+                  ),
+                  const SizedBox(width:8),
+                  Text("已选：${_selectedBatchIds.length}个"),
                 ],
               ),
             ),
-
-            //批次卡片列表
             Expanded(
               child: ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal:12),
                 itemCount: batches.length,
                 itemBuilder: (ctx,idx){
                   final b = batches[idx];
-                  String statusStr = b.isArchived ? "已归档" : "进行中";
+                  Future<int> getCount()async{
+                    return await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).count();
+                  }
                   return FutureBuilder<int>(
-                    future: _isar.scanRecords.filter().batchIdEqualTo(b.batchId).count(),
+                    future:getCount(),
                     builder: (ctx,countSnap){
-                      int recCnt = countSnap.data ?? 0;
-                      //提取使用站台展示文本
-                      List<int> stList = b.usedStation;
-                      String stationTip = stList.isEmpty ? "无货位" : "${stList.first}、${stList.last}号货位";
-
-                      return Card(
-                        elevation:2,
-                        margin: const EdgeInsets.only(bottom:10),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        child: Padding(
-                          padding: const EdgeInsets.all(14),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Checkbox(
-                                value: _selectedBatchIds.contains(b.batchId),
-                                onChanged: (sel){
-                                  setState(() {
-                                    if(sel == true){
-                                      _selectedBatchIds.add(b.batchId);
-                                    }else{
-                                      _selectedBatchIds.remove(b.batchId);
-                                    }
-                                  });
-                                },
-                              ),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Expanded(child:Text(b.batchId,style:const TextStyle(fontSize:16,fontWeight:FontWeight.w500))),
-                                        const SizedBox(width:8),
-                                        buildStatusLabel(statusStr),
-                                      ],
-                                    ),
-                                    const SizedBox(height:4),
-                                    Text("🕒 ${b.createTime.substring(0,16)}",style:const TextStyle(fontSize:13,color:Colors.black54)),
-                                    const SizedBox(height:4),
-                                    Text("📁 $recCnt 条记录  📍 $stationTip",style:const TextStyle(fontSize:13,color:Colors.black54)),
-                                  ],
-                                ),
-                              ),
-                              SizedBox(
-                                width:72,
-                                child: Column(
-                                  children: [
-                                    SizedBox(
-                                      width:70,
-                                      child: ElevatedButton(
-                                        style: ElevatedButton.styleFrom(backgroundColor:Colors.blue.shade100,foregroundColor:Colors.blue,padding:const EdgeInsets.symmetric(vertical:4)),
-                                        onPressed:()async=>await _showBatchReadOnlyDetail(b),
-                                        child:const Text("查看",style:TextStyle(fontSize:14)),
-                                      ),
-                                    ),
-                                    const SizedBox(height:4),
-                                    SizedBox(
-                                      width:70,
-                                      child: ElevatedButton(
-                                        style: ElevatedButton.styleFrom(backgroundColor:Colors.grey.shade100,foregroundColor:Colors.black87,padding:const EdgeInsets.symmetric(vertical:4)),
-                                        onPressed: b.isArchived ? null : ()async{
-                                          final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("归档批次"),content:const Text("归档后无法新增采集记录，确认归档？"),actions:[
-                                            TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
-                                            TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认归档")),
-                                          ]));
-                                          if(ok==true){
-                                            await _isar.writeTxn(()async{
-                                              b.isArchived = true;
-                                              await _isar.batchInfos.put(b);
-                                            });
-                                            setState((){});
-                                          }
-                                        },
-                                        child:const Text("归档",style:TextStyle(fontSize:14)),
-                                      ),
-                                    ),
-                                    const SizedBox(height:4),
-                                    SizedBox(
-                                      width:70,
-                                      child: ElevatedButton(
-                                        style: ElevatedButton.styleFrom(backgroundColor:Colors.red.shade100,foregroundColor:Colors.red,padding:const EdgeInsets.symmetric(vertical:4)),
-                                        onPressed:()async{
-                                          final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("删除批次"),content:const Text("警告！会永久删除该批次所有采集数据，不可恢复！"),actions:[
-                                            TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
-                                            TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认删除")),
-                                          ]));
-                                          if(ok==true){
-                                            await _isar.writeTxn(()async{
-                                              await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).deleteAll();
-                                              await _isar.batchInfos.delete(b.id);
-                                            });
-                                            if(_currentBatchId == b.batchId){
-                                              await _loadLastBatch();
-                                              await _refreshBatchStat();
-                                            }
-                                            setState((){});
-                                          }
-                                        },
-                                        child:const Text("删除",style:TextStyle(fontSize:14)),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
+                      final recCount = countSnap.data ?? 0;
+                      return CheckboxListTile(
+                        title: Text("${b.batchId} ${b.isArchived?"【已归档】":"【进行中】"}"),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("创建：${b.createTime.substring(0,16)}｜记录条数：$recCount"),
+                            Text("批次备注：${b.batchRemark.isNotEmpty?b.batchRemark:"无备注"}"),
+                          ],
+                        ),
+                        value: _selectedBatchIds.contains(b.batchId),
+                        onChanged: (sel){
+                          setState(() {
+                            if(sel == true){
+                              _selectedBatchIds.add(b.batchId);
+                            }else{
+                              _selectedBatchIds.remove(b.batchId);
+                            }
+                          });
+                        },
+                        secondary: Row(
+                          mainAxisSize:MainAxisSize.min,
+                          children: [
+                            //【修改：不再切回采集页，打开独立只读弹窗】
+                            TextButton(onPressed:()async{
+                              await _showBatchReadOnlyDetail(b);
+                            },child:const Text("查看")),
+                            //归档按钮，仅未归档可用
+                            if(!b.isArchived)
+                            TextButton(onPressed:()async{
+                              final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("归档批次"),content:const Text("归档后无法新增采集记录，确认归档？"),actions:[
+                                TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
+                                TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认归档")),
+                              ]));
+                              if(ok==true){
+                                await _isar.writeTxn(()async{
+                                  b.isArchived = true;
+                                  await _isar.batchInfos.put(b);
+                                });
+                                setState((){});
+                              }
+                            },child:const Text("归档")),
+                            //删除批次
+                            TextButton(onPressed:()async{
+                              final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("删除批次"),content:const Text("警告！会永久删除该批次所有采集数据，不可恢复！"),actions:[
+                                TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
+                                TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认删除")),
+                              ]));
+                              if(ok==true){
+                                await _isar.writeTxn(()async{
+                                  await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).deleteAll();
+                                  await _isar.batchInfos.delete(b.id);
+                                });
+                                //如果删除的是当前批次，则自动切换可用批次
+                                if(_currentBatchId == b.batchId){
+                                  await _loadLastBatch();
+                                  await _refreshBatchStat();
+                                }
+                                setState((){});
+                              }
+                            },style:TextButton.styleFrom(foregroundColor:Colors.red),child:const Text("删除")),
+                          ],
                         ),
                       );
                     },
                   );
                 },
-              ),
-            ),
-
-            //底部批量操作栏（严格匹配截图：无选中时按钮置灰）
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width:140,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(backgroundColor:Colors.white,foregroundColor:Colors.black87,side:const BorderSide(color:Colors.black26)),
-                      onPressed: selectedCount>0 ? ()async{
-                        for(String bid in _selectedBatchIds){
-                          BatchInfo? item = await _isar.batchInfos.filter().batchIdEqualTo(bid).findFirst();
-                          if(item != null && !item.isArchived){
-                            await _isar.writeTxn(()async{
-                              item.isArchived = true;
-                              await _isar.batchInfos.put(item);
-                            });
-                          }
-                        }
-                        setState(()=>_selectedBatchIds.clear());
-                      } : null,
-                      child: const Text("批量归档",style:TextStyle(fontSize:15)),
-                    ),
-                  ),
-                  const SizedBox(width:12),
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(backgroundColor:Colors.blue),
-                      icon: const Icon(Icons.download,size:18),
-                      label: const Text("批量导出",style:TextStyle(fontSize:15)),
-                      onPressed: selectedCount>0 ? ()async{
-                        await _saveCsvToFile(batchIds:_selectedBatchIds);
-                        setState(()=>_selectedBatchIds.clear());
-                      } : null,
-                    ),
-                  ),
-                ],
               ),
             ),
           ],
@@ -1051,8 +972,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Colors.blue,
-        title: const Text("AGV货位采集器"),
+        backgroundColor: Color(0xFF515BD4),
+        title: const Text("AGV货位采集器",style: TextStyle(fontWeight: FontWeight.bold)),
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
@@ -1070,90 +991,116 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                //【MOD‑新增2｜替换为正常/作废统计面板】
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical:16,horizontal:10),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      _statItem("正常", "$_normalCount"),
-                      _statItem("作废", "$_cancelCount"),
-                    ],
-                  ),
+                //【MOD‑新增2｜替换为截图样式3个统计卡片】
+                Row(
+                  children: [
+                    Expanded(
+                      child: _statItem("正常", "$_normalCount",Color(0xFFE8F5E9),Colors.green),
+                    ),
+                    SizedBox(width:10),
+                    Expanded(
+                      child: _statItem("作废", "$_cancelCount",Color(0xFFFFEBEE),Colors.red),
+                    ),
+                    SizedBox(width:10),
+                    Expanded(
+                      child: _statItem("本批合计", "${_normalCount+_cancelCount}",Color(0xFFE8EAF6),Color(0xFF515BD4),isCircle:true),
+                    ),
+                  ],
                 ),
-                const SizedBox(height:12),
+                const SizedBox(height:16),
                 SizedBox(
                   width: double.infinity,
+                  height:52,
                   child: ElevatedButton(
+                    style:ElevatedButton.styleFrom(
+                      backgroundColor:Color(0xFF515BD4),
+                      shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(12))
+                    ),
                     onPressed: ()=>_createNewBatch(),
-                    child: const Text("新建采集批次"),
+                    child: const Text("+ 新建采集批次",style:TextStyle(fontSize:16)),
+                  ),
+                ),
+                const SizedBox(height:16),
+
+                const Text("作业模式",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+                const SizedBox(height:8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _workModeCard(0,"AGV站台模式","站台直送 · 选5-12号"),
+                    ),
+                    const SizedBox(width:10),
+                    Expanded(
+                      child: _workModeCard(1,"人工地面摆放","区域+编号 · A~D区"),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                const Text("选择货位 *",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+                const SizedBox(height:8),
+                if (_workType == 0) _buildStationPanel(),
+                if (_workType == 1) _buildGroundLocPanel(),
+                const SizedBox(height: 16),
+
+                const Text("扫码录入",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+                const SizedBox(height:8),
+                Container(
+                  padding: EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey.shade300)
+                  ),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _goodsInputCtrl,
+                              focusNode: _goodsFocusNode,
+                              decoration: const InputDecoration(
+                                hintText: "扫描或输入货物条码",
+                                border: InputBorder.none
+                              ),
+                              onSubmitted: (txt) {
+                                WidgetsBinding.instance.addPostFrameCallback((_) async {
+                                  String code = txt.trim();
+                                  if (code.isNotEmpty) await _saveRecord(code);
+                                });
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            style:ElevatedButton.styleFrom(backgroundColor:Color(0xFF515BD4)),
+                            onPressed: _openCameraScan,
+                            child: const Text("相机扫码"),
+                          ),
+                        ],
+                      ),
+                      SizedBox(height:4),
+                      Align(
+                        alignment:Alignment.centerLeft,
+                        child:Text("PDA红外扫码就绪，对准条码即自动填入；无红外时点右侧相机扫码",style:TextStyle(fontSize:12,color:Colors.grey)),
+                      )
+                    ],
                   ),
                 ),
                 const SizedBox(height:16),
 
                 Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text("作业模式："),
-                    const SizedBox(width: 10),
-                    ChoiceChip(
-                      label: const Text("AGV站台模式"),
-                      selected: _workType == 0,
-                      onSelected: (s) => setState(() {
-                        _workType = 0;
-                        _selectedGroundLoc = null;
-                      }),
-                    ),
-                    const SizedBox(width: 8),
-                    ChoiceChip(
-                      label: const Text("人工地面摆放"),
-                      selected: _workType == 1,
-                      onSelected: (s) => setState(() {
-                        _workType = 1;
-                        _selectedStation = null;
-                      }),
-                    ),
+                    const Text("备注标签",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+                    Text("可多选 · 冲突项目自动互斥",style:TextStyle(fontSize:12,color:Colors.grey)),
                   ],
                 ),
-                const SizedBox(height: 12),
-
-                if (_workType == 0) _buildStationPanel(),
-                if (_workType == 1) _buildGroundLocPanel(),
-                const SizedBox(height: 16),
-
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _goodsInputCtrl,
-                        focusNode: _goodsFocusNode,
-                        decoration: const InputDecoration(
-                          hintText: "PDA红外扫码自动填入，也可手动输入货码",
-                          border: OutlineInputBorder()
-                        ),
-                        onSubmitted: (txt) {
-                          WidgetsBinding.instance.addPostFrameCallback((_) async {
-                            String code = txt.trim();
-                            if (code.isNotEmpty) await _saveRecord(code);
-                          });
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    ElevatedButton(onPressed: _openCameraScan, child: const Text("相机扫码")),
-                  ],
-                ),
-                const SizedBox(height:10),
-
-                const Text("备注标签（可多选）："),
-                const SizedBox(height:6),
-                // =========改动2‑3：单选ChoiceChip替换为可勾选复选样式=========
+                const SizedBox(height:8),
                 Wrap(
-                  spacing:6,
+                  spacing:10,
+                  runSpacing:10,
                   children:_quickRemarkTags.map((tag)=>FilterChip(
                     label:Text(tag),
                     selected:_selectedTags.contains(tag),
@@ -1168,7 +1115,24 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                     },
                   )).toList(),
                 ),
-                const SizedBox(height:8),
+                SizedBox(height:6),
+                Wrap(
+                  spacing:6,
+                  children:_extraTags.map((tag)=>FilterChip(
+                    label:Text(tag,style:TextStyle(fontSize:12)),
+                    selected:_selectedTags.contains(tag),
+                    onSelected:(sel){
+                      setState(() {
+                        if(sel){
+                          _selectedTags.add(tag);
+                        }else{
+                          _selectedTags.remove(tag);
+                        }
+                      });
+                    },
+                  )).toList(),
+                ),
+                const SizedBox(height:12),
 
                 TextField(
                   controller:_remarkInputCtrl,
@@ -1190,23 +1154,29 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text("本批次采集记录",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+                      Row(
+                        children: [
+                          const Text("本批次采集记录",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+                          SizedBox(width:8),
+                          Text("共 ${_recordList.length}条",style:TextStyle(fontSize:13,color:Colors.grey)),
+                        ],
+                      ),
                       Icon(_recordPanelExpanded ? Icons.expand_less : Icons.expand_more),
                     ],
                   ),
                 ),
                 const SizedBox(height:6),
-                // =========【修改：PDA适配，最大高度调整至400】 =========
+                // =========【修改：移除固定高度，改用自适应+最大高度约束】 =========
                 if(_recordPanelExpanded)
                   ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 400),
+                    constraints: const BoxConstraints(maxHeight: 450),
                     child: _buildRecordList(),
                   ),
                 const SizedBox(height:80),
               ],
             ),
           ),
-          //历史批次页面（已完全美化）
+          //历史批次页面
           _buildHistoryBatchPage()
         ],
       ),
@@ -1253,13 +1223,62 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     );
   }
 
-  Widget _statItem(String title,String num){
-    return Column(
-      children: [
-        Text(num,style:const TextStyle(fontSize:20,fontWeight:FontWeight.bold,color:Colors.blue)),
-        const SizedBox(height:4),
-        Text(title,style:const TextStyle(fontSize:13)),
-      ],
+  //统计卡片组件
+  Widget _statItem(String title,String num,Color bg,Color txtColor,{bool isCircle=false}){
+    return Container(
+      padding: EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color:bg,
+        borderRadius: BorderRadius.circular(12)
+      ),
+      child:Column(
+        children: [
+          isCircle?
+          Container(
+            width:40,
+            height:40,
+            decoration:BoxDecoration(color:txtColor,shape:BoxShape.circle),
+            child:Center(child:Text(num,style:TextStyle(color:Colors.white,fontSize:18,fontWeight:FontWeight.bold))),
+          )
+          :Text(num,style:TextStyle(fontSize:22,fontWeight:FontWeight.bold,color:txtColor)),
+          const SizedBox(height:4),
+          Text(title,style:const TextStyle(fontSize:13)),
+        ],
+      ),
+    );
+  }
+
+  //作业模式卡片组件
+  Widget _workModeCard(int type,String title,String sub){
+    bool selected = _workType == type;
+    return InkWell(
+      onTap:(){
+        setState(() {
+          _workType = type;
+          if(type ==0){
+            _selectedGroundLoc = null;
+          }else{
+            _selectedStation = null;
+          }
+        });
+      },
+      child:Container(
+        padding:EdgeInsets.all(16),
+        decoration:BoxDecoration(
+          color: selected ? Color(0xFFF0F0FF) : Colors.white,
+          borderRadius:BorderRadius.circular(12),
+          border: Border.all(color: selected ? Color(0xFF515BD4):Colors.grey.shade200,width:selected?2:1)
+        ),
+        child:Column(
+          children:[
+            Icon(type==0?Icons.precision_manufacturing:Icons.back_hand,size:32,color:selected?Color(0xFF515BD4):Colors.grey),
+            SizedBox(height:8),
+            Text(title,style:TextStyle(fontSize:16,fontWeight:selected?FontWeight.bold:FontWeight.normal,color:selected?Color(0xFF515BD4):Colors.black87)),
+            SizedBox(height:4),
+            Text(sub,style:TextStyle(fontSize:12,color:Colors.grey)),
+          ],
+        ),
+      ),
     );
   }
 }
