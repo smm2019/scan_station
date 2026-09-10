@@ -26,6 +26,7 @@ class ScanRecord {
   String goodsCode;
   String remark;
   String batchId;
+  bool isCancel = false; //标记：true=人工作废，保留原始数据，仅业务失效，不可用于站台占用校验
 
   ScanRecord({
     required this.scanTime,
@@ -35,6 +36,7 @@ class ScanRecord {
     required this.goodsCode,
     required this.remark,
     required this.batchId,
+    this.isCancel = false,
   });
 }
 
@@ -238,26 +240,78 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         .batchIdEqualTo(_currentBatchId!)
         .goodsCodeEqualTo(code)
         .findFirst();
-    if (exist != null) {
-      String posInfo = "";
-      if (exist.workType == 0) {
-        posInfo = "AGV站台${exist.stationNo}号";
-      } else {
-        posInfo = "人工货位${exist.groundLocation}";
-      }
-      if (mounted) {
-        showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text("重复标签提示"),
-            content: Text("该货码【${code}】已登记，位置：$posInfo"),
-            actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("确定"))],
-          ),
-        );
-      }
-      return true;
+    if (exist == null) return false;
+
+    String posInfo = "";
+    if (exist.workType == 0) {
+      posInfo = "AGV站台${exist.stationNo}号";
+    } else {
+      posInfo = "人工货位${exist.groundLocation}";
     }
-    return false;
+
+    final res = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("该货码已登记"),
+        content: Text("货码：$code\n登记位置：$posInfo\n状态：${exist.isCancel ? "【已作废】" : "正常有效"}"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "view"),
+            child: const Text("查看旧记录"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "cancelOld"),
+            child: const Text("作废旧记录，新建本条"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "abort"),
+            child: const Text("取消"),
+          ),
+        ],
+      ),
+    );
+
+    if (res == "abort" || res == null) {
+      return true;
+    } else if (res == "view") {
+      await showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("旧记录详情"),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("采集时间：${exist.scanTime.toString().substring(0,19)}"),
+                Text("作业类型：${exist.workType==0?"AGV站台":"人工货位"}"),
+                Text("位置：$posInfo"),
+                Text("备注：${exist.remark.isNotEmpty?exist.remark:"无"}"),
+                Text("状态：${exist.isCancel?"已作废":"正常"}"),
+              ],
+            ),
+          ),
+          actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("关闭"))],
+        ),
+      );
+      return true;
+    } else if (res == "cancelOld") {
+      await _isar.writeTxn(() async {
+        exist.isCancel = true;
+        await _isar.scanRecords.put(exist);
+        if(exist.workType == 0 && exist.stationNo != null){
+          BatchInfo? batch = await _getCurrentBatch();
+          if(batch != null){
+            List<int> mutableList = batch.usedStation.toList();
+            mutableList.remove(exist.stationNo);
+            batch.usedStation = mutableList;
+            await _isar.batchInfos.put(batch);
+          }
+        }
+      });
+      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("旧记录已标记作废，可录入新记录")));
+      return false;
+    }
+    return true;
   }
 
   Future<void> _scanSuccessAction() async {
@@ -407,7 +461,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
 
   //====修改：支持多批次合并导出｜改动2：函数改为异步，移除同步查询
   Future<String> _generateCsvText({List<String>? targetBatchIds}) async {
-    String header = "采集时间,作业类型,站台编号,地面货位编码,货物标签,备注\n";
+    String header = "采集时间,作业类型,站台编号,地面货位编码,货物标签,备注,记录状态\n";
     String content = header;
     List<ScanRecord> targetRecords = [];
     if(targetBatchIds != null && targetBatchIds.isNotEmpty){
@@ -426,7 +480,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       String gl = r.groundLocation ?? "";
       String code = r.goodsCode;
       String rem = r.remark;
-      content += "$timeStr,$wt,$st,$gl,$code,$rem\n";
+      String statusText = r.isCancel ? "作废" : "正常";
+      content += "$timeStr,$wt,$st,$gl,$code,$rem,$statusText\n";
     }
     return content;
   }
@@ -636,7 +691,7 @@ void _openCameraScan() async {
         String timeTxt = r.scanTime.toString().substring(0, 19);
         return ListTile(
           title: Text("货码：${r.goodsCode}｜$posTxt"),
-          subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty ? r.remark : "无"}"),
+          subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty ? r.remark : "无"}｜${r.isCancel?"⚠️已作废":"✅正常"}"),
           trailing: TextButton(
             style: TextButton.styleFrom(foregroundColor: Colors.red),
             onPressed: () async {
