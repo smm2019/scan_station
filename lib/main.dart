@@ -869,8 +869,8 @@ void _openCameraScan() async {
                 ),
                 const SizedBox(height: 12),
 
-                if (_workType == 0) _buildStationPanel();
-                if (_workType == 1) _buildGroundLocPanel();
+                if (_workType == 0) _buildStationPanel(),
+                if (_workType == 1) _buildGroundLocPanel(),
                 const SizedBox(height: 16),
 
                 //货码输入行
