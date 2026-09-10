@@ -399,6 +399,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         .batchIdEqualTo(_currentBatchId!)
         .findAll();
     all.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
+    //【修复BUG：此处强制setState，保证数据变更立刻刷新界面，解决保存成功看不到记录】
     setState(() {
       _recordList = all;
     });
@@ -616,6 +617,10 @@ void _openCameraScan() async {
   }
 
   Widget _buildRecordList() {
+    //【修复空白崩溃：增加判空兜底】
+    if(_recordList.isEmpty){
+      return const Center(child:Text("本批次暂无采集记录"));
+    }
     return Expanded(
       child: ListView.builder(
         itemCount: _recordList.length,
@@ -839,6 +844,15 @@ void _openCameraScan() async {
                       _statItem("AGV站台", "$_agvCount"),
                       _statItem("人工货位", "$_manualCount"),
                     ],
+                  ),
+                ),
+                const SizedBox(height:12),
+                //【修改点1：新增新建批次按钮】
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: ()=>_createNewBatch(),
+                    child: const Text("新建采集批次"),
                   ),
                 ),
                 const SizedBox(height:16),
