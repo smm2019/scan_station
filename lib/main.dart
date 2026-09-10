@@ -680,6 +680,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     }
     return ListView.builder(
       shrinkWrap: true,
+      physics: const AlwaysScrollableScrollPhysics(),
       itemCount: _recordList.length,
       itemBuilder: (ctx, idx) {
         var r = _recordList[idx];
@@ -1070,13 +1071,11 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   ),
                 ),
                 const SizedBox(height:6),
-                // =========【唯一修改点：增加SingleChildScrollView，解决只能显示3条记录】 =========
+                // =========【修改：移除固定高度，改用自适应+最大高度约束】 =========
                 if(_recordPanelExpanded)
-                  SizedBox(
-                    height:220,
-                    child: SingleChildScrollView(
-                      child: _buildRecordList(),
-                    ),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 320),
+                    child: _buildRecordList(),
                   ),
                 const SizedBox(height:80),
               ],
