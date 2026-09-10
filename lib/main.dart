@@ -90,7 +90,7 @@ class MainPage extends StatefulWidget {
   State<MainPage> createState() => _MainPageState();
 }
 
-class _MainPageState extends State<MainPage> {
+class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin {
   late Isar _isar;
   String? _currentBatchId;
   int _workType = 0; //0 AGV站台，1人工地面
