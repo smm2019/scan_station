@@ -102,7 +102,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   final TextEditingController _remarkInputCtrl = TextEditingController();
   final FocusNode _goodsFocusNode = FocusNode(); //【新增】货码输入框焦点控制器
   //【修改标签列表，匹配截图标签】
-  final List<String> _quickRemarkTags = ["完好", "外包装破损", "待复核", "空托"];
+  final List<String> _quickRemarkTags = ["设变件", "验证件", "海外版"];
   final List<String> _extraTags = ["易碎轻放", "优先入库", "需拍照留存"];
   // =========改动2‑1：单选变量替换为集合，支持多选标签=========
   final Set<String> _selectedTags = {};
@@ -849,7 +849,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     );
   }
 
-  //====本次新增：历史批次页面【完全对齐截图布局】====
+  //====本次【修改重点】历史批次页面【完全对齐截图布局】====
   Widget _buildHistoryBatchPage(){
     return FutureBuilder<List<BatchInfo>>(
       future: _isar.batchInfos.where().findAll(),
@@ -879,7 +879,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                       ),
                       const Text("全选"),
                       SizedBox(width:12),
-                      Text("已选：${_selectedBatchIds.length}个"),
+                      Text("已选: ${_selectedBatchIds.length}个"),
                     ],
                   ),
                 ],
@@ -898,7 +898,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                     future:getCount(),
                     builder: (ctx,countSnap){
                       final recCount = countSnap.data ?? 0;
-                      //状态标签颜色匹配截图
+                      //状态标签样式完全匹配截图
                       Widget statusWidget;
                       if(b.isArchived){
                         statusWidget = Container(
@@ -942,18 +942,21 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                                 children: [
                                   Row(
                                     children: [
-                                      Text(b.batchId,style:TextStyle(fontSize:16,fontWeight:FontWeight.bold)),
+                                      Expanded(child:Text(b.batchId,style:TextStyle(fontSize:16,fontWeight:FontWeight.bold,overflow:TextOverflow.ellipsis))),
                                       SizedBox(width:8),
                                       statusWidget
                                     ],
                                   ),
                                   SizedBox(height:4),
-                                  Text("${b.createTime.substring(0,16)}  ·  $recCount 条"),
-                                  Text("${b.batchRemark.isNotEmpty?b.batchRemark:"无备注"}"),
+                                  Text("🕒 ${b.createTime.substring(0,16)}"),
+                                  SizedBox(height:4),
+                                  Text("📂 $recCount 条记录  📍 ${b.batchRemark.isNotEmpty?b.batchRemark:"无货位信息"}"),
                                 ],
                               ),
                             ),
+                            SizedBox(width:8),
                             Column(
+                              mainAxisSize: MainAxisSize.min,
                               children: [
                                 SizedBox(
                                   width:70,
@@ -1051,7 +1054,9 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                     child:SizedBox(
                       height:48,
                       child:ElevatedButton(
-                        style:ElevatedButton.styleFrom(backgroundColor:Color(0xFF515BD4)),
+                        style:ElevatedButton.styleFrom(
+                          backgroundColor:_selectedBatchIds.isNotEmpty ? Color(0xFF515BD4) : Colors.grey.shade300,
+                        ),
                         onPressed: _selectedBatchIds.isEmpty ? null : ()async{
                           await _saveCsvToFile(batchIds: _selectedBatchIds);
                           setState(()=>_selectedBatchIds.clear());
@@ -1346,7 +1351,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
         color:bg,
-        borderRadius: BorderRadius.circular(12)
+        borderRadius:BorderRadius.circular(12)
       ),
       child:Column(
         children: [
