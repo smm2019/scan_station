@@ -44,10 +44,15 @@ class BatchInfo {
   String batchId;
   String createTime;
   List<int> usedStation = []; //本批次已经使用过的站台编号
+  //====本次新增字段====
+  String batchRemark = "";
+  bool isArchived = false;
 
   BatchInfo({
     required this.batchId,
     required this.createTime,
+    this.batchRemark = "",
+    this.isArchived = false,
   });
 }
 
@@ -92,18 +97,24 @@ class _MainPageState extends State<MainPage> {
   int? _selectedStation;
   String? _selectedGroundLoc;
   final TextEditingController _goodsInputCtrl = TextEditingController();
-  List<ScanRecord> _recordList = [];
-  bool _isSaving = false; //新增：保存互斥锁
+  final TextEditingController _remarkInputCtrl = TextEditingController();
+  final List<String> _quickRemarkTags = ["完好", "外包装破损", "待复核", "空托"];
+  String? _selectedQuickTag;
 
-  //地面货位分组
+  List<ScanRecord> _recordList = [];
+  bool _isSaving = false;
+
+  //====本次新增：页面导航、批量导出多选集合====
+  int _pageIndex = 0; //0采集主页，1历史批次页面
+  List<String> _selectedBatchIds = [];
+
   final List<String> _locGroup = ["A", "B", "C", "D"];
   String _curLocGroup = "A";
 
-  //局域网Web服务
   HttpServer? _webServer;
   bool _webServiceRunning = false;
   String? _localIpAddress;
-  static const int _webPort = 8090; //【修改】更换端口
+  static const int _webPort = 8090;
 
   @override
   void initState() {
@@ -113,26 +124,52 @@ class _MainPageState extends State<MainPage> {
     _refreshRecord();
   }
 
-  //读取最近批次：内存排序，彻底避开Isar版本API差异
   Future<void> _loadLastBatch() async {
     List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
     if(allBatch.isNotEmpty){
-      allBatch.sort((a, b) => b.createTime.compareTo(a.createTime));
-      setState(() {
-        _currentBatchId = allBatch.first.batchId;
-      });
+      //只筛选未归档批次作为可采集候选
+      final active = allBatch.where((b)=>!b.isArchived).toList();
+      if(active.isNotEmpty){
+        active.sort((a, b) => b.createTime.compareTo(a.createTime));
+        setState(() {
+          _currentBatchId = active.first.batchId;
+        });
+      }else{
+        await _createNewBatch();
+      }
     } else {
       await _createNewBatch();
     }
   }
 
-  //新建批次，重置状态，关闭web服务
+  //====修改：新建批次弹窗，增加批次备注输入====
   Future<void> _createNewBatch() async {
     if (_webServiceRunning) {
       await stopWebService();
     }
+    final TextEditingController batchRemarkCtrl = TextEditingController();
+    final confirmCreate = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("新建采集批次"),
+        content: TextField(
+          controller: batchRemarkCtrl,
+          decoration: const InputDecoration(hintText="填写备注，例：3号库区 白班", border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
+          TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认新建")),
+        ],
+      ),
+    );
+    if(confirmCreate != true) return;
+
     final nowStr = DateTime.now().toString().substring(0, 16).replaceAll(" ", "-").replaceAll(":", "");
-    final newBatch = BatchInfo(batchId: "B$nowStr", createTime: DateTime.now().toString());
+    final newBatch = BatchInfo(
+      batchId: "B$nowStr",
+      createTime: DateTime.now().toString(),
+      batchRemark: batchRemarkCtrl.text.trim(),
+    );
     await _isar.writeTxn(() async {
       await _isar.batchInfos.put(newBatch);
     });
@@ -140,6 +177,9 @@ class _MainPageState extends State<MainPage> {
       _currentBatchId = newBatch.batchId;
       _selectedStation = null;
       _selectedGroundLoc = null;
+      _selectedQuickTag = null;
+      _remarkInputCtrl.clear();
+      _pageIndex = 0; //切回采集主页
     });
     _refreshRecord();
   }
@@ -149,7 +189,18 @@ class _MainPageState extends State<MainPage> {
     return await _isar.batchInfos.filter().batchIdEqualTo(_currentBatchId!).findFirst();
   }
 
-  //校验货码在本批次是否重复
+  //====本次新增校验：禁止向已归档批次录入数据====
+  Future<bool> _checkBatchArchived() async{
+    final batch = await _getCurrentBatch();
+    if(batch?.isArchived == true){
+      if(mounted){
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("当前批次已归档，不可新增采集记录！")));
+      }
+      return true;
+    }
+    return false;
+  }
+
   Future<bool> _isCodeDuplicate(String code) async {
     final exist = await _isar.scanRecords
         .filter()
@@ -178,7 +229,6 @@ class _MainPageState extends State<MainPage> {
     return false;
   }
 
-  //扫码震动反馈
   Future<void> _scanSuccessAction() async {
     try {
       if ((await Vibration.hasVibrator()) ?? false) {
@@ -187,11 +237,13 @@ class _MainPageState extends State<MainPage> {
     } catch (_) {}
   }
 
-  /// 新版逻辑：点击站台仅选中；扫码保存成功后站台才锁定占用并取消选中
   Future<void> _saveRecord(String code) async {
     if(_isSaving) return;
     _isSaving = true;
     try{
+      //归档拦截校验
+      if(await _checkBatchArchived()) return;
+
       if (_currentBatchId == null) {
         if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
         return;
@@ -205,7 +257,6 @@ class _MainPageState extends State<MainPage> {
         return;
       }
 
-      //AGV模式校验：该站台是否已经登记过货物（一站一码）
       if (_workType == 0) {
         final existStationRecord = await _isar.scanRecords
             .filter()
@@ -227,26 +278,34 @@ class _MainPageState extends State<MainPage> {
         return;
       }
 
+      String finalRemark = "";
+      if(_selectedQuickTag != null){
+        finalRemark = _selectedQuickTag!;
+      }
+      if(_remarkInputCtrl.text.isNotEmpty){
+        if(finalRemark.isNotEmpty) finalRemark += "｜";
+        finalRemark += _remarkInputCtrl.text.trim();
+      }
+
       final rec = ScanRecord(
         scanTime: DateTime.now(),
         workType: _workType,
         stationNo: _workType == 0 ? _selectedStation : null,
         groundLocation: _workType == 1 ? _selectedGroundLoc : null,
         goodsCode: code,
-        remark: "",
+        remark: finalRemark,
         batchId: _currentBatchId!,
       );
 
       await _isar.writeTxn(() async {
         await _isar.scanRecords.put(rec);
-        // ==========【核心修复】Isar读出的list是固定长度，必须toList复制可变列表 ==========
         if(_workType ==0 && _selectedStation != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
-            List<int> mutableList = batch.usedStation.toList(); //拷贝为可变列表
+            List<int> mutableList = batch.usedStation.toList();
             if(!mutableList.contains(_selectedStation)){
               mutableList.add(_selectedStation!);
-              batch.usedStation = mutableList; //赋值回对象
+              batch.usedStation = mutableList;
               await _isar.batchInfos.put(batch);
             }
           }
@@ -255,8 +314,11 @@ class _MainPageState extends State<MainPage> {
 
       await _scanSuccessAction();
       _goodsInputCtrl.clear();
+      setState((){
+        _selectedQuickTag = null;
+        _remarkInputCtrl.clear();
+      });
 
-      //AGV模式保存成功后，手动清空选中站台
       if(_workType ==0){
         setState((){
           _selectedStation = null;
@@ -272,7 +334,6 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //【修复】调整赋值顺序，等待数据库校验完成后再变更状态，消除时序差
   Future<void> onStationTap(int stationNum) async {
     final batch = await _getCurrentBatch();
     if (batch == null) return;
@@ -287,14 +348,12 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-  //人工模式货位选择
   void _selectGroundLoc(int num) {
     setState(() {
       _selectedGroundLoc = "${_curLocGroup}${num}";
     });
   }
 
-//刷新当前批次记录列表，内存排序，不移除选中状态
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     List<ScanRecord> all = await _isar.scanRecords
@@ -307,11 +366,21 @@ class _MainPageState extends State<MainPage> {
     });
   }
 
-  //生成CSV文本
-  String _generateCsvText() {
+  //====修改：支持多批次合并导出｜改动2：函数改为异步，移除同步查询
+  Future<String> _generateCsvText({List<String>? targetBatchIds}) async {
     String header = "采集时间,作业类型,站台编号,地面货位编码,货物标签,备注\n";
     String content = header;
-    for (var r in _recordList) {
+    List<ScanRecord> targetRecords = [];
+    if(targetBatchIds != null && targetBatchIds.isNotEmpty){
+      for(var bid in targetBatchIds){
+        final list = await _isar.scanRecords.filter().batchIdEqualTo(bid).findAll();
+        targetRecords.addAll(list);
+      }
+    }else{
+      targetRecords = _recordList;
+    }
+    targetRecords.sort((a,b)=>a.scanTime.compareTo(b.scanTime));
+    for (var r in targetRecords) {
       String timeStr = r.scanTime.toString().substring(0, 19);
       String wt = r.workType.toString();
       String st = r.stationNo?.toString() ?? "";
@@ -323,12 +392,12 @@ class _MainPageState extends State<MainPage> {
     return content;
   }
 
-  //导出本地CSV文件
-  Future<void> _saveCsvToFile() async {
-    String csvText = _generateCsvText();
+  Future<void> _saveCsvToFile({List<String>? batchIds}) async {
+    String csvText = await _generateCsvText(targetBatchIds: batchIds);
     final dir = await getExternalStorageDirectory();
     if (dir == null) return;
-    String filePath = "${dir.path}/采集_${_currentBatchId}.csv";
+    String suffix = batchIds!=null ? "多批次合并" : _currentBatchId;
+    String filePath = "${dir.path}/采集_${suffix}.csv";
     File file = File(filePath);
     await file.writeAsString(csvText, encoding: utf8);
     if (mounted) {
@@ -336,7 +405,6 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  // =========【改动2：完全重写该函数，过滤蜂窝网卡，只读取WiFi】=========
   Future<String?> _getLocalIp() async {
     try {
       final interfaces = await NetworkInterface.list(
@@ -345,7 +413,6 @@ class _MainPageState extends State<MainPage> {
       );
       for (var interface in interfaces) {
         final name = interface.name.toLowerCase();
-        //rmnet代表移动蜂窝网络，直接跳过；仅保留wifi/wlan工业无线网卡
         if (name.contains('rmnet') || name.contains('mobile')) continue;
         for (var addr in interface.addresses) {
           if (addr.type == InternetAddressType.IPv4) {
@@ -359,10 +426,8 @@ class _MainPageState extends State<MainPage> {
     return null;
   }
 
-  // =========【改动3：函数开头增加Android14动态权限申请；同时修正响应头非法减号】=========
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
-    //Android14‑16工业PDA必备附近设备权限，用于读取WiFi网卡列表
     final wifiPermStatus = await Permission.nearbyWifiDevices.request();
     if(!wifiPermStatus.isGranted){
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("需要附近设备权限，才能读取WiFi地址")));
@@ -376,14 +441,13 @@ class _MainPageState extends State<MainPage> {
     }
     _localIpAddress = ip;
     final handler = Pipeline().addHandler((Request req) async {
-      final csvContent = _generateCsvText();
+      final csvContent = await _generateCsvText();
       return Response.ok(csvContent, headers: {
         "Content-Type": "text/csv;charset=utf-8",
         "Content-Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
       });
     });
     try {
-      // 关键改动：绑定0.0.0.0，监听全部网卡，不再仅绑定局域网IP
       _webServer = await shelf_io.serve(handler, "0.0.0.0", _webPort);
       setState(() {
         _webServiceRunning = true;
@@ -413,7 +477,6 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  //相机扫码弹窗：移除多余输入框赋值
 void _openCameraScan() async {
   bool scannedHandled = false;
   final result = await showDialog(
@@ -444,7 +507,6 @@ void _openCameraScan() async {
   }
 }
 
-  //修改3：站台更换为5‑12
   Widget _buildStationPanel() {
     return FutureBuilder<BatchInfo?>(
       future: _getCurrentBatch(),
@@ -515,7 +577,6 @@ void _openCameraScan() async {
     );
   }
 
-  //修改1：删除按钮改为文字【删除】；修改2：删除AGV记录自动释放站台
   Widget _buildRecordList() {
     return Expanded(
       child: ListView.builder(
@@ -531,7 +592,7 @@ void _openCameraScan() async {
           String timeTxt = r.scanTime.toString().substring(0, 19);
           return ListTile(
             title: Text("货码：${r.goodsCode}｜$posTxt"),
-            subtitle: Text("采集时间：$timeTxt"),
+            subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty ? r.remark : "无"}"),
             trailing: TextButton(
               style: TextButton.styleFrom(foregroundColor: Colors.red),
               onPressed: () async {
@@ -550,7 +611,6 @@ void _openCameraScan() async {
 
                 await _isar.writeTxn(() async {
                   await _isar.scanRecords.delete(r.id);
-                  // AGV记录：释放站台
                   if(r.workType ==0 && r.stationNo != null){
                     BatchInfo? batch = await _getCurrentBatch();
                     if(batch != null){
@@ -571,7 +631,122 @@ void _openCameraScan() async {
     );
   }
 
-  //=====【新增函数，修复CI报错】=====
+  //====本次新增：历史批次页面====
+  Widget _buildHistoryBatchPage(){
+    return FutureBuilder<List<BatchInfo>>(
+      future: _isar.batchInfos.where().findAll(),
+      builder: (ctx,snap){
+        if(!snap.hasData) return const Center(child: CircularProgressIndicator());
+        final batches = snap.data!;
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Row(
+                children: [
+                  ElevatedButton(
+                    onPressed: ()async{
+                      await _saveCsvToFile(batchIds: _selectedBatchIds);
+                      setState(()=>_selectedBatchIds.clear());
+                    },
+                    child: const Text("批量导出选中批次"),
+                  ),
+                  const SizedBox(width:8),
+                  Text("已选：${_selectedBatchIds.length}个"),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: batches.length,
+                itemBuilder: (ctx,idx){
+                  final b = batches[idx];
+                  Future<int> getCount()async{
+                    return await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).count();
+                  }
+                  return FutureBuilder<int>(
+                    future:getCount(),
+                    builder: (ctx,countSnap){
+                      final recCount = countSnap.data ?? 0;
+                      return CheckboxListTile(
+                        title: Text("${b.batchId} ${b.isArchived?"【已归档】":"【进行中】"}"),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("创建：${b.createTime.substring(0,16)}｜记录条数：$recCount"),
+                            Text("批次备注：${b.batchRemark.isNotEmpty?b.batchRemark:"无备注"}"),
+                          ],
+                        ),
+                        value: _selectedBatchIds.contains(b.batchId),
+                        onChanged: (sel){
+                          setState(() {
+                            if(sel == true){
+                              _selectedBatchIds.add(b.batchId);
+                            }else{
+                              _selectedBatchIds.remove(b.batchId);
+                            }
+                          });
+                        },
+                        secondary: Row(
+                          mainAxisSize:MainAxisSize.min,
+                          children: [
+                            //切换查看该批次
+                            TextButton(onPressed:()async{
+                              setState(() {
+                                _currentBatchId = b.batchId;
+                                _pageIndex =0;
+                                _selectedStation=null;
+                                _selectedGroundLoc=null;
+                              });
+                              await _refreshRecord();
+                            },child:const Text("查看")),
+                            //归档按钮，仅未归档可用
+                            if(!b.isArchived)
+                            TextButton(onPressed:()async{
+                              final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("归档批次"),content:const Text("归档后无法新增采集记录，确认归档？"),actions:[
+                                TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
+                                TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认归档")),
+                              ]));
+                              if(ok==true){
+                                await _isar.writeTxn(()async{
+                                  b.isArchived = true;
+                                  await _isar.batchInfos.put(b);
+                                });
+                                setState((){});
+                              }
+                            },child:const Text("归档")),
+                            //删除批次
+                            TextButton(onPressed:()async{
+                              final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("删除批次"),content:const Text("警告！会永久删除该批次所有采集数据，不可恢复！"),actions:[
+                                TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
+                                TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认删除")),
+                              ]));
+                              if(ok==true){
+                                await _isar.writeTxn(()async{
+                                  await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).deleteAll();
+                                  await _isar.batchInfos.delete(b.id);
+                                });
+                                //如果删除的是当前批次，则自动切换可用批次
+                                if(_currentBatchId == b.batchId){
+                                  await _loadLastBatch();
+                                }
+                                setState((){});
+                              }
+                            },style:TextButton.styleFrom(foregroundColor:Colors.red),child:const Text("删除")),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   Future<void> _exportCsvFile() async {
     await _saveCsvToFile();
   }
@@ -583,49 +758,51 @@ void _openCameraScan() async {
       await startWebService();
     }
   }
-  //====================================
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-    appBar: AppBar(
-  backgroundColor: Colors.blue,
-  // 移除title，全部使用文字按钮规避图标bug
-  actions: [
-    TextButton(
-      onPressed: _createNewBatch,
-      child: const Text(
-        "新批次",
-        style: TextStyle(color: Colors.white, fontSize: 14),
+      //改动1：重构AppBar，适配PDA窄屏，按钮不会溢出消失
+      appBar: AppBar(
+        backgroundColor: Colors.blue,
+        title: Text(_pageIndex ==1 ? "历史批次" : "AGV货位采集器"),
+        actions: [
+          TextButton(
+            onPressed: _createNewBatch,
+            child: const Text("新批次", style: TextStyle(color: Colors.white, fontSize: 14)),
+          ),
+          TextButton(
+            onPressed: ()=>setState((){
+              _pageIndex =1;
+              _selectedBatchIds.clear();
+            }),
+            child: const Text("历史批次", style: TextStyle(color: Colors.white, fontSize: 14)),
+          ),
+          PopupMenuButton<String>(
+            color: Colors.white,
+            onSelected: (val) async {
+              switch(val){
+                case "copy":
+                  final csv = await _generateCsvText();
+                  await Clipboard.setData(ClipboardData(text: csv));
+                  break;
+                case "export":
+                  await _exportCsvFile();
+                  break;
+                case "wifi":
+                  await _toggleWifiServer();
+                  break;
+              }
+            },
+            itemBuilder: (ctx) => const [
+              PopupMenuItem(value: "copy", child: Text("复制")),
+              PopupMenuItem(value: "export", child: Text("导出文件")),
+              PopupMenuItem(value: "wifi", child: Text("WiFi服务")),
+            ],
+          ),
+        ],
       ),
-    ),
-    TextButton(
-      onPressed: () async {
-        final csv = _generateCsvText();
-        await Clipboard.setData(ClipboardData(text: csv));
-      },
-      child: const Text(
-        "复制",
-        style: TextStyle(color: Colors.white, fontSize: 14),
-      ),
-    ),
-    TextButton(
-      onPressed: _exportCsvFile,
-      child: const Text(
-        "导出文件",
-        style: TextStyle(color: Colors.white, fontSize: 14),
-      ),
-    ),
-    TextButton(
-      onPressed: _toggleWifiServer,
-      child: const Text(
-        "WiFi服务",
-        style: TextStyle(color: Colors.white, fontSize: 14),
-      ),
-    ),
-  ],
-),
-      body: Padding(
+      body: _pageIndex == 1 ? _buildHistoryBatchPage() : Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -674,6 +851,30 @@ void _openCameraScan() async {
                 const SizedBox(width: 8),
                 ElevatedButton(onPressed: _openCameraScan, child: const Text("相机扫码")),
               ],
+            ),
+            const SizedBox(height:10),
+            const Text("备注标签："),
+            const SizedBox(height:6),
+            Wrap(
+              spacing:6,
+              children:_quickRemarkTags.map((tag)=>ChoiceChip(
+                label:Text(tag),
+                selected:_selectedQuickTag==tag,
+                onSelected:(sel){
+                  setState(() {
+                    if(sel){
+                      _selectedQuickTag=tag;
+                    }else{
+                      _selectedQuickTag=null;
+                    }
+                  });
+                },
+              )).toList(),
+            ),
+            const SizedBox(height:8),
+            TextField(
+              controller:_remarkInputCtrl,
+              decoration:const InputDecoration(hintText:"自定义补充备注（可选）",border:OutlineInputBorder(),isDense:true),
             ),
             const SizedBox(height: 12),
             const Divider(),
