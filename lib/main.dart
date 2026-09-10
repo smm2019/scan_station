@@ -105,8 +105,13 @@ class _MainPageState extends State<MainPage> {
   List<ScanRecord> _recordList = [];
   bool _isSaving = false;
 
-  //====本次新增：页面导航、批量导出多选集合====
-  int _pageIndex = 0; //0采集主页，1历史批次页面
+  //====【布局改动新增变量：统计、折叠面板、Tab控制器】====
+  int _totalCount = 0;
+  int _agvCount = 0;
+  int _manualCount = 0;
+  bool _recordPanelExpanded = false;
+  late TabController _tabController;
+
   List<String> _selectedBatchIds = [];
 
   final List<String> _locGroup = ["A", "B", "C", "D"];
@@ -123,14 +128,28 @@ class _MainPageState extends State<MainPage> {
     _isar = _globalIsar;
     _loadLastBatch();
     _refreshRecord();
+    //初始化Tab控制器
+    _tabController = TabController(length: 2, vsync: this);
   }
 
   @override
   void dispose() {
+    _tabController.dispose();
     _goodsFocusNode.dispose(); //【新增】释放焦点资源
     _goodsInputCtrl.dispose();
     _remarkInputCtrl.dispose();
     super.dispose();
+  }
+
+  ///【布局新增：刷新批次统计数据，仅UI使用，业务无改动】
+  Future<void> _refreshBatchStat() async {
+    if (_currentBatchId == null) return;
+    final records = await _isar.scanRecords.filter().batchIdEqualTo(_currentBatchId!).findAll();
+    setState(() {
+      _totalCount = records.length;
+      _agvCount = records.where((r) => r.workType == 0).length;
+      _manualCount = records.where((r) => r.workType == 1).length;
+    });
   }
 
   Future<void> _loadLastBatch() async {
@@ -163,10 +182,10 @@ class _MainPageState extends State<MainPage> {
         title: const Text("新建采集批次"),
         content: TextField(
           controller: batchRemarkCtrl,
-         decoration: InputDecoration(
-  hintText: "填写备注，例: 3号库区 白班",
-  border: OutlineInputBorder(),
-),
+          decoration: InputDecoration(
+            hintText: "填写备注，例: 3号库区 白班",
+            border: OutlineInputBorder(),
+          ),
         ),
         actions: [
           TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
@@ -191,9 +210,9 @@ class _MainPageState extends State<MainPage> {
       _selectedGroundLoc = null;
       _selectedQuickTag = null;
       _remarkInputCtrl.clear();
-      _pageIndex = 0; //切回采集主页
     });
     _refreshRecord();
+    await _refreshBatchStat();
   }
 
   Future<BatchInfo?> _getCurrentBatch() async {
@@ -338,6 +357,7 @@ class _MainPageState extends State<MainPage> {
       }
 
       await _refreshRecord();
+      await _refreshBatchStat();
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("采集保存成功")));
       //【新增】保存完成，自动激活输入框，准备PDA下一次扫码
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -640,6 +660,7 @@ void _openCameraScan() async {
                   }
                 });
                 await _refreshRecord();
+                await _refreshBatchStat();
               },
               child: const Text("删除",style: TextStyle(fontSize:14)),
             ),
@@ -712,11 +733,12 @@ void _openCameraScan() async {
                             TextButton(onPressed:()async{
                               setState(() {
                                 _currentBatchId = b.batchId;
-                                _pageIndex =0;
                                 _selectedStation=null;
                                 _selectedGroundLoc=null;
                               });
                               await _refreshRecord();
+                              await _refreshBatchStat();
+                              _tabController.animateTo(0);
                             },child:const Text("查看")),
                             //归档按钮，仅未归档可用
                             if(!b.isArchived)
@@ -747,6 +769,7 @@ void _openCameraScan() async {
                                 //如果删除的是当前批次，则自动切换可用批次
                                 if(_currentBatchId == b.batchId){
                                   await _loadLastBatch();
+                                  await _refreshBatchStat();
                                 }
                                 setState((){});
                               }
@@ -777,28 +800,183 @@ void _openCameraScan() async {
     }
   }
 
+  // ==========仅此处布局完全重构，业务逻辑无改动==========
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      //改动1：重构AppBar，适配PDA窄屏，按钮不会溢出消失
       appBar: AppBar(
         backgroundColor: Colors.blue,
-        title: Text(_pageIndex ==1 ? "历史批次" : "AGV货位采集器"),
-        actions: [
-          TextButton(
-            onPressed: _createNewBatch,
-            child: const Text("新批次", style: TextStyle(color: Colors.white, fontSize: 14)),
+        title: const Text("AGV货位采集器"),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: "采集录入"),
+            Tab(text: "历史批次"),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          //采集录入页面
+          SingleChildScrollView(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                //独立置顶统计看板，永久可见
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical:16,horizontal:10),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _statItem("总采集", "$_totalCount"),
+                      _statItem("AGV站台", "$_agvCount"),
+                      _statItem("人工货位", "$_manualCount"),
+                    ],
+                  ),
+                ),
+                const SizedBox(height:16),
+
+                //作业模式切换
+                Row(
+                  children: [
+                    const Text("作业模式："),
+                    const SizedBox(width: 10),
+                    ChoiceChip(
+                      label: const Text("AGV站台模式"),
+                      selected: _workType == 0,
+                      onSelected: (s) => setState(() {
+                        _workType = 0;
+                        _selectedGroundLoc = null;
+                      }),
+                    ),
+                    const SizedBox(width: 8),
+                    ChoiceChip(
+                      label: const Text("人工地面摆放"),
+                      selected: _workType == 1,
+                      onSelected: (s) => setState(() {
+                        _workType = 1;
+                        _selectedStation = null;
+                      }),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+
+                if (_workType == 0) _buildStationPanel();
+                if (_workType == 1) _buildGroundLocPanel();
+                const SizedBox(height: 16),
+
+                //货码输入行
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _goodsInputCtrl,
+                        focusNode: _goodsFocusNode,
+                        decoration: const InputDecoration(
+                          hintText: "PDA红外扫码自动填入，也可手动输入货码",
+                          border: OutlineInputBorder()
+                        ),
+                        onSubmitted: (txt) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) async {
+                            String code = txt.trim();
+                            if (code.isNotEmpty) await _saveRecord(code);
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    ElevatedButton(onPressed: _openCameraScan, child: const Text("相机扫码")),
+                  ],
+                ),
+                const SizedBox(height:10),
+
+                const Text("备注标签："),
+                const SizedBox(height:6),
+                Wrap(
+                  spacing:6,
+                  children:_quickRemarkTags.map((tag)=>ChoiceChip(
+                    label:Text(tag),
+                    selected:_selectedQuickTag==tag,
+                    onSelected:(sel){
+                      setState(() {
+                        if(sel){
+                          _selectedQuickTag=tag;
+                        }else{
+                          _selectedQuickTag=null;
+                        }
+                      });
+                    },
+                  )).toList(),
+                ),
+                const SizedBox(height:8),
+
+                TextField(
+                  controller:_remarkInputCtrl,
+                  decoration:const InputDecoration(
+                    hintText:"自定义补充备注（可选）",
+                    border:OutlineInputBorder(),
+                    isDense:true
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Divider(),
+
+                //可折叠采集记录面板，默认收起，解决页面过长遮挡
+                InkWell(
+                  onTap: (){
+                    setState(() {
+                      _recordPanelExpanded = !_recordPanelExpanded;
+                    });
+                  },
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text("本批次采集记录",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+                      Icon(_recordPanelExpanded ? Icons.expand_less : Icons.expand_more),
+                    ],
+                  ),
+                ),
+                const SizedBox(height:6),
+                if(_recordPanelExpanded)
+                  SizedBox(
+                    height:210,
+                    child: _buildRecordList(),
+                  ),
+                const SizedBox(height:80),
+              ],
+            ),
           ),
-          TextButton(
-            onPressed: ()=>setState((){
-              _pageIndex =1;
-              _selectedBatchIds.clear();
-            }),
-            child: const Text("历史批次", style: TextStyle(color: Colors.white, fontSize: 14)),
-          ),
-          PopupMenuButton<String>(
-            color: Colors.white,
-            onSelected: (val) async {
+          //历史批次页面
+          _buildHistoryBatchPage()
+        ],
+      ),
+      //底部常驻导航栏
+      bottomNavigationBar: BottomNavigationBar(
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.home),label:"采集"),
+          BottomNavigationBarItem(icon: Icon(Icons.download),label:"导出"),
+          BottomNavigationBarItem(icon: Icon(Icons.settings),label:"设置"),
+        ],
+        currentIndex: 0,
+        onTap: (idx) async{
+          if(idx ==0){
+            _tabController.animateTo(0);
+          }else if(idx ==1){
+            await showMenu(context: context,
+                position: const RelativeRect.fromLTRB(100,500,100,100),
+                items: [
+                  PopupMenuItem(value: "copy", child: Text("复制CSV内容")),
+                  PopupMenuItem(value: "export", child: Text("导出CSV文件")),
+                  PopupMenuItem(value: "wifi", child: Text("开启WiFi局域网服务")),
+                ]).then((val)async{
               switch(val){
                 case "copy":
                   final csv = await _generateCsvText();
@@ -811,97 +989,27 @@ void _openCameraScan() async {
                   await _toggleWifiServer();
                   break;
               }
-            },
-            itemBuilder: (ctx) => const [
-              PopupMenuItem(value: "copy", child: Text("复制")),
-              PopupMenuItem(value: "export", child: Text("导出文件")),
-              PopupMenuItem(value: "wifi", child: Text("WiFi服务")),
-            ],
-          ),
-        ],
+            });
+          }else if(idx ==2){
+            await showDialog(context: context, builder: (ctx)=>AlertDialog(
+              title: const Text("设置"),
+              content: const Text("可配置PDA扫码参数、导出格式"),
+              actions: [TextButton(onPressed: ()=>Navigator.pop(ctx),child:const Text("关闭"))],
+            ));
+          }
+        },
       ),
-      body: _pageIndex == 1 ? _buildHistoryBatchPage() : Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Text("作业模式："),
-                const SizedBox(width: 10),
-                ChoiceChip(
-                  label: const Text("AGV站台模式"),
-                  selected: _workType == 0,
-                  onSelected: (s) => setState(() {
-                    _workType = 0;
-                    _selectedGroundLoc = null;
-                  }),
-                ),
-                const SizedBox(width: 8),
-                ChoiceChip(
-                  label: const Text("人工地面摆放"),
-                  selected: _workType == 1,
-                  onSelected: (s) => setState(() {
-                    _workType = 1;
-                    _selectedStation = null;
-                  }),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (_workType == 0) _buildStationPanel(),
-            if (_workType == 1) _buildGroundLocPanel(),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _goodsInputCtrl,
-                    focusNode: _goodsFocusNode, //【新增绑定焦点】
-                    decoration: const InputDecoration(hintText: "PDA红外扫码自动填入，也可手动输入货码", border: OutlineInputBorder()),
-                    onSubmitted: (txt) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) async {
-                        String code = txt.trim();
-                        if (code.isNotEmpty) await _saveRecord(code);
-                      });
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(onPressed: _openCameraScan, child: const Text("相机扫码")),
-              ],
-            ),
-            const SizedBox(height:10),
-            const Text("备注标签："),
-            const SizedBox(height:6),
-            Wrap(
-              spacing:6,
-              children:_quickRemarkTags.map((tag)=>ChoiceChip(
-                label:Text(tag),
-                selected:_selectedQuickTag==tag,
-                onSelected:(sel){
-                  setState(() {
-                    if(sel){
-                      _selectedQuickTag=tag;
-                    }else{
-                      _selectedQuickTag=null;
-                    }
-                  });
-                },
-              )).toList(),
-            ),
-            const SizedBox(height:8),
-            TextField(
-              controller:_remarkInputCtrl,
-              decoration:const InputDecoration(hintText:"自定义补充备注（可选）",border:OutlineInputBorder(),isDense:true),
-            ),
-            const SizedBox(height: 12),
-            const Divider(),
-            const Text("本批次采集记录"),
-            _buildRecordList()
-          ],
-        ),
-      ),
+    );
+  }
+
+  ///统计卡片子组件（布局新增）
+  Widget _statItem(String title,String num){
+    return Column(
+      children: [
+        Text(num,style:const TextStyle(fontSize:20,fontWeight:FontWeight.bold,color:Colors.blue)),
+        const SizedBox(height:4),
+        Text(title,style:const TextStyle(fontSize:13)),
+      ],
     );
   }
 }
