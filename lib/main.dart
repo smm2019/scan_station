@@ -399,7 +399,7 @@ class _MainPageState extends State<MainPage> {
     String csvText = await _generateCsvText(targetBatchIds: batchIds);
     final dir = await getExternalStorageDirectory();
     if (dir == null) return;
-   String suffix = batchId != null ? "多次合并" : currentBatchId ?? "";
+String suffix = batchIds != null ? "多批次合并" : (_currentBatchId ?? "");
     String filePath = "${dir.path}/采集_${suffix}.csv";
     File file = File(filePath);
     await file.writeAsString(csvText, encoding: utf8);
