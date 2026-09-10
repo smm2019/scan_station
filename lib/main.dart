@@ -799,109 +799,234 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     );
   }
 
-  //====本次新增：历史批次页面====
+  //====【完全重构：适配截图样式的历史批次页面，业务逻辑不变，仅UI】====
   Widget _buildHistoryBatchPage(){
     return FutureBuilder<List<BatchInfo>>(
       future: _isar.batchInfos.where().findAll(),
       builder: (ctx,snap){
         if(!snap.hasData) return const Center(child: CircularProgressIndicator());
         final batches = snap.data!;
+        int selectedCount = _selectedBatchIds.length;
+
+        //状态标签组件
+        Widget buildStatusLabel(String statusText){
+          late Color bg;
+          late Color text;
+          switch(statusText){
+            case "进行中":
+              bg = const Color(0xFFE8E4FF);
+              text = const Color(0xFF6048D8);
+              break;
+            case "已完成":
+              bg = const Color(0xFFE6F9E9);
+              text = const Color(0xFF28A745);
+              break;
+            case "已归档":
+              bg = const Color(0xFFF0F0F2);
+              text = const Color(0xFF707074);
+              break;
+            default:
+              bg = Colors.grey.shade200;
+              text = Colors.black54;
+          }
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal:8, vertical:3),
+            decoration: BoxDecoration(color:bg, borderRadius:BorderRadius.circular(12)),
+            child: Text(statusText,style:TextStyle(color:text,fontSize:13)),
+          );
+        }
+
         return Column(
           children: [
+            //全选+已选计数行
             Padding(
-              padding: const EdgeInsets.all(8.0),
+              padding: const EdgeInsets.symmetric(horizontal:16,vertical:8),
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  ElevatedButton(
-                    onPressed: ()async{
-                      await _saveCsvToFile(batchIds: _selectedBatchIds);
-                      setState(()=>_selectedBatchIds.clear());
-                    },
-                    child: const Text("批量导出选中批次"),
-                  ),
-                  const SizedBox(width:8),
-                  Text("已选：${_selectedBatchIds.length}个"),
+                  Row(children: [
+                    Checkbox(
+                      value: selectedCount>0 && selectedCount == batches.length,
+                      onChanged: (val){
+                        setState(() {
+                          if(val == true){
+                            _selectedBatchIds = batches.map((b)=>b.batchId).toList();
+                          }else{
+                            _selectedBatchIds.clear();
+                          }
+                        });
+                      },
+                    ),
+                    const Text("全选",style:TextStyle(fontSize:15)),
+                  ]),
+                  Text("已选：$selectedCount 个",style:const TextStyle(fontSize:15,color:Colors.black54)),
                 ],
               ),
             ),
+
+            //批次卡片列表
             Expanded(
               child: ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal:12),
                 itemCount: batches.length,
                 itemBuilder: (ctx,idx){
                   final b = batches[idx];
-                  Future<int> getCount()async{
-                    return await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).count();
-                  }
+                  String statusStr = b.isArchived ? "已归档" : "进行中";
                   return FutureBuilder<int>(
-                    future:getCount(),
+                    future: _isar.scanRecords.filter().batchIdEqualTo(b.batchId).count(),
                     builder: (ctx,countSnap){
-                      final recCount = countSnap.data ?? 0;
-                      return CheckboxListTile(
-                        title: Text("${b.batchId} ${b.isArchived?"【已归档】":"【进行中】"}"),
-                        subtitle: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text("创建：${b.createTime.substring(0,16)}｜记录条数：$recCount"),
-                            Text("批次备注：${b.batchRemark.isNotEmpty?b.batchRemark:"无备注"}"),
-                          ],
-                        ),
-                        value: _selectedBatchIds.contains(b.batchId),
-                        onChanged: (sel){
-                          setState(() {
-                            if(sel == true){
-                              _selectedBatchIds.add(b.batchId);
-                            }else{
-                              _selectedBatchIds.remove(b.batchId);
-                            }
-                          });
-                        },
-                        secondary: Row(
-                          mainAxisSize:MainAxisSize.min,
-                          children: [
-                            //【修改：不再切回采集页，打开独立只读弹窗】
-                            TextButton(onPressed:()async{
-                              await _showBatchReadOnlyDetail(b);
-                            },child:const Text("查看")),
-                            //归档按钮，仅未归档可用
-                            if(!b.isArchived)
-                            TextButton(onPressed:()async{
-                              final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("归档批次"),content:const Text("归档后无法新增采集记录，确认归档？"),actions:[
-                                TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
-                                TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认归档")),
-                              ]));
-                              if(ok==true){
-                                await _isar.writeTxn(()async{
-                                  b.isArchived = true;
-                                  await _isar.batchInfos.put(b);
-                                });
-                                setState((){});
-                              }
-                            },child:const Text("归档")),
-                            //删除批次
-                            TextButton(onPressed:()async{
-                              final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("删除批次"),content:const Text("警告！会永久删除该批次所有采集数据，不可恢复！"),actions:[
-                                TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
-                                TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认删除")),
-                              ]));
-                              if(ok==true){
-                                await _isar.writeTxn(()async{
-                                  await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).deleteAll();
-                                  await _isar.batchInfos.delete(b.id);
-                                });
-                                //如果删除的是当前批次，则自动切换可用批次
-                                if(_currentBatchId == b.batchId){
-                                  await _loadLastBatch();
-                                  await _refreshBatchStat();
-                                }
-                                setState((){});
-                              }
-                            },style:TextButton.styleFrom(foregroundColor:Colors.red),child:const Text("删除")),
-                          ],
+                      int recCnt = countSnap.data ?? 0;
+                      //提取使用站台展示文本
+                      List<int> stList = b.usedStation;
+                      String stationTip = stList.isEmpty ? "无货位" : "${stList.first}、${stList.last}号货位";
+
+                      return Card(
+                        elevation:2,
+                        margin: const EdgeInsets.only(bottom:10),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Checkbox(
+                                value: _selectedBatchIds.contains(b.batchId),
+                                onChanged: (sel){
+                                  setState(() {
+                                    if(sel == true){
+                                      _selectedBatchIds.add(b.batchId);
+                                    }else{
+                                      _selectedBatchIds.remove(b.batchId);
+                                    }
+                                  });
+                                },
+                              ),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Expanded(child:Text(b.batchId,style:const TextStyle(fontSize:16,fontWeight:FontWeight.w500))),
+                                        const SizedBox(width:8),
+                                        buildStatusLabel(statusStr),
+                                      ],
+                                    ),
+                                    const SizedBox(height:4),
+                                    Text("🕒 ${b.createTime.substring(0,16)}",style:const TextStyle(fontSize:13,color:Colors.black54)),
+                                    const SizedBox(height:4),
+                                    Text("📁 $recCnt 条记录  📍 $stationTip",style:const TextStyle(fontSize:13,color:Colors.black54)),
+                                  ],
+                                ),
+                              ),
+                              SizedBox(
+                                width:72,
+                                child: Column(
+                                  children: [
+                                    SizedBox(
+                                      width:70,
+                                      child: ElevatedButton(
+                                        style: ElevatedButton.styleFrom(backgroundColor:Colors.blue.shade100,foregroundColor:Colors.blue,padding:const EdgeInsets.symmetric(vertical:4)),
+                                        onPressed:()async=>await _showBatchReadOnlyDetail(b),
+                                        child:const Text("查看",style:TextStyle(fontSize:14)),
+                                      ),
+                                    ),
+                                    const SizedBox(height:4),
+                                    SizedBox(
+                                      width:70,
+                                      child: ElevatedButton(
+                                        style: ElevatedButton.styleFrom(backgroundColor:Colors.grey.shade100,foregroundColor:Colors.black87,padding:const EdgeInsets.symmetric(vertical:4)),
+                                        onPressed: b.isArchived ? null : ()async{
+                                          final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("归档批次"),content:const Text("归档后无法新增采集记录，确认归档？"),actions:[
+                                            TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
+                                            TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认归档")),
+                                          ]));
+                                          if(ok==true){
+                                            await _isar.writeTxn(()async{
+                                              b.isArchived = true;
+                                              await _isar.batchInfos.put(b);
+                                            });
+                                            setState((){});
+                                          }
+                                        },
+                                        child:const Text("归档",style:TextStyle(fontSize:14)),
+                                      ),
+                                    ),
+                                    const SizedBox(height:4),
+                                    SizedBox(
+                                      width:70,
+                                      child: ElevatedButton(
+                                        style: ElevatedButton.styleFrom(backgroundColor:Colors.red.shade100,foregroundColor:Colors.red,padding:const EdgeInsets.symmetric(vertical:4)),
+                                        onPressed:()async{
+                                          final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("删除批次"),content:const Text("警告！会永久删除该批次所有采集数据，不可恢复！"),actions:[
+                                            TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
+                                            TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认删除")),
+                                          ]));
+                                          if(ok==true){
+                                            await _isar.writeTxn(()async{
+                                              await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).deleteAll();
+                                              await _isar.batchInfos.delete(b.id);
+                                            });
+                                            if(_currentBatchId == b.batchId){
+                                              await _loadLastBatch();
+                                              await _refreshBatchStat();
+                                            }
+                                            setState((){});
+                                          }
+                                        },
+                                        child:const Text("删除",style:TextStyle(fontSize:14)),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       );
                     },
                   );
                 },
+              ),
+            ),
+
+            //底部批量操作栏（严格匹配截图：无选中时按钮置灰）
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width:140,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor:Colors.white,foregroundColor:Colors.black87,side:const BorderSide(color:Colors.black26)),
+                      onPressed: selectedCount>0 ? ()async{
+                        for(String bid in _selectedBatchIds){
+                          BatchInfo? item = await _isar.batchInfos.filter().batchIdEqualTo(bid).findFirst();
+                          if(item != null && !item.isArchived){
+                            await _isar.writeTxn(()async{
+                              item.isArchived = true;
+                              await _isar.batchInfos.put(item);
+                            });
+                          }
+                        }
+                        setState(()=>_selectedBatchIds.clear());
+                      } : null,
+                      child: const Text("批量归档",style:TextStyle(fontSize:15)),
+                    ),
+                  ),
+                  const SizedBox(width:12),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(backgroundColor:Colors.blue),
+                      icon: const Icon(Icons.download,size:18),
+                      label: const Text("批量导出",style:TextStyle(fontSize:15)),
+                      onPressed: selectedCount>0 ? ()async{
+                        await _saveCsvToFile(batchIds:_selectedBatchIds);
+                        setState(()=>_selectedBatchIds.clear());
+                      } : null,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1071,17 +1196,17 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   ),
                 ),
                 const SizedBox(height:6),
-                // =========【修改：移除固定高度，改用自适应+最大高度约束】 =========
+                // =========【修改：PDA适配，最大高度调整至400】 =========
                 if(_recordPanelExpanded)
                   ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 320),
+                    constraints: const BoxConstraints(maxHeight: 400),
                     child: _buildRecordList(),
                   ),
                 const SizedBox(height:80),
               ],
             ),
           ),
-          //历史批次页面
+          //历史批次页面（已完全美化）
           _buildHistoryBatchPage()
         ],
       ),
