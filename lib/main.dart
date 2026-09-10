@@ -154,7 +154,10 @@ class _MainPageState extends State<MainPage> {
         title: const Text("新建采集批次"),
         content: TextField(
           controller: batchRemarkCtrl,
-          decoration: const InputDecoration(hintText="填写备注，例：3号库区 白班", border: OutlineInputBorder()),
+         decoration: InputDecoration(
+  hintText: "填写备注，例: 3号库区 白班",
+  border: OutlineInputBorder(),
+),
         ),
         actions: [
           TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
@@ -396,7 +399,7 @@ class _MainPageState extends State<MainPage> {
     String csvText = await _generateCsvText(targetBatchIds: batchIds);
     final dir = await getExternalStorageDirectory();
     if (dir == null) return;
-    String suffix = batchIds!=null ? "多批次合并" : _currentBatchId;
+   String suffix = batchId != null ? "多次合并" : currentBatchId ?? "";
     String filePath = "${dir.path}/采集_${suffix}.csv";
     File file = File(filePath);
     await file.writeAsString(csvText, encoding: utf8);
