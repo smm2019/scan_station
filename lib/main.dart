@@ -108,9 +108,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   bool _isSaving = false;
 
   //====【布局改动新增变量：统计、折叠面板、Tab控制器】====
-  int _totalCount = 0;
-  int _agvCount = 0;
-  int _manualCount = 0;
+  int _normalCount = 0;
+  int _cancelCount = 0;
   bool _recordPanelExpanded = false;
   late TabController _tabController;
 
@@ -143,14 +142,13 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     super.dispose();
   }
 
-  ///【布局新增：刷新批次统计数据，仅UI使用，业务无改动】
+  ///【MOD‑新增2：刷新正常/作废统计，替换原有统计】
   Future<void> _refreshBatchStat() async {
     if (_currentBatchId == null) return;
     final records = await _isar.scanRecords.filter().batchIdEqualTo(_currentBatchId!).findAll();
     setState(() {
-      _totalCount = records.length;
-      _agvCount = records.where((r) => r.workType == 0).length;
-      _manualCount = records.where((r) => r.workType == 1).length;
+      _normalCount = records.where((r) => !r.isCancel).length;
+      _cancelCount = records.where((r) => r.isCancel).length;
     });
   }
 
@@ -234,6 +232,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     return false;
   }
 
+  //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug】
   Future<bool> _isCodeDuplicate(String code) async {
     final exist = await _isar.scanRecords
         .filter()
@@ -295,8 +294,10 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       );
       return true;
     } else if (res == "cancelOld") {
+      //每次操作独立标记，不会残留作废状态（修复Bug核心）
+      bool tempCancelFlag = true;
       await _isar.writeTxn(() async {
-        exist.isCancel = true;
+        exist.isCancel = tempCancelFlag;
         await _isar.scanRecords.put(exist);
         if(exist.workType == 0 && exist.stationNo != null){
           BatchInfo? batch = await _getCurrentBatch();
@@ -671,14 +672,13 @@ void _openCameraScan() async {
     );
   }
 
-  //【仅此处修改：移除Expanded，解决展开后全屏灰色遮挡、记录不渲染】
+  //【MOD‑Bug2 + 新增1｜完整替换此函数】
   Widget _buildRecordList() {
-    //【修复空白崩溃：增加判空兜底】
     if(_recordList.isEmpty){
       return const Center(child:Text("本批次暂无采集记录"));
     }
     return ListView.builder(
-      shrinkWrap: true,
+      shrinkWrap: false, //修复底部大面积空白，适配PDA竖屏
       itemCount: _recordList.length,
       itemBuilder: (ctx, idx) {
         var r = _recordList[idx];
@@ -692,39 +692,42 @@ void _openCameraScan() async {
         return ListTile(
           title: Text("货码：${r.goodsCode}｜$posTxt"),
           subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty ? r.remark : "无"}｜${r.isCancel?"⚠️已作废":"✅正常"}"),
-          trailing: TextButton(
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            onPressed: () async {
-              final confirm = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text("删除记录"),
-                  content: const Text("确定删除本条采集记录？"),
-                  actions: [
-                    TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
-                    TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认")),
-                  ],
-                ),
-              );
-              if(confirm != true) return;
+          //新增1判断：作废记录移除删除按钮，不可删除，仅归档
+          trailing: r.isCancel
+              ? null
+              : TextButton(
+                  style: TextButton.styleFrom(foregroundColor: Colors.red),
+                  onPressed: () async {
+                    final confirm = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                        title: const Text("删除记录"),
+                        content: const Text("确定删除本条采集记录？"),
+                        actions: [
+                          TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
+                          TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认")),
+                        ],
+                      ),
+                    );
+                    if(confirm != true) return;
 
-              await _isar.writeTxn(() async {
-                await _isar.scanRecords.delete(r.id);
-                if(r.workType ==0 && r.stationNo != null){
-                  BatchInfo? batch = await _getCurrentBatch();
-                  if(batch != null){
-                    List<int> mutable = batch.usedStation.toList();
-                    mutable.remove(r.stationNo);
-                    batch.usedStation = mutable;
-                    await _isar.batchInfos.put(batch);
-                  }
-                }
-              });
-              await _refreshRecord();
-              await _refreshBatchStat();
-            },
-            child: const Text("删除",style: TextStyle(fontSize:14)),
-          ),
+                    await _isar.writeTxn(() async {
+                      await _isar.scanRecords.delete(r.id);
+                      if(r.workType ==0 && r.stationNo != null){
+                        BatchInfo? batch = await _getCurrentBatch();
+                        if(batch != null){
+                          List<int> mutable = batch.usedStation.toList();
+                          mutable.remove(r.stationNo);
+                          batch.usedStation = mutable;
+                          await _isar.batchInfos.put(batch);
+                        }
+                      }
+                    });
+                    await _refreshRecord();
+                    await _refreshBatchStat();
+                  },
+                  child: const Text("删除",style: TextStyle(fontSize:14)),
+                ),
         );
       },
     );
@@ -860,7 +863,6 @@ void _openCameraScan() async {
     }
   }
 
-  // ==========仅此处布局完全重构，业务逻辑无改动==========
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -884,7 +886,7 @@ void _openCameraScan() async {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                //独立置顶统计看板，永久可见
+                //【MOD‑新增2｜替换为正常/作废统计面板】
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(vertical:16,horizontal:10),
@@ -895,14 +897,12 @@ void _openCameraScan() async {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      _statItem("总采集", "$_totalCount"),
-                      _statItem("AGV站台", "$_agvCount"),
-                      _statItem("人工货位", "$_manualCount"),
+                      _statItem("正常", "$_normalCount"),
+                      _statItem("作废", "$_cancelCount"),
                     ],
                   ),
                 ),
                 const SizedBox(height:12),
-                //【修改点1：新增新建批次按钮】
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
@@ -912,7 +912,6 @@ void _openCameraScan() async {
                 ),
                 const SizedBox(height:16),
 
-                //作业模式切换
                 Row(
                   children: [
                     const Text("作业模式："),
@@ -942,7 +941,6 @@ void _openCameraScan() async {
                 if (_workType == 1) _buildGroundLocPanel(),
                 const SizedBox(height: 16),
 
-                //货码输入行
                 Row(
                   children: [
                     Expanded(
@@ -998,7 +996,6 @@ void _openCameraScan() async {
                 const SizedBox(height: 12),
                 const Divider(),
 
-                //可折叠采集记录面板，默认收起，解决页面过长遮挡
                 InkWell(
                   onTap: (){
                     setState(() {
@@ -1027,7 +1024,6 @@ void _openCameraScan() async {
           _buildHistoryBatchPage()
         ],
       ),
-      //底部常驻导航栏
       bottomNavigationBar: BottomNavigationBar(
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home),label:"采集"),
@@ -1071,7 +1067,6 @@ void _openCameraScan() async {
     );
   }
 
-  ///统计卡片子组件（布局新增）
   Widget _statItem(String title,String num){
     return Column(
       children: [
