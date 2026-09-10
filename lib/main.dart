@@ -1070,11 +1070,13 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   ),
                 ),
                 const SizedBox(height:6),
-                // =========【唯一修改点】移除Expanded，改用固定最大高度+内部滚动，适配外层SingleChildScrollView约束冲突 =========
+                // =========【唯一修改点：增加SingleChildScrollView，解决只能显示3条记录】 =========
                 if(_recordPanelExpanded)
                   SizedBox(
                     height:220,
-                    child: _buildRecordList(),
+                    child: SingleChildScrollView(
+                      child: _buildRecordList(),
+                    ),
                   ),
                 const SizedBox(height:80),
               ],
