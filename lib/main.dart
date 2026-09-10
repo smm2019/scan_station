@@ -102,7 +102,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   final TextEditingController _remarkInputCtrl = TextEditingController();
   final FocusNode _goodsFocusNode = FocusNode(); //【新增】货码输入框焦点控制器
   final List<String> _quickRemarkTags = ["完好", "外包装破损", "待复核", "空托"];
-  String? _selectedQuickTag;
+  // =========改动2‑1：单选变量替换为集合，支持多选标签=========
+  final Set<String> _selectedTags = {};
 
   List<ScanRecord> _recordList = [];
   bool _isSaving = false;
@@ -208,7 +209,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       _currentBatchId = newBatch.batchId;
       _selectedStation = null;
       _selectedGroundLoc = null;
-      _selectedQuickTag = null;
+      _selectedTags.clear(); //新建批次清空多选标签
       _remarkInputCtrl.clear();
     });
     _refreshRecord();
@@ -366,10 +367,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         return;
       }
 
-      String finalRemark = "";
-      if(_selectedQuickTag != null){
-        finalRemark = _selectedQuickTag!;
-      }
+      // =========改动2‑2：拼接多选标签=========
+      String finalRemark = _selectedTags.join("｜");
       if(_remarkInputCtrl.text.isNotEmpty){
         if(finalRemark.isNotEmpty) finalRemark += "｜";
         finalRemark += _remarkInputCtrl.text.trim();
@@ -403,7 +402,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       await _scanSuccessAction();
       _goodsInputCtrl.clear();
       setState((){
-        _selectedQuickTag = null;
+        _selectedTags.clear(); //录入完成清空多选标签
         _remarkInputCtrl.clear();
       });
 
@@ -674,13 +673,13 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     );
   }
 
-  //【MOD‑Bug2 + 新增1｜完整替换此函数】
+  //【MOD‑Bug2｜完整替换此函数】
   Widget _buildRecordList() {
     if(_recordList.isEmpty){
       return const Center(child:Text("本批次暂无采集记录"));
     }
     return ListView.builder(
-      shrinkWrap: false, //修复底部大面积空白，适配PDA竖屏
+      shrinkWrap: false,
       itemCount: _recordList.length,
       itemBuilder: (ctx, idx) {
         var r = _recordList[idx];
@@ -1024,19 +1023,20 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                 ),
                 const SizedBox(height:10),
 
-                const Text("备注标签："),
+                const Text("备注标签（可多选）："),
                 const SizedBox(height:6),
+                // =========改动2‑3：单选ChoiceChip替换为可勾选复选样式=========
                 Wrap(
                   spacing:6,
-                  children:_quickRemarkTags.map((tag)=>ChoiceChip(
+                  children:_quickRemarkTags.map((tag)=>FilterChip(
                     label:Text(tag),
-                    selected:_selectedQuickTag==tag,
+                    selected:_selectedTags.contains(tag),
                     onSelected:(sel){
                       setState(() {
                         if(sel){
-                          _selectedQuickTag=tag;
+                          _selectedTags.add(tag);
                         }else{
-                          _selectedQuickTag=null;
+                          _selectedTags.remove(tag);
                         }
                       });
                     },
@@ -1070,9 +1070,10 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   ),
                 ),
                 const SizedBox(height:6),
+                // =========改动1：移除固定height:210，使用Expanded自适应，解决截断问题=========
                 if(_recordPanelExpanded)
-                  SizedBox(
-                    height:210,
+                  Expanded(
+                    flex:1,
                     child: _buildRecordList(),
                   ),
                 const SizedBox(height:80),
