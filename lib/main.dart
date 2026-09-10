@@ -110,11 +110,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   //====【布局改动新增变量：统计、折叠面板、Tab控制器】====
   int _normalCount = 0;
   int _cancelCount = 0;
-  //新增三项统计变量
-  int _totalRecordCount = 0;
-  int _agvOccupiedStationCount = 0;
-  int _manualRecordCount = 0;
-
   bool _recordPanelExpanded = false;
   late TabController _tabController;
 
@@ -147,28 +142,13 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     super.dispose();
   }
 
-  ///【MOD‑新增2：刷新完整五项统计，适配需求：总条数、AGV占用站台、人工采集数、正常、作废】
+  ///【MOD‑新增2：刷新正常/作废统计，替换原有统计】
   Future<void> _refreshBatchStat() async {
     if (_currentBatchId == null) return;
     final records = await _isar.scanRecords.filter().batchIdEqualTo(_currentBatchId!).findAll();
-    //1.总条数
-    int total = records.length;
-    //2.正常、作废
-    int normal = records.where((r) => !r.isCancel).length;
-    int cancel = records.where((r) => r.isCancel).length;
-    //3.AGV占用站台：仅正常记录，站台去重
-    final agvNormalRecords = records.where((r)=>r.workType==0 && !r.isCancel);
-    final occupiedStations = agvNormalRecords.map((e)=>e.stationNo).toSet();
-    int agvOccupy = occupiedStations.length;
-    //4.人工采集总数（包含作废）
-    int manualTotal = records.where((r)=>r.workType==1).length;
-
     setState(() {
-      _totalRecordCount = total;
-      _agvOccupiedStationCount = agvOccupy;
-      _manualRecordCount = manualTotal;
-      _normalCount = normal;
-      _cancelCount = cancel;
+      _normalCount = records.where((r) => !r.isCancel).length;
+      _cancelCount = records.where((r) => r.isCancel).length;
     });
   }
 
@@ -252,41 +232,37 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     return false;
   }
 
-  //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug｜方案B版本】
+  //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug】
   Future<bool> _isCodeDuplicate(String code) async {
-    //查询本批次所有同货码记录（无论作废与否，用于弹窗审计）
-    final allSameCodeRecords = await _isar.scanRecords
+    final exist = await _isar.scanRecords
         .filter()
         .batchIdEqualTo(_currentBatchId!)
         .goodsCodeEqualTo(code)
-        .findAll();
-    if(allSameCodeRecords.isEmpty) return false;
-
-    final activeRecord = allSameCodeRecords.where((r)=>!r.isCancel).firstOrNull;
-    final historyRecord = allSameCodeRecords.first;
+        .isCancelEqualTo(false)
+        .findFirst();
+    if (exist == null) return false;
 
     String posInfo = "";
-    if (historyRecord.workType == 0) {
-      posInfo = "AGV站台${historyRecord.stationNo}号";
+    if (exist.workType == 0) {
+      posInfo = "AGV站台${exist.stationNo}号";
     } else {
-      posInfo = "人工货位${historyRecord.groundLocation}";
+      posInfo = "人工货位${exist.groundLocation}";
     }
 
     final res = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("该货码已登记"),
-        content: Text("货码：$code\n登记位置：$posInfo\n状态：${activeRecord != null ? "正常有效" : "【已作废历史记录】"}"),
+        content: Text("货码：$code\n登记位置：$posInfo\n状态：${exist.isCancel ? "【已作废】" : "正常有效"}"),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, "view"),
             child: const Text("查看旧记录"),
           ),
-          if(activeRecord != null)
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, "cancelOld"),
-              child: const Text("作废旧记录，新建本条"),
-            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, "cancelOld"),
+            child: const Text("作废旧记录，新建本条"),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, "abort"),
             child: const Text("取消"),
@@ -306,11 +282,11 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text("采集时间：${historyRecord.scanTime.toString().substring(0,19)}"),
-                Text("作业类型：${historyRecord.workType==0?"AGV站台":"人工货位"}"),
+                Text("采集时间：${exist.scanTime.toString().substring(0,19)}"),
+                Text("作业类型：${exist.workType==0?"AGV站台":"人工货位"}"),
                 Text("位置：$posInfo"),
-                Text("备注：${historyRecord.remark.isNotEmpty?historyRecord.remark:"无"}"),
-                Text("状态：${historyRecord.isCancel?"已作废":"正常"}"),
+                Text("备注：${exist.remark.isNotEmpty?exist.remark:"无"}"),
+                Text("状态：${exist.isCancel?"已作废":"正常"}"),
               ],
             ),
           ),
@@ -318,17 +294,17 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         ),
       );
       return true;
-    } else if (res == "cancelOld" && activeRecord != null) {
+    } else if (res == "cancelOld") {
       //每次操作独立标记，不会残留作废状态（修复Bug核心）
       bool tempCancelFlag = true;
       await _isar.writeTxn(() async {
-        activeRecord.isCancel = tempCancelFlag;
-        await _isar.scanRecords.put(activeRecord);
-        if(activeRecord.workType == 0 && activeRecord.stationNo != null){
+        exist.isCancel = tempCancelFlag;
+        await _isar.scanRecords.put(exist);
+        if(exist.workType == 0 && exist.stationNo != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
             List<int> mutableList = batch.usedStation.toList();
-            mutableList.remove(activeRecord.stationNo);
+            mutableList.remove(exist.stationNo);
             batch.usedStation = mutableList;
             await _isar.batchInfos.put(batch);
           }
@@ -598,35 +574,35 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     }
   }
 
-void _openCameraScan() async {
-  bool scannedHandled = false;
-  final result = await showDialog(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      insetPadding: EdgeInsets.zero,
-      contentPadding: EdgeInsets.zero,
-      content: SizedBox(
-        width: 300,
-        height: 350,
-        child: MobileScanner(
-          onDetect: (capture) {
-            if (scannedHandled) return;
-            final barcodes = capture.barcodes;
-            if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
-              scannedHandled = true;
-              final String code = barcodes.first.rawValue!.trim();
-              Navigator.pop(ctx, code);
-            }
-          },
+  void _openCameraScan() async {
+    bool scannedHandled = false;
+    final result = await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        insetPadding: EdgeInsets.zero,
+        contentPadding: EdgeInsets.zero,
+        content: SizedBox(
+          width: 300,
+          height: 350,
+          child: MobileScanner(
+            onDetect: (capture) {
+              if (scannedHandled) return;
+              final barcodes = capture.barcodes;
+              if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
+                scannedHandled = true;
+                final String code = barcodes.first.rawValue!.trim();
+                Navigator.pop(ctx, code);
+              }
+            },
+          ),
         ),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
       ),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
-    ),
-  );
-  if(result != null && result.toString().trim().isNotEmpty){
-    await _saveRecord(result.toString().trim());
+    );
+    if(result != null && result.toString().trim().isNotEmpty){
+      await _saveRecord(result.toString().trim());
+    }
   }
-}
 
   Widget _buildStationPanel() {
     return FutureBuilder<BatchInfo?>(
@@ -759,6 +735,70 @@ void _openCameraScan() async {
     );
   }
 
+  //【新增：独立只读批次详情弹窗】
+  Future<void> _showBatchReadOnlyDetail(BatchInfo targetBatch) async{
+    List<ScanRecord> records = await _isar.scanRecords.filter().batchIdEqualTo(targetBatch.batchId).findAll();
+    records.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
+    bool archived = targetBatch.isArchived;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text("${targetBatch.batchId} ${archived ? "【已归档‑只读】" : "【进行中‑仅查看】"}"),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 420,
+          child: records.isEmpty
+              ? const Center(child:Text("该批次暂无采集记录"))
+              : ListView.builder(
+                  itemCount: records.length,
+                  itemBuilder: (c,idx){
+                    var r = records[idx];
+                    String posTxt = r.workType==0 ? "站台${r.stationNo}号" : "货位${r.groundLocation}";
+                    String timeTxt = r.scanTime.toString().substring(0,19);
+                    return ListTile(
+                      title: Text("货码：${r.goodsCode}｜$posTxt"),
+                      subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty?r.remark:"无"}｜${r.isCancel?"⚠️已作废":"✅正常"}"),
+                      trailing: (archived || r.isCancel)
+                          ? null
+                          : TextButton(
+                              style:TextButton.styleFrom(foregroundColor:Colors.red),
+                              onPressed:()async{
+                                final confirm = await showDialog<bool>(context:context,builder:(cx)=>AlertDialog(title:const Text("删除记录"),content:const Text("确定删除本条采集记录？"),actions:[
+                                  TextButton(onPressed:()=>Navigator.pop(cx,false),child:const Text("取消")),
+                                  TextButton(onPressed:()=>Navigator.pop(cx,true),child:const Text("确认")),
+                                ]));
+                                if(confirm != true) return;
+                                await _isar.writeTxn(()async{
+                                  await _isar.scanRecords.delete(r.id);
+                                  if(r.workType==0 && r.stationNo!=null){
+                                    BatchInfo? b = await _isar.batchInfos.filter().batchIdEqualTo(targetBatch.batchId).findFirst();
+                                    if(b!=null){
+                                      List<int> mut = b.usedStation.toList();
+                                      mut.remove(r.stationNo);
+                                      b.usedStation = mut;
+                                      await _isar.batchInfos.put(b);
+                                    }
+                                  }
+                                });
+                                Navigator.pop(ctx);
+                              },
+                              child:const Text("删除",style:TextStyle(fontSize:14)),
+                            ),
+                    );
+                  }
+                ),
+        ),
+        actions: [
+          TextButton(onPressed:()async{
+            await _saveCsvToFile(batchIds: [targetBatch.batchId]);
+          }, child:const Text("导出本批次")),
+          TextButton(onPressed:()=>Navigator.pop(ctx), child:const Text("返回")),
+        ],
+      ),
+    );
+  }
+
   //====本次新增：历史批次页面====
   Widget _buildHistoryBatchPage(){
     return FutureBuilder<List<BatchInfo>>(
@@ -818,16 +858,9 @@ void _openCameraScan() async {
                         secondary: Row(
                           mainAxisSize:MainAxisSize.min,
                           children: [
-                            //切换查看该批次
+                            //【修改：不再切回采集页，打开独立只读弹窗】
                             TextButton(onPressed:()async{
-                              setState(() {
-                                _currentBatchId = b.batchId;
-                                _selectedStation=null;
-                                _selectedGroundLoc=null;
-                              });
-                              await _refreshRecord();
-                              await _refreshBatchStat();
-                              _tabController.animateTo(0);
+                              await _showBatchReadOnlyDetail(b);
                             },child:const Text("查看")),
                             //归档按钮，仅未归档可用
                             if(!b.isArchived)
@@ -912,7 +945,7 @@ void _openCameraScan() async {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                //【MOD‑更新：完整五项统计面板】
+                //【MOD‑新增2｜替换为正常/作废统计面板】
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(vertical:16,horizontal:10),
@@ -920,24 +953,11 @@ void _openCameraScan() async {
                     color: Colors.blue.shade50,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Column(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          _statItem("总采集", "$_totalRecordCount"),
-                          _statItem("AGV占用站台", "$_agvOccupiedStationCount"),
-                        ],
-                      ),
-                      const SizedBox(height:12),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          _statItem("人工货位", "$_manualRecordCount"),
-                          _statItem("正常", "$_normalCount"),
-                          _statItem("作废", "$_cancelCount"),
-                        ],
-                      ),
+                      _statItem("正常", "$_normalCount"),
+                      _statItem("作废", "$_cancelCount"),
                     ],
                   ),
                 ),
