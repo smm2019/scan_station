@@ -616,62 +616,62 @@ void _openCameraScan() async {
     );
   }
 
+  //【仅此处修改：移除Expanded，解决展开后全屏灰色遮挡、记录不渲染】
   Widget _buildRecordList() {
     //【修复空白崩溃：增加判空兜底】
     if(_recordList.isEmpty){
       return const Center(child:Text("本批次暂无采集记录"));
     }
-    return Expanded(
-      child: ListView.builder(
-        itemCount: _recordList.length,
-        itemBuilder: (ctx, idx) {
-          var r = _recordList[idx];
-          String posTxt;
-          if (r.workType == 0) {
-            posTxt = "站台${r.stationNo}号";
-          } else {
-            posTxt = "货位${r.groundLocation}";
-          }
-          String timeTxt = r.scanTime.toString().substring(0, 19);
-          return ListTile(
-            title: Text("货码：${r.goodsCode}｜$posTxt"),
-            subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty ? r.remark : "无"}"),
-            trailing: TextButton(
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              onPressed: () async {
-                final confirm = await showDialog<bool>(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text("删除记录"),
-                    content: const Text("确定删除本条采集记录？"),
-                    actions: [
-                      TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
-                      TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认")),
-                    ],
-                  ),
-                );
-                if(confirm != true) return;
+    return ListView.builder(
+      shrinkWrap: true,
+      itemCount: _recordList.length,
+      itemBuilder: (ctx, idx) {
+        var r = _recordList[idx];
+        String posTxt;
+        if (r.workType == 0) {
+          posTxt = "站台${r.stationNo}号";
+        } else {
+          posTxt = "货位${r.groundLocation}";
+        }
+        String timeTxt = r.scanTime.toString().substring(0, 19);
+        return ListTile(
+          title: Text("货码：${r.goodsCode}｜$posTxt"),
+          subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty ? r.remark : "无"}"),
+          trailing: TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            onPressed: () async {
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text("删除记录"),
+                  content: const Text("确定删除本条采集记录？"),
+                  actions: [
+                    TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
+                    TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认")),
+                  ],
+                ),
+              );
+              if(confirm != true) return;
 
-                await _isar.writeTxn(() async {
-                  await _isar.scanRecords.delete(r.id);
-                  if(r.workType ==0 && r.stationNo != null){
-                    BatchInfo? batch = await _getCurrentBatch();
-                    if(batch != null){
-                      List<int> mutable = batch.usedStation.toList();
-                      mutable.remove(r.stationNo);
-                      batch.usedStation = mutable;
-                      await _isar.batchInfos.put(batch);
-                    }
+              await _isar.writeTxn(() async {
+                await _isar.scanRecords.delete(r.id);
+                if(r.workType ==0 && r.stationNo != null){
+                  BatchInfo? batch = await _getCurrentBatch();
+                  if(batch != null){
+                    List<int> mutable = batch.usedStation.toList();
+                    mutable.remove(r.stationNo);
+                    batch.usedStation = mutable;
+                    await _isar.batchInfos.put(batch);
                   }
-                });
-                await _refreshRecord();
-                await _refreshBatchStat();
-              },
-              child: const Text("删除",style: TextStyle(fontSize:14)),
-            ),
-          );
-        },
-      ),
+                }
+              });
+              await _refreshRecord();
+              await _refreshBatchStat();
+            },
+            child: const Text("删除",style: TextStyle(fontSize:14)),
+          ),
+        );
+      },
     );
   }
 
