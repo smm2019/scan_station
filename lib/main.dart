@@ -679,7 +679,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       return const Center(child:Text("本批次暂无采集记录"));
     }
     return ListView.builder(
-      shrinkWrap: false,
+      shrinkWrap: true,
       itemCount: _recordList.length,
       itemBuilder: (ctx, idx) {
         var r = _recordList[idx];
@@ -1070,10 +1070,10 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   ),
                 ),
                 const SizedBox(height:6),
-                // =========改动1：移除固定height:210，使用Expanded自适应，解决截断问题=========
+                // =========【唯一修改点】移除Expanded，改用固定最大高度+内部滚动，适配外层SingleChildScrollView约束冲突 =========
                 if(_recordPanelExpanded)
-                  Expanded(
-                    flex:1,
+                  SizedBox(
+                    height:220,
                     child: _buildRecordList(),
                   ),
                 const SizedBox(height:80),
