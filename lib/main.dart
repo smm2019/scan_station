@@ -98,6 +98,7 @@ class _MainPageState extends State<MainPage> {
   String? _selectedGroundLoc;
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
+  final FocusNode _goodsFocusNode = FocusNode(); //【新增】货码输入框焦点控制器
   final List<String> _quickRemarkTags = ["完好", "外包装破损", "待复核", "空托"];
   String? _selectedQuickTag;
 
@@ -122,6 +123,14 @@ class _MainPageState extends State<MainPage> {
     _isar = _globalIsar;
     _loadLastBatch();
     _refreshRecord();
+  }
+
+  @override
+  void dispose() {
+    _goodsFocusNode.dispose(); //【新增】释放焦点资源
+    _goodsInputCtrl.dispose();
+    _remarkInputCtrl.dispose();
+    super.dispose();
   }
 
   Future<void> _loadLastBatch() async {
@@ -330,6 +339,12 @@ class _MainPageState extends State<MainPage> {
 
       await _refreshRecord();
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("采集保存成功")));
+      //【新增】保存完成，自动激活输入框，准备PDA下一次扫码
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if(mounted){
+          _goodsFocusNode.requestFocus();
+        }
+      });
     }catch(e){
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("保存异常：${e.toString()}")));
     }finally{
@@ -399,7 +414,7 @@ class _MainPageState extends State<MainPage> {
     String csvText = await _generateCsvText(targetBatchIds: batchIds);
     final dir = await getExternalStorageDirectory();
     if (dir == null) return;
-String suffix = batchIds != null ? "多批次合并" : (_currentBatchId ?? "");
+    String suffix = batchIds != null ? "多批次合并" : (_currentBatchId ?? "");
     String filePath = "${dir.path}/采集_${suffix}.csv";
     File file = File(filePath);
     await file.writeAsString(csvText, encoding: utf8);
@@ -842,6 +857,7 @@ void _openCameraScan() async {
                 Expanded(
                   child: TextField(
                     controller: _goodsInputCtrl,
+                    focusNode: _goodsFocusNode, //【新增绑定焦点】
                     decoration: const InputDecoration(hintText: "PDA红外扫码自动填入，也可手动输入货码", border: OutlineInputBorder()),
                     onSubmitted: (txt) {
                       WidgetsBinding.instance.addPostFrameCallback((_) async {
