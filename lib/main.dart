@@ -232,48 +232,62 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     return false;
   }
 
-  //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug】
-  Future<bool> _isCodeDuplicate(String code) async {
-  final exist = await _isar.scanRecords
-    .filter()
-    .batchIdEqualTo(_currentBatchId!)
-    .goodsCodeEqualTo(code)
-    .isCancelEqualTo(false)
-    .findFirst();
-if (exist == null) return false;
+//【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug｜方案B】
+Future<bool> _isCodeDuplicate(String code) async {
+  // 查询所有同批次同货码记录（包含作废，用于弹窗展示历史）
+  final allRecord = await _isar.scanRecords
+      .filter()
+      .batchIdEqualTo(_currentBatchId!)
+      .goodsCodeEqualTo(code)
+      .findFirst();
 
-    String posInfo = "";
-    if (exist.workType == 0) {
-      posInfo = "AGV站台${exist.stationNo}号";
-    } else {
-      posInfo = "人工货位${exist.groundLocation}";
-    }
+  // 查询仅正常有效记录，用于判断是否拦截录入
+  final activeRecord = await _isar.scanRecords
+      .filter()
+      .batchIdEqualTo(_currentBatchId!)
+      .goodsCodeEqualTo(code)
+      .isCancelEqualTo(false)
+      .findFirst();
 
-    final res = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("该货码已登记"),
-        content: Text("货码：$code\n登记位置：$posInfo\n状态：${exist.isCancel ? "【已作废】" : "正常有效"}"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, "view"),
-            child: const Text("查看旧记录"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, "cancelOld"),
-            child: const Text("作废旧记录，新建本条"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, "abort"),
-            child: const Text("取消"),
-          ),
-        ],
-      ),
-    );
+  // 无任何记录，直接放行
+  if(allRecord == null) return false;
 
-    if (res == "abort" || res == null) {
+  String posInfo = "";
+  if (allRecord.workType == 0) {
+    posInfo = "AGV站台${allRecord.stationNo}号";
+  } else {
+    posInfo = "人工货位${allRecord.groundLocation}";
+  }
+
+  final res = await showDialog<String>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text("该货码已登记"),
+      content: Text("货码：$code\n登记位置：$posInfo\n状态：${allRecord.isCancel ? "【已作废】" : "正常有效"}"),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, "view"),
+          child: const Text("查看旧记录"),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, "cancelOld"),
+          child: const Text("作废旧记录，新建本条"),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, "abort"),
+          child: const Text("取消"),
+        ),
+      ],
+    ),
+  );
+
+  // 分支判断
+  switch(res){
+    case "abort":
+      // 用户取消录入，返回true拦截扫码
       return true;
-    } else if (res == "view") {
+    case "view":
+      // 仅查看记录，判断是否存在正常货码
       await showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -282,29 +296,29 @@ if (exist == null) return false;
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text("采集时间：${exist.scanTime.toString().substring(0,19)}"),
-                Text("作业类型：${exist.workType==0?"AGV站台":"人工货位"}"),
+                Text("采集时间：${allRecord.scanTime.toString().substring(0,19)}"),
+                Text("作业类型：${allRecord.workType==0?"AGV站台":"人工货位"}"),
                 Text("位置：$posInfo"),
-                Text("备注：${exist.remark.isNotEmpty?exist.remark:"无"}"),
-                Text("状态：${exist.isCancel?"已作废":"正常"}"),
+                Text("备注：${allRecord.remark.isNotEmpty?allRecord.remark:"无"}"),
+                Text("状态：${allRecord.isCancel?"已作废":"正常"}"),
               ],
             ),
           ),
           actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("关闭"))],
         ),
       );
-      return true;
-    } else if (res == "cancelOld") {
-      //每次操作独立标记，不会残留作废状态（修复Bug核心）
+      return activeRecord != null;
+    case "cancelOld":
+      // 执行作废旧记录（原有逻辑不变），放行本次扫码
       bool tempCancelFlag = true;
       await _isar.writeTxn(() async {
-        exist.isCancel = tempCancelFlag;
-        await _isar.scanRecords.put(exist);
-        if(exist.workType == 0 && exist.stationNo != null){
+        allRecord.isCancel = tempCancelFlag;
+        await _isar.scanRecords.put(allRecord);
+        if(allRecord.workType == 0 && allRecord.stationNo != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
             List<int> mutableList = batch.usedStation.toList();
-            mutableList.remove(exist.stationNo);
+            mutableList.remove(allRecord.stationNo);
             batch.usedStation = mutableList;
             await _isar.batchInfos.put(batch);
           }
@@ -312,10 +326,10 @@ if (exist == null) return false;
       });
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("旧记录已标记作废，可录入新记录")));
       return false;
-    }
-    return true;
+    default:
+      return activeRecord != null;
   }
-
+}
   Future<void> _scanSuccessAction() async {
     try {
       if ((await Vibration.hasVibrator()) ?? false) {
