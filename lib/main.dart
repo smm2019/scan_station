@@ -234,12 +234,13 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
 
   //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug】
   Future<bool> _isCodeDuplicate(String code) async {
-    final exist = await _isar.scanRecords
-        .filter()
-        .batchIdEqualTo(_currentBatchId!)
-        .goodsCodeEqualTo(code)
-        .findFirst();
-    if (exist == null) return false;
+  final exist = await _isar.scanRecords
+    .filter()
+    .batchIdEqualTo(_currentBatchId!)
+    .goodsCodeEqualTo(code)
+    .isCancelEqualTo(false)
+    .findFirst();
+if (exist == null) return false;
 
     String posInfo = "";
     if (exist.workType == 0) {
