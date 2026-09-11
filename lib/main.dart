@@ -21,13 +21,12 @@ class ScanRecord {
   Id id = Isar.autoIncrement;
   DateTime scanTime;
   int workType; //0=AGV站台模式，1=人工地面摆放模式
-  int? stationNo; //站台5‑12，仅模式0使用
+  String? stationNo; //【修改：由int?改为String，存储NB02-CK-05这类编码】
   String? groundLocation; //地面货位A1‑D18，仅模式1使用
   String goodsCode;
   String remark;
   String batchId;
   bool isCancel = false; //标记：true=人工作废，保留原始数据，仅业务失效，不可用于站台占用校验
-
   ScanRecord({
     required this.scanTime,
     required this.workType,
@@ -39,17 +38,15 @@ class ScanRecord {
     this.isCancel = false,
   });
 }
-
 @collection
 class BatchInfo {
   Id id = Isar.autoIncrement;
   String batchId;
   String createTime;
-  List<int> usedStation = []; //本批次已经使用过的站台编号
+  List<String> usedStation = []; //【修改：由List<int>改为List<String>，存储站台编码】
   //====本次新增字段====
   String batchRemark = "";
   bool isArchived = false;
-
   BatchInfo({
     required this.batchId,
     required this.createTime,
@@ -57,10 +54,8 @@ class BatchInfo {
     this.isArchived = false,
   });
 }
-
 // ===================== 全局Isar实例 =====================
 late Isar _globalIsar;
-
 // ===================== 程序入口 =====================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -72,7 +67,6 @@ void main() async {
   );
   runApp(const MyApp());
 }
-
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
@@ -85,47 +79,41 @@ class MyApp extends StatelessWidget {
     );
   }
 }
-
 class MainPage extends StatefulWidget {
   const MainPage({super.key});
   @override
   State<MainPage> createState() => _MainPageState();
 }
-
 class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin {
   late Isar _isar;
   String? _currentBatchId;
   int _workType = 0; //0 AGV站台，1人工地面
-  int? _selectedStation;
+  String? _selectedStation; //【修改：存储编码 NB02-CK-05】
   String? _selectedGroundLoc;
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
   final FocusNode _goodsFocusNode = FocusNode(); //【新增】货码输入框焦点控制器
+  //【修改区域列表，A~H】
+  final List<String> _locGroup = ["A", "B", "C", "D", "E", "F", "G", "H"];
+  String _curLocGroup = "A";
   //【修改标签列表，匹配截图标签】
   final List<String> _quickRemarkTags = ["设变件", "验证件", "海外版"];
   final List<String> _extraTags = ["易碎轻放", "优先入库", "需拍照留存"];
   // =========改动2‑1：单选变量替换为集合，支持多选标签=========
   final Set<String> _selectedTags = {};
-
   List<ScanRecord> _recordList = [];
   bool _isSaving = false;
-
   //====【布局改动新增变量：统计、折叠面板、Tab控制器】====
   int _normalCount = 0;
   int _cancelCount = 0;
   bool _recordPanelExpanded = false;
   late TabController _tabController;
-
   List<String> _selectedBatchIds = [];
-
-  final List<String> _locGroup = ["A", "B", "C", "D"];
-  String _curLocGroup = "A";
 
   HttpServer? _webServer;
   bool _webServiceRunning = false;
   String? _localIpAddress;
   static const int _webPort = 8090;
-
   @override
   void initState() {
     super.initState();
@@ -135,7 +123,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     //初始化Tab控制器
     _tabController = TabController(length: 2, vsync: this);
   }
-
   @override
   void dispose() {
     _tabController.dispose();
@@ -144,7 +131,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     _remarkInputCtrl.dispose();
     super.dispose();
   }
-
   ///【MOD‑新增2：刷新正常/作废统计，替换原有统计】
   Future<void> _refreshBatchStat() async {
     if (_currentBatchId == null) return;
@@ -154,7 +140,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       _cancelCount = records.where((r) => r.isCancel).length;
     });
   }
-
   Future<void> _loadLastBatch() async {
     List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
     if(allBatch.isNotEmpty){
@@ -172,7 +157,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       await _createNewBatch();
     }
   }
-
   //====修改：新建批次弹窗，增加批次备注输入====
   Future<void> _createNewBatch() async {
     if (_webServiceRunning) {
@@ -197,7 +181,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       ),
     );
     if(confirmCreate != true) return;
-
     final nowStr = DateTime.now().toString().substring(0, 16).replaceAll(" ", "-").replaceAll(":", "");
     final newBatch = BatchInfo(
       batchId: "B$nowStr",
@@ -217,12 +200,10 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     _refreshRecord();
     await _refreshBatchStat();
   }
-
   Future<BatchInfo?> _getCurrentBatch() async {
     if (_currentBatchId == null) return null;
     return await _isar.batchInfos.filter().batchIdEqualTo(_currentBatchId!).findFirst();
   }
-
   //====本次新增校验：禁止向已归档批次录入数据====
   Future<bool> _checkBatchArchived() async{
     final batch = await _getCurrentBatch();
@@ -234,7 +215,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     }
     return false;
   }
-
   //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug】
   Future<bool> _isCodeDuplicate(String code) async {
     final exist = await _isar.scanRecords
@@ -244,14 +224,12 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         .isCancelEqualTo(false)
         .findFirst();
     if (exist == null) return false;
-
     String posInfo = "";
     if (exist.workType == 0) {
-      posInfo = "AGV站台${exist.stationNo}号";
+      posInfo = "AGV站台${exist.stationNo}";
     } else {
       posInfo = "人工货位${exist.groundLocation}";
     }
-
     final res = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -273,7 +251,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         ],
       ),
     );
-
     if (res == "abort" || res == null) {
       return true;
     } else if (res == "view") {
@@ -306,7 +283,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         if(exist.workType == 0 && exist.stationNo != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
-            List<int> mutableList = batch.usedStation.toList();
+            List<String> mutableList = batch.usedStation.toList();
             mutableList.remove(exist.stationNo);
             batch.usedStation = mutableList;
             await _isar.batchInfos.put(batch);
@@ -318,7 +295,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     }
     return true;
   }
-
   Future<void> _scanSuccessAction() async {
     try {
       if ((await Vibration.hasVibrator()) ?? false) {
@@ -326,27 +302,23 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       }
     } catch (_) {}
   }
-
   Future<void> _saveRecord(String code) async {
     if(_isSaving) return;
     _isSaving = true;
     try{
       //归档拦截校验
       if(await _checkBatchArchived()) return;
-
       if (_currentBatchId == null) {
         if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
         return;
       }
       if (await _isCodeDuplicate(code)) return;
-
       if (_workType == 0 && _selectedStation == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择站台！")));
         }
         return;
       }
-
       if (_workType == 0) {
         final existStationRecord = await _isar.scanRecords
             .filter()
@@ -356,26 +328,23 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
             .findFirst();
         if (existStationRecord != null) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${_selectedStation}号站台已登记货物，不可再次使用！")));
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${_selectedStation}站台已登记货物，不可再次使用！")));
           }
           return;
         }
       }
-
       if (_workType == 1 && _selectedGroundLoc == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
         }
         return;
       }
-
       // =========改动2‑2：拼接多选标签=========
       String finalRemark = _selectedTags.join("｜");
       if(_remarkInputCtrl.text.isNotEmpty){
         if(finalRemark.isNotEmpty) finalRemark += "｜";
         finalRemark += _remarkInputCtrl.text.trim();
       }
-
       final rec = ScanRecord(
         scanTime: DateTime.now(),
         workType: _workType,
@@ -385,13 +354,12 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         remark: finalRemark,
         batchId: _currentBatchId!,
       );
-
       await _isar.writeTxn(() async {
         await _isar.scanRecords.put(rec);
         if(_workType ==0 && _selectedStation != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
-            List<int> mutableList = batch.usedStation.toList();
+            List<String> mutableList = batch.usedStation.toList();
             if(!mutableList.contains(_selectedStation)){
               mutableList.add(_selectedStation!);
               batch.usedStation = mutableList;
@@ -400,20 +368,17 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
           }
         }
       });
-
       await _scanSuccessAction();
       _goodsInputCtrl.clear();
       setState((){
         _selectedTags.clear(); //录入完成清空多选标签
         _remarkInputCtrl.clear();
       });
-
       if(_workType ==0){
         setState((){
           _selectedStation = null;
         });
       }
-
       await _refreshRecord();
       await _refreshBatchStat();
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("采集保存成功")));
@@ -429,27 +394,26 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       _isSaving = false;
     }
   }
-
+  //【优化一：数字转编码 5→NB02-CK-05】
   Future<void> onStationTap(int stationNum) async {
     final batch = await _getCurrentBatch();
     if (batch == null) return;
-    if (batch.usedStation.contains(stationNum)) {
+    String stationCode = "NB02-CK-${stationNum.toString().padLeft(2,"0")}";
+    if (batch.usedStation.contains(stationCode)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${stationNum}号站台已使用，无法选择！")));
       }
       return;
     }
     setState(() {
-      _selectedStation = stationNum;
+      _selectedStation = stationCode;
     });
   }
-
   void _selectGroundLoc(int num) {
     setState(() {
       _selectedGroundLoc = "${_curLocGroup}${num}";
     });
   }
-
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     List<ScanRecord> all = await _isar.scanRecords
@@ -462,7 +426,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       _recordList = all;
     });
   }
-
   //====修改：支持多批次合并导出｜改动2：函数改为异步，移除同步查询
   Future<String> _generateCsvText({List<String>? targetBatchIds}) async {
     String header = "采集时间,作业类型,站台编号,地面货位编码,货物标签,备注,记录状态\n";
@@ -480,7 +443,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     for (var r in targetRecords) {
       String timeStr = r.scanTime.toString().substring(0, 19);
       String wt = r.workType.toString();
-      String st = r.stationNo?.toString() ?? "";
+      String st = r.stationNo ?? "";
       String gl = r.groundLocation ?? "";
       String code = r.goodsCode;
       String rem = r.remark;
@@ -489,7 +452,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     }
     return content;
   }
-
   Future<void> _saveCsvToFile({List<String>? batchIds}) async {
     String csvText = await _generateCsvText(targetBatchIds: batchIds);
     final dir = await getExternalStorageDirectory();
@@ -502,7 +464,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
     }
   }
-
   Future<String?> _getLocalIp() async {
     try {
       final interfaces = await NetworkInterface.list(
@@ -523,7 +484,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     }
     return null;
   }
-
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
     final wifiPermStatus = await Permission.nearbyWifiDevices.request();
@@ -531,7 +491,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("需要附近设备权限，才能读取WiFi地址")));
       return;
     }
-
     final ip = await _getLocalIp();
     if (ip == null) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未获取到局域网IP，请确认已连接WiFi，并关闭移动数据")));
@@ -560,7 +519,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       return;
     }
   }
-
   Future<void> stopWebService() async {
     if (_webServer != null) {
       await _webServer!.close();
@@ -574,7 +532,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("局域网传输服务已关闭")));
     }
   }
-
   void _openCameraScan() async {
     bool scannedHandled = false;
     final result = await showDialog(
@@ -604,12 +561,11 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       await _saveRecord(result.toString().trim());
     }
   }
-
   Widget _buildStationPanel() {
     return FutureBuilder<BatchInfo?>(
       future: _getCurrentBatch(),
       builder: (ctx, snapshot) {
-        List<int> used = snapshot.data?.usedStation ?? [];
+        List<String> used = snapshot.data?.usedStation ?? [];
         // 8个站台，两行，每行4个：[5,6,7,8] / [9,10,11,12]
         final List<List<int>> stationRows = [
           [5,6,7,8],
@@ -623,8 +579,9 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: rowStationList.map((num) {
-                  bool locked = used.contains(num);
-                  bool selected = _selectedStation == num;
+                  String stationCode = "NB02-CK-${num.toString().padLeft(2,"0")}";
+                  bool locked = used.contains(stationCode);
+                  bool selected = _selectedStation == stationCode;
                   return SizedBox(
                     width: 80,
                     height: 64,
@@ -647,20 +604,23 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       },
     );
   }
-
   Widget _buildGroundLocPanel() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: _locGroup.map((g) => Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: ChoiceChip(
-              label: Text(g),
-              selected: _curLocGroup == g,
-              onSelected: (s) => setState(() => _curLocGroup = g),
-            ),
-          )).toList(),
+        //【优化三：水平滚动区域选择】
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child:Row(
+            children: _locGroup.map((g) => Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: ChoiceChip(
+                label: Text(g),
+                selected: _curLocGroup == g,
+                onSelected: (s) => setState(() => _curLocGroup = g),
+              ),
+            )).toList(),
+          ),
         ),
         const SizedBox(height: 8),
         Wrap(
@@ -689,7 +649,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       ],
     );
   }
-
   //【MOD‑Bug2｜完整替换此函数】
   Widget _buildRecordList() {
     if(_recordList.isEmpty){
@@ -703,7 +662,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         var r = _recordList[idx];
         String posTxt;
         if (r.workType == 0) {
-          posTxt = "站台${r.stationNo}号";
+          posTxt = "站台${r.stationNo}";
         } else {
           posTxt = "货位${r.groundLocation}";
         }
@@ -758,13 +717,12 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                           ),
                         );
                         if(confirm != true) return;
-
                         await _isar.writeTxn(() async {
                           await _isar.scanRecords.delete(r.id);
                           if(r.workType ==0 && r.stationNo != null){
                             BatchInfo? batch = await _getCurrentBatch();
                             if(batch != null){
-                              List<int> mutable = batch.usedStation.toList();
+                              List<String> mutable = batch.usedStation.toList();
                               mutable.remove(r.stationNo);
                               batch.usedStation = mutable;
                               await _isar.batchInfos.put(batch);
@@ -784,13 +742,11 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       },
     );
   }
-
   //【新增：独立只读批次详情弹窗】
   Future<void> _showBatchReadOnlyDetail(BatchInfo targetBatch) async{
     List<ScanRecord> records = await _isar.scanRecords.filter().batchIdEqualTo(targetBatch.batchId).findAll();
     records.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
     bool archived = targetBatch.isArchived;
-
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -804,7 +760,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   itemCount: records.length,
                   itemBuilder: (c,idx){
                     var r = records[idx];
-                    String posTxt = r.workType==0 ? "站台${r.stationNo}号" : "货位${r.groundLocation}";
+                    String posTxt = r.workType==0 ? "站台${r.stationNo}" : "货位${r.groundLocation}";
                     String timeTxt = r.scanTime.toString().substring(0,19);
                     return ListTile(
                       title: Text("货码：${r.goodsCode}｜$posTxt"),
@@ -824,7 +780,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                                   if(r.workType==0 && r.stationNo!=null){
                                     BatchInfo? b = await _isar.batchInfos.filter().batchIdEqualTo(targetBatch.batchId).findFirst();
                                     if(b!=null){
-                                      List<int> mut = b.usedStation.toList();
+                                      List<String> mut = b.usedStation.toList();
                                       mut.remove(r.stationNo);
                                       b.usedStation = mut;
                                       await _isar.batchInfos.put(b);
@@ -848,7 +804,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       ),
     );
   }
-
   //====本次【修改重点】历史批次页面【完全对齐截图布局】====
   Widget _buildHistoryBatchPage(){
     return FutureBuilder<List<BatchInfo>>(
@@ -1073,11 +1028,9 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       },
     );
   }
-
   Future<void> _exportCsvFile() async {
     await _saveCsvToFile();
   }
-
   Future<void> _toggleWifiServer() async {
     if (_webServiceRunning) {
       await stopWebService();
@@ -1085,7 +1038,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       await startWebService();
     }
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1143,28 +1095,25 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   ),
                 ),
                 const SizedBox(height:16),
-
                 const Text("作业模式",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
                 const SizedBox(height:8),
                 Row(
                   children: [
                     Expanded(
-                      child: _workModeCard(0,"AGV站台模式","站台直送 · 选5-12号"),
+                      child: _workModeCard(0,"AGV站台模式"),
                     ),
                     const SizedBox(width:10),
                     Expanded(
-                      child: _workModeCard(1,"人工地面摆放","区域+编号 · A~D区"),
+                      child: _workModeCard(1,"人工地面摆放"),
                     ),
                   ],
                 ),
                 const SizedBox(height: 16),
-
                 const Text("选择货位 *",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
                 const SizedBox(height:8),
                 if (_workType == 0) _buildStationPanel(),
                 if (_workType == 1) _buildGroundLocPanel(),
                 const SizedBox(height: 16),
-
                 const Text("扫码录入",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
                 const SizedBox(height:8),
                 Container(
@@ -1202,16 +1151,11 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                           ),
                         ],
                       ),
-                      SizedBox(height:4),
-                      Align(
-                        alignment:Alignment.centerLeft,
-                        child:Text("PDA红外扫码就绪，对准条码即自动填入；无红外时点右侧相机扫码",style:TextStyle(fontSize:12,color:Colors.grey)),
-                      )
+                      //【优化二：移除底部提示小字】
                     ],
                   ),
                 ),
                 const SizedBox(height:16),
-
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -1255,7 +1199,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   )).toList(),
                 ),
                 const SizedBox(height:12),
-
                 TextField(
                   controller:_remarkInputCtrl,
                   decoration:const InputDecoration(
@@ -1266,7 +1209,6 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                 ),
                 const SizedBox(height: 12),
                 const Divider(),
-
                 InkWell(
                   onTap: (){
                     setState(() {
@@ -1298,7 +1240,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
               ],
             ),
           ),
-          //历史批次页面
+                  //历史批次页面
           _buildHistoryBatchPage()
         ],
       ),
