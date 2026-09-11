@@ -1081,33 +1081,38 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                     ),
                   ],
                 ),
-                const SizedBox(height:16),
-                SizedBox(
-                  width: double.infinity,
-                  height:52,
-                  child: ElevatedButton(
-                    style:ElevatedButton.styleFrom(
-                      backgroundColor:Color(0xFF515BD4),
-                      shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(12))
-                    ),
-                    onPressed: ()=>_createNewBatch(),
-                    child: const Text("+ 新建采集批次",style:TextStyle(fontSize:16)),
-                  ),
-                ),
-                const SizedBox(height:16),
-                const Text("作业模式",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-                const SizedBox(height:8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _workModeCard(0,"AGV站台模式"),
-                    ),
-                    const SizedBox(width:10),
-                    Expanded(
-                      child: _workModeCard(1,"人工地面摆放"),
-                    ),
-                  ],
-                ),
+              const SizedBox(height:16),
+SizedBox(
+  width: double.infinity,
+  height:52,
+  child: ElevatedButton(
+    style:ElevatedButton.styleFrom(
+      backgroundColor:Color(0xFF515BD4),
+      shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(12))
+    ),
+    onPressed: ()=>_createNewBatch(),
+    child: const Text("+ 新建采集批次",style:TextStyle(fontSize:16)),
+  ),
+),
+const SizedBox(height:16),
+const Text("作业模式",style:TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+const SizedBox(height:8),
+Row(
+  children: [
+    Expanded(
+      child: _workModeCard(0,"AGV站台模式", () {
+        // AGV模式点击逻辑
+      }),
+    ),
+    const SizedBox(width:10),
+    Expanded(
+      child: _workModeCard(1,"人工地面摆放", () {
+        // 人工模式点击逻辑
+      }),
+    ),
+  ],
+),
+
                 const SizedBox(height: 16),
                 const Text("选择货位 *",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
                 const SizedBox(height:8),
