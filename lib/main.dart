@@ -1100,15 +1100,21 @@ const SizedBox(height:8),
 Row(
   children: [
     Expanded(
-      child: _workModeCard(0,"AGV站台模式", () {
-        // AGV模式点击逻辑
-      }),
+      child: InkWell(
+        onTap: (){
+          // AGV模式点击逻辑写这里
+        },
+        child: _workModeCard(0,"AGV站台模式","AGV站台扫码采集"),
+      ),
     ),
     const SizedBox(width:10),
     Expanded(
-      child: _workModeCard(1,"人工地面摆放", () {
-        // 人工模式点击逻辑
-      }),
+      child: InkWell(
+        onTap: (){
+          // 人工模式点击逻辑写这里
+        },
+        child: _workModeCard(1,"人工地面摆放","人工地堆托盘扫码"),
+      ),
     ),
   ],
 ),
