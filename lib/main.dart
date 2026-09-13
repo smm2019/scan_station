@@ -1165,7 +1165,7 @@ Row(
                     ],
                   ),
                 ),
-           const SizedBox(height:16),
+         const SizedBox(height:16),
 Row(
   mainAxisAlignment: MainAxisAlignment.spaceBetween,
   children: [
@@ -1177,19 +1177,21 @@ const SizedBox(height:8),
 SingleChildScrollView(
   scrollDirection: Axis.horizontal,
   child: Row(
-    spacing:10,
-    children:_quickRemarkTags.map((tag)=>FilterChip(
-      label:Text(tag),
-      selected:_selectedTags.contains(tag),
-      onSelected:(sel){
-        setState(() {
-          if(sel){
-            _selectedTags.add(tag);
-          }else{
-            _selectedTags.remove(tag);
-          }
-        });
-      },
+    children:_quickRemarkTags.map((tag)=>Padding(
+      padding: const EdgeInsets.only(right:10),
+      child: FilterChip(
+        label:Text(tag),
+        selected:_selectedTags.contains(tag),
+        onSelected:(sel){
+          setState(() {
+            if(sel){
+              _selectedTags.add(tag);
+            }else{
+              _selectedTags.remove(tag);
+            }
+          });
+        },
+      ),
     )).toList(),
   ),
 ),
@@ -1197,22 +1199,25 @@ SizedBox(height:6),
 SingleChildScrollView(
   scrollDirection: Axis.horizontal,
   child: Row(
-    spacing:6,
-    children:_extraTags.map((tag)=>FilterChip(
-      label:Text(tag,style:TextStyle(fontSize:12)),
-      selected:_selectedTags.contains(tag),
-      onSelected:(sel){
-        setState(() {
-          if(sel){
-            _selectedTags.add(tag);
-          }else{
-            _selectedTags.remove(tag);
-          }
-        });
-      },
+    children:_extraTags.map((tag)=>Padding(
+      padding: const EdgeInsets.only(right:6),
+      child: FilterChip(
+        label:Text(tag,style:TextStyle(fontSize:12)),
+        selected:_selectedTags.contains(tag),
+        onSelected:(sel){
+          setState(() {
+            if(sel){
+              _selectedTags.add(tag);
+            }else{
+              _selectedTags.remove(tag);
+            }
+          });
+        },
+      ),
     )).toList(),
   ),
 ),
+
 
                 const SizedBox(height:12),
                 TextField(
