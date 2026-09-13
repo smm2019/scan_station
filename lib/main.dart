@@ -381,6 +381,10 @@ containerType: _containerType,
       setState((){
         _selectedTags.clear(); //录入完成清空多选标签
         _remarkInputCtrl.clear();
+_containerType = null; // 新增：保存成功，容器类型取消选中
+if(_workType == 1){
+          _selectedGroundLoc = null; // ✅人工模式，录入成功清空地面货位
+        }
       });
       if(_workType ==0){
         setState((){
@@ -1082,7 +1086,7 @@ String container = r.containerType ?? "";
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Color(0xFF515BD4),
-toolbarHeight: 15, // 原来标题没了，把顶部栏高度压低
+toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
                bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white, //选中文字白色
