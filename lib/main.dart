@@ -784,69 +784,6 @@ String container = r.containerType ?? "";
       },
     );
   }
-  //【新增：独立只读批次详情弹窗】
-  Future<void> _showBatchReadOnlyDetail(BatchInfo targetBatch) async{
-    List<ScanRecord> records = await _isar.scanRecords.filter().batchIdEqualTo(targetBatch.batchId).findAll();
-    records.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
-    bool archived = targetBatch.isArchived;
-    await showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text("${targetBatch.batchId} ${archived ? "【已归档‑只读】" : "【进行中‑仅查看】"}"),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 420,
-          child: records.isEmpty
-              ? const Center(child:Text("该批次暂无采集记录"))
-              : ListView.builder(
-                  itemCount: records.length,
-                  itemBuilder: (c,idx){
-                    var r = records[idx];
-                    String posTxt = r.workType==0 ? "站台${r.stationNo}" : "货位${r.groundLocation}";
-                    String timeTxt = r.scanTime.toString().substring(0,19);
-                    return ListTile(
-                      title: Text("货码：${r.goodsCode}｜$posTxt"),
-                     subtitle: Text("采集时间：$timeTxt｜容器:${r.containerType ?? "未选择"}｜备注：${r.remark.isNotEmpty?r.remark:"无"}｜${r.isCancel?"⚠️已作废":"✅正常"}"),
-
-                      trailing: (archived || r.isCancel)
-                          ? null
-                          : TextButton(
-                              style:TextButton.styleFrom(foregroundColor:Colors.red),
-                              onPressed:()async{
-                                final confirm = await showDialog<bool>(context:context,builder:(cx)=>AlertDialog(title:const Text("删除记录"),content:const Text("确定删除本条采集记录？"),actions:[
-                                  TextButton(onPressed:()=>Navigator.pop(cx,false),child:const Text("取消")),
-                                  TextButton(onPressed:()=>Navigator.pop(cx,true),child:const Text("确认")),
-                                ]));
-                                if(confirm != true) return;
-                                await _isar.writeTxn(()async{
-                                  await _isar.scanRecords.delete(r.id);
-                                  if(r.workType==0 && r.stationNo!=null){
-                                    BatchInfo? b = await _isar.batchInfos.filter().batchIdEqualTo(targetBatch.batchId).findFirst();
-                                    if(b!=null){
-                                      List<String> mut = b.usedStation.toList();
-                                      mut.remove(r.stationNo);
-                                      b.usedStation = mut;
-                                      await _isar.batchInfos.put(b);
-                                    }
-                                  }
-                                });
-                                Navigator.pop(ctx);
-                              },
-                              child:const Text("删除",style:TextStyle(fontSize:14)),
-                            ),
-                    );
-                  }
-                ),
-        ),
-        actions: [
-          TextButton(onPressed:()async{
-            await _saveCsvToFile(batchIds: [targetBatch.batchId]);
-          }, child:const Text("导出本批次")),
-          TextButton(onPressed:()=>Navigator.pop(ctx), child:const Text("返回")),
-        ],
-      ),
-    );
-  }
   //====本次【修改重点】历史批次页面【完全对齐截图布局】====
   Widget _buildHistoryBatchPage(){
     return FutureBuilder<List<BatchInfo>>(
@@ -960,9 +897,12 @@ String container = r.containerType ?? "";
                                   width:70,
                                   child:ElevatedButton(
                                     style:ElevatedButton.styleFrom(padding:EdgeInsets.symmetric(vertical:4)),
-                                    onPressed:()async{
-                                      await _showBatchReadOnlyDetail(b);
-                                    },
+                              onPressed: () {
+  Navigator.push(
+    context,
+    MaterialPageRoute(builder: (ctx) => BatchDetailPage(batch: b)),
+  );
+},
                                     child:const Text("查看",style:TextStyle(fontSize:12)),
                                   ),
                                 ),
@@ -1422,6 +1362,193 @@ mainAxisSize: MainAxisSize.min, // 关键！让Column高度自适应内容，不
                      ],
         ),
       ),
+    );
+  }
+}
+class BatchDetailPage extends StatefulWidget {
+  final BatchInfo batch;
+  const BatchDetailPage({super.key, required this.batch});
+
+  @override
+  State<BatchDetailPage> createState() => _BatchDetailPageState();
+}
+
+class _BatchDetailPageState extends State<BatchDetailPage> {
+  late Isar _isar;
+  List<ScanRecord> _records = [];
+  bool _isLoading = true; // 初始化加载标记
+
+  @override
+  void initState() {
+    super.initState();
+    _isar = _globalIsar;
+    _loadRecords();
+  }
+
+  Future<void> _loadRecords() async {
+    setState(() {
+      _isLoading = true;
+    });
+    try {
+      final list = await _isar.scanRecords
+          .filter()
+          .batchIdEqualTo(widget.batch.batchId)
+          .findAll();
+      list.sort((a, b) => b.scanTime.compareTo(a.scanTime));
+      _records = list;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("加载异常: $e")),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _deleteRecord(ScanRecord r) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("删除记录"),
+        content: const Text("确定删除本条采集记录？"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认")),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    await _isar.writeTxn(() async {
+      await _isar.scanRecords.delete(r.id);
+      if (r.workType == 0 && r.stationNo != null) {
+        BatchInfo? b = await _isar.batchInfos
+            .filter()
+            .batchIdEqualTo(widget.batch.batchId)
+            .findFirst();
+        if (b != null) {
+          List<String> mut = b.usedStation.toList();
+          mut.remove(r.stationNo);
+          b.usedStation = mut;
+          await _isar.batchInfos.put(b);
+        }
+      }
+    });
+    await _loadRecords();
+  }
+
+  Future<void> _exportThisBatch() async {
+    String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态\n";
+    String content = header;
+    List<ScanRecord> targetRecords = _records;
+    targetRecords.sort((a, b) => a.scanTime.compareTo(b.scanTime));
+    for (var r in targetRecords) {
+      String timeStr = r.scanTime.toString().substring(0, 19);
+      String wt = r.workType.toString();
+      String st = r.stationNo ?? "";
+      String gl = r.groundLocation ?? "";
+      String container = r.containerType ?? "";
+      String code = r.goodsCode;
+      String rem = r.remark;
+      String statusText = r.isCancel ? "作废" : "正常";
+      content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText\n";
+    }
+    final dir = await getExternalStorageDirectory();
+    if (dir == null) return;
+    String filePath = "${dir.path}/采集_${widget.batch.batchId}.csv";
+    File file = File(filePath);
+    await file.writeAsString(content, encoding: utf8);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    bool archived = widget.batch.isArchived;
+    return Scaffold(
+      appBar: AppBar(
+        title: Text("${widget.batch.batchId} ${archived ? "【已归档‑只读】" : "【进行中】"}"),
+        backgroundColor: const Color(0xFF515BD4),
+        actions: [
+          TextButton(
+            onPressed: _exportThisBatch,
+            child: const Text("导出CSV", style: TextStyle(color: Colors.white)),
+          )
+        ],
+      ),
+      body: RefreshIndicator(
+        onRefresh: _loadRecords,
+        child: _buildBody(),
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    // 加载中
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    // 空数据
+    if (_records.isEmpty) {
+      return ListView(
+        children: const [
+          SizedBox(height: 300),
+          Center(child: Text("该批次暂无采集记录")),
+        ],
+      );
+    }
+    // 正常列表
+    return ListView.builder(
+      padding: const EdgeInsets.all(12),
+      itemCount: _records.length,
+      itemBuilder: (c, idx) {
+        var r = _records[idx];
+        String posTxt = r.workType == 0 ? "站台${r.stationNo}" : "货位${r.groundLocation}";
+        String timeTxt = r.scanTime.toString().substring(0, 19);
+        return Card(
+          margin: const EdgeInsets.only(bottom: 8),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "货码：${r.goodsCode}",
+                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 4),
+                      Text("📍 $posTxt｜容器:${r.containerType ?? "未选择"}"),
+                      Text("⏱ 采集时间：$timeTxt"),
+                      Text("📝 备注：${r.remark.isNotEmpty ? r.remark : "无"}"),
+                      const SizedBox(height: 4),
+                      Text(
+                        r.isCancel ? "⚠️ 已作废" : "✅ 正常",
+                        style: TextStyle(color: r.isCancel ? Colors.red : Colors.green),
+                      ),
+                    ],
+                  ),
+                ),
+                if (!archived && !r.isCancel)
+                  TextButton(
+                    style: TextButton.styleFrom(foregroundColor: Colors.red),
+                    onPressed: () => _deleteRecord(r),
+                    child: const Text("删除"),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
