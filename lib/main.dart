@@ -24,6 +24,7 @@ class ScanRecord {
   String? stationNo; //【修改：由int?改为String，存储NB02-CK-05这类编码】
   String? groundLocation; //地面货位A1‑D18，仅模式1使用
   String goodsCode;
+String? containerType; // 新增这一行！用来存容器类型
   String remark;
   String batchId;
   bool isCancel = false; //标记：true=人工作废，保留原始数据，仅业务失效，不可用于站台占用校验
