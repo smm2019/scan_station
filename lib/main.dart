@@ -1043,8 +1043,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Color(0xFF515BD4),
-        title: const Text("AGV货位采集器",style: TextStyle(fontWeight: FontWeight.bold)),
-        bottom: TabBar(
+               bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white, //选中文字白色
           labelStyle: TextStyle(fontWeight: FontWeight.bold), //选中加粗
@@ -1096,7 +1095,7 @@ SizedBox(
 ),
 const SizedBox(height:16),
 const Text("作业模式",style:TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-const SizedBox(height:8),
+const SizedBox(height:6),
 Row(
   children: [
     Expanded(
@@ -1119,14 +1118,14 @@ Row(
   ],
 ),
 
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 const Text("选择货位 *",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-                const SizedBox(height:8),
+                const SizedBox(height:6),
                 if (_workType == 0) _buildStationPanel(),
                 if (_workType == 1) _buildGroundLocPanel(),
-                const SizedBox(height: 16),
+                const SizedBox(height: 12),
                 const Text("扫码录入",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-                const SizedBox(height:8),
+                const SizedBox(height:4),
                 Container(
                   padding: EdgeInsets.all(12),
                   decoration: BoxDecoration(
@@ -1166,49 +1165,55 @@ Row(
                     ],
                   ),
                 ),
-                const SizedBox(height:16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text("备注标签",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-                    Text("可多选 · 冲突项目自动互斥",style:TextStyle(fontSize:12,color:Colors.grey)),
-                  ],
-                ),
-                const SizedBox(height:8),
-                Wrap(
-                  spacing:10,
-                  runSpacing:10,
-                  children:_quickRemarkTags.map((tag)=>FilterChip(
-                    label:Text(tag),
-                    selected:_selectedTags.contains(tag),
-                    onSelected:(sel){
-                      setState(() {
-                        if(sel){
-                          _selectedTags.add(tag);
-                        }else{
-                          _selectedTags.remove(tag);
-                        }
-                      });
-                    },
-                  )).toList(),
-                ),
-                SizedBox(height:6),
-                Wrap(
-                  spacing:6,
-                  children:_extraTags.map((tag)=>FilterChip(
-                    label:Text(tag,style:TextStyle(fontSize:12)),
-                    selected:_selectedTags.contains(tag),
-                    onSelected:(sel){
-                      setState(() {
-                        if(sel){
-                          _selectedTags.add(tag);
-                        }else{
-                          _selectedTags.remove(tag);
-                        }
-                      });
-                    },
-                  )).toList(),
-                ),
+           const SizedBox(height:16),
+Row(
+  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  children: [
+    const Text("备注标签",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+    Text("可多选 · 冲突项目自动互斥",style:TextStyle(fontSize:12,color:Colors.grey)),
+  ],
+),
+const SizedBox(height:8),
+SingleChildScrollView(
+  scrollDirection: Axis.horizontal,
+  child: Row(
+    spacing:10,
+    children:_quickRemarkTags.map((tag)=>FilterChip(
+      label:Text(tag),
+      selected:_selectedTags.contains(tag),
+      onSelected:(sel){
+        setState(() {
+          if(sel){
+            _selectedTags.add(tag);
+          }else{
+            _selectedTags.remove(tag);
+          }
+        });
+      },
+    )).toList(),
+  ),
+),
+SizedBox(height:6),
+SingleChildScrollView(
+  scrollDirection: Axis.horizontal,
+  child: Row(
+    spacing:6,
+    children:_extraTags.map((tag)=>FilterChip(
+      label:Text(tag,style:TextStyle(fontSize:12)),
+      selected:_selectedTags.contains(tag),
+      onSelected:(sel){
+        setState(() {
+          if(sel){
+            _selectedTags.add(tag);
+          }else{
+            _selectedTags.remove(tag);
+          }
+        });
+      },
+    )).toList(),
+  ),
+),
+
                 const SizedBox(height:12),
                 TextField(
                   controller:_remarkInputCtrl,
@@ -1244,7 +1249,7 @@ Row(
                 // =========【修改：移除固定高度，改用自适应+最大高度约束】 =========
                 if(_recordPanelExpanded)
                   ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 450),
+                    constraints: const BoxConstraints(maxHeight: 420),
                     child: _buildRecordList(),
                   ),
                 const SizedBox(height:80),
@@ -1338,7 +1343,7 @@ Row(
         });
       },
       child:Container(
-        padding:EdgeInsets.all(16),
+        padding:EdgeInsets.all(12),
         decoration:BoxDecoration(
           color: selected ? Color(0xFFF0F0FF) : Colors.white,
           borderRadius:BorderRadius.circular(12),
@@ -1347,11 +1352,10 @@ Row(
         child:Column(
           children:[
             Icon(type==0?Icons.precision_manufacturing:Icons.back_hand,size:32,color:selected?Color(0xFF515BD4):Colors.grey),
-            SizedBox(height:8),
+            SizedBox(height:4),
             Text(title,style:TextStyle(fontSize:16,fontWeight:selected?FontWeight.bold:FontWeight.normal,color:selected?Color(0xFF515BD4):Colors.black87)),
             SizedBox(height:4),
-            Text(sub,style:TextStyle(fontSize:12,color:Colors.grey)),
-          ],
+                     ],
         ),
       ),
     );
