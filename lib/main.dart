@@ -1043,6 +1043,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Color(0xFF515BD4),
+toolbarHeight: 38, // 原来标题没了，把顶部栏高度压低
                bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white, //选中文字白色
@@ -1348,13 +1349,14 @@ SingleChildScrollView(
         });
       },
       child:Container(
-        padding:EdgeInsets.all(12),
+       padding: const EdgeInsets.symmetric(horizontal:12, vertical:10), // ← 改这里，上下内边距缩小
         decoration:BoxDecoration(
           color: selected ? Color(0xFFF0F0FF) : Colors.white,
           borderRadius:BorderRadius.circular(12),
           border: Border.all(color: selected ? Color(0xFF515BD4):Colors.grey.shade200,width:selected?2:1)
         ),
         child:Column(
+mainAxisSize: MainAxisSize.min, // 关键！让Column高度自适应内容，不自动撑高
           children:[
             Icon(type==0?Icons.precision_manufacturing:Icons.back_hand,size:32,color:selected?Color(0xFF515BD4):Colors.grey),
             SizedBox(height:4),
