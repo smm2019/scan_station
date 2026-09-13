@@ -1368,7 +1368,6 @@ mainAxisSize: MainAxisSize.min, // 关键！让Column高度自适应内容，不
 class BatchDetailPage extends StatefulWidget {
   final BatchInfo batch;
   const BatchDetailPage({super.key, required this.batch});
-
   @override
   State<BatchDetailPage> createState() => _BatchDetailPageState();
 }
@@ -1376,7 +1375,7 @@ class BatchDetailPage extends StatefulWidget {
 class _BatchDetailPageState extends State<BatchDetailPage> {
   late Isar _isar;
   List<ScanRecord> _records = [];
-  bool _isLoading = true; // 初始化加载标记
+  bool _isLoading = true;
 
   @override
   void initState() {
@@ -1484,17 +1483,16 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
       ),
       body: RefreshIndicator(
         onRefresh: _loadRecords,
-        child: _buildBody(),
+        child: _buildBody(archived), // ✅ 把archived传进函数
       ),
     );
   }
 
-  Widget _buildBody() {
-    // 加载中
+  // ✅ 新增参数 bool archived
+  Widget _buildBody(bool archived) {
     if (_isLoading) {
       return const Center(child: CircularProgressIndicator());
     }
-    // 空数据
     if (_records.isEmpty) {
       return ListView(
         children: const [
@@ -1503,7 +1501,6 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
         ],
       );
     }
-    // 正常列表
     return ListView.builder(
       padding: const EdgeInsets.all(12),
       itemCount: _records.length,
@@ -1538,17 +1535,88 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
                     ],
                   ),
                 ),
-                if (!archived && !r.isCancel)
-                  TextButton(
-                    style: TextButton.styleFrom(foregroundColor: Colors.red),
-                    onPressed: () => _deleteRecord(r),
-                    child: const Text("删除"),
-                  ),
+                // 右侧按钮区域：【查看】 + 【删除】
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton(
+                      onPressed: () {
+                        // 点击查看，打开ScanRecordDetailPage，把r传过去
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(builder: (ctx) => ScanRecordDetailPage(record: r)),
+                        );
+                      },
+                      child: const Text("查看"),
+                    ),
+                    if (!archived && !r.isCancel)
+                      TextButton(
+                        style: TextButton.styleFrom(foregroundColor: Colors.red),
+                        onPressed: () => _deleteRecord(r),
+                        child: const Text("删除"),
+                      ),
+                  ],
+                ),
               ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+// ==========【新增页面：ScanRecordDetailPage 放在这里，BatchDetailPage后面】==========
+class ScanRecordDetailPage extends StatefulWidget {
+  final ScanRecord record;
+  const ScanRecordDetailPage({super.key, required this.record});
+
+  @override
+  State<ScanRecordDetailPage> createState() => _ScanRecordDetailPageState();
+}
+
+class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
+  @override
+  Widget build(BuildContext context) {
+    final r = widget.record;
+    String posTxt = r.workType == 0 ? "站台${r.stationNo}" : "货位${r.groundLocation}";
+    String timeTxt = r.scanTime.toString().substring(0, 19);
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("采集记录详情"),
+        backgroundColor: const Color(0xFF515BD4),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "货码：${r.goodsCode}",
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height:12),
+            _detailItem("作业位置", posTxt),
+            _detailItem("容器类型", r.containerType ?? "未选择"),
+            _detailItem("采集时间", timeTxt),
+            _detailItem("备注", r.remark.isNotEmpty ? r.remark : "无"),
+            _detailItem("记录状态", r.isCancel ? "⚠️ 已作废" : "✅ 正常"),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _detailItem(String label, String value){
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical:6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width:90,child:Text("$label：",style: TextStyle(fontWeight: FontWeight.w500,fontSize:16))),
+          Expanded(child:Text(value,style: TextStyle(fontSize:16))),
+        ],
+      ),
     );
   }
 }
