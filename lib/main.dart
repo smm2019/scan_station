@@ -36,6 +36,7 @@ class ScanRecord {
     required this.remark,
     required this.batchId,
     this.isCancel = false,
+this.containerType, // 新增
   });
 }
 @collection
@@ -90,6 +91,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   int _workType = 0; //0 AGV站台，1人工地面
   String? _selectedStation; //【修改：存储编码 NB02-CK-05】
   String? _selectedGroundLoc;
+String? _containerType;
+
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
   final FocusNode _goodsFocusNode = FocusNode(); //【新增】货码输入框焦点控制器
@@ -196,6 +199,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       _selectedGroundLoc = null;
       _selectedTags.clear(); //新建批次清空多选标签
       _remarkInputCtrl.clear();
+_containerType = null;
+
     });
     _refreshRecord();
     await _refreshBatchStat();
@@ -353,6 +358,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
         goodsCode: code,
         remark: finalRemark,
         batchId: _currentBatchId!,
+containerType: _containerType,
+
       );
       await _isar.writeTxn(() async {
         await _isar.scanRecords.put(rec);
@@ -428,7 +435,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   }
   //====修改：支持多批次合并导出｜改动2：函数改为异步，移除同步查询
   Future<String> _generateCsvText({List<String>? targetBatchIds}) async {
-    String header = "采集时间,作业类型,站台编号,地面货位编码,货物标签,备注,记录状态\n";
+   String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态\n";
+
     String content = header;
     List<ScanRecord> targetRecords = [];
     if(targetBatchIds != null && targetBatchIds.isNotEmpty){
@@ -445,10 +453,13 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       String wt = r.workType.toString();
       String st = r.stationNo ?? "";
       String gl = r.groundLocation ?? "";
+String container = r.containerType ?? "";
+
       String code = r.goodsCode;
       String rem = r.remark;
       String statusText = r.isCancel ? "作废" : "正常";
-      content += "$timeStr,$wt,$st,$gl,$code,$rem,$statusText\n";
+      content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText\n";
+
     }
     return content;
   }
@@ -649,6 +660,31 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
       ],
     );
   }
+  Widget _buildContainerButton({required String showText,required String dbValue}){
+    bool selected = _containerType == dbValue;
+    return SizedBox(
+      height:48,
+      child: ElevatedButton(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: selected ? Color(0xFF515BD4) : Colors.white,
+          foregroundColor: selected ? Colors.white : Colors.black87,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          elevation:2,
+        ),
+        onPressed: (){
+          setState(() {
+            if(_containerType == dbValue){
+              _containerType = null;
+            }else{
+              _containerType = dbValue;
+            }
+          });
+        },
+        child: Text(showText,style: TextStyle(fontSize:15)),
+      ),
+    );
+  }
+
   //【MOD‑Bug2｜完整替换此函数】
   Widget _buildRecordList() {
     if(_recordList.isEmpty){
@@ -684,7 +720,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                   children: [
                     Text("${r.goodsCode}",style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)),
                     SizedBox(height:4),
-                    Text("📍 $posTxt  ⏱ $timeTxt"),
+                    Text("📍 $posTxt｜容器:${r.containerType ?? "未选择"} ⏱ $timeTxt"),
+
                     SizedBox(height:4),
                     Text("📝 ${r.remark.isNotEmpty ? r.remark : "无"}"),
                   ],
@@ -764,7 +801,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
                     String timeTxt = r.scanTime.toString().substring(0,19);
                     return ListTile(
                       title: Text("货码：${r.goodsCode}｜$posTxt"),
-                      subtitle: Text("采集时间：$timeTxt｜备注：${r.remark.isNotEmpty?r.remark:"无"}｜${r.isCancel?"⚠️已作废":"✅正常"}"),
+                     subtitle: Text("采集时间：$timeTxt｜容器:${r.containerType ?? "未选择"}｜备注：${r.remark.isNotEmpty?r.remark:"无"}｜${r.isCancel?"⚠️已作废":"✅正常"}"),
+
                       trailing: (archived || r.isCancel)
                           ? null
                           : TextButton(
@@ -1043,7 +1081,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Color(0xFF515BD4),
-toolbarHeight: 30, // 原来标题没了，把顶部栏高度压低
+toolbarHeight: 15, // 原来标题没了，把顶部栏高度压低
                bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white, //选中文字白色
@@ -1119,7 +1157,23 @@ Row(
   ],
 ),
 
-                const SizedBox(height: 12),
+               const SizedBox(height:12),
+const Text("容器类型",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+const SizedBox(height:6),
+SingleChildScrollView(
+  scrollDirection: Axis.horizontal,
+  child: Row(
+    children: [
+      _buildContainerButton(showText:"1.8米铁框",dbValue:"1800*1200_2"),
+      const SizedBox(width:8),
+      _buildContainerButton(showText:"1.6米铁框",dbValue:"1600*1100"),
+      const SizedBox(width:8),
+      _buildContainerButton(showText:"托盘",dbValue:"托盘"),
+    ],
+  ),
+),
+const SizedBox(height:12),
+
                 const Text("选择货位 *",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
                 const SizedBox(height:6),
                 if (_workType == 0) _buildStationPanel(),
@@ -1344,6 +1398,8 @@ SingleChildScrollView(
           }else{
             _selectedStation = null;
           }
+_containerType = null;
+
         });
       },
       child:Container(
