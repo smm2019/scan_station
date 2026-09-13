@@ -1326,7 +1326,7 @@ SingleChildScrollView(
       padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
         color:bg,
-        borderRadius:BorderRadius.circular(12)
+        borderRadius:BorderRadius.circular(12),
       ),
       child:Column(
         children: [
