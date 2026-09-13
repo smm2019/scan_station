@@ -1217,7 +1217,7 @@ SingleChildScrollView(
 ),
 
 
-                const SizedBox(height:12),
+                            const SizedBox(height: 12),
                 TextField(
                   controller:_remarkInputCtrl,
                   decoration:const InputDecoration(
@@ -1228,10 +1228,18 @@ SingleChildScrollView(
                 ),
                 const SizedBox(height: 12),
                 const Divider(),
-                                        SizedBox(width:8),
-                          Text("共 ${_recordList.length}条",style:TextStyle(fontSize:13,color:Colors.grey)),
-                        ],
-                      ),
+                InkWell(
+                  onTap:(){
+                    setState((){
+                      _recordPanelExpanded = !_recordPanelExpanded;
+                    });
+                  },
+                  child: Row(
+                    children:[
+                      Text("本批次采集记录",style:TextStyle(fontSize:15,fontWeight:FontWeight.w500)),
+                      SizedBox(width:8),
+                      Text("共 ${_recordList.length}条",style:TextStyle(fontSize:13,color:Colors.grey)),
+                      Spacer(),
                       Icon(_recordPanelExpanded ? Icons.expand_less : Icons.expand_more),
                     ],
                   ),
@@ -1244,6 +1252,7 @@ SingleChildScrollView(
                     child: _buildRecordList(),
                   ),
                 const SizedBox(height:80),
+
               ],
             ),
           ),
