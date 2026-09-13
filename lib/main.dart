@@ -1043,7 +1043,7 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Color(0xFF515BD4),
-toolbarHeight: 30, // 原来标题没了，把顶部栏高度压低
+toolbarHeight: 38, // 原来标题没了，把顶部栏高度压低
                bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white, //选中文字白色
@@ -1162,7 +1162,11 @@ Row(
                           ),
                         ],
                       ),
-                     const SizedBox(height:16),
+                      //【优化二：移除底部提示小字】
+                    ],
+                  ),
+                ),
+         const SizedBox(height:16),
 Row(
   mainAxisAlignment: MainAxisAlignment.spaceBetween,
   children: [
@@ -1174,61 +1178,46 @@ const SizedBox(height:8),
 SingleChildScrollView(
   scrollDirection: Axis.horizontal,
   child: Row(
-    children: _quickRemarkTags.asMap().entries.map((entry) {
-      int index = entry.key;
-      String tag = entry.value;
-      bool isLast = index == _quickRemarkTags.length - 1;
-      return Padding(
-        padding: EdgeInsets.only(right: isLast ? 0 : 10),
-        child: FilterChip(
-          label:Text(tag, style: const TextStyle(fontSize:14)),
-          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          labelPadding: const EdgeInsets.symmetric(horizontal:8),
-          selected:_selectedTags.contains(tag),
-          onSelected:(sel){
-            setState(() {
-              if(sel){
-                _selectedTags.add(tag);
-              }else{
-                _selectedTags.remove(tag);
-              }
-            });
-          },
-        ),
-      );
-    }).toList(),
+    children:_quickRemarkTags.map((tag)=>Padding(
+      padding: const EdgeInsets.only(right:10),
+      child: FilterChip(
+        label:Text(tag),
+        selected:_selectedTags.contains(tag),
+        onSelected:(sel){
+          setState(() {
+            if(sel){
+              _selectedTags.add(tag);
+            }else{
+              _selectedTags.remove(tag);
+            }
+          });
+        },
+      ),
+    )).toList(),
   ),
 ),
-const SizedBox(height:6),
+SizedBox(height:6),
 SingleChildScrollView(
   scrollDirection: Axis.horizontal,
   child: Row(
-    children: _extraTags.asMap().entries.map((entry) {
-      int index = entry.key;
-      String tag = entry.value;
-      bool isLast = index == _extraTags.length - 1;
-      return Padding(
-        padding: EdgeInsets.only(right: isLast ? 0 : 10),
-        child: FilterChip(
-          label:Text(tag, style: const TextStyle(fontSize:14)),
-          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          labelPadding: const EdgeInsets.symmetric(horizontal:8),
-          selected:_selectedTags.contains(tag),
-          onSelected:(sel){
-            setState(() {
-              if(sel){
-                _selectedTags.add(tag);
-              }else{
-                _selectedTags.remove(tag);
-              }
-            });
-          },
-        ),
-      );
-    }).toList(),
+    children:_extraTags.map((tag)=>Padding(
+      padding: const EdgeInsets.only(right:6),
+      child: FilterChip(
+        label:Text(tag,style:TextStyle(fontSize:12)),
+        selected:_selectedTags.contains(tag),
+        onSelected:(sel){
+          setState(() {
+            if(sel){
+              _selectedTags.add(tag);
+            }else{
+              _selectedTags.remove(tag);
+            }
+          });
+        },
+      ),
+    )).toList(),
   ),
 ),
-
 
 
                 const SizedBox(height:12),
@@ -1326,7 +1315,7 @@ SingleChildScrollView(
       padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
         color:bg,
-        borderRadius:BorderRadius.circular(12),
+        borderRadius:BorderRadius.circular(12)
       ),
       child:Column(
         children: [
@@ -1369,7 +1358,9 @@ SingleChildScrollView(
         child:Column(
 mainAxisSize: MainAxisSize.min, // 关键！让Column高度自适应内容，不自动撑高
           children:[
-                     Text(title,style:TextStyle(fontSize:16,fontWeight:selected?FontWeight.bold:FontWeight.normal,color:selected?Color(0xFF515BD4):Colors.black87)),
+            Icon(type==0?Icons.precision_manufacturing:Icons.back_hand,size:32,color:selected?Color(0xFF515BD4):Colors.grey),
+            SizedBox(height:4),
+            Text(title,style:TextStyle(fontSize:16,fontWeight:selected?FontWeight.bold:FontWeight.normal,color:selected?Color(0xFF515BD4):Colors.black87)),
             SizedBox(height:4),
                      ],
         ),
