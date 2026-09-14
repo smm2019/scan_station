@@ -1323,7 +1323,9 @@ SingleChildScrollView(
         },
       ),
 
-  //统计卡片组件
+ 
+}
+ //统计卡片组件
   Widget _statItem(String title,String num,Color bg,Color txtColor,{bool isCircle=false}){
     return Container(
       padding: EdgeInsets.all(12),
@@ -1381,7 +1383,6 @@ mainAxisSize: MainAxisSize.min, // 关键！让Column高度自适应内容，不
       ),
     );
   }
-}
 class BatchDetailPage extends StatefulWidget {
   final BatchInfo batch;
   const BatchDetailPage({super.key, required this.batch});
