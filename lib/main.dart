@@ -697,7 +697,7 @@ String container = r.containerType ?? "";
     }
     return ListView.builder(
       shrinkWrap: true,
-     physics: const NeverScrollableScrollPhysics(), // 禁止自身独立滚动，跟随外层页面一起滚动
+    physics: const NeverScrollableScrollPhysics(), // 改动这里
       itemCount: _recordList.length,
       itemBuilder: (ctx, idx) {
         var r = _recordList[idx];
@@ -1217,7 +1217,7 @@ SingleChildScrollView(
 ),
 
 
-                            const SizedBox(height: 12),
+                const SizedBox(height:12),
                 TextField(
                   controller:_remarkInputCtrl,
                   decoration:const InputDecoration(
@@ -1229,30 +1229,31 @@ SingleChildScrollView(
                 const SizedBox(height: 12),
                 const Divider(),
                 InkWell(
-                  onTap:(){
-                    setState((){
+                  onTap: (){
+                    setState(() {
                       _recordPanelExpanded = !_recordPanelExpanded;
                     });
                   },
                   child: Row(
-                    children:[
-                      Text("本批次采集记录",style:TextStyle(fontSize:15,fontWeight:FontWeight.w500)),
-                      SizedBox(width:8),
-                      Text("共 ${_recordList.length}条",style:TextStyle(fontSize:13,color:Colors.grey)),
-                      Spacer(),
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        children: [
+                          const Text("本批次采集记录",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+                          SizedBox(width:8),
+                          Text("共 ${_recordList.length}条",style:TextStyle(fontSize:13,color:Colors.grey)),
+                        ],
+                      ),
                       Icon(_recordPanelExpanded ? Icons.expand_less : Icons.expand_more),
                     ],
                   ),
                 ),
                 const SizedBox(height:6),
                 // =========【修改：移除固定高度，改用自适应+最大高度约束】 =========
-                if(_recordPanelExpanded)
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 420),
-                    child: _buildRecordList(),
-                  ),
-                const SizedBox(height:80),
+             if(_recordPanelExpanded)
+  _buildRecordList(),
 
+                const SizedBox(height:80),
               ],
             ),
           ),
@@ -1260,11 +1261,7 @@ SingleChildScrollView(
           _buildHistoryBatchPage()
         ],
       ),
-           bottomNavigationBar: BottomNavigationBar(
-        type: BottomNavigationBarType.fixed, // 固定模式，所有选项都显示文字，适配PDA小屏幕
-        selectedItemColor: Colors.white,
-        unselectedItemColor: Colors.white70,
-        backgroundColor: const Color(0xFF515BD4),
+      bottomNavigationBar: BottomNavigationBar(
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.home),label:"采集"),
           BottomNavigationBarItem(icon: Icon(Icons.download),label:"导出"),
@@ -1272,48 +1269,30 @@ SingleChildScrollView(
         ],
         currentIndex: 0,
         onTap: (idx) async{
-          if(idx == 0){
-            // 切回采集录入Tab
+          if(idx ==0){
             _tabController.animateTo(0);
-          }else if(idx == 1){
-            // 导出功能菜单
-            await showModalBottomSheet(
-              context: context,
-              builder: (ctx) => Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ListTile(
-                    leading: const Icon(Icons.copy),
-                    title: const Text("复制CSV内容"),
-                    onTap: () async {
-                      Navigator.pop(ctx);
-                      final csv = await _generateCsvText();
-                      await Clipboard.setData(ClipboardData(text: csv));
-                      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已复制到剪贴板")));
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.save_alt),
-                    title: const Text("导出CSV文件"),
-                    onTap: () async {
-                      Navigator.pop(ctx);
-                      await _exportCsvFile();
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.wifi),
-                    title: const Text("开启WiFi局域网服务"),
-                    onTap: () async {
-                      Navigator.pop(ctx);
-                      await _toggleWifiServer();
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                ],
-              ),
-            );
-          }else if(idx == 2){
-            // 设置弹窗
+          }else if(idx ==1){
+            await showMenu(context: context,
+                position: const RelativeRect.fromLTRB(100,500,100,100),
+                items: [
+                  PopupMenuItem(value: "copy", child: Text("复制CSV内容")),
+                  PopupMenuItem(value: "export", child: Text("导出CSV文件")),
+                  PopupMenuItem(value: "wifi", child: Text("开启WiFi局域网服务")),
+                ]).then((val)async{
+              switch(val){
+                case "copy":
+                  final csv = await _generateCsvText();
+                  await Clipboard.setData(ClipboardData(text: csv));
+                  break;
+                case "export":
+                  await _exportCsvFile();
+                  break;
+                case "wifi":
+                  await _toggleWifiServer();
+                  break;
+              }
+            });
+          }else if(idx ==2){
             await showDialog(context: context, builder: (ctx)=>AlertDialog(
               title: const Text("设置"),
               content: const Text("可配置PDA扫码参数、导出格式"),
@@ -1322,10 +1301,10 @@ SingleChildScrollView(
           }
         },
       ),
+    );
+  }
 
- 
-}
- //统计卡片组件
+  //统计卡片组件
   Widget _statItem(String title,String num,Color bg,Color txtColor,{bool isCircle=false}){
     return Container(
       padding: EdgeInsets.all(12),
@@ -1383,6 +1362,7 @@ mainAxisSize: MainAxisSize.min, // 关键！让Column高度自适应内容，不
       ),
     );
   }
+}
 class BatchDetailPage extends StatefulWidget {
   final BatchInfo batch;
   const BatchDetailPage({super.key, required this.batch});
