@@ -620,51 +620,87 @@ String container = r.containerType ?? "";
       },
     );
   }
-  Widget _buildGroundLocPanel() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        //【优化三：水平滚动区域选择】
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child:Row(
-            children: _locGroup.map((g) => Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: ChoiceChip(
-                label: Text(g),
-                selected: _curLocGroup == g,
-                onSelected: (s) => setState(() => _curLocGroup = g),
-              ),
-            )).toList(),
-          ),
+ Widget _buildGroundLocPanel() {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      //【A~H区域选择：横向滚动】
+      SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: _locGroup.map((g) => Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: ChoiceChip(
+              label: Text(g),
+              selected: _curLocGroup == g,
+              onSelected: (s) => setState(() => _curLocGroup = g),
+            ),
+          )).toList(),
         ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: List.generate(18, (i) {
-            int n = i + 1;
-            String locCode = "$_curLocGroup$n";
-            bool isSelected = _selectedGroundLoc == locCode;
-            return SizedBox(
-              width: 42,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: isSelected ? Colors.blue : Colors.white,
-                  foregroundColor: isSelected ? Colors.white : Colors.black,
-                  elevation:2,
-                ),
-                onPressed: () => _selectGroundLoc(n),
-                child: Text("$n",style: TextStyle(fontSize:16)),
-              ),
-            );
-          }),
+      ),
+      const SizedBox(height: 8),
+      // ========= 货位数字区域：横向滚动 + 两行布局 =========
+      SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 第一行：1~9
+            Row(
+              children: List.generate(9, (i) {
+                int n = i + 1;
+                String locCode = "$_curLocGroup$n";
+                bool isSelected = _selectedGroundLoc == locCode;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal:3),
+                  child: SizedBox(
+                    width: 42,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isSelected ? Color(0xFF515BD4) : Colors.white,
+                        foregroundColor: isSelected ? Colors.white : Colors.black,
+                        elevation:2,
+                      ),
+                      onPressed: () => _selectGroundLoc(n),
+                      child: Text("$n",style: TextStyle(fontSize:16)),
+                    ),
+                  ),
+                );
+              }),
+            ),
+            const SizedBox(height:6),
+            // 第二行：10~18
+            Row(
+              children: List.generate(9, (i) {
+                int n = i + 10;
+                String locCode = "$_curLocGroup$n";
+                bool isSelected = _selectedGroundLoc == locCode;
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal:3),
+                  child: SizedBox(
+                    width: 42,
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: isSelected ? Color(0xFF515BD4) : Colors.white,
+                        foregroundColor: isSelected ? Colors.white : Colors.black,
+                        elevation:2,
+                      ),
+                      onPressed: () => _selectGroundLoc(n),
+                      child: Text("$n",style: TextStyle(fontSize:16)),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          ],
         ),
-        const SizedBox(height: 10),
-        Text("已选货位：${_selectedGroundLoc ?? "未选择"}")
-      ],
-    );
-  }
+      ),
+      const SizedBox(height: 10),
+      Text("已选货位：${_selectedGroundLoc ?? "未选择"}")
+    ],
+  );
+}
+
   Widget _buildContainerButton({required String showText,required String dbValue}){
     bool selected = _containerType == dbValue;
     return SizedBox(
