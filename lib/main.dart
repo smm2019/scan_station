@@ -1263,9 +1263,9 @@ SingleChildScrollView(
       ),
     bottomNavigationBar: BottomNavigationBar(
         items: const [
-          BottomNavigationBarItem(icon: SizedBox.shrink(),label:"采集"),
-          BottomNavigationBarItem(icon: SizedBox.shrink(),label:"导出"),
-          BottomNavigationBarItem(icon: SizedBox.shrink(),label:"设置"),
+          BottomNavigationBarItem(icon: SizedBox.shrink(), label: "采集"),
+          BottomNavigationBarItem(icon: SizedBox.shrink(), label: "导出"),
+          BottomNavigationBarItem(icon: SizedBox.shrink(), label: "设置"),
         ],
         currentIndex: 0,
         type: BottomNavigationBarType.fixed,
@@ -1304,6 +1304,8 @@ SingleChildScrollView(
           }
         },
       ),
+    );
+
   }
 
   //统计卡片组件
