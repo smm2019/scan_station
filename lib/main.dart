@@ -1261,13 +1261,16 @@ SingleChildScrollView(
           _buildHistoryBatchPage()
         ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
+    bottomNavigationBar: BottomNavigationBar(
         items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home),label:"采集"),
-          BottomNavigationBarItem(icon: Icon(Icons.download),label:"导出"),
-          BottomNavigationBarItem(icon: Icon(Icons.settings),label:"设置"),
+          BottomNavigationBarItem(icon: SizedBox.shrink(),label:"采集"),
+          BottomNavigationBarItem(icon: SizedBox.shrink(),label:"导出"),
+          BottomNavigationBarItem(icon: SizedBox.shrink(),label:"设置"),
         ],
         currentIndex: 0,
+        type: BottomNavigationBarType.fixed,
+        showSelectedLabels: true,
+        showUnselectedLabels: true,
         onTap: (idx) async{
           if(idx ==0){
             _tabController.animateTo(0);
@@ -1301,7 +1304,6 @@ SingleChildScrollView(
           }
         },
       ),
-    );
   }
 
   //统计卡片组件
