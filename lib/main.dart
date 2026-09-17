@@ -1205,13 +1205,13 @@ Container(
         scrollDirection: Axis.horizontal,
         child: Row(
           children: [
-            _buildContainerButton(showText:"1.8米铁框",dbValue:"18001200_2"),
+            _buildContainerButton(showText:"1.8米铁框",dbValue:"1800*1200_2"),
             const SizedBox(width:8),
-            _buildContainerButton(showText:"1.6米铁框",dbValue:"16001100"),
+            _buildContainerButton(showText:"1.6米铁框",dbValue:"1600*1100"),
             const SizedBox(width:8),
-            _buildContainerButton(showText:"2.4米铁框",dbValue:"24001200"),
+            _buildContainerButton(showText:"2.4米铁框",dbValue:"2.4米铁框"),
             const SizedBox(width:8),
-            _buildContainerButton(showText:"华强铁框",dbValue:"huaqiang_frame"),
+            _buildContainerButton(showText:"华强铁框",dbValue:"华强铁框"),
             const SizedBox(width:8),
             _buildContainerButton(showText:"托盘",dbValue:"托盘"),
           ],
