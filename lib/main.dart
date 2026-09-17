@@ -1153,12 +1153,21 @@ SizedBox(
   child: ElevatedButton(
     style:ElevatedButton.styleFrom(
       backgroundColor:Color(0xFF515BD4),
-      shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(12))
+      shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(12)),
+      padding: const EdgeInsets.symmetric(vertical: 8), // 增加垂直内边距，防止文字紧贴上下边缘
     ),
     onPressed: ()=>_createNewBatch(),
-    child: const Text("+ 新建采集批次",style:TextStyle(fontSize:16)),
+    child: const Text(
+      "+ 新建采集批次",
+      style:TextStyle(
+        fontSize:16,
+        color: Colors.white, // 强制白色文字，提升和紫色背景对比度，解决看不清
+        fontWeight: FontWeight.w500, // 字重加粗，文字更清晰
+      ),
+    ),
   ),
 ),
+
 const SizedBox(height:16),
 const Text("作业模式",style:TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
 const SizedBox(height:6),
