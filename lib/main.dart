@@ -97,6 +97,23 @@ String? _containerType;
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
   final FocusNode _goodsFocusNode = FocusNode(); //【新增】货码输入框焦点控制器
+// 滚动控制器
+final ScrollController _mainScrollCtrl = ScrollController();
+// GlobalKey 用于定位三个区域
+final GlobalKey _keyContainerArea = GlobalKey();
+final GlobalKey _keyLocationArea = GlobalKey();
+final GlobalKey _keyScanInputArea = GlobalKey();
+  /// 滚动到指定GlobalKey组件
+  Future<void> _scrollToKey(GlobalKey key) async {
+    final ctx = key.currentContext;
+    if (ctx == null) return;
+    await Scrollable.ensureVisible(
+      ctx,
+      duration: const Duration(milliseconds: 350),
+      alignment: 0.15, // 目标区域在视口偏上一点，方便查看
+    );
+  }
+
   //【修改区域列表，A~H】
   final List<String> _locGroup = ["A", "B", "C", "D", "E", "F", "G", "H"];
   String _curLocGroup = "A";
@@ -133,6 +150,7 @@ String? _containerType;
     _goodsFocusNode.dispose(); //【新增】释放焦点资源
     _goodsInputCtrl.dispose();
     _remarkInputCtrl.dispose();
+_mainScrollCtrl.dispose(); //新增
     super.dispose();
   }
   ///【MOD‑新增2：刷新正常/作废统计，替换原有统计】
@@ -311,6 +329,32 @@ _containerType = null;
   Future<void> _saveRecord(String code) async {
     if(_isSaving) return;
     _isSaving = true;
+// ==========【新增前置校验，从这里开始】==========
+    try {
+      //校验1：容器类型不能为空
+      if (_containerType == null) {
+        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择容器类型！")));
+        await _scrollToKey(_keyContainerArea);
+        _isSaving = false;
+        return;
+      }
+      //校验2：货位/站台校验
+      bool locationValid = false;
+      if (_workType == 0) {
+        locationValid = _selectedStation != null;
+      } else {
+        locationValid = _selectedGroundLoc != null;
+      }
+      if (!locationValid) {
+        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择货位！")));
+        await _scrollToKey(_keyLocationArea);
+        _isSaving = false;
+        return;
+      }
+    } catch (e) {
+      debugPrint("校验滚动异常 $e");
+    }
+    // ==========【前置校验结束，下面原有代码保留不变】==========
     try{
       //归档拦截校验
       if(await _checkBatchArchived()) return;
@@ -1079,9 +1123,11 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
         controller: _tabController,
         children: [
           //采集录入页面
-          SingleChildScrollView(
-            padding: const EdgeInsets.all(12),
-            child: Column(
+        SingleChildScrollView(
+  controller: _mainScrollCtrl,
+  padding: const EdgeInsets.all(12),
+  child: Column(
+
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 //【MOD‑新增2｜替换为截图样式3个统计卡片】
@@ -1139,31 +1185,48 @@ Row(
 ),
 
                const SizedBox(height:12),
-const Text("容器类型",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-const SizedBox(height:6),
-SingleChildScrollView(
-  scrollDirection: Axis.horizontal,
-  child: Row(
+Container(
+  key: _keyContainerArea,
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _buildContainerButton(showText:"1.8米铁框",dbValue:"18001200_2"),
-      const SizedBox(width:8),
-      _buildContainerButton(showText:"1.6米铁框",dbValue:"16001100"),
-      const SizedBox(width:8),
-      _buildContainerButton(showText:"2.4米铁框",dbValue:"24001200"),
-      const SizedBox(width:8),
-      _buildContainerButton(showText:"华强铁框",dbValue:"huaqiang_frame"),
-      const SizedBox(width:8),
-      _buildContainerButton(showText:"托盘",dbValue:"托盘"),
+      const Text("容器类型",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+      const SizedBox(height:6),
+      SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            _buildContainerButton(showText:"1.8米铁框",dbValue:"18001200_2"),
+            const SizedBox(width:8),
+            _buildContainerButton(showText:"1.6米铁框",dbValue:"16001100"),
+            const SizedBox(width:8),
+            _buildContainerButton(showText:"2.4米铁框",dbValue:"24001200"),
+            const SizedBox(width:8),
+            _buildContainerButton(showText:"华强铁框",dbValue:"huaqiang_frame"),
+            const SizedBox(width:8),
+            _buildContainerButton(showText:"托盘",dbValue:"托盘"),
+          ],
+        ),
+      ),
     ],
   ),
 ),
 const SizedBox(height:12),
 
-                const Text("选择货位 *",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-                const SizedBox(height:6),
-                if (_workType == 0) _buildStationPanel(),
-                if (_workType == 1) _buildGroundLocPanel(),
-                const SizedBox(height: 12),
+ Container(
+  key: _keyLocationArea,
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const Text("选择货位 *",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+      const SizedBox(height:6),
+      if (_workType == 0) _buildStationPanel(),
+      if (_workType == 1) _buildGroundLocPanel(),
+    ],
+  ),
+),
+const SizedBox(height: 12),
+
                 const Text("扫码录入",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
                 const SizedBox(height:4),
                 Container(
