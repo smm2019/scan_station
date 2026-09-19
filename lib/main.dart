@@ -9,7 +9,7 @@ import 'dart:io';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'dart:convert';
-import 'dart:io';
+
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 // =========【改动1：新增权限依赖导入】=========
@@ -57,11 +57,12 @@ String? mesWarehouseName;    // WAREHOUSE_NAME 仓库名称
     required this.workType,
     this.stationNo,
     this.groundLocation,
-    required this.goodsCode,
-    required this.remark,
+    // 删掉 required
+    this.goodsCode,
+    this.remark,
     required this.batchId,
     this.isCancel = false,
-this.containerType, // 新增
+    this.containerType,
 //MES参数
     this.mesPartCode,
     this.mesItemName,
@@ -70,7 +71,9 @@ this.containerType, // 新增
     this.mesCreateTime,
     this.mesLotNo,
     this.mesSupplierName,
-    this.mesWarehouseName,  });
+    this.mesWarehouseName,
+  });
+
 }
 @collection
 class BatchInfo {
