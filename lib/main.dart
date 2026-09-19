@@ -52,13 +52,12 @@ String? mesLotNo;            // LOT_NO 批次号
 String? mesSupplierName;     // SUPPLIER_NAME 供应商名称
 String? mesWarehouseName;    // WAREHOUSE_NAME 仓库名称
 
-  ScanRecord({
+ScanRecord({
     required this.scanTime,
     required this.workType,
     this.stationNo,
     this.groundLocation,
-    // 删掉 required
-    this.goodsCode,
+    required this.goodsCode,  // ✅修复：加上 required
     this.remark,
     required this.batchId,
     this.isCancel = false,
