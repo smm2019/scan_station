@@ -28,6 +28,11 @@ String? containerType; // 新增这一行！用来存容器类型
   String remark;
   String batchId;
   bool isCancel = false; //标记：true=人工作废，保留原始数据，仅业务失效，不可用于站台占用校验
+  // ==========【MES新增字段，直接粘贴到这里】==========
+  String? mesPartNo;     //MES零件号
+  String? mesQty;        //MES数量
+  String? mesProduceDate;//MES日期
+  // ===================================================
   ScanRecord({
     required this.scanTime,
     required this.workType,
@@ -38,6 +43,11 @@ String? containerType; // 新增这一行！用来存容器类型
     required this.batchId,
     this.isCancel = false,
 this.containerType, // 新增
+// =========【构造函数追加MES参数】=========
+    this.mesPartNo,
+    this.mesQty,
+    this.mesProduceDate,
+    // ========================================
   });
 }
 @collection
@@ -395,6 +405,42 @@ _containerType = null;
         if(finalRemark.isNotEmpty) finalRemark += "｜";
         finalRemark += _remarkInputCtrl.text.trim();
       }
+
+      // ===================== MES接口请求【新增代码块】=====================
+String? mesPartNo;
+String? mesQty;
+String? mesProduceDate;
+try {
+  //====【这里后续抓包完成替换成真实MES接口地址】====
+  final mesUri = Uri.parse("http://MES_IP:端口/api/queryLabel");
+  final mesResponse = await HttpClient().postUrl(mesUri);
+  // 请求头，抓包后替换成真实token、Content-Type
+  mesResponse.headers.set("Content-Type", "application/json");
+  // 把当前扫码的货码goodsCode传给MES
+  String reqBody = jsonEncode({
+    "barcode": code,
+    // 【抓包后补充登录后的token参数，例如 "token":"xxxx"】
+  });
+  mesResponse.write(utf8.encode(reqBody));
+  final resp = await mesResponse.close();
+  final respBody = await resp.transform(utf8.decoder).join();
+  final Map<String,dynamic> mesJson = jsonDecode(respBody);
+
+  // =========【根据抓包返回的JSON结构，修改下面取值路径！】=========
+  mesPartNo = mesJson["partNo"]?.toString();
+  mesQty = mesJson["qty"]?.toString();
+  mesProduceDate = mesJson["produceDate"]?.toString();
+  // =============================================================
+} catch (mesErr) {
+  if(mounted){
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("MES查询失败：${mesErr.toString()}，仅保存本地采集信息"))
+    );
+  }
+  //MES查询失败，字段保留null，不阻断保存流程
+}
+// ===================================================================
+
       final rec = ScanRecord(
         scanTime: DateTime.now(),
         workType: _workType,
@@ -404,6 +450,11 @@ _containerType = null;
         remark: finalRemark,
         batchId: _currentBatchId!,
 containerType: _containerType,
+// =========追加MES三个参数=========
+  mesPartNo: mesPartNo,
+  mesQty: mesQty,
+  mesProduceDate: mesProduceDate,
+  //================================
 
       );
       await _isar.writeTxn(() async {
@@ -484,7 +535,8 @@ if(_workType == 1){
   }
   //====修改：支持多批次合并导出｜改动2：函数改为异步，移除同步查询
   Future<String> _generateCsvText({List<String>? targetBatchIds}) async {
-   String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态\n";
+  String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期\n";
+
 
     String content = header;
     List<ScanRecord> targetRecords = [];
@@ -506,8 +558,12 @@ String container = r.containerType ?? "";
 
       String code = r.goodsCode;
       String rem = r.remark;
-      String statusText = r.isCancel ? "作废" : "正常";
-      content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText\n";
+     String statusText = r.isCancel ? "作废" : "正常";
+String pn = r.mesPartNo ?? "";
+String qty = r.mesQty ?? "";
+String pd = r.mesProduceDate ?? "";
+content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\n";
+
 
     }
     return content;
@@ -1715,6 +1771,10 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
             _detailItem("采集时间", timeTxt),
             _detailItem("备注", r.remark.isNotEmpty ? r.remark : "无"),
             _detailItem("记录状态", r.isCancel ? "⚠️ 已作废" : "✅ 正常"),
+            _detailItem("MES零件号", r.mesPartNo ?? "无"),
+_detailItem("MES数量", r.mesQty ?? "无"),
+_detailItem("MES生产日期", r.mesProduceDate ?? "无"),
+
           ],
         ),
       ),
