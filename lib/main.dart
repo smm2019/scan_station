@@ -17,28 +17,30 @@ import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
 
-import 'package:http/http.dart' as http;
 import 'package:pointycastle/pointycastle.dart' as pc;
 import 'package:pointycastle/asymmetric/api.dart' as pc;
-import 'package:pointycastle/pkcs1.dart' as pc;
-import 'package:asn1lib/asn1lib.dart'; //PEM解析必须，读取MES返回的公钥字符串
+import 'package:pointycastle/pem/pem_parser.dart'; // ✅新增PEM解析
+import 'package:asn1lib/asn1lib.dart';
 
 
 
 
 part 'main.g.dart';
-/// RSA PKCS#1 v1.5 加密（对齐前端JSEncrypt）
+/// RSA PKCS#1 v1.5 加密（pointycastle 3.7.3兼容版本，对齐JSEncrypt）
 String rsaEncrypt(String plainText, String publicKeyBase64) {
   // 拼接完整PEM公钥字符串
   final pem = '''-----BEGIN PUBLIC KEY-----
 $publicKeyBase64
 -----END PUBLIC KEY-----''';
-  // 解析PEM
-final parser = pc.RSAKeyParser();
-final pubKey = parser.parse(pem) as pc.RSAPublicKey;
+
+  // 使用PEMParser替代旧的RSAKeyParser
+  final pemParser = PEMParser(Stream.fromIterable(utf8.encode(pem)));
+  final pubKey = pemParser.readObject() as pc.RSAPublicKey;
+
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
   final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
   cipher.init(true, param);
+
   Uint8List rawData = Uint8List.fromList(utf8.encode(plainText));
   Uint8List encryptedBytes = cipher.process(rawData);
   return base64.encode(encryptedBytes);
