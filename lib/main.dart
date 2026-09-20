@@ -32,8 +32,9 @@ $publicKeyBase64
   final parser = RSAKeyParser();
   RSAPublicKey pubKey = parser.parse(pem) as RSAPublicKey;
 
-  final cipher = AsymmetricBlockCipher('RSA/PKCS1');
-  cipher.init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+final cipher = AsymmetricBlockCipher('RSA/PKCS1');
+final PublicKeyParameter param = PublicKeyParameter(pubKey);
+cipher.init(true, param);
   Uint8List rawData = Uint8List.fromList(utf8.encode(plainText));
   Uint8List encryptedBytes = cipher.process(rawData);
   return base64.encode(encryptedBytes);
@@ -742,7 +743,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
     String suffix = batchIds != null ? "多批次合并" : (_currentBatchId ?? "");
     String filePath = "${dir.path}/采集_${suffix}.csv";
     File file = File(filePath);
-   await file.writeAsString(content, encoding: utf8);
+   await file.writeAsString(csvText, encoding: utf8);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
     }
