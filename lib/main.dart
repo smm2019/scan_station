@@ -21,6 +21,7 @@ import 'package:pointycastle/pointycastle.dart';
 import 'package:pointycastle/asymmetric/api.dart';
 import 'package:pointycastle/export.dart';
 import 'package:asn1lib/asn1lib.dart'; //PEM解析必须，读取MES返回的公钥字符串
+part 'main.g.dart';
 /// RSA PKCS#1 v1.5 加密（对齐前端JSEncrypt）
 String rsaEncrypt(String plainText, String publicKeyBase64) {
   // 拼接完整PEM公钥字符串
@@ -151,7 +152,7 @@ class MesConfig {
 }
 // =========【MesConfig结束】=========
 // ===================== Isar数据库模型 =====================
-part 'main.g.dart';
+
 
 @collection
 class ScanRecord {
