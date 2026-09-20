@@ -2026,42 +2026,122 @@ final TextEditingController orgIdCtrl = TextEditingController();
   }
 
   // ========== MES登录方法（放在State内部，与build平级） ==========
-  Future<bool> _testMesLogin() async {
-    final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
-    // 先保存表单配置
-    await MesConfig.saveConfig(
-  host: hostCtrl.text,
-  port: portCtrl.text,
-  account: accountCtrl.text,
-  pwd: pwdCtrl.text,
-  token: "",
-  timeout: timeoutSec,
-  moduleId: moduleIdCtrl.text.trim(),
-  orgId: orgIdCtrl.text.trim(),
-);
-    final ip = hostCtrl.text.trim();
-    final port = portCtrl.text.trim();
-    String baseUrl = "http://$ip:$port";
-    try {
-      //调用新RSA两步登录
-      String token = await mesLogin(accountCtrl.text.trim(), pwdCtrl.text.trim(), baseUrl);
-      _token = token;
-      await MesConfig.saveConfig(
-  host: hostCtrl.text,
-  port: portCtrl.text,
-  account: accountCtrl.text,
-  pwd: pwdCtrl.text,
-  token: token,
-  timeout: timeoutSec,
-  moduleId: moduleIdCtrl.text.trim(),
-  orgId: orgIdCtrl.text.trim(),
-);
-      return true;
-    } catch (e) {
-      debugPrint("MES登录异常:$e");
-      return false;
+// ========== MES登录方法（放在State内部，与build平级） ==========
+Future<bool> _testMesLogin() async {
+  final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
+  // 先保存表单配置
+  await MesConfig.saveConfig(
+    host: hostCtrl.text,
+    port: portCtrl.text,
+    account: accountCtrl.text,
+    pwd: pwdCtrl.text,
+    token: "",
+    timeout: timeoutSec,
+    moduleId: moduleIdCtrl.text.trim(),
+    orgId: orgIdCtrl.text.trim(),
+  );
+  final ip = hostCtrl.text.trim();
+  final port = portCtrl.text.trim();
+  String baseUrl = "http://$ip:$port";
+
+  try {
+    // =========阶段1：获取RSA公钥 KeyToken=========
+    debugPrint("【阶段1】开始请求获取公钥接口 $baseUrl/platform/sign/getvalidatekey2");
+    final validateResp = await http.get(
+      Uri.parse("$baseUrl/platform/sign/getvalidatekey2"),
+      headers: {
+        "Content-Type": "application/json;charset=utf-8",
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+        "Culture": "zh-CN",
+        "EnterpriseId": "*",
+        "X-TZ-Offset": "-480",
+        "Referer": "$baseUrl/h5/login.html",
+        "Origin": "$baseUrl",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0",
+      },
+    ).timeout(Duration(seconds: timeoutSec));
+
+    if (validateResp.statusCode != 200) {
+      throw Exception("阶段1失败：获取公钥接口Http状态码${validateResp.statusCode}，返回：${validateResp.body}");
     }
+    final validateJson = jsonDecode(validateResp.body);
+    if(validateJson["success"] != true){
+      throw Exception("阶段1失败：服务返回success=false，返回内容：${validateResp.body}");
+    }
+    final validateData = validateJson["data"];
+    if(validateData == null){
+      throw Exception("阶段1失败：接口data为空，返回内容：${validateResp.body}");
+    }
+    String pubKeyRaw = validateData["PublicKey"];
+    String keyToken = validateData["KeyToken"];
+    debugPrint("【阶段1成功】获取公钥、keyToken完成");
+
+    // =========阶段2：RSA加密密码=========
+    debugPrint("【阶段2】开始RSA加密密码");
+    String encryptedPwd = rsaEncrypt(pwdCtrl.text.trim(), pubKeyRaw);
+    debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
+
+    // =========阶段3：提交登录请求，获取token=========
+    debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
+    final loginResp = await http.post(
+      Uri.parse("$baseUrl/platform/sign/signin2"),
+      headers: {
+        "Content-Type": "application/json;charset=utf-8",
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+        "Culture": "zh-CN",
+        "EnterpriseId": "*",
+        "X-TZ-Offset": "-480",
+        "Referer": "$baseUrl/h5/login.html",
+        "Origin": "$baseUrl",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0 Safari/537.36 Edg/153.0.0",
+      },
+      body: jsonEncode([accountCtrl.text.trim(), encryptedPwd, keyToken]),
+    ).timeout(Duration(seconds: timeoutSec));
+
+    if (loginResp.statusCode != 200) {
+      throw Exception("阶段3失败：登录接口Http状态码${loginResp.statusCode}，返回：${loginResp.body}");
+    }
+    final loginJson = jsonDecode(loginResp.body);
+    if(loginJson["success"] != true){
+      throw Exception("阶段3失败：登录接口success=false，返回内容：${loginResp.body}");
+    }
+    if(loginJson["data"] == null || loginJson["data"]["token"] == null){
+      throw Exception("阶段3失败：登录成功但是没有返回token，返回：${loginResp.body}");
+    }
+    String token = loginJson["data"]["token"];
+    _token = token;
+    debugPrint("【阶段3成功】获取token：$token");
+
+    await MesConfig.saveConfig(
+      host: hostCtrl.text,
+      port: portCtrl.text,
+      account: accountCtrl.text,
+      pwd: pwdCtrl.text,
+      token: token,
+      timeout: timeoutSec,
+      moduleId: moduleIdCtrl.text.trim(),
+      orgId: orgIdCtrl.text.trim(),
+    );
+    return true;
+  } catch (e) {
+    String errMsg = e.toString();
+    debugPrint("MES登录异常:$errMsg");
+    //弹窗展示详细错误信息
+    if(mounted){
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("❌登录失败：$errMsg"),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    }
+    return false;
   }
+}
 
   @override
   void dispose() {
