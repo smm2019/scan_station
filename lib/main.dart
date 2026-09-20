@@ -59,6 +59,21 @@ class MesConfig {
   static const String keyModuleId = "mes_moduleId";
   static const String keyOrgId = "mes_orgId";
 
+
+  // ========== 新增：登录返回的 OrgId、UserInfoId 等 ==========
+  static const String keyMesOrgId = "mes_org_id";
+  static const String keyMesUserId = "mes_user_id";
+  static const String keyMesUserName = "mes_user_name";
+  static const String keyMesDisplayName = "mes_display_name";
+
+  // ========== 新增：美云智数 MES RSA 公钥 ==========
+  static const String mesRsaPublicKey = """-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDCFENGw33yGihy92pDjZQhl0C3
+6rPJj+CvfSC8+q28hxA161QFNUd13wuCTUcq0Qd2qsBe/2hFyc2DKhLb5DME0B
+Y4bO+15/2pMjy1/kk9rO4XaNqtMqw/FfLKToLWRG5pQvvYJmfBSzXKa48Y7qgO
+Y/W3nPMrBfr/y1D5eQIDAQAB
+-----END PUBLIC KEY-----""";
+
   //保存配置
   static Future<void> saveConfig({
     required String host,
@@ -98,11 +113,104 @@ class MesConfig {
     };
   }
 
-  //清除token
+   // ========== 清除 Token（退出登录用） ==========
   static Future<void> clearToken() async {
     final sp = await SharedPreferences.getInstance();
     await sp.remove(keyToken);
+    await sp.remove(keyMesOrgId);
+    await sp.remove(keyMesUserId);
+    await sp.remove(keyMesUserName);
+    await sp.remove(keyMesDisplayName);
   }
+
+  // ========== 新增：保存登录成功后的用户信息 ==========
+  static Future<void> saveLoginInfo({
+    required String token,
+    required String orgId,
+    required String userId,
+    required String userName,
+    required String displayName,
+  }) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(keyToken, token);
+    await sp.setString(keyMesOrgId, orgId);
+    await sp.setString(keyMesUserId, userId);
+    await sp.setString(keyMesUserName, userName);
+    await sp.setString(keyMesDisplayName, displayName);
+  }
+
+  // ========== 新增：读取 MES Token ==========
+  static Future<String> getToken() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getString(keyToken) ?? "";
+  }
+
+  // ========== 新增：读取登录返回的 OrgId ==========
+  static Future<String> getOrgId() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getString(keyMesOrgId) ?? "";
+  }
+
+  // ========== 新增：读取用户信息 ==========
+  static Future<Map<String, String>> getUserInfo() async {
+    final sp = await SharedPreferences.getInstance();
+    return {
+      "orgId": sp.getString(keyMesOrgId) ?? "",
+      "userId": sp.getString(keyMesUserId) ?? "",
+      "userName": sp.getString(keyMesUserName) ?? "",
+      "displayName": sp.getString(keyMesDisplayName) ?? "",
+    };
+  }
+}
+// 登录接口
+Future<String?> mesLogin(String serverIp, String serverPort, String account, String password) async {
+  final baseUrl = "http://$serverIp:$serverPort";
+  final uri = Uri.parse("$baseUrl/platform/sign/signin2");
+
+  // RSA加密密码，公钥放在MesConfig
+  final encryptPwd = rsaEncrypt(password, MesConfig.mesRsaPublicKey);
+
+  final Map<String, String> headers = {
+    "Content-Type": "application/json; charset=utf-8",
+  };
+
+  final body = json.encode({
+    "account": account,
+    "password": encryptPwd,
+  });
+
+  try {
+    final resp = await http.post(uri, headers: headers, body: body);
+    if (resp.statusCode == 200) {
+      final jsonResp = json.decode(resp.body);
+      if(jsonResp["success"] == true){
+        // 从响应Header取出Token
+        final token = resp.headers["token"];
+        if(token != null && token.isNotEmpty){
+          final sp = await SharedPreferences.getInstance();
+          await sp.setString("mes_token", token);
+          // 顺带保存OrgId，后续查询接口用
+          final orgId = jsonResp["data"]["organizations"][0]["id"];
+          await sp.setString("mes_orgId", orgId);
+          return token;
+        }
+      }
+    }
+    debugPrint("MES登录失败: ${resp.statusCode}, ${resp.body}");
+    return null;
+  } catch (e) {
+    debugPrint("MES登录异常：$e");
+    return null;
+  }
+}
+
+// RSA加密工具函数（配套，密码加密）
+String rsaEncrypt(String plainText, String publicKeyStr) {
+  final parser = RSAKeyParser();
+  final RSAPublicKey publicKey = parser.parse(publicKeyStr) as RSAPublicKey;
+  final cipher = Cipher("RSA/ECB/PKCS1")..init(true, PublicKeyParameter(publicKey));
+  final encrypted = cipher.process(Uint8List.fromList(utf8.encode(plainText)));
+  return convert.base64.encode(encrypted);
 }
 // =========【MesConfig结束】=========
 // ===================== Isar数据库模型 =====================
