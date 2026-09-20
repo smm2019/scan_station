@@ -22,8 +22,10 @@ import 'package:pointycastle/asymmetric/api.dart' as pc;
 import 'package:pointycastle/export.dart' as pc;
 
 import 'package:asn1lib/asn1lib.dart'; //PEM解析必须，读取MES返回的公钥字符串
+
+
+
 part 'main.g.dart';
-import 'dart:network'; // ✅ 新增这一行，读取局域网IP
 /// RSA PKCS#1 v1.5 加密（对齐前端JSEncrypt）
 String rsaEncrypt(String plainText, String publicKeyBase64) {
   // 拼接完整PEM公钥字符串
