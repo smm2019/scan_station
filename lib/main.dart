@@ -9,7 +9,7 @@ import 'dart:io';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'dart:convert';
-import 'dart:io';
+
 // =========【改动1：新增权限依赖导入】=========
 import 'package:permission_handler/permission_handler.dart';
 
@@ -25,29 +25,19 @@ import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
 
 part 'main.g.dart';
-
-String rsaEncryptXmlRsaKey(String plainText, String xmlBody) {
-  final xmlDoc = XmlDocument.parse(xmlBody);
-  // 安全读取Modulus
-  final modList = xmlDoc.findAllElements("Modulus").toList();
-  if(modList.isEmpty) throw Exception("XML公钥缺少Modulus节点");
-  String modulusBase64 = modList.first.text;
-
-  // 安全读取Exponent
-  final expList = xmlDoc.findAllElements("Exponent").toList();
-  if(expList.isEmpty) throw Exception("XML公钥缺少Exponent节点");
-  String exponentBase64 = expList.first.text;
-
-  Uint8List modBytes = base64.decode(modulusBase64);
-  Uint8List expBytes = base64.decode(exponentBase64);
-  BigInt modulus = BigInt.parse(
-    modBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
-    radix: 16,
-  );
-  BigInt exponent = BigInt.parse(
-    expBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
-    radix: 16,
-  );
+String rsaEncryptPemKey(String plainText, String pemPublicKey) {
+  // 清理PEM头尾标记、换行
+  String pem = pemPublicKey
+      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
+      .replaceAll("-----END PUBLIC KEY-----", "")
+      .replaceAll("\n", "")
+      .replaceAll("\r", "");
+  Uint8List keyBytes = base64.decode(pem);
+  ASN1Parser parser = ASN1Parser(keyBytes);
+  ASN1Sequence seq = parser.nextObject() as ASN1Sequence;
+  ASN1Sequence pubKeySeq = seq.elements[1] as ASN1Sequence;
+  BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).value;
+  BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).value;
   pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
   final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
@@ -57,79 +47,6 @@ String rsaEncryptXmlRsaKey(String plainText, String xmlBody) {
   return base64.encode(encryptedBytes);
 }
 
-/// MES登录主流程
-Future<String> mesLogin(String username, String password, String baseUrl) async {
-  // 1. 获取XML格式RSA公钥
-  final validateResp = await http.get(
-    Uri.parse("$baseUrl/platform/sign/getvalidatekey2"),
-    headers: {
-      "Content-Type": "application/json;charset=utf-8",
-      "Accept": "*/*",
-      "Accept-Encoding": "gzip, deflate",
-      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-      "Culture": "zh-CN",
-      "EnterpriseId": "*",
-      "X-TZ-Offset": "-480",
-      "Referer": "$baseUrl/h5/login.html",
-      "Origin": "$baseUrl",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0",
-    },
-  );
-  if(validateResp.statusCode != 200){
-    throw Exception("获取公钥接口请求失败，http状态码：${validateResp.statusCode}");
-  }
-  // =========重点改动：返回是XML，不是JSON！=========
-  String xmlContent = validateResp.body;
-  String keyToken = "";
-  // 部分MES接口XML里同时包含KeyToken节点，自行适配节点名
-  try{
-    // 修复：安全查找KeyToken，避免 No element 崩溃
-String keyToken = "";
-// ==========【新增这一行！！】解析xml，定义xmlDoc变量 ==========
-  final xmlDoc = XmlDocument.parse(xmlContent);
-final keyTokenList = xmlDoc.findAllElements("KeyToken").toList();
-if(keyTokenList.isNotEmpty){
-  keyToken = keyTokenList.first.text;
-}else{
-  // 兼容小写，部分MES返回<keytoken>
-  final keyTokenLowerList = xmlDoc.findAllElements("keytoken").toList();
-  if(keyTokenLowerList.isNotEmpty){
-    keyToken = keyTokenLowerList.first.text;
-  }else{
-    debugPrint("警告：XML中未找到KeyToken节点，keyToken为空");
-  }
-}
-  }catch(e){
-    throw Exception("XML解析KeyToken失败:$e");
-  }
-  // 密码RSA加密
-  String encryptedPwd = rsaEncryptXmlRsaKey(password, xmlContent);
-
-  // 2. 登录接口
-  final loginResp = await http.post(
-    Uri.parse("$baseUrl/platform/sign/signin2"),
-    headers: {
-      "Content-Type": "application/json;charset=utf-8",
-      "Accept": "*/*",
-      "Accept-Encoding": "gzip, deflate",
-      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-      "Culture": "zh-CN",
-      "EnterpriseId": "*",
-      "X-TZ-Offset": "-480",
-      "Referer": "$baseUrl/h5/login.html",
-      "Origin": "$baseUrl",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0",
-    },
-    body: jsonEncode([username, encryptedPwd, keyToken]),
-  );
-  if(loginResp.statusCode != 200){
-    throw Exception("登录接口请求失败，http状态码：${loginResp.statusCode}");
-  }
-  final loginJson = jsonDecode(loginResp.body);
-  String token = loginJson["data"]["token"];
-  return token;
-}
-// =========【粘贴结束】=========
 
 class MesConfig {
   static const String keyHost = "mes_host";
@@ -2046,7 +1963,6 @@ final TextEditingController orgIdCtrl = TextEditingController();
   }
 
   // ========== MES登录方法（放在State内部，与build平级） ==========
-// ========== MES登录方法（放在State内部，与build平级） ==========
 Future<bool> _testMesLogin() async {
   final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
   // 先保存表单配置
@@ -2063,53 +1979,57 @@ Future<bool> _testMesLogin() async {
   final ip = hostCtrl.text.trim();
   final port = portCtrl.text.trim();
   String baseUrl = "http://$ip:$port";
-
   try {
-    
-       // =========阶段1：获取RSA公钥 KeyToken=========
-    debugPrint("【阶段1】开始请求获取公钥接口 $baseUrl/platform/sign/getvalidatekey2");
-    final validateResp = await http.get(
-      Uri.parse("$baseUrl/platform/sign/getvalidatekey2"),
-      headers: {
-        "Content-Type": "application/json;charset=utf-8",
+    // =========阶段1：获取RSA公钥 KeyToken=========
+    Future<Map<String, String>?> getValidateKey2(String serverIp, String serverPort, String userId) async {
+      final baseUrl = "http://$serverIp:$serverPort";
+      final uri = Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
+      final headers = {
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+        "Content-Type": "application/json;charset=utf-8",
         "Culture": "zh-CN",
         "EnterpriseId": "*",
+        "ModuleId": "null",
+        "ModulePage": "/h5/login.html",
+        "OrgId": "",
+        "Referer": "http://$serverIp:$serverPort/h5/login.html",
+        "Token": "null",
         "X-TZ-Offset": "-480",
-        "Referer": "$baseUrl/h5/login.html",
-        "Origin": "$baseUrl",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0",
-      },
-    ).timeout(Duration(seconds: timeoutSec));
-    if (validateResp.statusCode != 200) {
-      throw Exception("阶段1失败：获取公钥接口Http状态码${validateResp.statusCode}，返回：${validateResp.body}");
+        "Connection": "keep-alive",
+        "Host": "$serverIp:$serverPort",
+      };
+      try {
+        final resp = await http.get(uri, headers: headers);
+        if(resp.statusCode != 200) return null;
+        final json = jsonDecode(resp.body);
+        if(json["success"] != true) return null;
+        final data = json["data"];
+        final keyToken = data["KeyToken"] as String;
+        final publicKey = data["PublicKey"] as String;
+        return {
+          "KeyToken": keyToken,
+          "PublicKey": publicKey,
+        };
+      }catch(e){
+        debugPrint("getValidateKey2异常：$e");
+        return null;
+      }
     }
-final xmlDoc = XmlDocument.parse(validateResp.body);
-final keyTokenList = xmlDoc.findAllElements("KeyToken").toList();
-String keyToken = "";
-if(keyTokenList.isNotEmpty){
-  keyToken = keyTokenList.first.text;
-}else{
-  // 兼容小写 keytoken
-  final keyTokenLowerList = xmlDoc.findAllElements("keytoken").toList();
-  if(keyTokenLowerList.isNotEmpty){
-    keyToken = keyTokenLowerList.first.text;
-  }else{
-    debugPrint("警告：XML未找到KeyToken节点，keyToken为空");
-    keyToken = "";
-  }
-}
-if(keyToken.isEmpty){
-  throw Exception("获取公钥成功，但返回XML内缺少KeyToken字段，请核对抓包返回XML内容");
-}
-debugPrint("【阶段1成功】XML解析公钥完成，keyToken=$keyToken");
+
+    // 调用获取公钥&keyToken
+    final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim());
+    if(validateResult == null){
+      throw Exception("获取公钥/KeyToken失败，请检查账号和服务器地址");
+    }
+    String keyToken = validateResult["KeyToken"]!;
+    String publicKeyXml = validateResult["PublicKey"]!;
 
     // =========阶段2：RSA加密密码=========
     debugPrint("【阶段2】开始RSA加密密码");
- 
-    String encryptedPwd = rsaEncryptXmlRsaKey(pwdCtrl.text.trim(), validateResp.body);
+   String encryptedPwd = rsaEncryptPemKey(pwdCtrl.text.trim(), publicKeyXml);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
 
     // =========阶段3：提交登录请求，获取token=========
@@ -2130,7 +2050,6 @@ debugPrint("【阶段1成功】XML解析公钥完成，keyToken=$keyToken");
       },
       body: jsonEncode([accountCtrl.text.trim(), encryptedPwd, keyToken]),
     ).timeout(Duration(seconds: timeoutSec));
-
     if (loginResp.statusCode != 200) {
       throw Exception("阶段3失败：登录接口Http状态码${loginResp.statusCode}，返回：${loginResp.body}");
     }
@@ -2144,7 +2063,6 @@ debugPrint("【阶段1成功】XML解析公钥完成，keyToken=$keyToken");
     String token = loginJson["data"]["token"];
     _token = token;
     debugPrint("【阶段3成功】获取token：$token");
-
     await MesConfig.saveConfig(
       host: hostCtrl.text,
       port: portCtrl.text,
@@ -2159,7 +2077,6 @@ debugPrint("【阶段1成功】XML解析公钥完成，keyToken=$keyToken");
   } catch (e) {
     String errMsg = e.toString();
     debugPrint("MES登录异常:$errMsg");
-    //弹窗展示详细错误信息
     if(mounted){
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
