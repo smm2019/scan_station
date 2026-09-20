@@ -33,8 +33,8 @@ String rsaEncrypt(String plainText, String publicKeyBase64) {
 $publicKeyBase64
 -----END PUBLIC KEY-----''';
   // 解析PEM
-  final parser = RSAKeyParser();
-  pc.RSAPublicKey pubKey = parser.parse(pem) as pc.RSAPublicKey;
+final parser = pc.RSAKeyParser();
+final pubKey = parser.parse(pem) as pc.RSAPublicKey;
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
   final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
   cipher.init(true, param);
@@ -1809,7 +1809,7 @@ Future<void> _exportThisBatch() async {
   if (dir == null) return;
   String filePath = "${dir.path}/采集_${widget.batch.batchId}.csv";
   File file = File(filePath);
-  await file.writeAsString(csvText, encoding: utf8);
+  await file.writeAsString(content, encoding: utf8);
   if (mounted) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
   }
