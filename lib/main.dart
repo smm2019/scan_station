@@ -727,7 +727,7 @@ String container = r.containerType ?? "";
       String rem = r.remark;
      String statusText = r.isCancel ? "作废" : "正常";
 String pn = r.mesPartNo ?? "";
-String qty = r.mesQty ?? "";
+String qty = r.mesQty?.toString() ?? "";
 String pd = r.mesCreateTime ?? "";
 content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\n";
 
@@ -742,7 +742,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
     String suffix = batchIds != null ? "多批次合并" : (_currentBatchId ?? "");
     String filePath = "${dir.path}/采集_${suffix}.csv";
     File file = File(filePath);
-    await file.writeAsString(csvText, encoding: utf8);
+   await file.writeAsString(content, encoding: utf8);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
     }
@@ -1947,7 +1947,7 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
             _detailItem("备注", r.remark.isNotEmpty ? r.remark : "无"),
             _detailItem("记录状态", r.isCancel ? "⚠️ 已作废" : "✅ 正常"),
             _detailItem("MES零件号", r.mesPartNo ?? "无"),
-_detailItem("MES数量", r.mesQty ?? "无"),
+_detailItem("MES数量", r.mesQty?.toString() ?? "无"),
 _detailItem("MES生产日期", r.mesCreateTime ?? "无"),
 
           ],
