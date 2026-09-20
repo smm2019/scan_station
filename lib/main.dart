@@ -16,12 +16,13 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
+
 import 'package:http/http.dart' as http;
 import 'package:pointycastle/pointycastle.dart' as pc;
 import 'package:pointycastle/asymmetric/api.dart' as pc;
-import 'package:pointycastle/export.dart' as pc;
-
+import 'package:pointycastle/pkcs1.dart' as pc;
 import 'package:asn1lib/asn1lib.dart'; //PEM解析必须，读取MES返回的公钥字符串
+
 
 
 
