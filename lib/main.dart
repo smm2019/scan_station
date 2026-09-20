@@ -16,31 +16,24 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
-
-import 'package:pointycastle/pointycastle.dart' as pc;
-import 'package:pointycastle/asymmetric/api.dart' as pc;
-import 'package:pointycastle/pem/pem_parser.dart'; // ✅新增PEM解析
-import 'package:asn1lib/asn1lib.dart';
-
-
-
-
+import 'package:http/http.dart' as http;
+import 'package:pointycastle/pointycastle.dart';
+import 'package:pointycastle/asymmetric/api.dart';
+import 'package:pointycastle/export.dart';
+import 'package:asn1lib/asn1lib.dart'; //PEM解析必须，读取MES返回的公钥字符串
 part 'main.g.dart';
-/// RSA PKCS#1 v1.5 加密（pointycastle 3.7.3兼容版本，对齐JSEncrypt）
+/// RSA PKCS#1 v1.5 加密（对齐前端JSEncrypt）
 String rsaEncrypt(String plainText, String publicKeyBase64) {
   // 拼接完整PEM公钥字符串
   final pem = '''-----BEGIN PUBLIC KEY-----
 $publicKeyBase64
 -----END PUBLIC KEY-----''';
+  // 解析PEM
+  final parser = RSAKeyParser();
+  RSAPublicKey pubKey = parser.parse(pem) as RSAPublicKey;
 
-  // 使用PEMParser替代旧的RSAKeyParser
-  final pemParser = PEMParser(Stream.fromIterable(utf8.encode(pem)));
-  final pubKey = pemParser.readObject() as pc.RSAPublicKey;
-
-  final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
-  final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
-  cipher.init(true, param);
-
+  final cipher = AsymmetricBlockCipher('RSA/PKCS1');
+  cipher.init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
   Uint8List rawData = Uint8List.fromList(utf8.encode(plainText));
   Uint8List encryptedBytes = cipher.process(rawData);
   return base64.encode(encryptedBytes);
@@ -734,7 +727,7 @@ String container = r.containerType ?? "";
       String rem = r.remark;
      String statusText = r.isCancel ? "作废" : "正常";
 String pn = r.mesPartNo ?? "";
-String qty = r.mesQty?.toString() ?? "";
+String qty = r.mesQty ?? "";
 String pd = r.mesCreateTime ?? "";
 content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\n";
 
@@ -749,7 +742,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
     String suffix = batchIds != null ? "多批次合并" : (_currentBatchId ?? "");
     String filePath = "${dir.path}/采集_${suffix}.csv";
     File file = File(filePath);
-   await file.writeAsString(csvText, encoding: utf8);
+    await file.writeAsString(csvText, encoding: utf8);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
     }
@@ -1812,7 +1805,7 @@ Future<void> _exportThisBatch() async {
   if (dir == null) return;
   String filePath = "${dir.path}/采集_${widget.batch.batchId}.csv";
   File file = File(filePath);
-  await file.writeAsString(content, encoding: utf8);
+  await file.writeAsString(csvText, encoding: utf8);
   if (mounted) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
   }
@@ -1954,7 +1947,7 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
             _detailItem("备注", r.remark.isNotEmpty ? r.remark : "无"),
             _detailItem("记录状态", r.isCancel ? "⚠️ 已作废" : "✅ 正常"),
             _detailItem("MES零件号", r.mesPartNo ?? "无"),
-_detailItem("MES数量", r.mesQty?.toString() ?? "无"),
+_detailItem("MES数量", r.mesQty ?? "无"),
 _detailItem("MES生产日期", r.mesCreateTime ?? "无"),
 
           ],
