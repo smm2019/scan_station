@@ -2065,7 +2065,8 @@ Future<bool> _testMesLogin() async {
   String baseUrl = "http://$ip:$port";
 
   try {
-    // =========阶段1：获取RSA公钥 KeyToken=========
+    
+       // =========阶段1：获取RSA公钥 KeyToken=========
     debugPrint("【阶段1】开始请求获取公钥接口 $baseUrl/platform/sign/getvalidatekey2");
     final validateResp = await http.get(
       Uri.parse("$baseUrl/platform/sign/getvalidatekey2"),
@@ -2082,14 +2083,28 @@ Future<bool> _testMesLogin() async {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0",
       },
     ).timeout(Duration(seconds: timeoutSec));
-
     if (validateResp.statusCode != 200) {
       throw Exception("阶段1失败：获取公钥接口Http状态码${validateResp.statusCode}，返回：${validateResp.body}");
     }
 final xmlDoc = XmlDocument.parse(validateResp.body);
-String keyToken = xmlDoc.findAllElements("KeyToken").first.text;
-debugPrint("【阶段1成功】XML解析公钥、keyToken完成");
-  
+final keyTokenList = xmlDoc.findAllElements("KeyToken").toList();
+String keyToken = "";
+if(keyTokenList.isNotEmpty){
+  keyToken = keyTokenList.first.text;
+}else{
+  // 兼容小写 keytoken
+  final keyTokenLowerList = xmlDoc.findAllElements("keytoken").toList();
+  if(keyTokenLowerList.isNotEmpty){
+    keyToken = keyTokenLowerList.first.text;
+  }else{
+    debugPrint("警告：XML未找到KeyToken节点，keyToken为空");
+    keyToken = "";
+  }
+}
+if(keyToken.isEmpty){
+  throw Exception("获取公钥成功，但返回XML内缺少KeyToken字段，请核对抓包返回XML内容");
+}
+debugPrint("【阶段1成功】XML解析公钥完成，keyToken=$keyToken");
 
     // =========阶段2：RSA加密密码=========
     debugPrint("【阶段2】开始RSA加密密码");
