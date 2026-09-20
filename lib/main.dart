@@ -22,32 +22,31 @@ import 'package:pointycastle/asymmetric/api.dart' as pc;
 
 import 'package:asn1lib/asn1lib.dart';
 import 'package:http/http.dart' as http;
-
-// import 'package:pointycastle/pem/pem_parser.dart'; // ❌删掉
-
+import 'package:xml/xml.dart';
 
 part 'main.g.dart';
-/// RSA PKCS#1 v1.5 加密（pointycastle 3.7.3 无PEMParser版本，对齐JSEncrypt）
-String rsaEncrypt(String plainText, String publicKeyBase64) {
-  // 拼接完整PEM公钥字符串
-  final pem = '''-----BEGIN PUBLIC KEY-----
-$publicKeyBase64
------END PUBLIC KEY-----''';
-  // 移除PEMParser，手动解析PEM
-  String pemBody = pem
-      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
-      .replaceAll("-----END PUBLIC KEY-----", "")
-      .replaceAll("\n", "")
-      .replaceAll("\r", "")
-      .trim();
-  Uint8List derBytes = base64.decode(pemBody);
-  ASN1Parser asn1Parser = ASN1Parser(derBytes);
-  ASN1Sequence topSeq = asn1Parser.nextObject() as ASN1Sequence;
-  ASN1Sequence pubKeySeq = topSeq.elements[1] as ASN1Sequence;
-BigInt modulus = BigInt.from((pubKeySeq.elements[0] as ASN1Integer).intValue);
-BigInt exponent = BigInt.from((pubKeySeq.elements[1] as ASN1Integer).intValue);
-  pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
 
+
+/// 解析MES返回的 <RSAKeyValue> XML公钥，提取Modulus、Exponent，RSA PKCS#1 v1.5加密
+String rsaEncryptXmlRsaKey(String plainText, String xmlBody) {
+  final xmlDoc = XmlDocument.parse(xmlBody);
+  // 提取Modulus、Exponent
+  String modulusBase64 = xmlDoc.findAllElements("Modulus").first.text;
+  String exponentBase64 = xmlDoc.findAllElements("Exponent").first.text;
+
+  Uint8List modBytes = base64.decode(modulusBase64);
+  Uint8List expBytes = base64.decode(exponentBase64);
+
+  BigInt modulus = BigInt.parse(
+    modBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
+    radix: 16,
+  );
+  BigInt exponent = BigInt.parse(
+    expBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
+    radix: 16,
+  );
+
+  pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
   final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
   cipher.init(true, param);
@@ -56,9 +55,9 @@ BigInt exponent = BigInt.from((pubKeySeq.elements[1] as ASN1Integer).intValue);
   return base64.encode(encryptedBytes);
 }
 
-/// MES登录主流程【http版本，方案A，替换Dio】
+/// MES登录主流程
 Future<String> mesLogin(String username, String password, String baseUrl) async {
-  // 1. 第一步：获取RSA公钥与KeyToken
+  // 1. 获取XML格式RSA公钥
   final validateResp = await http.get(
     Uri.parse("$baseUrl/platform/sign/getvalidatekey2"),
     headers: {
@@ -77,15 +76,20 @@ Future<String> mesLogin(String username, String password, String baseUrl) async 
   if(validateResp.statusCode != 200){
     throw Exception("获取公钥接口请求失败，http状态码：${validateResp.statusCode}");
   }
-  final validateJson = jsonDecode(validateResp.body);
-  final validateData = validateJson["data"];
-  String pubKeyRaw = validateData["PublicKey"];
-  String keyToken = validateData["KeyToken"];
+  // =========重点改动：返回是XML，不是JSON！=========
+  String xmlContent = validateResp.body;
+  String keyToken = "";
+  // 部分MES接口XML里同时包含KeyToken节点，自行适配节点名
+  try{
+    final xmlDoc = XmlDocument.parse(xmlContent);
+    keyToken = xmlDoc.findAllElements("KeyToken").first.text;
+  }catch(e){
+    throw Exception("XML解析KeyToken失败:$e");
+  }
+  // 密码RSA加密
+  String encryptedPwd = rsaEncryptXmlRsaKey(password, xmlContent);
 
-  // 2. RSA加密明文密码（rsaEncrypt函数完全复用，不用改）
-  String encryptedPwd = rsaEncrypt(password, pubKeyRaw);
-
-  // 3. 第二步：调用signin2登录接口，参数数组 [username,加密密码,keyToken]
+  // 2. 登录接口
   final loginResp = await http.post(
     Uri.parse("$baseUrl/platform/sign/signin2"),
     headers: {
@@ -2066,21 +2070,15 @@ Future<bool> _testMesLogin() async {
     if (validateResp.statusCode != 200) {
       throw Exception("阶段1失败：获取公钥接口Http状态码${validateResp.statusCode}，返回：${validateResp.body}");
     }
-    final validateJson = jsonDecode(validateResp.body);
-    if(validateJson["success"] != true){
-      throw Exception("阶段1失败：服务返回success=false，返回内容：${validateResp.body}");
-    }
-    final validateData = validateJson["data"];
-    if(validateData == null){
-      throw Exception("阶段1失败：接口data为空，返回内容：${validateResp.body}");
-    }
-    String pubKeyRaw = validateData["PublicKey"];
-    String keyToken = validateData["KeyToken"];
-    debugPrint("【阶段1成功】获取公钥、keyToken完成");
+final xmlDoc = XmlDocument.parse(validateResp.body);
+String keyToken = xmlDoc.findAllElements("KeyToken").first.text;
+debugPrint("【阶段1成功】XML解析公钥、keyToken完成");
+  
 
     // =========阶段2：RSA加密密码=========
     debugPrint("【阶段2】开始RSA加密密码");
-    String encryptedPwd = rsaEncrypt(pwdCtrl.text.trim(), pubKeyRaw);
+ 
+    String encryptedPwd = rsaEncryptXmlRsaKey(pwdCtrl.text.trim(), validateResp.body);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
 
     // =========阶段3：提交登录请求，获取token=========

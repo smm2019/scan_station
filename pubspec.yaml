@@ -19,6 +19,7 @@ dependencies:
   json_annotation: ^4.9.0
   pointycastle: 3.7.3
   asn1lib: 1.5.0
+  xml: ^6.5.0
 
 dev_dependencies:
   flutter_test:
