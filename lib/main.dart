@@ -26,17 +26,20 @@ import 'package:xml/xml.dart';
 
 part 'main.g.dart';
 
-
-/// 解析MES返回的 <RSAKeyValue> XML公钥，提取Modulus、Exponent，RSA PKCS#1 v1.5加密
 String rsaEncryptXmlRsaKey(String plainText, String xmlBody) {
   final xmlDoc = XmlDocument.parse(xmlBody);
-  // 提取Modulus、Exponent
-  String modulusBase64 = xmlDoc.findAllElements("Modulus").first.text;
-  String exponentBase64 = xmlDoc.findAllElements("Exponent").first.text;
+  // 安全读取Modulus
+  final modList = xmlDoc.findAllElements("Modulus").toList();
+  if(modList.isEmpty) throw Exception("XML公钥缺少Modulus节点");
+  String modulusBase64 = modList.first.text;
+
+  // 安全读取Exponent
+  final expList = xmlDoc.findAllElements("Exponent").toList();
+  if(expList.isEmpty) throw Exception("XML公钥缺少Exponent节点");
+  String exponentBase64 = expList.first.text;
 
   Uint8List modBytes = base64.decode(modulusBase64);
   Uint8List expBytes = base64.decode(exponentBase64);
-
   BigInt modulus = BigInt.parse(
     modBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
     radix: 16,
@@ -45,7 +48,6 @@ String rsaEncryptXmlRsaKey(String plainText, String xmlBody) {
     expBytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
     radix: 16,
   );
-
   pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
   final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
@@ -81,8 +83,20 @@ Future<String> mesLogin(String username, String password, String baseUrl) async 
   String keyToken = "";
   // 部分MES接口XML里同时包含KeyToken节点，自行适配节点名
   try{
-    final xmlDoc = XmlDocument.parse(xmlContent);
-    keyToken = xmlDoc.findAllElements("KeyToken").first.text;
+    // 修复：安全查找KeyToken，避免 No element 崩溃
+String keyToken = "";
+final keyTokenList = xmlDoc.findAllElements("KeyToken").toList();
+if(keyTokenList.isNotEmpty){
+  keyToken = keyTokenList.first.text;
+}else{
+  // 兼容小写，部分MES返回<keytoken>
+  final keyTokenLowerList = xmlDoc.findAllElements("keytoken").toList();
+  if(keyTokenLowerList.isNotEmpty){
+    keyToken = keyTokenLowerList.first.text;
+  }else{
+    debugPrint("警告：XML中未找到KeyToken节点，keyToken为空");
+  }
+}
   }catch(e){
     throw Exception("XML解析KeyToken失败:$e");
   }
