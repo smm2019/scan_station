@@ -13,6 +13,143 @@ import 'dart:io';
 // =========【改动1：新增权限依赖导入】=========
 import 'package:permission_handler/permission_handler.dart';
 
+import 'package:shared_preferences/shared_preferences.dart'; //新增导入
+// =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
+import 'dart:typed_data';
+import 'package:http/http.dart' as http;
+import 'package:pointycastle/pointycastle.dart';
+import 'package:pointycastle/asymmetric/api.dart';
+import 'package:pointycastle/export.dart';
+import 'package:asn1lib/asn1lib.dart'; //PEM解析必须，读取MES返回的公钥字符串
+/// RSA PKCS#1 v1.5 加密（对齐前端JSEncrypt）
+String rsaEncrypt(String plainText, String publicKeyBase64) {
+  // 拼接完整PEM公钥字符串
+  final pem = '''-----BEGIN PUBLIC KEY-----
+$publicKeyBase64
+-----END PUBLIC KEY-----''';
+  // 解析PEM
+  final parser = RSAKeyParser();
+  RSAPublicKey pubKey = parser.parse(pem) as RSAPublicKey;
+
+  final cipher = AsymmetricBlockCipher('RSA/PKCS1');
+  cipher.init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+  Uint8List rawData = Uint8List.fromList(utf8.encode(plainText));
+  Uint8List encryptedBytes = cipher.process(rawData);
+  return base64.encode(encryptedBytes);
+}
+
+/// MES登录主流程【http版本，方案A，替换Dio】
+Future<String> mesLogin(String username, String password, String baseUrl) async {
+  // 1. 第一步：获取RSA公钥与KeyToken
+  final validateResp = await http.get(
+    Uri.parse("$baseUrl/platform/sign/getvalidatekey2"),
+    headers: {
+      "Content-Type": "application/json;charset=utf-8",
+      "Accept": "*/*",
+      "Accept-Encoding": "gzip, deflate",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+      "Culture": "zh-CN",
+      "EnterpriseId": "*",
+      "X-TZ-Offset": "-480",
+      "Referer": "$baseUrl/h5/login.html",
+      "Origin": "$baseUrl",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0",
+    },
+  );
+  if(validateResp.statusCode != 200){
+    throw Exception("获取公钥接口请求失败，http状态码：${validateResp.statusCode}");
+  }
+  final validateJson = jsonDecode(validateResp.body);
+  final validateData = validateJson["data"];
+  String pubKeyRaw = validateData["PublicKey"];
+  String keyToken = validateData["KeyToken"];
+
+  // 2. RSA加密明文密码（rsaEncrypt函数完全复用，不用改）
+  String encryptedPwd = rsaEncrypt(password, pubKeyRaw);
+
+  // 3. 第二步：调用signin2登录接口，参数数组 [username,加密密码,keyToken]
+  final loginResp = await http.post(
+    Uri.parse("$baseUrl/platform/sign/signin2"),
+    headers: {
+      "Content-Type": "application/json;charset=utf-8",
+      "Accept": "*/*",
+      "Accept-Encoding": "gzip, deflate",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+      "Culture": "zh-CN",
+      "EnterpriseId": "*",
+      "X-TZ-Offset": "-480",
+      "Referer": "$baseUrl/h5/login.html",
+      "Origin": "$baseUrl",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0",
+    },
+    body: jsonEncode([username, encryptedPwd, keyToken]),
+  );
+  if(loginResp.statusCode != 200){
+    throw Exception("登录接口请求失败，http状态码：${loginResp.statusCode}");
+  }
+  final loginJson = jsonDecode(loginResp.body);
+  String token = loginJson["data"]["token"];
+  return token;
+}
+// =========【粘贴结束】=========
+
+class MesConfig {
+  static const String keyHost = "mes_host";
+  static const String keyPort = "mes_port";
+  static const keyAccount = "mes_account";
+  static const keyPwd = "mes_pwd";
+  static const keyToken = "mes_token";
+  static const keyTimeout = "mes_timeout";
+  // 新增两个key
+  static const String keyModuleId = "mes_moduleId";
+  static const String keyOrgId = "mes_orgId";
+
+  //保存配置
+  static Future<void> saveConfig({
+    required String host,
+    required String port,
+    required String account,
+    required String pwd,
+    required String token,
+    required int timeout,
+    required String moduleId,   //新增
+    required String orgId,      //新增
+  }) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString(keyHost, host);
+    await sp.setString(keyPort, port);
+    await sp.setString(keyAccount, account);
+    await sp.setString(keyPwd, pwd);
+    await sp.setString(keyToken, token);
+    await sp.setInt(keyTimeout, timeout);
+    // 新增保存
+    await sp.setString(keyModuleId, moduleId);
+    await sp.setString(keyOrgId, orgId);
+  }
+
+  //读取配置
+  static Future<Map<String, dynamic>> getConfig() async {
+    final sp = await SharedPreferences.getInstance();
+    return {
+      "host": sp.getString(keyHost) ?? "172.25.1.141",
+      "port": sp.getString(keyPort) ?? "6689",
+      "account": sp.getString(keyAccount) ?? "",
+      "pwd": sp.getString(keyPwd) ?? "",
+      "token": sp.getString(keyToken) ?? "",
+      "timeout": sp.getInt(keyTimeout) ?? 10,
+      //新增读取
+      "moduleId": sp.getString(keyModuleId) ?? "",
+      "orgId": sp.getString(keyOrgId) ?? "",
+    };
+  }
+
+  //清除token
+  static Future<void> clearToken() async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.remove(keyToken);
+  }
+}
+// =========【MesConfig结束】=========
 // ===================== Isar数据库模型 =====================
 part 'main.g.dart';
 
@@ -22,17 +159,17 @@ class ScanRecord {
   DateTime scanTime;
   int workType; //0=AGV站台模式，1=人工地面摆放模式
   String? stationNo; //【修改：由int?改为String，存储NB02-CK-05这类编码】
+
   String? groundLocation; //地面货位A1‑D18，仅模式1使用
   String goodsCode;
 String? containerType; // 新增这一行！用来存容器类型
   String remark;
   String batchId;
   bool isCancel = false; //标记：true=人工作废，保留原始数据，仅业务失效，不可用于站台占用校验
-  // ==========【MES新增字段，直接粘贴到这里】==========
-  String? mesPartNo;     //MES零件号
-  String? mesQty;        //MES数量
-  String? mesProduceDate;//MES日期
-  // ===================================================
+  //=====新增MES字段，只加这3行=====
+  String? mesPartNo;      //零件号 PartCode
+  double? mesQty;         //数量 QTY
+  String? mesCreateTime;  //MES DATETIME_CREATED
   ScanRecord({
     required this.scanTime,
     required this.workType,
@@ -43,11 +180,11 @@ String? containerType; // 新增这一行！用来存容器类型
     required this.batchId,
     this.isCancel = false,
 this.containerType, // 新增
-// =========【构造函数追加MES参数】=========
+// =========【BUG在这里！！】=========
+    // 你构造函数写了 mesProduceDate，但类里面字段名字是 mesCreateTime，名字不一致！
     this.mesPartNo,
     this.mesQty,
-    this.mesProduceDate,
-    // ========================================
+    this.mesCreateTime, //把原来的 mesProduceDate 改成 mesCreateTime
   });
 }
 @collection
@@ -406,31 +543,62 @@ _containerType = null;
         finalRemark += _remarkInputCtrl.text.trim();
       }
 
-      // ===================== MES接口请求【新增代码块】=====================
+// ===================== MES接口请求【替换为GET版本，适配抓包接口】=====================
 String? mesPartNo;
-String? mesQty;
-String? mesProduceDate;
+double? mesQty;
+String? mesCreateTime;
 try {
-  //====【这里后续抓包完成替换成真实MES接口地址】====
-  final mesUri = Uri.parse("http://MES_IP:端口/api/queryLabel");
-  final mesResponse = await HttpClient().postUrl(mesUri);
-  // 请求头，抓包后替换成真实token、Content-Type
-  mesResponse.headers.set("Content-Type", "application/json");
-  // 把当前扫码的货码goodsCode传给MES
-  String reqBody = jsonEncode({
-    "barcode": code,
-    // 【抓包后补充登录后的token参数，例如 "token":"xxxx"】
+  final mesCfg = await MesConfig.getConfig();
+  String baseUrl = "http://${mesCfg["host"]}:${mesCfg["port"]}";
+  String token = mesCfg["token"];
+  if(token.isEmpty) throw Exception("MES Token为空，请先在设置页登录MES");
+  // 重点：接口名修正为 GetLableList（抓包原始拼写，少a，否则404）
+  final uri = Uri.parse("$baseUrl/api/station/label/GetLableList").replace(queryParameters: {
+    "start": "0",
+    "length": "20",
+    "mitemCode": "",
+    "mitemName": "",
+    "warehouseCode": "",
+    "baseCode": "",
+    "baseName": "",
+    "districtCode": "",
+    "locCode": "",
+    "supplierCode": "",
+    "lotNo": "",
+    "labelNo": code,
+    "status": "",
+    "poNo": "",
+    "bDate": "",
+    "eDate": "",
+    "warehouse": "",
+    "mitemSize": "",
+    "supplier": "",
   });
-  mesResponse.write(utf8.encode(reqBody));
-  final resp = await mesResponse.close();
+  final httpClient = HttpClient();
+  final mesRequest = await httpClient.getUrl(uri);
+  // 【全部复制抓包拿到的请求头】
+  mesRequest.headers.set("Culture","zh-CN");
+  mesRequest.headers.set("EnterpriseId","*");
+  // 改为从配置读取，不再硬编码ModuleId/OrgId
+  mesRequest.headers.set("ModuleId", mesCfg["moduleId"] ?? "");
+  mesRequest.headers.set("OrgId", mesCfg["orgId"] ?? "");
+  mesRequest.headers.set("ModulePage","/h5/pages/LABEL/MitemLabelQuery/index.html");
+  mesRequest.headers.set("X-TZ-Offset","-480");
+  mesRequest.headers.set("Token", token);
+  mesRequest.headers.set("Accept","*/*");
+  mesRequest.headers.set("Content-Type","application/json; charset=utf-8");
+
+  final resp = await mesRequest.close();
   final respBody = await resp.transform(utf8.decoder).join();
   final Map<String,dynamic> mesJson = jsonDecode(respBody);
-
-  // =========【根据抓包返回的JSON结构，修改下面取值路径！】=========
-  mesPartNo = mesJson["partNo"]?.toString();
-  mesQty = mesJson["qty"]?.toString();
-  mesProduceDate = mesJson["produceDate"]?.toString();
-  // =============================================================
+  //解析抓包返回的JSON结构
+  if(mesJson["success"] == true && mesJson["data"] != null && mesJson["data"]["data"] != null){
+    // 抓包返回 data.data 是单个对象，不是数组，修正此处！
+    final row = mesJson["data"]["data"];
+    mesPartNo = row["MITEM_CODE"]?.toString();
+    mesQty = (row["QTY"] as num?)?.toDouble();
+    mesCreateTime = row["DATETIME_CREATED"]?.toString();
+  }
 } catch (mesErr) {
   if(mounted){
     ScaffoldMessenger.of(context).showSnackBar(
@@ -439,24 +607,22 @@ try {
   }
   //MES查询失败，字段保留null，不阻断保存流程
 }
-// ===================================================================
 
-      final rec = ScanRecord(
-        scanTime: DateTime.now(),
-        workType: _workType,
-        stationNo: _workType == 0 ? _selectedStation : null,
-        groundLocation: _workType == 1 ? _selectedGroundLoc : null,
-        goodsCode: code,
-        remark: finalRemark,
-        batchId: _currentBatchId!,
-containerType: _containerType,
-// =========追加MES三个参数=========
+
+final rec = ScanRecord(
+  scanTime: DateTime.now(),
+  workType: _workType,
+  stationNo: _workType == 0 ? _selectedStation : null,
+  groundLocation: _workType == 1 ? _selectedGroundLoc : null,
+  goodsCode: code,
+  remark: finalRemark,
+  batchId: _currentBatchId!,
+  containerType: _containerType,
+  //MES参数
   mesPartNo: mesPartNo,
   mesQty: mesQty,
-  mesProduceDate: mesProduceDate,
-  //================================
-
-      );
+  mesCreateTime: mesCreateTime,
+);
       await _isar.writeTxn(() async {
         await _isar.scanRecords.put(rec);
         if(_workType ==0 && _selectedStation != null){
@@ -561,7 +727,7 @@ String container = r.containerType ?? "";
      String statusText = r.isCancel ? "作废" : "正常";
 String pn = r.mesPartNo ?? "";
 String qty = r.mesQty ?? "";
-String pd = r.mesProduceDate ?? "";
+String pd = r.mesCreateTime ?? "";
 content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\n";
 
 
@@ -1463,13 +1629,15 @@ SingleChildScrollView(
                   break;
               }
             });
-          }else if(idx ==2){
-            await showDialog(context: context, builder: (ctx)=>AlertDialog(
-              title: const Text("设置"),
-              content: const Text("可配置PDA扫码参数、导出格式"),
-              actions: [TextButton(onPressed: ()=>Navigator.pop(ctx),child:const Text("关闭"))],
-            ));
           }
+      else if(idx ==2){
+  //跳转MES服务器配置页面
+  Navigator.push(
+    context,
+    MaterialPageRoute(builder: (context)=>const MesSettingPage()),
+  );
+}
+
         },
       ),
     );
@@ -1611,31 +1779,37 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
     await _loadRecords();
   }
 
-  Future<void> _exportThisBatch() async {
-    String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态\n";
-    String content = header;
-    List<ScanRecord> targetRecords = _records;
-    targetRecords.sort((a, b) => a.scanTime.compareTo(b.scanTime));
-    for (var r in targetRecords) {
-      String timeStr = r.scanTime.toString().substring(0, 19);
-      String wt = r.workType.toString();
-      String st = r.stationNo ?? "";
-      String gl = r.groundLocation ?? "";
-      String container = r.containerType ?? "";
-      String code = r.goodsCode;
-      String rem = r.remark;
-      String statusText = r.isCancel ? "作废" : "正常";
-      content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText\n";
-    }
-    final dir = await getExternalStorageDirectory();
-    if (dir == null) return;
-    String filePath = "${dir.path}/采集_${widget.batch.batchId}.csv";
-    File file = File(filePath);
-    await file.writeAsString(content, encoding: utf8);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
-    }
+Future<void> _exportThisBatch() async {
+  //【修改这里，增加MES三列】
+  String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期\n";
+  String content = header;
+  List<ScanRecord> targetRecords = _records;
+  targetRecords.sort((a, b) => a.scanTime.compareTo(b.scanTime));
+  for (var r in targetRecords) {
+    String timeStr = r.scanTime.toString().substring(0, 19);
+    String wt = r.workType.toString();
+    String st = r.stationNo ?? "";
+    String gl = r.groundLocation ?? "";
+    String container = r.containerType ?? "";
+    String code = r.goodsCode;
+    String rem = r.remark;
+    String statusText = r.isCancel ? "作废" : "正常";
+    //新增MES
+    String pn = r.mesPartNo ?? "";
+    String qty = r.mesQty?.toString() ?? "";
+    String pd = r.mesCreateTime ?? "";
+    content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\n";
   }
+  final dir = await getExternalStorageDirectory();
+  if (dir == null) return;
+  String filePath = "${dir.path}/采集_${widget.batch.batchId}.csv";
+  File file = File(filePath);
+  await file.writeAsString(csvText, encoding: utf8);
+  if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
+  }
+}
+
 
   @override
   Widget build(BuildContext context) {
@@ -1773,7 +1947,7 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
             _detailItem("记录状态", r.isCancel ? "⚠️ 已作废" : "✅ 正常"),
             _detailItem("MES零件号", r.mesPartNo ?? "无"),
 _detailItem("MES数量", r.mesQty ?? "无"),
-_detailItem("MES生产日期", r.mesProduceDate ?? "无"),
+_detailItem("MES生产日期", r.mesCreateTime ?? "无"),
 
           ],
         ),
@@ -1790,6 +1964,282 @@ _detailItem("MES生产日期", r.mesProduceDate ?? "无"),
           SizedBox(width:90,child:Text("$label：",style: TextStyle(fontWeight: FontWeight.w500,fontSize:16))),
           Expanded(child:Text(value,style: TextStyle(fontSize:16))),
         ],
+      ),
+    );
+  }
+}
+class MesSettingPage extends StatefulWidget {
+  const MesSettingPage({super.key});
+
+  @override
+  State<MesSettingPage> createState() => _MesSettingPageState();
+}
+
+class _MesSettingPageState extends State<MesSettingPage> {
+  final TextEditingController hostCtrl = TextEditingController();
+  final TextEditingController portCtrl = TextEditingController();
+  final TextEditingController timeoutCtrl = TextEditingController();
+  final TextEditingController accountCtrl = TextEditingController();
+  final TextEditingController pwdCtrl = TextEditingController();
+  //新增
+final TextEditingController moduleIdCtrl = TextEditingController();
+final TextEditingController orgIdCtrl = TextEditingController();
+  bool _pwdVisible = false;
+  String? _token;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadConfig();
+  }
+
+  Future<void> _loadConfig() async {
+    final cfg = await MesConfig.getConfig();
+    setState(() {
+      hostCtrl.text = cfg["host"];
+      portCtrl.text = cfg["port"];
+      timeoutCtrl.text = cfg["timeout"].toString();
+      accountCtrl.text = cfg["account"];
+      pwdCtrl.text = cfg["pwd"];
+      //新增
+    moduleIdCtrl.text = cfg["moduleId"];
+    orgIdCtrl.text = cfg["orgId"];
+    });
+  }
+
+  // ========== MES登录方法（放在State内部，与build平级） ==========
+  Future<bool> _testMesLogin() async {
+    final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
+    // 先保存表单配置
+    await MesConfig.saveConfig(
+  host: hostCtrl.text,
+  port: portCtrl.text,
+  account: accountCtrl.text,
+  pwd: pwdCtrl.text,
+  token: "",
+  timeout: timeoutSec,
+  moduleId: moduleIdCtrl.text.trim(),
+  orgId: orgIdCtrl.text.trim(),
+);
+    final ip = hostCtrl.text.trim();
+    final port = portCtrl.text.trim();
+    String baseUrl = "http://$ip:$port";
+    try {
+      //调用新RSA两步登录
+      String token = await mesLogin(accountCtrl.text.trim(), pwdCtrl.text.trim(), baseUrl);
+      _token = token;
+      await MesConfig.saveConfig(
+  host: hostCtrl.text,
+  port: portCtrl.text,
+  account: accountCtrl.text,
+  pwd: pwdCtrl.text,
+  token: token,
+  timeout: timeoutSec,
+  moduleId: moduleIdCtrl.text.trim(),
+  orgId: orgIdCtrl.text.trim(),
+);
+      return true;
+    } catch (e) {
+      debugPrint("MES登录异常:$e");
+      return false;
+    }
+  }
+
+  @override
+  void dispose() {
+    hostCtrl.dispose();
+    portCtrl.dispose();
+    timeoutCtrl.dispose();
+    accountCtrl.dispose();
+    pwdCtrl.dispose();
+    //新增释放
+  moduleIdCtrl.dispose();
+  orgIdCtrl.dispose();
+  
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("MES服务器设置"),
+        backgroundColor: const Color(0xFF515BD4),
+      ),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text("通信协议：HTTP", style: TextStyle(fontSize: 16)),
+            const SizedBox(height: 8),
+            TextField(
+              controller: hostCtrl,
+              decoration: const InputDecoration(
+                labelText: "MES服务地址",
+                hintText: "例：172.25.1.141",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: portCtrl,
+              decoration: const InputDecoration(
+                labelText: "端口号",
+                hintText: "例：6689",
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: timeoutCtrl,
+              decoration: const InputDecoration(
+                labelText: "请求超时(秒)",
+                hintText: "默认10",
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 16),
+            const Divider(),
+            const Text(
+              "MES账号登录",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: accountCtrl,
+              decoration: const InputDecoration(
+                labelText: "账号",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: pwdCtrl,
+              obscureText: !_pwdVisible,
+              decoration: InputDecoration(
+                labelText: "密码",
+                border: const OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  icon: Icon(_pwdVisible ? Icons.visibility : Icons.visibility_off),
+                  onPressed: () => setState(() => _pwdVisible = !_pwdVisible),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+TextField(
+  controller: moduleIdCtrl,
+  decoration: const InputDecoration(
+    labelText: "ModuleId",
+    hintText: "MES接口ModuleId",
+    border: OutlineInputBorder(),
+  ),
+),
+const SizedBox(height: 10),
+TextField(
+  controller: orgIdCtrl,
+  decoration: const InputDecoration(
+    labelText: "OrgId",
+    hintText: "MES接口OrgId",
+    border: OutlineInputBorder(),
+  ),
+),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey.shade600,
+                    ),
+                    onPressed: () async {
+                      // 测试连通性
+                      try {
+                        final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
+                        final uri = Uri.parse("http://${hostCtrl.text}:${portCtrl.text}");
+                        final client = HttpClient();
+                        final req = await client.getUrl(uri).timeout(Duration(seconds: timeoutSec));
+                        final resp = await req.close();
+                        if (resp.statusCode >= 200 && resp.statusCode < 300) {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text("✅ 服务器连通成功")),
+                            );
+                          }
+                        } else {
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text("⚠️ 服务器可达，但返回异常")),
+                            );
+                          }
+                        }
+                      } catch (e) {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text("❌ 连接失败：$e")),
+                          );
+                        }
+                      }
+                    },
+                    child: const Text("测试连通"),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF515BD4),
+                    ),
+                    onPressed: () async {
+                      bool loginOk = await _testMesLogin();
+                      if (!mounted) return;
+                      if (loginOk) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("✅ MES登录成功，Token已保存")),
+                        );
+                      } else {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("❌ MES登录失败，请检查账号/地址")),
+                        );
+                      }
+                    },
+                    child: const Text("登录MES"),
+                  ),
+                )
+              ],
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.blueAccent,
+                ),
+                onPressed: () async {
+                  final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
+                await MesConfig.saveConfig(
+                  host: hostCtrl.text,
+                  port: portCtrl.text,
+                  account: accountCtrl.text,
+                  pwd: pwdCtrl.text,
+                  token: "",
+                  timeout: timeoutSec,
+                  moduleId: moduleIdCtrl.text.trim(),
+                  orgId: orgIdCtrl.text.trim(),
+                );
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("✅ 配置保存成功")),
+                    );
+                  }
+                },
+                child: const Text("仅保存配置（不登录）"),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
