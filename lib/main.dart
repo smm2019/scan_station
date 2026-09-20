@@ -85,6 +85,8 @@ Future<String> mesLogin(String username, String password, String baseUrl) async 
   try{
     // 修复：安全查找KeyToken，避免 No element 崩溃
 String keyToken = "";
+// ==========【新增这一行！！】解析xml，定义xmlDoc变量 ==========
+  final xmlDoc = XmlDocument.parse(xmlContent);
 final keyTokenList = xmlDoc.findAllElements("KeyToken").toList();
 if(keyTokenList.isNotEmpty){
   keyToken = keyTokenList.first.text;
