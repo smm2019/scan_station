@@ -44,8 +44,8 @@ $publicKeyBase64
   ASN1Parser asn1Parser = ASN1Parser(derBytes);
   ASN1Sequence topSeq = asn1Parser.nextObject() as ASN1Sequence;
   ASN1Sequence pubKeySeq = topSeq.elements[1] as ASN1Sequence;
-BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).intValue;
-BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).intValue;
+BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).integer;
+BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).integer;
   pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
 
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
