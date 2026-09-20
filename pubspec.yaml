@@ -14,11 +14,17 @@ dependencies:
   path_provider: 2.1.3
   shelf: 1.4.1
   permission_handler: ^11.1.0
+  http: ^1.2.1   # ==========新增这一行，用于MES接口http请求
+  shared_preferences: ^2.2.3 # 新增，用来保存MES登录信息、token、MES服务器IP端口
+  json_annotation: ^4.9.0
+  pointycastle: ^3.9.1
+  asn1lib: ^1.5.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   isar_generator: 3.1.0
   build_runner: 2.4.6
+  json_serializable: ^6.8.0
 
 flutter:
