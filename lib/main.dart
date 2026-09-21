@@ -14,8 +14,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
-import 'package:pointycastle/pointycastle.dart' as pc;
-import 'package:pointycastle/asymmetric/api.dart' as pc;
+import 'package:pointycastle/pointycastle.dart';
+import 'package:pointycastle/asymmetric/api.dart';
+
 import 'package:http/http.dart' as http;
 part 'main.g.dart';
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
@@ -2064,17 +2065,17 @@ Future<bool> _testMesLogin() async {
 
     // =========阶段2：RSA加密密码【使用pointycastle标准PEM解析，移除手写DER解析！】=========
     // 使用PEM读取器加载公钥，不再手动解析字节，彻底解决exponent越界
-    final pemParser = pc.PemParser(pc.ScanStream(utf8.encode(pubPem)));
-    final pc.PemObject pemObj = pemParser.readPemObject();
-    final pc.Asn1Parser asn1Parser = pc.Asn1Parser(pemObj.content);
-    final pc.RSAPublicKey pubKey = pc.RSAPublicKey.fromAsn1(asn1Parser);
+final pemParser = PemParser(ScanStream(utf8.encode(pubPem)));
+final PemObject pemObj = pemParser.readPemObject();
+final Asn1Parser asn1Parser = Asn1Parser(pemObj.content);
+final RSAPublicKey pubKey = RSAPublicKey.fromAsn1(asn1Parser);
+// PKCS1-v1_5加密
+final cipher = AsymmetricBlockCipher('RSA/PKCS1')
+  ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
+Uint8List encryptedRaw = cipher.process(dataRaw);
+String encryptedPwd = base64.encode(encryptedRaw);
 
-    // PKCS1-v1_5加密
-    final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
-      ..init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
-    Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
-    Uint8List encryptedRaw = cipher.process(dataRaw);
-    String encryptedPwd = base64.encode(encryptedRaw);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
 
     // =========阶段3：提交登录请求，获取token=========
