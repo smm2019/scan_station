@@ -25,28 +25,7 @@ import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart';
 
 part 'main.g.dart';
-String rsaEncryptPemKey(String plainText, String pemPublicKey) {
-  // 清理PEM头尾标记、换行
-  String pem = pemPublicKey
-      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
-      .replaceAll("-----END PUBLIC KEY-----", "")
-      .replaceAll("\n", "")
-      .replaceAll("\r", "");
-  Uint8List keyBytes = base64.decode(pem);
-  ASN1Parser parser = ASN1Parser(keyBytes);
-  ASN1Sequence seq = parser.nextObject() as ASN1Sequence;
-  ASN1Sequence pubKeySeq = seq.elements[1] as ASN1Sequence;
-// =========【修复：value → integer】=========
-  BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).integer;
-  BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).integer;
-  pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
-  final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
-  final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
-  cipher.init(true, param);
-  Uint8List rawData = Uint8List.fromList(utf8.encode(plainText));
-  Uint8List encryptedBytes = cipher.process(rawData);
-  return base64.encode(encryptedBytes);
-}
+
 
 
 
