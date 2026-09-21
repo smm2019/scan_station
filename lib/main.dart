@@ -1994,6 +1994,46 @@ final TextEditingController orgIdCtrl = TextEditingController();
     orgIdCtrl.text = cfg["orgId"];
     });
   }
+  // =========【独立提取到类顶层：获取公钥接口】=========
+  Future<Map<String, String>?> getValidateKey2(String serverIp, String serverPort, String userId, int timeoutSec) async {
+    try {
+      final baseUrl = "http://$serverIp:$serverPort";
+      final uri = Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
+      final headers = {
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Culture": "zh-CN",
+      };
+      debugPrint("【阶段1】请求getvalidatekey2：$uri");
+      // 增加timeout（解决问题4）
+      final resp = await http.get(uri, headers: headers).timeout(Duration(seconds: timeoutSec));
+      debugPrint("【阶段1】接口返回code:${resp.statusCode}");
+      if (resp.statusCode == 200) {
+        final jsonObj = jsonDecode(resp.body);
+        bool success = jsonObj["success"] ?? false;
+        if (!success) {
+          debugPrint("【阶段1】接口返回失败：${jsonObj["message"]}");
+          return null;
+        }
+        final data = jsonObj["data"];
+        String publicKey = data["PublicKey"];
+        String keyToken = data["KeyToken"];
+        debugPrint("【阶段1】获取公钥成功，KeyToken=$keyToken");
+        return {
+          "publicKey": publicKey,
+          "keyToken": keyToken,
+        };
+      } else {
+        debugPrint("【阶段1】http请求失败，status=${resp.statusCode}");
+        return null;
+      }
+    } catch (e) {
+      debugPrint("【阶段1】异常：$e");
+      return null;
+    }
+  }
 
   // ========== MES登录方法（放在State内部，与build平级） ==========
 Future<bool> _testMesLogin() async {
@@ -2014,46 +2054,10 @@ Future<bool> _testMesLogin() async {
   String baseUrl = "http://$ip:$port";
   try {
     // =========阶段1：获取RSA公钥 KeyToken=========
-Future<Map<String, String>?> getValidateKey2(String serverIp, String serverPort, String userId) async {
-  try {
-    final baseUrl = "http://$serverIp:$serverPort";
-    final uri = Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
-    final headers = {
-      "Accept": "*/*",
-      "Accept-Encoding": "gzip, deflate",
-      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-      "Culture": "zh-CN",
-    };
-    debugPrint("【阶段1】请求getvalidatekey2：$uri");
-    final resp = await http.get(uri, headers: headers);
-    debugPrint("【阶段1】接口返回code:${resp.statusCode}");
-    if (resp.statusCode == 200) {
-      final jsonObj = jsonDecode(resp.body);
-      bool success = jsonObj["success"] ?? false;
-      if (!success) {
-        debugPrint("【阶段1】接口返回失败：${jsonObj["message"]}");
-        return null;
-      }
-      final data = jsonObj["data"];
-      String publicKey = data["PublicKey"];
-      String keyToken = data["KeyToken"];
-      debugPrint("【阶段1】获取公钥成功，KeyToken=$keyToken");
-      return {
-        "publicKey": publicKey,
-        "keyToken": keyToken,
-      };
-    } else {
-      debugPrint("【阶段1】http请求失败，status=${resp.statusCode}");
-      return null;
-    }
-  } catch (e) {
-    debugPrint("【阶段1】异常：$e");
-    return null;
-  }
-}
 
-    final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim());
+
+    final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim(), timeoutSec);
+
     if(validateResult == null){
       throw Exception("阶段1失败：获取公钥接口返回空，请检查账号/服务器地址");
     }
@@ -2070,8 +2074,7 @@ String pubPem = validateResult["publicKey"]!;
         .replaceAll("-----END PUBLIC KEY-----", "")
         .replaceAll("\n", "")
         .replaceAll("\r", "");
-    Uint8List pubDerBytes = base64.decode(pemClean);
-
+        Uint8List pubDerBytes = base64.decode(pemClean);
     // 手动从DER公钥提取 modulus 和 exponent（完全不使用ASN1Parser）
     BigInt extractBigInt(Uint8List bytes) {
       BigInt res = BigInt.from(0);
@@ -2080,24 +2083,42 @@ String pubPem = validateResult["publicKey"]!;
       }
       return res;
     }
-    // 跳过公钥头部固定19字节，后面就是modulus + exponent
+
+    // =========【新增：DER长度合法性保护，防止数组越界崩溃】=========
+    if (pubDerBytes.length < 19) {
+      throw Exception("公钥DER长度不足，无效公钥");
+    }
     int offset = 19;
     int modLen = pubDerBytes[offset];
     offset +=1;
     if(modLen >= 0x80){
       int lenBytes = modLen - 0x80;
+      if(offset + lenBytes > pubDerBytes.length){
+        throw Exception("公钥解析：mod长度越界");
+      }
       List<int> lb = pubDerBytes.sublist(offset, offset+lenBytes);
       offset += lenBytes;
       modLen = extractBigInt(Uint8List.fromList(lb)).toInt();
     }
+    // 校验modulus数据是否足够
+    if(offset + modLen > pubDerBytes.length){
+      throw Exception("公钥解析：modulus数据越界");
+    }
     Uint8List modBytes = pubDerBytes.sublist(offset, offset+modLen);
     offset += modLen;
+
+    if(offset >= pubDerBytes.length){
+      throw Exception("公钥解析：exponent长度越界");
+    }
     int expLen = pubDerBytes[offset];
     offset +=1;
+    if(offset + expLen > pubDerBytes.length){
+      throw Exception("公钥解析：exponent数据越界");
+    }
     Uint8List expBytes = pubDerBytes.sublist(offset, offset+expLen);
-
     BigInt modulus = extractBigInt(modBytes);
     BigInt exponent = extractBigInt(expBytes);
+
     final pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
 
     // PKCS1-v1_5加密
