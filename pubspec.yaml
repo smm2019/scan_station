@@ -17,7 +17,7 @@ dependencies:
   http: ^1.2.1   # ==========新增这一行，用于MES接口http请求
   shared_preferences: ^2.2.3 # 新增，用来保存MES登录信息、token、MES服务器IP端口
   json_annotation: ^4.9.0
-  pointycastle: 3.7.3
+  pointycastle: 3.7.4
   xml: ^6.5.0
 
 
