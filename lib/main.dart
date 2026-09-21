@@ -17,7 +17,7 @@ import 'dart:typed_data';
 import 'package:pointycastle/pointycastle.dart' as pc;
 import 'package:pointycastle/asymmetric/api.dart' as pc;
 import 'package:http/http.dart' as http;
-
+part 'main.g.dart';
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 String rsaEncryptPemKey(String plainText, String pemPublicKey) {
   // 1) 清理 PEM头尾标记、换行、空格
@@ -52,7 +52,7 @@ String rsaEncryptPemKey(String plainText, String pemPublicKey) {
   return base64.encode(encrypted);
 }
 
-part 'main.g.dart';
+
 
 
 class MesConfig {
