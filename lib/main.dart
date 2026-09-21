@@ -19,30 +19,7 @@ import 'package:pointycastle/asymmetric/api.dart' as pc;
 import 'package:http/http.dart' as http;
 part 'main.g.dart';
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
-String rsaEncryptByModExp(String plainText, String modulusBase64, String exponentBase64) {
-  // base64解码
-  Uint8List modBytes = base64.decode(modulusBase64);
-  Uint8List expBytes = base64.decode(exponentBase64);
 
-  // base64二进制转BigInt（正确方式，不会有ASN1Tag报错）
-  BigInt modulus = BigInt.from(0);
-  for (var byte in modBytes) {
-    modulus = (modulus << 8) | BigInt.from(byte);
-  }
-  BigInt exponent = BigInt.from(0);
-  for (var byte in expBytes) {
-    exponent = (exponent << 8) | BigInt.from(byte);
-  }
-
-  final pubKey = pc.RSAPublicKey(modulus, exponent);
-  // PKCS1-v1_5加密
-  final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
-    ..init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
-
-  Uint8List data = Uint8List.fromList(utf8.encode(plainText));
-  Uint8List encrypted = cipher.process(data);
-  return base64.encode(encrypted);
-}
 
 
 
@@ -66,13 +43,7 @@ class MesConfig {
   static const String keyMesUserName = "mes_user_name";
   static const String keyMesDisplayName = "mes_display_name";
 
-  // ========== 新增：美云智数 MES RSA 公钥 ==========
-  static const String mesRsaPublicKey = """-----BEGIN PUBLIC KEY-----
-MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDCFENGw33yGihy92pDjZQhl0C3
-6rPJj+CvfSC8+q28hxA161QFNUd13wuCTUcq0Qd2qsBe/2hFyc2DKhLb5DME0B
-Y4bO+15/2pMjy1/kk9rO4XaNqtMqw/FfLKToLWRG5pQvvYJmfBSzXKa48Y7qgO
-Y/W3nPMrBfr/y1D5eQIDAQAB
------END PUBLIC KEY-----""";
+
 
   //保存配置
   static Future<void> saveConfig({
@@ -2043,51 +2014,53 @@ Future<bool> _testMesLogin() async {
   String baseUrl = "http://$ip:$port";
   try {
     // =========阶段1：获取RSA公钥 KeyToken=========
-    Future<Map<String, String>?> getValidateKey2(String serverIp, String serverPort, String userId) async {
-      final baseUrl = "http://$serverIp:$serverPort";
-      final uri = Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
-      final headers = {
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
-        "Content-Type": "application/json;charset=utf-8",
-        "Culture": "zh-CN",
-        "EnterpriseId": "*",
-        "ModuleId": "null",
-        "ModulePage": "/h5/login.html",
-        "OrgId": "",
-        "Referer": "http://$serverIp:$serverPort/h5/login.html",
-        "Token": "null",
-        "X-TZ-Offset": "-480",
-        "Connection": "keep-alive",
-        "Host": "$serverIp:$serverPort",
-      };
-      try {
-        final resp = await http.get(uri, headers: headers);
-        debugPrint("【getValidateKey2 返回报文】${resp.body}");
-        if(resp.statusCode != 200) return null;
-        final json = jsonDecode(resp.body);
-        if(json["success"] != true) return null;
-        final data = json["data"];
-        final keyToken = data["KeyToken"] as String;
-        final publicKeyPem = data["PublicKey"] as String; //公钥PEM
-        return {
-          "KeyToken": keyToken,
-          "PublicKeyPem": publicKeyPem,
-        };
-      }catch(e){
-        debugPrint("getValidateKey2异常：$e");
+Future<Map<String, String>?> getValidateKey2(String serverIp, String serverPort, String userId) async {
+  try {
+    final baseUrl = "http://$serverIp:$serverPort";
+    final uri = Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
+    final headers = {
+      "Accept": "*/*",
+      "Accept-Encoding": "gzip, deflate",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Culture": "zh-CN",
+    };
+    debugPrint("【阶段1】请求getvalidatekey2：$uri");
+    final resp = await http.get(uri, headers: headers);
+    debugPrint("【阶段1】接口返回code:${resp.statusCode}");
+    if (resp.statusCode == 200) {
+      final jsonObj = jsonDecode(resp.body);
+      bool success = jsonObj["success"] ?? false;
+      if (!success) {
+        debugPrint("【阶段1】接口返回失败：${jsonObj["message"]}");
         return null;
       }
+      final data = jsonObj["data"];
+      String publicKey = data["PublicKey"];
+      String keyToken = data["KeyToken"];
+      debugPrint("【阶段1】获取公钥成功，KeyToken=$keyToken");
+      return {
+        "publicKey": publicKey,
+        "keyToken": keyToken,
+      };
+    } else {
+      debugPrint("【阶段1】http请求失败，status=${resp.statusCode}");
+      return null;
     }
+  } catch (e) {
+    debugPrint("【阶段1】异常：$e");
+    return null;
+  }
+}
 
     final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim());
     if(validateResult == null){
       throw Exception("阶段1失败：获取公钥接口返回空，请检查账号/服务器地址");
     }
-    final String keyToken = validateResult["KeyToken"]!;
-    String pubPem = validateResult["PublicKeyPem"]!;
+
+    // ✅ 替换成下面这两行
+final String keyToken = validateResult["keyToken"]!;
+String pubPem = validateResult["publicKey"]!;
 
     // =========阶段2：RSA加密密码【✅删除全部ASN1Parser代码！！使用mod exp方案】=========
     debugPrint("【阶段2】开始RSA加密密码");
