@@ -19,29 +19,23 @@ import 'package:pointycastle/asymmetric/api.dart' as pc;
 import 'package:http/http.dart' as http;
 part 'main.g.dart';
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
-String rsaEncryptPemKey(String plainText, String pemPublicKey) {
-  String keyBody = pemPublicKey
-      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
-      .replaceAll("-----END PUBLIC KEY-----", "")
-      .replaceAll("\n", "")
-      .replaceAll("\r", "")
-      .replaceAll(" ", "");
+String rsaEncryptByModExp(String plainText, String modulusBase64, String exponentBase64) {
+  // base64解码
+  Uint8List modBytes = base64.decode(modulusBase64);
+  Uint8List expBytes = base64.decode(exponentBase64);
 
-  Uint8List keyBytes = base64.decode(keyBody);
-
-  final topParser = pc.ASN1Parser(keyBytes);
-  final topObj = topParser.nextObject() as pc.ASN1Sequence;
-  final bitStr = topObj.elements?[1] as pc.ASN1BitString;
-  final pubKeyData = bitStr.valueBytes!;
-
-  final innerParser = pc.ASN1Parser(pubKeyData);
-  final innerSeq = innerParser.nextObject() as pc.ASN1Sequence;
-  // 加上 ! 把 BigInt? 转为 BigInt
-  final modulus = (innerSeq.elements![0] as pc.ASN1Integer).integer!;
-  final exponent = (innerSeq.elements![1] as pc.ASN1Integer).integer!;
+  // base64二进制转BigInt（正确方式，不会有ASN1Tag报错）
+  BigInt modulus = BigInt.from(0);
+  for (var byte in modBytes) {
+    modulus = (modulus << 8) | BigInt.from(byte);
+  }
+  BigInt exponent = BigInt.from(0);
+  for (var byte in expBytes) {
+    exponent = (exponent << 8) | BigInt.from(byte);
+  }
 
   final pubKey = pc.RSAPublicKey(modulus, exponent);
-
+  // PKCS1-v1_5加密
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
     ..init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
 
@@ -49,6 +43,7 @@ String rsaEncryptPemKey(String plainText, String pemPublicKey) {
   Uint8List encrypted = cipher.process(data);
   return base64.encode(encrypted);
 }
+
 
 
 
@@ -2075,7 +2070,7 @@ Future<bool> _testMesLogin() async {
         if(json["success"] != true) return null;
         final data = json["data"];
         final keyToken = data["KeyToken"] as String;
-        final publicKey = data["PublicKey"] as String;
+      final publicKey = data["PublicKey"] as Map<String,dynamic>; // 改成Map，不是String
         return {
           "KeyToken": keyToken,
           "PublicKey": publicKey,
@@ -2092,12 +2087,19 @@ Future<bool> _testMesLogin() async {
       throw Exception("获取公钥/KeyToken失败，请检查账号和服务器地址");
     }
     String keyToken = validateResult["KeyToken"]!;
-    String publicKeyXml = validateResult["PublicKey"]!;
+   Map<String,dynamic> publicKeyXml = validateResult["PublicKey"]!;
 
-    // =========阶段2：RSA加密密码=========
+
+    // =========阶段2：RSA加密密码【适配Modulus+Exponent】=========
     debugPrint("【阶段2】开始RSA加密密码");
-   String encryptedPwd = rsaEncryptPemKey(pwdCtrl.text.trim(), publicKeyXml);
+    // publicKeyXml 是json里面的PublicKey对象，包含Modulus、Exponent
+    final Map<String,dynamic> pubKeyObj = publicKeyXml;
+    String modBase64 = pubKeyObj["Modulus"];
+    String expBase64 = pubKeyObj["Exponent"];
+    // 调用我们写的 rsaEncryptByModExp，不再使用rsaEncryptPemKey
+    String encryptedPwd = rsaEncryptByModExp(pwdCtrl.text.trim(), modBase64, expBase64);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
+
 
     // =========阶段3：提交登录请求，获取token=========
     debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
