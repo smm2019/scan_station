@@ -303,7 +303,7 @@ _mainScrollCtrl.dispose(); //新增
     List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
     if(allBatch.isNotEmpty){
       //只筛选未归档批次作为可采集候选
-      final active = allBatch.where((b)=>!b.isArchived).toList().cast<Widget>();
+  final active = allBatch.where((b)=>!b.isArchived).toList();
       if(active.isNotEmpty){
         active.sort((a, b) => b.createTime.compareTo(a.createTime));
         setState(() {
@@ -444,7 +444,8 @@ _containerType = null;
         if(exist.workType == 0 && exist.stationNo != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
-            List<String> mutableList = batch.usedStation.toList().cast<Widget>();
+                       List<String> mutableList = batch.usedStation.toList();
+
             mutableList.remove(exist.stationNo);
             batch.usedStation = mutableList;
             await _isar.batchInfos.put(batch);
@@ -618,7 +619,8 @@ final rec = ScanRecord(
         if(_workType ==0 && _selectedStation != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
-            List<String> mutableList = batch.usedStation.toList().cast<Widget>();
+             List<String> mutableList = batch.usedStation.toList();
+
             if(!mutableList.contains(_selectedStation)){
               mutableList.add(_selectedStation!);
               batch.usedStation = mutableList;
@@ -1056,7 +1058,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
                           if(r.workType ==0 && r.stationNo != null){
                             BatchInfo? batch = await _getCurrentBatch();
                             if(batch != null){
-                              List<String> mutable = batch.usedStation.toList().cast<Widget>();
+                              List<String> mutable = batch.usedStation.toList();
                               mutable.remove(r.stationNo);
                               batch.usedStation = mutable;
                               await _isar.batchInfos.put(batch);
@@ -1097,7 +1099,8 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
                         onChanged: (sel){
                           setState(() {
                             if(sel == true){
-                              _selectedBatchIds = batches.map((b)=>b.batchId).toList().cast<Widget>();
+                                                         _selectedBatchIds = batches.map((b)=>b.batchId).toList();
+
                             }else{
                               _selectedBatchIds.clear();
                             }
@@ -1518,7 +1521,7 @@ SingleChildScrollView(
             });
           },
         ),
-      )),
+      )).toList().cast<Widget>(),
       //第二组 extraTags，接在同一行后面
       ..._extraTags.map((tag)=>Padding(
         padding: const EdgeInsets.only(right:6),
@@ -1535,7 +1538,7 @@ SingleChildScrollView(
             });
           },
         ),
-      )),
+      )).toList().cast<Widget>(),
     ],
   ),
 ),
@@ -1759,7 +1762,8 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
             .batchIdEqualTo(widget.batch.batchId)
             .findFirst();
         if (b != null) {
-          List<String> mut = b.usedStation.toList().cast<Widget>();
+            List<String> mut = b.usedStation.toList();
+
           mut.remove(r.stationNo);
           b.usedStation = mut;
           await _isar.batchInfos.put(b);
