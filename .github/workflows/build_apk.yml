@@ -28,7 +28,7 @@ jobs:
         with:
           flutter-version: '3.22.0'
           channel: stable
-          cache: true
+          cache: false # 改这里！关闭flutter-action自带缓存
 
       - name: Install Android Command‑Line Tools
         run: |
