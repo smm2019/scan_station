@@ -36,9 +36,9 @@ String rsaEncryptPemKey(String plainText, String pemPublicKey) {
 
   final innerParser = pc.ASN1Parser(pubKeyData);
   final innerSeq = innerParser.nextObject() as pc.ASN1Sequence;
-  // ==========这里改：.value → .integer ==========
-  final modulus = (innerSeq.elements![0] as pc.ASN1Integer).integer;
-  final exponent = (innerSeq.elements![1] as pc.ASN1Integer).integer;
+  // 加上 ! 把 BigInt? 转为 BigInt
+  final modulus = (innerSeq.elements![0] as pc.ASN1Integer).integer!;
+  final exponent = (innerSeq.elements![1] as pc.ASN1Integer).integer!;
 
   final pubKey = pc.RSAPublicKey(modulus, exponent);
 
