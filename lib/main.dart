@@ -9,25 +9,50 @@ import 'dart:io';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'dart:convert';
-
 // =========【改动1：新增权限依赖导入】=========
 import 'package:permission_handler/permission_handler.dart';
-
 import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
-
 import 'package:pointycastle/pointycastle.dart' as pc;
 import 'package:pointycastle/asymmetric/api.dart' as pc;
-
-
 import 'package:http/http.dart' as http;
 
+// ============粘贴刚刚更新好的rsaEncryptPemKey函数============
+String rsaEncryptPemKey(String plainText, String pemPublicKey) {
+  // 1) 清理 PEM头尾标记、换行、空格
+  String keyBody = pemPublicKey
+      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
+      .replaceAll("-----END PUBLIC KEY-----", "")
+      .replaceAll("\n", "")
+      .replaceAll("\r", "")
+      .replaceAll(" ", "");
+
+  Uint8List keyBytes = base64.decode(keyBody);
+
+  // 2) ASN1解析公钥
+  final topParser = pc.ASN1Parser(keyBytes);
+  final topObj = topParser.nextObject() as pc.ASN1Sequence;
+  final bitStr = topObj.elements?[1] as pc.ASN1BitString;
+  final pubKeyData = bitStr.valueBytes!;
+
+  final innerParser = pc.ASN1Parser(pubKeyData);
+  final innerSeq = innerParser.nextObject() as pc.ASN1Sequence;
+  final modulus = (innerSeq.elements![0] as pc.ASN1Integer).value!;
+  final exponent = (innerSeq.elements![1] as pc.ASN1Integer).value!;
+
+  final pubKey = pc.RSAPublicKey(modulus, exponent);
+
+  // 3) PKCS1-v1_5加密（和MES网页JS对齐）
+  final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
+    ..init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
+
+  Uint8List data = Uint8List.fromList(utf8.encode(plainText));
+  Uint8List encrypted = cipher.process(data);
+  return base64.encode(encrypted);
+}
 
 part 'main.g.dart';
-
-
-
 
 
 class MesConfig {
@@ -147,33 +172,6 @@ Y/W3nPMrBfr/y1D5eQIDAQAB
 
 
 // =========【MesConfig结束】=========
-// ↓↓↓粘贴下面完整RSA函数在这里 ↓↓↓
-String rsaEncryptPemKey(String plainText, String pemPublicKey) {
-  //移除PEM头尾标记、换行空格
-  String keyBody = pemPublicKey
-      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
-      .replaceAll("-----END PUBLIC KEY-----", "")
-      .replaceAll("\n", "")
-      .replaceAll("\r", "")
-      .replaceAll(" ", "");
-  Uint8List keyBytes = base64.decode(keyBody);
-  //解析公钥
-  final asn1Parser = pc.ASN1Parser(keyBytes);
-  final topLevelSeq = asn1Parser.parse() as pc.ASN1Sequence;
-  final pubKeySeq = topLevelSeq.children[1] as pc.ASN1BitString;
-  final pubKeyParser = pc.ASN1Parser(pubKeySeq.value);
-  final pubKeyAsn1 = pubKeyParser.parse() as pc.ASN1Sequence;
-  BigInt modulus = pubKeyAsn1.children[0] as pc.ASN1Integer;
-  BigInt exponent = pubKeyAsn1.children[1] as pc.ASN1Integer;
-  final pubKey = pc.RSAPublicKey(modulus, exponent);
-  //RSA加密
-  final encryptor = pc.RSAEngine();
-  encryptor.init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
-  Uint8List data = Uint8List.fromList(utf8.encode(plainText));
-  Uint8List encrypted = encryptor.process(data);
-  return base64.encode(encrypted);
-}
-// ↑↑↑RSA函数结束 ↑↑↑
 
 
 // ===================== Isar数据库模型 =====================
