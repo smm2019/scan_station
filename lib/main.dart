@@ -2076,8 +2076,9 @@ Future<bool> _testMesLogin() async {
     final asn1Parser = ASN1Parser(pubDerBytes);
     final topSeq = asn1Parser.nextObject() as ASN1Sequence;
     final pubKeySeq = topSeq.elements![1] as ASN1Sequence;
-    final modulus = (pubKeySeq.elements![0] as ASN1Integer).value;
-    final exponent = (pubKeySeq.elements![1] as ASN1Integer).value;
+    final modulus = (pubKeySeq.elements![0] as ASN1Integer).intValue;
+    final exponent = (pubKeySeq.elements![1] as ASN1Integer).intValue;
+
     final pubKey = RSAPublicKey(modulus!, exponent!);
 
     // PKCS1-v1_5加密
