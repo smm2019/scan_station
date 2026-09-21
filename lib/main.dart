@@ -20,7 +20,6 @@ import 'package:http/http.dart' as http;
 part 'main.g.dart';
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 String rsaEncryptPemKey(String plainText, String pemPublicKey) {
-  // 1) 清理 PEM头尾标记、换行、空格
   String keyBody = pemPublicKey
       .replaceAll("-----BEGIN PUBLIC KEY-----", "")
       .replaceAll("-----END PUBLIC KEY-----", "")
@@ -30,7 +29,6 @@ String rsaEncryptPemKey(String plainText, String pemPublicKey) {
 
   Uint8List keyBytes = base64.decode(keyBody);
 
-  // 2) ASN1解析公钥
   final topParser = pc.ASN1Parser(keyBytes);
   final topObj = topParser.nextObject() as pc.ASN1Sequence;
   final bitStr = topObj.elements?[1] as pc.ASN1BitString;
@@ -38,12 +36,12 @@ String rsaEncryptPemKey(String plainText, String pemPublicKey) {
 
   final innerParser = pc.ASN1Parser(pubKeyData);
   final innerSeq = innerParser.nextObject() as pc.ASN1Sequence;
-  final modulus = (innerSeq.elements![0] as pc.ASN1Integer).value!;
-  final exponent = (innerSeq.elements![1] as pc.ASN1Integer).value!;
+  // ==========这里改：.value → .integer ==========
+  final modulus = (innerSeq.elements![0] as pc.ASN1Integer).integer;
+  final exponent = (innerSeq.elements![1] as pc.ASN1Integer).integer;
 
   final pubKey = pc.RSAPublicKey(modulus, exponent);
 
-  // 3) PKCS1-v1_5加密（和MES网页JS对齐）
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
     ..init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
 
