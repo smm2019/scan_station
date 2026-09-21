@@ -22,11 +22,31 @@ import 'package:http/http.dart' as http;
 
 
 import 'package:rsa_cipher/rsa_cipher.dart';
+import 'package:pointycastle/pointycastle.dart';
+import 'package:asn1lib/asn1lib.dart';
+
 
 part 'main.g.dart';
 String rsaEncrypt(String plainText, String publicKeyPem) {
-  final pubKey = RSAPublicKey.fromPEM(publicKeyPem);
-  return pubKey.encrypt(plainText);
+  // 清理PEM字符串，去掉头尾标记、换行空格
+  String pem = publicKeyPem
+      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
+      .replaceAll("-----END PUBLIC KEY-----", "")
+      .replaceAll("\n", "")
+      .replaceAll("\r", "")
+      .replaceAll(" ", "");
+  Uint8List keyBytes = base64.decode(pem);
+  ASN1Parser parser = ASN1Parser(keyBytes);
+  ASN1Sequence seq = parser.nextObject() as ASN1Sequence;
+  ASN1Sequence pubKeySeq = seq.elements[1] as ASN1Sequence;
+  BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).value;
+  BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).value;
+
+  RSAPublicKey pubKey = RSAPublicKey(modulus, exponent);
+  var cipher = RSAEngine()..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+  Uint8List data = Uint8List.fromList(utf8.encode(plainText));
+  Uint8List encrypted = cipher.process(data);
+  return base64.encode(encrypted);
 }
 
 
