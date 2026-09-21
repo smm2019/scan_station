@@ -36,8 +36,9 @@ String rsaEncryptPemKey(String plainText, String pemPublicKey) {
   ASN1Parser parser = ASN1Parser(keyBytes);
   ASN1Sequence seq = parser.nextObject() as ASN1Sequence;
   ASN1Sequence pubKeySeq = seq.elements[1] as ASN1Sequence;
-  BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).value;
-  BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).value;
+// ========= 这里改 .value → .integer =========
+  BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).integer;
+  BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).integer;
   pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
   final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
@@ -204,14 +205,7 @@ Future<String?> mesLogin(String serverIp, String serverPort, String account, Str
   }
 }
 
-// RSA加密工具函数（配套，密码加密）
-String rsaEncrypt(String plainText, String publicKeyStr) {
-  final parser = RSAKeyParser();
-  final RSAPublicKey publicKey = parser.parse(publicKeyStr) as RSAPublicKey;
-  final cipher = Cipher("RSA/ECB/PKCS1")..init(true, PublicKeyParameter(publicKey));
-  final encrypted = cipher.process(Uint8List.fromList(utf8.encode(plainText)));
-  return convert.base64.encode(encrypted);
-}
+
 // =========【MesConfig结束】=========
 // ===================== Isar数据库模型 =====================
 
