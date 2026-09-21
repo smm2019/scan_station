@@ -2088,7 +2088,7 @@ Future<bool> _testMesLogin() async {
     }
     final String keyToken = validateResult["KeyToken"]!;
     String pubPem = validateResult["PublicKeyPem"]!;
-    // =========阶段2：RSA加密密码【PEM公钥，不使用RSAPublicKeyParser】=========
+        // =========阶段2：RSA加密密码【PEM公钥，修复ASN1编译错误】=========
     debugPrint("【阶段2】开始RSA加密密码");
     //清理PEM头尾标记和换行
     String pemClean = pubPem
@@ -2100,12 +2100,14 @@ Future<bool> _testMesLogin() async {
     // ASN1解析DER二进制
     final asn1Parser = pc.ASN1Parser(pubDerBytes);
     final topLevelSeq = asn1Parser.readObject() as pc.ASN1Sequence;
-    final pubKeyBitStr = topLevelSeq.elements[1] as pc.ASN1BitString;
+    final pubKeyBitStr = topLevelSeq.elements?[1] as pc.ASN1BitString;
     final pubSeqParser = pc.ASN1Parser(pubKeyBitStr.value);
     final pubSeq = pubSeqParser.readObject() as pc.ASN1Sequence;
-    BigInt modulus = (pubSeq.elements[0] as pc.ASN1Integer).value;
-    BigInt exponent = (pubSeq.elements[1] as pc.ASN1Integer).value;
-
+    // ==========【这里是修复核心】==========
+    final el0 = pubSeq.elements?[0] as pc.ASN1Integer?;
+    final el1 = pubSeq.elements?[1] as pc.ASN1Integer?;
+    BigInt modulus = el0!.integer;
+    BigInt exponent = el1!.integer;
     final pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
     // PKCS1-v1_5加密
     final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
@@ -2114,6 +2116,7 @@ Future<bool> _testMesLogin() async {
     Uint8List encryptedRaw = cipher.process(dataRaw);
     String encryptedPwd = base64.encode(encryptedRaw);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
+
     // =========阶段3：提交登录请求，获取token=========
     debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
     final loginResp = await http.post(
