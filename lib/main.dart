@@ -18,7 +18,7 @@ import 'dart:typed_data';
 import 'package:pointycastle/pointycastle.dart' hide Padding;
 import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
-import 'package:pointycastle/pem/pem.dart';
+
 
 part 'main.g.dart';
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
@@ -2069,24 +2069,24 @@ Future<bool> _testMesLogin() async {
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
 
-                    // =========阶段2：RSA加密密码【官方标准解析版】=========
-    // 1. 将base64的DER公钥包装为标准PEM格式
+                        // =========阶段2：RSA加密密码【官方工具版】=========
+    // 1. 将base64编码的DER公钥包装为标准PEM格式
     String pemContent = '''-----BEGIN PUBLIC KEY-----
 $pubPem
 -----END PUBLIC KEY-----''';
 
-    // 2. 官方解析器自动解析PKCS#8公钥，直接得到RSA公钥对象
-    final pemParser = PemParser(pemContent);
-    final pemObj = pemParser.next()!;
-    final publicKey = pemObj.publicKey as RSAPublicKey;
+    // 2. 官方工具提取DER字节 + 自动解析公钥
+    Uint8List derBytes = ASN1Utils.getBytesFromPEMString(pemContent);
+    final publicKey = PublicKeyFactory.fromDer(derBytes) as RSAPublicKey;
 
-    // 3. PKCS1-v1_5 加密
+    // 3. PKCS1-v1_5加密
     final cipher = AsymmetricBlockCipher('RSA/PKCS1')
       ..init(true, PublicKeyParameter<RSAPublicKey>(publicKey));
     Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
     Uint8List encryptedRaw = cipher.process(dataRaw);
     String encryptedPwd = base64.encode(encryptedRaw);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
+
 
     // =========阶段3：提交登录请求，获取token=========
     debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
