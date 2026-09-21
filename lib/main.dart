@@ -17,35 +17,19 @@ import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
 
-import 'package:pointycastle/pointycastle.dart' as pc;
-import 'package:pointycastle/asymmetric/api.dart' as pc;
 
-import 'package:asn1lib/asn1lib.dart';
 import 'package:http/http.dart' as http;
-import 'package:xml/xml.dart';
+
 
 part 'main.g.dart';
-String rsaEncryptPemKey(String plainText, String pemPublicKey) {
-  // 清理PEM头尾标记、换行
-  String pem = pemPublicKey
-      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
-      .replaceAll("-----END PUBLIC KEY-----", "")
-      .replaceAll("\n", "")
-      .replaceAll("\r", "");
-  Uint8List keyBytes = base64.decode(pem);
-  ASN1Parser parser = ASN1Parser(keyBytes);
-  ASN1Sequence seq = parser.nextObject() as ASN1Sequence;
-  ASN1Sequence pubKeySeq = seq.elements[1] as ASN1Sequence;
-  BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).value;
-  BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).value;
-  pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
-  final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
-  final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
-  cipher.init(true, param);
-  Uint8List rawData = Uint8List.fromList(utf8.encode(plainText));
-  Uint8List encryptedBytes = cipher.process(rawData);
-  return base64.encode(encryptedBytes);
+
+import 'package:rsa_cipher/rsa_cipher.dart';
+
+String rsaEncrypt(String plainText, String publicKeyPem) {
+  final pubKey = RSAPublicKey.fromPEM(publicKeyPem);
+  return pubKey.encrypt(plainText);
 }
+
 
 
 class MesConfig {
@@ -162,57 +146,8 @@ Y/W3nPMrBfr/y1D5eQIDAQAB
     };
   }
 }
-// 登录接口
-Future<String?> mesLogin(String serverIp, String serverPort, String account, String password) async {
-  final baseUrl = "http://$serverIp:$serverPort";
-  final uri = Uri.parse("$baseUrl/platform/sign/signin2");
 
-  // RSA加密密码，公钥放在MesConfig
-  final encryptPwd = rsaEncrypt(password, MesConfig.mesRsaPublicKey);
 
-  final Map<String, String> headers = {
-    "Content-Type": "application/json; charset=utf-8",
-  };
-
-  final body = json.encode({
-    "account": account,
-    "password": encryptPwd,
-  });
-
-  try {
-    final resp = await http.post(uri, headers: headers, body: body);
-    if (resp.statusCode == 200) {
-      final jsonResp = json.decode(resp.body);
-      if(jsonResp["success"] == true){
-        // 从响应Header取出Token
-        final token = resp.headers["token"];
-        if(token != null && token.isNotEmpty){
-          final sp = await SharedPreferences.getInstance();
-          await sp.setString("mes_token", token);
-          // 顺带保存OrgId，后续查询接口用
-          final orgId = jsonResp["data"]["organizations"][0]["id"];
-          await sp.setString("mes_orgId", orgId);
-          return token;
-        }
-      }
-    }
-    debugPrint("MES登录失败: ${resp.statusCode}, ${resp.body}");
-    return null;
-  } catch (e) {
-    debugPrint("MES登录异常：$e");
-    return null;
-  }
-}
-
-// RSA加密工具函数（配套，密码加密）
-String rsaEncrypt(String plainText, String publicKeyStr) {
-  final parser = RSAKeyParser();
-  final RSAPublicKey publicKey = parser.parse(publicKeyStr) as RSAPublicKey;
-  final cipher = Cipher("RSA/ECB/PKCS1")..init(true, PublicKeyParameter(publicKey));
-  final encrypted = cipher.process(Uint8List.fromList(utf8.encode(plainText)));
-  return convert.base64.encode(encrypted);
-}
-// =========【MesConfig结束】=========
 // ===================== Isar数据库模型 =====================
 
 
@@ -2137,7 +2072,13 @@ Future<bool> _testMesLogin() async {
 
     // =========阶段2：RSA加密密码=========
     debugPrint("【阶段2】开始RSA加密密码");
-   String encryptedPwd = rsaEncryptPemKey(pwdCtrl.text.trim(), publicKeyXml);
+// 拼接PEM头尾
+String pemKey = """-----BEGIN PUBLIC KEY-----
+$publicKeyXml
+-----END PUBLIC KEY-----""";
+String encryptedPwd = rsaEncrypt(pwdCtrl.text.trim(), pemKey);
+
+
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
 
     // =========阶段3：提交登录请求，获取token=========
