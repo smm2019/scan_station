@@ -2071,7 +2071,7 @@ Future<bool> _testMesLogin() async {
         if(json["success"] != true) return null;
         final data = json["data"];
         final keyToken = data["KeyToken"] as String;
-        final publicKeyPem = data["PublicKey"] as String; //公钥是PEM字符串
+        final publicKeyPem = data["PublicKey"] as String; //公钥PEM
         return {
           "KeyToken": keyToken,
           "PublicKeyPem": publicKeyPem,
@@ -2081,34 +2081,52 @@ Future<bool> _testMesLogin() async {
         return null;
       }
     }
-    // ✅【修复点：接收接口返回结果】
+
     final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim());
     if(validateResult == null){
       throw Exception("阶段1失败：获取公钥接口返回空，请检查账号/服务器地址");
     }
     final String keyToken = validateResult["KeyToken"]!;
     String pubPem = validateResult["PublicKeyPem"]!;
-        // =========阶段2：RSA加密密码【PEM公钥，修复ASN1编译错误】=========
+
+    // =========阶段2：RSA加密密码【✅删除全部ASN1Parser代码！！使用mod exp方案】=========
     debugPrint("【阶段2】开始RSA加密密码");
-    //清理PEM头尾标记和换行
+    // 清理PEM标记，拿到base64 der字符串
     String pemClean = pubPem
         .replaceAll("-----BEGIN PUBLIC KEY-----", "")
         .replaceAll("-----END PUBLIC KEY-----", "")
         .replaceAll("\n", "")
         .replaceAll("\r", "");
     Uint8List pubDerBytes = base64.decode(pemClean);
-    // ASN1解析DER二进制
-    final asn1Parser = pc.ASN1Parser(pubDerBytes);
-    final topLevelSeq = asn1Parser.readObject() as pc.ASN1Sequence;
-    final pubKeyBitStr = topLevelSeq.elements?[1] as pc.ASN1BitString;
-    final pubSeqParser = pc.ASN1Parser(pubKeyBitStr.value);
-    final pubSeq = pubSeqParser.readObject() as pc.ASN1Sequence;
-    // ==========【这里是修复核心】==========
-    final el0 = pubSeq.elements?[0] as pc.ASN1Integer?;
-    final el1 = pubSeq.elements?[1] as pc.ASN1Integer?;
-    BigInt modulus = el0!.integer;
-    BigInt exponent = el1!.integer;
+
+    // 手动从DER公钥提取 modulus 和 exponent（完全不使用ASN1Parser）
+    BigInt extractBigInt(Uint8List bytes) {
+      BigInt res = BigInt.from(0);
+      for (var b in bytes) {
+        res = (res << 8) | BigInt.from(b);
+      }
+      return res;
+    }
+    // 跳过公钥头部固定19字节，后面就是modulus + exponent
+    int offset = 19;
+    int modLen = pubDerBytes[offset];
+    offset +=1;
+    if(modLen >= 0x80){
+      int lenBytes = modLen - 0x80;
+      List<int> lb = pubDerBytes.sublist(offset, offset+lenBytes);
+      offset += lenBytes;
+      modLen = extractBigInt(Uint8List.fromList(lb)).toInt();
+    }
+    Uint8List modBytes = pubDerBytes.sublist(offset, offset+modLen);
+    offset += modLen;
+    int expLen = pubDerBytes[offset];
+    offset +=1;
+    Uint8List expBytes = pubDerBytes.sublist(offset, offset+expLen);
+
+    BigInt modulus = extractBigInt(modBytes);
+    BigInt exponent = extractBigInt(expBytes);
     final pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
+
     // PKCS1-v1_5加密
     final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
       ..init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
@@ -2173,6 +2191,7 @@ Future<bool> _testMesLogin() async {
     return false;
   }
 }
+
 
 
 
