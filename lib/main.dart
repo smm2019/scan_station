@@ -36,9 +36,9 @@ String rsaEncryptPemKey(String plainText, String pemPublicKey) {
   ASN1Parser parser = ASN1Parser(keyBytes);
   ASN1Sequence seq = parser.nextObject() as ASN1Sequence;
   ASN1Sequence pubKeySeq = seq.elements[1] as ASN1Sequence;
-// ========= 这里改 .value → .integer =========
-  BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).integer;
-  BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).integer;
+// =========【修复点：integer → value】=========
+  BigInt modulus = (pubKeySeq.elements[0] as ASN1Integer).value;
+  BigInt exponent = (pubKeySeq.elements[1] as ASN1Integer).value;
   pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
   final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1');
   final pc.PublicKeyParameter param = pc.PublicKeyParameter(pubKey);
@@ -47,6 +47,7 @@ String rsaEncryptPemKey(String plainText, String pemPublicKey) {
   Uint8List encryptedBytes = cipher.process(rawData);
   return base64.encode(encryptedBytes);
 }
+
 
 
 class MesConfig {
