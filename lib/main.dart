@@ -2070,10 +2070,10 @@ Future<bool> _testMesLogin() async {
         if(json["success"] != true) return null;
         final data = json["data"];
         final keyToken = data["KeyToken"] as String;
-      final publicKey = data["PublicKey"] as Map<String,dynamic>; // 改成Map，不是String
+        final publicKeyPem = data["PublicKey"] as String; //公钥是PEM字符串
         return {
           "KeyToken": keyToken,
-          "PublicKey": publicKey,
+          "PublicKeyPem": publicKeyPem,
         };
       }catch(e){
         debugPrint("getValidateKey2异常：$e");
@@ -2081,24 +2081,22 @@ Future<bool> _testMesLogin() async {
       }
     }
 
-    // 调用获取公钥&keyToken
-    final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim());
-    if(validateResult == null){
-      throw Exception("获取公钥/KeyToken失败，请检查账号和服务器地址");
-    }
-    String keyToken = validateResult["KeyToken"]!;
-  // Map<String,dynamic> publicKeyXml = validateResult["PublicKey"]!;
 
 
-    // =========阶段2：RSA加密密码【适配Modulus+Exponent】=========
+     // =========阶段2：RSA加密密码【PEM公钥版本】=========
     debugPrint("【阶段2】开始RSA加密密码");
-    // publicKeyXml 是json里面的PublicKey对象，包含Modulus、Exponent
-   final Map<String,dynamic> pubKeyObj = validateResult["PublicKey"]!;
-
-    String modBase64 = pubKeyObj["Modulus"];
-    String expBase64 = pubKeyObj["Exponent"];
-    // 调用我们写的 rsaEncryptByModExp，不再使用rsaEncryptPemKey
-    String encryptedPwd = rsaEncryptByModExp(pwdCtrl.text.trim(), modBase64, expBase64);
+    String pubPem = validateResult["PublicKeyPem"]!;
+    // 解析PEM公钥
+    final parser = pc.RSAPublicKeyParser();
+    Uint8List pubBytes = Uint8List.fromList(utf8.encode(pubPem));
+    final asn1Obj = parser.parse(pubBytes);
+    final pc.RSAPublicKey pubKey = asn1Obj as pc.RSAPublicKey;
+    // PKCS1-v1_5加密
+    final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
+      ..init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
+    Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
+    Uint8List encryptedRaw = cipher.process(dataRaw);
+    String encryptedPwd = base64.encode(encryptedRaw);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
 
 
