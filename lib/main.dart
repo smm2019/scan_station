@@ -2065,6 +2065,7 @@ Future<bool> _testMesLogin() async {
       };
       try {
         final resp = await http.get(uri, headers: headers);
+        debugPrint("【getValidateKey2 返回报文】${resp.body}");
         if(resp.statusCode != 200) return null;
         final json = jsonDecode(resp.body);
         if(json["success"] != true) return null;
@@ -2081,12 +2082,16 @@ Future<bool> _testMesLogin() async {
       }
     }
 
-
-
-     // =========阶段2：RSA加密密码【PEM公钥版本】=========
-    debugPrint("【阶段2】开始RSA加密密码");
+    // ✅【修复点：接收接口返回结果】
+    final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim());
+    if(validateResult == null){
+      throw Exception("阶段1失败：获取公钥接口返回空，请检查账号/服务器地址");
+    }
+    final String keyToken = validateResult["KeyToken"]!;
     String pubPem = validateResult["PublicKeyPem"]!;
-    // 解析PEM公钥
+
+    // =========阶段2：RSA加密密码【PEM公钥版本】=========
+    debugPrint("【阶段2】开始RSA加密密码");
     final parser = pc.RSAPublicKeyParser();
     Uint8List pubBytes = Uint8List.fromList(utf8.encode(pubPem));
     final asn1Obj = parser.parse(pubBytes);
@@ -2098,7 +2103,6 @@ Future<bool> _testMesLogin() async {
     Uint8List encryptedRaw = cipher.process(dataRaw);
     String encryptedPwd = base64.encode(encryptedRaw);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
-
 
     // =========阶段3：提交登录请求，获取token=========
     debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
@@ -2118,6 +2122,7 @@ Future<bool> _testMesLogin() async {
       },
       body: jsonEncode([accountCtrl.text.trim(), encryptedPwd, keyToken]),
     ).timeout(Duration(seconds: timeoutSec));
+
     if (loginResp.statusCode != 200) {
       throw Exception("阶段3失败：登录接口Http状态码${loginResp.statusCode}，返回：${loginResp.body}");
     }
@@ -2156,6 +2161,7 @@ Future<bool> _testMesLogin() async {
     return false;
   }
 }
+
 
   @override
   void dispose() {
