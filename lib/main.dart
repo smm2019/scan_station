@@ -2054,72 +2054,20 @@ Future<bool> _testMesLogin() async {
   String baseUrl = "http://$ip:$port";
   try {
     // =========阶段1：获取RSA公钥 KeyToken=========
-
-
     final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim(), timeoutSec);
-
     if(validateResult == null){
       throw Exception("阶段1失败：获取公钥接口返回空，请检查账号/服务器地址");
     }
+    final String keyToken = validateResult["keyToken"]!;
+    String pubPem = validateResult["publicKey"]!;
+    debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
 
-    // ✅ 替换成下面这两行
-final String keyToken = validateResult["keyToken"]!;
-String pubPem = validateResult["publicKey"]!;
-
-    // =========阶段2：RSA加密密码【✅删除全部ASN1Parser代码！！使用mod exp方案】=========
-    debugPrint("【阶段2】开始RSA加密密码");
-    // 清理PEM标记，拿到base64 der字符串
-    String pemClean = pubPem
-        .replaceAll("-----BEGIN PUBLIC KEY-----", "")
-        .replaceAll("-----END PUBLIC KEY-----", "")
-        .replaceAll("\n", "")
-        .replaceAll("\r", "");
-        Uint8List pubDerBytes = base64.decode(pemClean);
-    // 手动从DER公钥提取 modulus 和 exponent（完全不使用ASN1Parser）
-    BigInt extractBigInt(Uint8List bytes) {
-      BigInt res = BigInt.from(0);
-      for (var b in bytes) {
-        res = (res << 8) | BigInt.from(b);
-      }
-      return res;
-    }
-
-    // =========【新增：DER长度合法性保护，防止数组越界崩溃】=========
-    if (pubDerBytes.length < 19) {
-      throw Exception("公钥DER长度不足，无效公钥");
-    }
-    int offset = 19;
-    int modLen = pubDerBytes[offset];
-    offset +=1;
-    if(modLen >= 0x80){
-      int lenBytes = modLen - 0x80;
-      if(offset + lenBytes > pubDerBytes.length){
-        throw Exception("公钥解析：mod长度越界");
-      }
-      List<int> lb = pubDerBytes.sublist(offset, offset+lenBytes);
-      offset += lenBytes;
-      modLen = extractBigInt(Uint8List.fromList(lb)).toInt();
-    }
-    // 校验modulus数据是否足够
-    if(offset + modLen > pubDerBytes.length){
-      throw Exception("公钥解析：modulus数据越界");
-    }
-    Uint8List modBytes = pubDerBytes.sublist(offset, offset+modLen);
-    offset += modLen;
-
-    if(offset >= pubDerBytes.length){
-      throw Exception("公钥解析：exponent长度越界");
-    }
-    int expLen = pubDerBytes[offset];
-    offset +=1;
-    if(offset + expLen > pubDerBytes.length){
-      throw Exception("公钥解析：exponent数据越界");
-    }
-    Uint8List expBytes = pubDerBytes.sublist(offset, offset+expLen);
-    BigInt modulus = extractBigInt(modBytes);
-    BigInt exponent = extractBigInt(expBytes);
-
-    final pc.RSAPublicKey pubKey = pc.RSAPublicKey(modulus, exponent);
+    // =========阶段2：RSA加密密码【使用pointycastle标准PEM解析，移除手写DER解析！】=========
+    // 使用PEM读取器加载公钥，不再手动解析字节，彻底解决exponent越界
+    final pemParser = pc.PemParser(pc.ScanStream(utf8.encode(pubPem)));
+    final pc.PemObject pemObj = pemParser.readPemObject();
+    final pc.Asn1Parser asn1Parser = pc.Asn1Parser(pemObj.content);
+    final pc.RSAPublicKey pubKey = pc.RSAPublicKey.fromAsn1(asn1Parser);
 
     // PKCS1-v1_5加密
     final cipher = pc.AsymmetricBlockCipher('RSA/PKCS1')
