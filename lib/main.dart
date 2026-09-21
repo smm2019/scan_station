@@ -20,9 +20,9 @@ import 'dart:typed_data';
 import 'package:pointycastle/pointycastle.dart' as pc;
 import 'package:pointycastle/asymmetric/api.dart' as pc;
 
-import 'package:asn1lib/asn1lib.dart';
+
 import 'package:http/http.dart' as http;
-import 'package:xml/xml.dart';
+
 
 part 'main.g.dart';
 
@@ -144,51 +144,38 @@ Y/W3nPMrBfr/y1D5eQIDAQAB
     };
   }
 }
-// 登录接口
-Future<String?> mesLogin(String serverIp, String serverPort, String account, String password) async {
-  final baseUrl = "http://$serverIp:$serverPort";
-  final uri = Uri.parse("$baseUrl/platform/sign/signin2");
-
-  // RSA加密密码，公钥放在MesConfig
-final encryptPwd = rsaEncryptPemKey(password, MesConfig.mesRsaPublicKey);
-
-
-  final Map<String, String> headers = {
-    "Content-Type": "application/json; charset=utf-8",
-  };
-
-  final body = json.encode({
-    "account": account,
-    "password": encryptPwd,
-  });
-
-  try {
-    final resp = await http.post(uri, headers: headers, body: body);
-    if (resp.statusCode == 200) {
-      final jsonResp = json.decode(resp.body);
-      if(jsonResp["success"] == true){
-        // 从响应Header取出Token
-        final token = resp.headers["token"];
-        if(token != null && token.isNotEmpty){
-          final sp = await SharedPreferences.getInstance();
-          await sp.setString("mes_token", token);
-          // 顺带保存OrgId，后续查询接口用
-          final orgId = jsonResp["data"]["organizations"][0]["id"];
-          await sp.setString("mes_orgId", orgId);
-          return token;
-        }
-      }
-    }
-    debugPrint("MES登录失败: ${resp.statusCode}, ${resp.body}");
-    return null;
-  } catch (e) {
-    debugPrint("MES登录异常：$e");
-    return null;
-  }
-}
 
 
 // =========【MesConfig结束】=========
+// ↓↓↓粘贴下面完整RSA函数在这里 ↓↓↓
+String rsaEncryptPemKey(String plainText, String pemPublicKey) {
+  //移除PEM头尾标记、换行空格
+  String keyBody = pemPublicKey
+      .replaceAll("-----BEGIN PUBLIC KEY-----", "")
+      .replaceAll("-----END PUBLIC KEY-----", "")
+      .replaceAll("\n", "")
+      .replaceAll("\r", "")
+      .replaceAll(" ", "");
+  Uint8List keyBytes = base64.decode(keyBody);
+  //解析公钥
+  final asn1Parser = pc.ASN1Parser(keyBytes);
+  final topLevelSeq = asn1Parser.parse() as pc.ASN1Sequence;
+  final pubKeySeq = topLevelSeq.children[1] as pc.ASN1BitString;
+  final pubKeyParser = pc.ASN1Parser(pubKeySeq.value);
+  final pubKeyAsn1 = pubKeyParser.parse() as pc.ASN1Sequence;
+  BigInt modulus = pubKeyAsn1.children[0] as pc.ASN1Integer;
+  BigInt exponent = pubKeyAsn1.children[1] as pc.ASN1Integer;
+  final pubKey = pc.RSAPublicKey(modulus, exponent);
+  //RSA加密
+  final encryptor = pc.RSAEngine();
+  encryptor.init(true, pc.PublicKeyParameter<pc.RSAPublicKey>(pubKey));
+  Uint8List data = Uint8List.fromList(utf8.encode(plainText));
+  Uint8List encrypted = encryptor.process(data);
+  return base64.encode(encrypted);
+}
+// ↑↑↑RSA函数结束 ↑↑↑
+
+
 // ===================== Isar数据库模型 =====================
 
 
