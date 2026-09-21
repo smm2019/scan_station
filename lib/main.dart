@@ -21,10 +21,9 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 
 
-part 'main.g.dart';
-
 import 'package:rsa_cipher/rsa_cipher.dart';
 
+part 'main.g.dart';
 String rsaEncrypt(String plainText, String publicKeyPem) {
   final pubKey = RSAPublicKey.fromPEM(publicKeyPem);
   return pubKey.encrypt(plainText);
