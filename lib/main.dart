@@ -2069,33 +2069,42 @@ Future<bool> _testMesLogin() async {
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
 
-                                    // =========阶段2：RSA加密密码【3.7.4 修正版】=========
-    // 1. base64解码得到PKCS#8格式的DER公钥字节
-    Uint8List pubDerBytes = base64.decode(pubPem);
-    final outerParser = ASN1Parser(pubDerBytes);
-    
-    // 2. 解析最外层 SubjectPublicKeyInfo 序列
-    final spkiSeq = outerParser.nextObject() as ASN1Sequence;
-    // 第二个元素是 BIT STRING，通过 .bytes 属性获取内部公钥字节
-    final pubKeyBitStr = spkiSeq.elements![1] as ASN1BitString;
-    Uint8List pubKeyBytes = Uint8List.fromList(pubKeyBitStr.bytes);
-    
-    // 3. 二次解析 BIT STRING 内部封装的 RSA 公钥序列
-    final innerParser = ASN1Parser(pubKeyBytes);
-    final rsaSeq = innerParser.nextObject() as ASN1Sequence;
-    
-    // 4. ASN1Integer 通过 .value 属性获取 BigInt 类型的模数、指数
-    final modulus = (rsaSeq.elements![0] as ASN1Integer).value;
-    final exponent = (rsaSeq.elements![1] as ASN1Integer).value;
-    final pubKey = RSAPublicKey(modulus, exponent);
+                                    // =========阶段2：RSA加密密码【完美防报错版】=========
+try{
+  String pemContent;
+  // 判断是否已经包含PEM头尾标记，没有就自动包装
+  if(pubPem.contains("-----BEGIN PUBLIC KEY-----")){
+    pemContent = pubPem;
+  }else{
+    pemContent = '''-----BEGIN PUBLIC KEY-----
+$pubPem
+-----END PUBLIC KEY-----''';
+  }
 
-    // 5. PKCS1-v1_5 加密
-    final cipher = AsymmetricBlockCipher('RSA/PKCS1')
-      ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
-    Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
-    Uint8List encryptedRaw = cipher.process(dataRaw);
-    String encryptedPwd = base64.encode(encryptedRaw);
-    debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
+  // 1. 使用官方标准 PEM 解析器，直接获取 RSAPublicKey 对象
+  final pemParser = PEMParser(pemContent); 
+  final pemObj = pemParser.next();
+  if(pemObj == null){
+    throw Exception("PEM解析失败，pemObj为空");
+  }
+  final pubKey = pemObj.publicKey as RSAPublicKey;
+
+  // 2. 使用 PKCS1-v1_5 填充方式加密
+  final cipher = AsymmetricBlockCipher('RSA/PKCS1')
+    ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+
+  // 3. 执行加密并转为 Base64 字符串
+  Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
+  Uint8List encryptedRaw = cipher.process(dataRaw);
+  String encryptedPwd = base64.encode(encryptedRaw);
+
+  debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
+}catch(e,stack){
+  debugPrint("【阶段2 RSA加密异常】$e \n $stack");
+  rethrow;
+}
+// =========阶段2结束=========
+
 
 
     // =========阶段3：提交登录请求，获取token=========
