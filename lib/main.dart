@@ -18,7 +18,7 @@ import 'dart:typed_data';
 import 'package:pointycastle/pointycastle.dart' hide Padding;
 import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
-
+import 'package:pointycastle/pem/pem.dart';
 
 part 'main.g.dart';
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
@@ -2069,43 +2069,25 @@ Future<bool> _testMesLogin() async {
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
 
-                // =========阶段2：RSA加密密码【3.7.3最终适配版】=========
-    // base64解码得到PKCS#8格式的DER公钥字节
-    Uint8List pubDerBytes = base64.decode(pubPem);
-    final outerParser = ASN1Parser(pubDerBytes);
-    
-    // 第一层：解析 SubjectPublicKeyInfo 外层序列
-    final spkiSeq = outerParser.nextObject() as ASN1Sequence;
-    // 第二个元素是 BIT STRING，value 属性返回01组成的二进制字符串
-    final bitString = spkiSeq.elements![1] as ASN1BitString;
-    String bitStr = bitString.value;
-    
-    // 二进制字符串补位并转换为字节数组
-    while (bitStr.length % 8 != 0) {
-      bitStr += '0';
-    }
-    List<int> byteList = [];
-    for (int i = 0; i < bitStr.length; i += 8) {
-      byteList.add(int.parse(bitStr.substring(i, i + 8), radix: 2));
-    }
-    Uint8List pubKeyBytes = Uint8List.fromList(byteList);
-    
-    // 第二层：解析 RSA 公钥本身的序列
-    final innerParser = ASN1Parser(pubKeyBytes);
-    final rsaSeq = innerParser.nextObject() as ASN1Sequence;
-    
-    // ASN1Integer 通过 value 属性获取 BigInt 类型的模数、指数
-    final modulus = (rsaSeq.elements![0] as ASN1Integer).value;
-    final exponent = (rsaSeq.elements![1] as ASN1Integer).value;
-    final pubKey = RSAPublicKey(modulus, exponent);
+                    // =========阶段2：RSA加密密码【官方标准解析版】=========
+    // 1. 将base64的DER公钥包装为标准PEM格式
+    String pemContent = '''-----BEGIN PUBLIC KEY-----
+$pubPem
+-----END PUBLIC KEY-----''';
 
-    // PKCS1-v1_5 加密
+    // 2. 官方解析器自动解析PKCS#8公钥，直接得到RSA公钥对象
+    final pemParser = PemParser(pemContent);
+    final pemObj = pemParser.next()!;
+    final publicKey = pemObj.publicKey as RSAPublicKey;
+
+    // 3. PKCS1-v1_5 加密
     final cipher = AsymmetricBlockCipher('RSA/PKCS1')
-      ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+      ..init(true, PublicKeyParameter<RSAPublicKey>(publicKey));
     Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
     Uint8List encryptedRaw = cipher.process(dataRaw);
     String encryptedPwd = base64.encode(encryptedRaw);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
+
     // =========阶段3：提交登录请求，获取token=========
     debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
     final loginResp = await http.post(
