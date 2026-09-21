@@ -14,9 +14,10 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
-import 'package:pointycastle/pointycastle.dart';
-import 'package:pointycastle/asymmetric/api.dart';
 
+import 'package:pointycastle/pointycastle.dart' hide Padding;
+import 'package:pointycastle/asymmetric/api.dart' hide Padding;
+import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
 part 'main.g.dart';
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
@@ -302,7 +303,7 @@ _mainScrollCtrl.dispose(); //新增
     List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
     if(allBatch.isNotEmpty){
       //只筛选未归档批次作为可采集候选
-      final active = allBatch.where((b)=>!b.isArchived).toList();
+      final active = allBatch.where((b)=>!b.isArchived).toList().cast<Widget>();
       if(active.isNotEmpty){
         active.sort((a, b) => b.createTime.compareTo(a.createTime));
         setState(() {
@@ -443,7 +444,7 @@ _containerType = null;
         if(exist.workType == 0 && exist.stationNo != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
-            List<String> mutableList = batch.usedStation.toList();
+            List<String> mutableList = batch.usedStation.toList().cast<Widget>();
             mutableList.remove(exist.stationNo);
             batch.usedStation = mutableList;
             await _isar.batchInfos.put(batch);
@@ -617,7 +618,7 @@ final rec = ScanRecord(
         if(_workType ==0 && _selectedStation != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
-            List<String> mutableList = batch.usedStation.toList();
+            List<String> mutableList = batch.usedStation.toList().cast<Widget>();
             if(!mutableList.contains(_selectedStation)){
               mutableList.add(_selectedStation!);
               batch.usedStation = mutableList;
@@ -867,10 +868,10 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
                       child: Text("$num号",style: TextStyle(fontSize:18)),
                     ),
                   );
-                }).toList(),
+                }).toList().cast<Widget>(),
               ),
             );
-          }).toList(),
+          }).toList().cast<Widget>(),
         );
       },
     );
@@ -890,7 +891,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
               selected: _curLocGroup == g,
               onSelected: (s) => setState(() => _curLocGroup = g),
             ),
-          )).toList(),
+          )).toList().cast<Widget>(),
         ),
       ),
       const SizedBox(height: 8),
@@ -1055,7 +1056,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
                           if(r.workType ==0 && r.stationNo != null){
                             BatchInfo? batch = await _getCurrentBatch();
                             if(batch != null){
-                              List<String> mutable = batch.usedStation.toList();
+                              List<String> mutable = batch.usedStation.toList().cast<Widget>();
                               mutable.remove(r.stationNo);
                               batch.usedStation = mutable;
                               await _isar.batchInfos.put(batch);
@@ -1096,7 +1097,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
                         onChanged: (sel){
                           setState(() {
                             if(sel == true){
-                              _selectedBatchIds = batches.map((b)=>b.batchId).toList();
+                              _selectedBatchIds = batches.map((b)=>b.batchId).toList().cast<Widget>();
                             }else{
                               _selectedBatchIds.clear();
                             }
@@ -1758,7 +1759,7 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
             .batchIdEqualTo(widget.batch.batchId)
             .findFirst();
         if (b != null) {
-          List<String> mut = b.usedStation.toList();
+          List<String> mut = b.usedStation.toList().cast<Widget>();
           mut.remove(r.stationNo);
           b.usedStation = mut;
           await _isar.batchInfos.put(b);
@@ -2065,16 +2066,23 @@ Future<bool> _testMesLogin() async {
 
     // =========阶段2：RSA加密密码【使用pointycastle标准PEM解析，移除手写DER解析！】=========
     // 使用PEM读取器加载公钥，不再手动解析字节，彻底解决exponent越界
-final pemParser = PemParser(ScanStream(utf8.encode(pubPem)));
-final PemObject pemObj = pemParser.readPemObject();
-final Asn1Parser asn1Parser = Asn1Parser(pemObj.content);
-final RSAPublicKey pubKey = RSAPublicKey.fromAsn1(asn1Parser);
-// PKCS1-v1_5加密
-final cipher = AsymmetricBlockCipher('RSA/PKCS1')
-  ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
-Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
-Uint8List encryptedRaw = cipher.process(dataRaw);
-String encryptedPwd = base64.encode(encryptedRaw);
+    // =========阶段2：RSA加密密码【官方ASN1解析DER公钥】=========
+    // MES返回公钥为base64编码的DER格式，直接解码解析
+    Uint8List pubDerBytes = base64.decode(pubPem);
+    final asn1Parser = ASN1Parser(pubDerBytes);
+    final topSeq = asn1Parser.nextObject() as ASN1Sequence;
+    final pubKeySeq = topSeq.elements![1] as ASN1Sequence;
+    final modulus = (pubKeySeq.elements![0] as ASN1Integer).value;
+    final exponent = (pubKeySeq.elements![1] as ASN1Integer).value;
+    final pubKey = RSAPublicKey(modulus!, exponent!);
+
+    // PKCS1-v1_5加密
+    final cipher = AsymmetricBlockCipher('RSA/PKCS1')
+      ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+    Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
+    Uint8List encryptedRaw = cipher.process(dataRaw);
+    String encryptedPwd = base64.encode(encryptedRaw);
+
 
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
 
