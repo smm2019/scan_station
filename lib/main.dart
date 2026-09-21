@@ -169,7 +169,8 @@ Future<String?> mesLogin(String serverIp, String serverPort, String account, Str
   final uri = Uri.parse("$baseUrl/platform/sign/signin2");
 
   // RSA加密密码，公钥放在MesConfig
-  final encryptPwd = rsaEncrypt(password, MesConfig.mesRsaPublicKey);
+final encryptPwd = rsaEncryptPemKey(password, MesConfig.mesRsaPublicKey);
+
 
   final Map<String, String> headers = {
     "Content-Type": "application/json; charset=utf-8",
