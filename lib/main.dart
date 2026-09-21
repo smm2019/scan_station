@@ -2069,37 +2069,27 @@ Future<bool> _testMesLogin() async {
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
 
-                            // =========阶段2：RSA加密密码【3.7.x原生适配版】=========
+                                // =========阶段2：RSA加密密码【3.7.4 准确版】=========
     // 1. base64解码得到PKCS#8格式的DER公钥字节
     Uint8List pubDerBytes = base64.decode(pubPem);
     final outerParser = ASN1Parser(pubDerBytes);
     
     // 2. 解析最外层 SubjectPublicKeyInfo 序列
     final spkiSeq = outerParser.nextObject() as ASN1Sequence;
-    // 第二个元素是 BIT STRING，通过 stringValue 获取二进制位字符串
+    // 第二个元素是 BIT STRING，通过 .bits 属性直接获取内部公钥字节数组
     final pubKeyBitStr = spkiSeq.elements![1] as ASN1BitString;
-    String bitStr = pubKeyBitStr.stringValue!;
+    Uint8List pubKeyBytes = pubKeyBitStr.bits;
     
-    // 3. 二进制位字符串补位并转换为字节数组
-    while (bitStr.length % 8 != 0) {
-      bitStr += '0';
-    }
-    List<int> byteList = [];
-    for (int i = 0; i < bitStr.length; i += 8) {
-      byteList.add(int.parse(bitStr.substring(i, i + 8), radix: 2));
-    }
-    Uint8List pubKeyBytes = Uint8List.fromList(byteList);
-    
-    // 4. 二次解析 BIT STRING 内部封装的 RSA 公钥序列
+    // 3. 二次解析 BIT STRING 内部封装的 RSA 公钥序列
     final innerParser = ASN1Parser(pubKeyBytes);
     final rsaSeq = innerParser.nextObject() as ASN1Sequence;
     
-    // 5. ASN1Integer 通过 .value 属性获取 BigInt 类型的模数、指数
-    final modulus = (rsaSeq.elements![0] as ASN1Integer).value;
-    final exponent = (rsaSeq.elements![1] as ASN1Integer).value;
+    // 4. ASN1Integer 通过 .integer 属性获取 BigInt 类型的模数、指数
+    final modulus = (rsaSeq.elements![0] as ASN1Integer).integer;
+    final exponent = (rsaSeq.elements![1] as ASN1Integer).integer;
     final pubKey = RSAPublicKey(modulus, exponent);
 
-    // 6. PKCS1-v1_5 加密
+    // 5. PKCS1-v1_5 加密
     final cipher = AsymmetricBlockCipher('RSA/PKCS1')
       ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
     Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
