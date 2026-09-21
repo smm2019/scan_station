@@ -2087,13 +2087,14 @@ Future<bool> _testMesLogin() async {
       throw Exception("获取公钥/KeyToken失败，请检查账号和服务器地址");
     }
     String keyToken = validateResult["KeyToken"]!;
-   Map<String,dynamic> publicKeyXml = validateResult["PublicKey"]!;
+  // Map<String,dynamic> publicKeyXml = validateResult["PublicKey"]!;
 
 
     // =========阶段2：RSA加密密码【适配Modulus+Exponent】=========
     debugPrint("【阶段2】开始RSA加密密码");
     // publicKeyXml 是json里面的PublicKey对象，包含Modulus、Exponent
-    final Map<String,dynamic> pubKeyObj = publicKeyXml;
+   final Map<String,dynamic> pubKeyObj = validateResult["PublicKey"]!;
+
     String modBase64 = pubKeyObj["Modulus"];
     String expBase64 = pubKeyObj["Exponent"];
     // 调用我们写的 rsaEncryptByModExp，不再使用rsaEncryptPemKey
