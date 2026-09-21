@@ -2069,32 +2069,31 @@ Future<bool> _testMesLogin() async {
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
 
-        // =========阶段2：RSA加密密码【手动解析 3.7.3适配版】=========
+            // =========阶段2：RSA加密密码【pointycastle 3.7.3 适配版】=========
     // base64解码得到PKCS#8格式的DER公钥字节
     Uint8List pubDerBytes = base64.decode(pubPem);
     final outerParser = ASN1Parser(pubDerBytes);
-    // 最外层 SubjectPublicKeyInfo 序列
+    // 最外层：SubjectPublicKeyInfo 序列
     final spkiSeq = outerParser.nextObject() as ASN1Sequence;
-    // 取第二个元素：BIT STRING，通过 .content 获取内部公钥字节
+    // 第二个元素是BIT STRING，用 contentBytes 获取内部的公钥原始字节
     final pubKeyBitStr = spkiSeq.elements![1] as ASN1BitString;
-    Uint8List pubKeyContentBytes = pubKeyBitStr.content;
+    Uint8List pubKeyContentBytes = pubKeyBitStr.contentBytes;
 
-    // 二次解析 RSA 公钥本身的序列
+    // 二次解析 BIT STRING 内部封装的 RSA 公钥序列
     final innerParser = ASN1Parser(pubKeyContentBytes);
     final pubKeySeq = innerParser.nextObject() as ASN1Sequence;
-    // ASN1Integer 通过 .value 获取 BigInteger 类型的数值
-    final modulus = (pubKeySeq.elements![0] as ASN1Integer).value;
-    final exponent = (pubKeySeq.elements![1] as ASN1Integer).value;
+    // ASN1Integer 调用 toBigInteger() 方法，得到 BigInteger 类型的模数/指数
+    final modulus = (pubKeySeq.elements![0] as ASN1Integer).toBigInteger();
+    final exponent = (pubKeySeq.elements![1] as ASN1Integer).toBigInteger();
     final pubKey = RSAPublicKey(modulus, exponent);
 
-    // PKCS1-v1_5加密
+    // PKCS1-v1_5 加密
     final cipher = AsymmetricBlockCipher('RSA/PKCS1')
       ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
     Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
     Uint8List encryptedRaw = cipher.process(dataRaw);
     String encryptedPwd = base64.encode(encryptedRaw);
     debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
-
 
     // =========阶段3：提交登录请求，获取token=========
     debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
