@@ -2068,25 +2068,26 @@ Future<bool> _testMesLogin() async {
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
 
-    // =========阶段2：RSA加密密码【pointycastle:3.7.3 适配版本】=========
-// MES返回公钥为PKCS#8 SubjectPublicKeyInfo，base64的DER
+    // =========阶段2：RSA加密密码【pointycastle 3.7.3 适配版】=========
+// MES返回公钥为PKCS#8 SubjectPublicKeyInfo格式的base64编码
 Uint8List pubDerBytes = base64.decode(pubPem);
 final outerParser = ASN1Parser(pubDerBytes);
+// 最外层：SubjectPublicKeyInfo 序列
 final spkiSeq = outerParser.nextObject() as ASN1Sequence;
-// elements[1] = BIT STRING，使用 .bytes 拿到内部DER字节
+// 取第二个元素：subjectPublicKey（BIT STRING类型），用 .bits 获取内部字节
 final pubKeyBitString = spkiSeq.elements![1] as ASN1BitString;
-Uint8List pubKeyContentBytes = pubKeyBitString.bytes;
+Uint8List pubKeyContentBytes = pubKeyBitString.bits;
 
-// 二次解析BITSTRING内部的RSA公钥SEQUENCE
+// 二次解析 BIT STRING 内部的 RSA 公钥序列
 final innerParser = ASN1Parser(pubKeyContentBytes);
 final pubKeySeq = innerParser.nextObject() as ASN1Sequence;
 
-// 调用 getPositiveValue() 方法，获取BigInteger
-final modulus = (pubKeySeq.elements![0] as ASN1Integer).getPositiveValue();
-final exponent = (pubKeySeq.elements![1] as ASN1Integer).getPositiveValue();
+// ASN1Integer 通过 .value 属性获取 BigInt 类型的数值
+final modulus = (pubKeySeq.elements![0] as ASN1Integer).value;
+final exponent = (pubKeySeq.elements![1] as ASN1Integer).value;
 final pubKey = RSAPublicKey(modulus, exponent);
 
-// PKCS1-v1_5加密
+// PKCS1-v1_5 加密
 final cipher = AsymmetricBlockCipher('RSA/PKCS1')
   ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
 Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
