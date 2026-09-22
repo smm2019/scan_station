@@ -583,18 +583,26 @@ try {
   final resp = await mesRequest.close();
   final respBody = await resp.transform(utf8.decoder).join();
   final Map<String,dynamic> mesJson = jsonDecode(respBody);
-  //解析抓包返回的JSON结构
-  if(mesJson["success"] == true && mesJson["data"] != null && mesJson["data"]["data"] != null){
-    // 实测返回为分页结构：data.recordsTotal + data.data 数组，取第一条记录；兼容单对象形态
+  //解析抓包返回的JSON结构：分页结构 data.recordsTotal + data.data 数组，取第一条记录；兼容单对象形态
+  String? mesErrMsg;
+  if(mesJson["success"] == true && mesJson["data"] != null){
     final rawData = mesJson["data"]["data"];
-    final Map<String, dynamic>? row = rawData is List
-        ? (rawData.isEmpty ? null : rawData.first as Map<String, dynamic>)
-        : (rawData is Map<String, dynamic> ? rawData : null);
-    if(row != null){
+    final List rows = rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
+    if(rows.isEmpty){
+      mesErrMsg = "查询结果为空(recordsTotal=${mesJson["data"]["recordsTotal"]})，请确认该货码在MES中有在库标签";
+    } else {
+      final row = rows.first as Map;
       mesPartNo = row["MITEM_CODE"]?.toString();
       mesQty = (row["QTY"] as num?)?.toDouble();
       mesCreateTime = row["DATETIME_CREATED"]?.toString();
     }
+  } else {
+    mesErrMsg = "接口返回异常 success=${mesJson["success"]} message=${mesJson["message"]}";
+  }
+  if(mesErrMsg != null && mounted){
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("MES查询失败：$mesErrMsg，仅保存本地采集信息"))
+    );
   }
 } catch (mesErr) {
   if(mounted){
