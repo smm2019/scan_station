@@ -96,6 +96,7 @@ class MesConfig {
     await sp.remove(keyMesUserId);
     await sp.remove(keyMesUserName);
     await sp.remove(keyMesDisplayName);
+    await sp.remove(keyMesModuleId);
   }
 
   // ========== 新增：保存登录成功后的用户信息 ==========
@@ -436,6 +437,8 @@ _containerType = null;
                 Text("采集时间：${exist.scanTime.toString().substring(0,19)}"),
                 Text("作业类型：${exist.workType==0?"AGV站台":"人工货位"}"),
                 Text("位置：$posInfo"),
+                Text("零件号：${(exist.mesPartNo?.isNotEmpty ?? false) ? exist.mesPartNo : "无"}"),
+                Text("数量：${exist.mesQty ?? "无"}"),
                 Text("备注：${exist.remark.isNotEmpty?exist.remark:"无"}"),
                 Text("状态：${exist.isCancel?"已作废":"正常"}"),
               ],
@@ -596,28 +599,65 @@ try {
 
   final resp = await mesRequest.close();
   final respBody = await resp.transform(utf8.decoder).join();
-  final Map<String,dynamic> mesJson = jsonDecode(respBody);
+  final int httpCode = resp.statusCode;
+
+  // ===== Token失效识别①：HTTP状态码 401/403；②响应体不是JSON（错误页/空内容）=====
+  bool tokenInvalid = false;
+  Map<String,dynamic>? mesJson;
+  if(httpCode == 401 || httpCode == 403){
+    tokenInvalid = true;
+  } else {
+    try {
+      final decoded = jsonDecode(respBody);
+      if(decoded is Map<String,dynamic>) mesJson = decoded;
+    } catch (_) {
+      mesJson = null; //解析失败按失效/服务异常处理，不再抛FormatException
+    }
+    if(mesJson == null) tokenInvalid = true;
+  }
+
   //解析抓包返回的JSON结构：分页结构 data.recordsTotal + data.data 数组，取第一条记录；兼容单对象形态
   String? mesErrMsg;
-  if(mesJson["success"] == true && mesJson["data"] != null){
-    final rawData = mesJson["data"]["data"];
-    final List rows = rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
-    if(rows.isEmpty){
-      mesErrMsg = "查询结果为空(recordsTotal=${mesJson["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确";
-    } else {
-      final row = rows.first as Map;
-      // 零件号取 PartCode（如 6608462082-A）；MITEM_CODE 是物料码，仅作兜底
-      mesPartNo = (row["PartCode"] ?? row["MITEM_CODE"])?.toString();
-      mesQty = (row["QTY"] as num?)?.toDouble();
-      mesCreateTime = row["DATETIME_CREATED"]?.toString();
-    }
+  bool msgComplete = false; //true=消息已自带完整上下文，直接显示；false=需加"MES查询失败："前缀
+  if(tokenInvalid){
+    final String previewRaw = respBody.trim();
+    final String preview = previewRaw.isEmpty
+        ? "(空响应)"
+        : (previewRaw.length > 100 ? "${previewRaw.substring(0,100)}…" : previewRaw);
+    mesErrMsg = "MES登录已失效(HTTP $httpCode)，请到设置页重新登录MES。服务器返回：$preview";
+    msgComplete = true;
   } else {
-    mesErrMsg = "接口返回异常 success=${mesJson["success"]} message=${mesJson["message"]}";
+    final Map<String,dynamic> json = mesJson!;
+    if(json["success"] == true && json["data"] != null){
+      final rawData = json["data"]["data"];
+      final List rows = rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
+      if(rows.isEmpty){
+        mesErrMsg = "查询结果为空(recordsTotal=${json["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确";
+      } else {
+        final row = rows.first as Map;
+        // 零件号取 PartCode（如 6608462082-A）；MITEM_CODE 是物料码，仅作兜底
+        mesPartNo = (row["PartCode"] ?? row["MITEM_CODE"])?.toString();
+        mesQty = (row["QTY"] as num?)?.toDouble();
+        mesCreateTime = row["DATETIME_CREATED"]?.toString();
+      }
+    } else {
+      // ===== Token失效识别③：success=false 且 message 指向会话/授权问题 =====
+      final String msg = json["message"]?.toString() ?? "";
+      final bool msgLooksLikeAuth = RegExp(
+        r"token|session|unauthor|forbidden|invalid|expire|过期|失效|未授权|未登录|重新登录|登录",
+        caseSensitive: false,
+      ).hasMatch(msg);
+      if(msgLooksLikeAuth){
+        mesErrMsg = "MES登录已失效：$msg，请到设置页重新登录MES";
+        msgComplete = true;
+      } else {
+        mesErrMsg = "接口返回异常 success=${json["success"]} message=$msg";
+      }
+    }
   }
   if(mesErrMsg != null && mounted){
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("MES查询失败：$mesErrMsg，仅保存本地采集信息"))
-    );
+    final String tip = msgComplete ? mesErrMsg : "MES查询失败：$mesErrMsg，仅保存本地采集信息";
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tip)));
   }
 } catch (mesErr) {
   if(mounted){
@@ -2495,6 +2535,38 @@ TextField(
                   }
                 },
                 child: const Text("仅保存配置（不登录）"),
+              ),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red.shade100,
+                  foregroundColor: Colors.red,
+                ),
+                onPressed: () async {
+                  final bool? ok = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text("退出登录"),
+                      content: const Text("确认退出当前 MES 登录吗？退出后需重新登录才能查询标签信息。"),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+                        TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认退出")),
+                      ],
+                    ),
+                  );
+                  if (ok != true) return;
+                  await MesConfig.clearToken();
+                  _token = null;
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("✅ 已退出登录，Token已清除")),
+                    );
+                  }
+                },
+                child: const Text("退出登录"),
               ),
             ),
           ],
