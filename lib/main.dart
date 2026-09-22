@@ -2093,8 +2093,7 @@ Future<bool> _testMesLogin() async {
       }
 final modulus = pubElements[0] as ASN1Integer;
 final exponent = pubElements[1] as ASN1Integer;
-//final pubKey = RSAPublicKey(modulus.value!, exponent.value!); // ✅ 适配3.7.4
-final pubKey = RSAPublicKey(exponent.integer!, module.integer!);
+final pubKey = RSAPublicKey(exponent.integer!, modulus.integer!);
       // 使用 PKCS1-v1_5 填充方式加密
       final cipher = AsymmetricBlockCipher('RSA/PKCS1')
         ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
