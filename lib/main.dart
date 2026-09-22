@@ -45,6 +45,7 @@ class MesConfig {
   static const String keyMesUserId = "mes_user_id";
   static const String keyMesUserName = "mes_user_name";
   static const String keyMesDisplayName = "mes_display_name";
+  static const String keyMesModuleId = "mes_module_id";
 
 
 
@@ -104,6 +105,7 @@ class MesConfig {
     required String userId,
     required String userName,
     required String displayName,
+    String moduleId = "",
   }) async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(keyToken, token);
@@ -111,6 +113,7 @@ class MesConfig {
     await sp.setString(keyMesUserId, userId);
     await sp.setString(keyMesUserName, userName);
     await sp.setString(keyMesDisplayName, displayName);
+    await sp.setString(keyMesModuleId, moduleId);
   }
 
   // ========== 新增：读取 MES Token ==========
@@ -123,6 +126,12 @@ class MesConfig {
   static Future<String> getOrgId() async {
     final sp = await SharedPreferences.getInstance();
     return sp.getString(keyMesOrgId) ?? "";
+  }
+
+  // ========== 新增：读取登录下发的 ModuleId ==========
+  static Future<String> getModuleId() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getString(keyMesModuleId) ?? "";
   }
 
   // ========== 新增：读取用户信息 ==========
@@ -571,9 +580,14 @@ try {
   // 【全部复制抓包拿到的请求头】
   mesRequest.headers.set("Culture","zh-CN");
   mesRequest.headers.set("EnterpriseId","*");
-  // 改为从配置读取，不再硬编码ModuleId/OrgId
-  mesRequest.headers.set("ModuleId", mesCfg["moduleId"] ?? "");
-  mesRequest.headers.set("OrgId", mesCfg["orgId"] ?? "");
+  // 改为从配置读取，不再硬编码ModuleId/OrgId；手填框为空时回退到登录下发值/抓包实测值，避免空请求头被服务端过滤成0条
+  String moduleId = (mesCfg["moduleId"] ?? "").toString().trim();
+  if (moduleId.isEmpty) moduleId = (await MesConfig.getModuleId()).trim();
+  if (moduleId.isEmpty) moduleId = "CE7F61BD526C424996CF6CE00211B86A"; // 抓包实测：标签查询模块ID
+  String orgIdHdr = (mesCfg["orgId"] ?? "").toString().trim();
+  if (orgIdHdr.isEmpty) orgIdHdr = (await MesConfig.getOrgId()).trim();
+  mesRequest.headers.set("ModuleId", moduleId);
+  mesRequest.headers.set("OrgId", orgIdHdr);
   mesRequest.headers.set("ModulePage","/h5/pages/LABEL/MitemLabelQuery/index.html");
   mesRequest.headers.set("X-TZ-Offset","-480");
   mesRequest.headers.set("Token", token);
@@ -589,7 +603,7 @@ try {
     final rawData = mesJson["data"]["data"];
     final List rows = rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
     if(rows.isEmpty){
-      mesErrMsg = "查询结果为空(recordsTotal=${mesJson["data"]["recordsTotal"]})，请确认该货码在MES中有在库标签";
+      mesErrMsg = "查询结果为空(recordsTotal=${mesJson["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确";
     } else {
       final row = rows.first as Map;
       mesPartNo = row["MITEM_CODE"]?.toString();
@@ -2244,12 +2258,16 @@ Future<bool> _testMesLogin() async {
       }
     }
     debugPrint("【阶段3】userId=$userId userName=$userName displayName=$displayName orgId=$orgId");
+    // 网页端查询接口的 ModuleId 来自登录响应头，此处一并保存供 GetLableList 请求头使用
+    final String loginModuleId = (loginResp.headers["moduleid"] ?? "").trim();
+    debugPrint("【阶段3】响应头ModuleId=$loginModuleId");
     await MesConfig.saveLoginInfo(
       token: token,
       orgId: orgId,
       userId: userId,
       userName: userName,
       displayName: displayName,
+      moduleId: loginModuleId,
     );
     await MesConfig.saveConfig(
       host: hostCtrl.text,
