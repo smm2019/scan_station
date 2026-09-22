@@ -15,8 +15,9 @@ import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
 
+
+import 'package:asn1lib/asn1lib.dart'; // 这才是我们要用的asn1库
 import 'package:pointycastle/pointycastle.dart' hide Padding;
-import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
 
 
@@ -2069,31 +2070,35 @@ Future<bool> _testMesLogin() async {
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
     // =========阶段2：RSA加密密码【修复：把encryptedPwd提到try外面，修复PEMParser】=========
-    String encryptedPwd = ""; // ✅ 提前声明变量，扩大作用域！！
+    // =========阶段2：RSA加密密码【修复X.509公钥解析】=========
+    String encryptedPwd = "";
     try{
       String pemContent;
-      // 判断是否已经包含PEM头尾标记，没有就自动包装
       if(pubPem.contains("-----BEGIN PUBLIC KEY-----")){
         pemContent = pubPem;
       }else{
-        pemContent = '''-----BEGIN PUBLIC KEY----- $pubPem -----END PUBLIC KEY-----''';
+        pemContent = '''-----BEGIN PUBLIC KEY-----
+$pubPem
+-----END PUBLIC KEY-----''';
       }
-      // ✅ 修复PEMParser：完整导入类，使用ASN1Parser读取PEM
-      final pemBytes = Uint8List.fromList(utf8.encode(pemContent));
-      final asn1Parser = ASN1Parser(pemBytes);
+      pemContent = pemContent.replaceAll('\n', '').replaceAll('\r', '');
+      final pemBody = pemContent
+          .replaceAll('-----BEGIN PUBLIC KEY-----', '')
+          .replaceAll('-----END PUBLIC KEY-----', '');
+      final derBytes = base64.decode(pemBody);
+
+      // X.509 SubjectPublicKeyInfo 解析
+      final asn1Parser = ASN1Parser(derBytes);
       final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
-      final topElements = topLevelSeq.elements;
-      if(topElements == null || topElements.length < 2){
-        throw Exception("公钥PEM解析失败：顶层序列元素不足");
-      }
-      final pubKeySeq = topElements[1] as ASN1Sequence;
-      final pubElements = pubKeySeq.elements;
-      if(pubElements == null || pubElements.length <2){
-        throw Exception("公钥PEM解析失败：公钥序列元素不足");
-      }
-final modulus = pubElements[0] as ASN1Integer;
-final exponent = pubElements[1] as ASN1Integer;
-final pubKey = RSAPublicKey(modulus.value!, exponent.value!); // ✅ 适配3.7.4
+      final bitString = topLevelSeq.elements[1] as ASN1BitString;
+      final innerParser = ASN1Parser(bitString.contentBytes());
+      final rsaPubSeq = innerParser.nextObject() as ASN1Sequence;
+      final pubElements = rsaPubSeq.elements;
+
+      final modulus = pubElements[0] as ASN1Integer;
+      final exponent = pubElements[1] as ASN1Integer;
+      final pubKey = RSAPublicKey(modulus.valueAsBigInteger, exponent.valueAsBigInteger);
+
       // 使用 PKCS1-v1_5 填充方式加密
       final cipher = AsymmetricBlockCipher('RSA/PKCS1')
         ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
