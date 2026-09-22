@@ -2068,7 +2068,6 @@ Future<bool> _testMesLogin() async {
     final String keyToken = validateResult["keyToken"]!;
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
-
     // =========阶段2：RSA加密密码【修复：把encryptedPwd提到try外面，修复PEMParser】=========
     String encryptedPwd = ""; // ✅ 提前声明变量，扩大作用域！！
     try{
@@ -2077,27 +2076,24 @@ Future<bool> _testMesLogin() async {
       if(pubPem.contains("-----BEGIN PUBLIC KEY-----")){
         pemContent = pubPem;
       }else{
-        pemContent = '''-----BEGIN PUBLIC KEY-----
-$pubPem
------END PUBLIC KEY-----''';
+        pemContent = '''-----BEGIN PUBLIC KEY----- $pubPem -----END PUBLIC KEY-----''';
       }
       // ✅ 修复PEMParser：完整导入类，使用ASN1Parser读取PEM
-final asn1Parser = ASN1Parser(pemBytes);
-final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
-final topElements = topLevelSeq.elements;
-if(topElements == null || topElements.length < 2){
-  throw Exception("公钥PEM解析失败：顶层序列元素不足");
-}
-final pubKeySeq = topElements[1] as ASN1Sequence;
-
-final pubElements = pubKeySeq.elements;
-if(pubElements == null || pubElements.length <2){
-  throw Exception("公钥PEM解析失败：公钥序列元素不足");
-}
-final modulus = pubElements[0] as ASN1Integer;
-final exponent = pubElements[1] as ASN1Integer;
-final pubKey = RSAPublicKey(modulus.value!, exponent.value!);
-
+      final pemBytes = Uint8List.fromList(utf8.encode(pemContent));
+      final asn1Parser = ASN1Parser(pemBytes);
+      final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
+      final topElements = topLevelSeq.elements;
+      if(topElements == null || topElements.length < 2){
+        throw Exception("公钥PEM解析失败：顶层序列元素不足");
+      }
+      final pubKeySeq = topElements[1] as ASN1Sequence;
+      final pubElements = pubKeySeq.elements;
+      if(pubElements == null || pubElements.length <2){
+        throw Exception("公钥PEM解析失败：公钥序列元素不足");
+      }
+      final modulus = pubElements[0] as ASN1Integer;
+      final exponent = pubElements[1] as ASN1Integer;
+      final pubKey = RSAPublicKey(modulus.value!, exponent.value!);
       // 使用 PKCS1-v1_5 填充方式加密
       final cipher = AsymmetricBlockCipher('RSA/PKCS1')
         ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
@@ -2142,6 +2138,19 @@ final pubKey = RSAPublicKey(modulus.value!, exponent.value!);
     String token = loginJson["data"]["token"];
     _token = token;
     debugPrint("【阶段3成功】获取token：$token");
+
+    // 【移除独立阶段4，直接在这里解析用户信息并保存】
+    final String orgId = loginJson["data"]["orgId"]?.toString() ?? "";
+    final String userId = loginJson["data"]["userId"]?.toString() ?? "";
+    final String userName = loginJson["data"]["userName"]?.toString() ?? "";
+    final String displayName = loginJson["data"]["displayName"]?.toString() ?? "";
+    await MesConfig.saveLoginInfo(
+      token: token,
+      orgId: orgId,
+      userId: userId,
+      userName: userName,
+      displayName: displayName,
+    );
     await MesConfig.saveConfig(
       host: hostCtrl.text,
       port: portCtrl.text,
