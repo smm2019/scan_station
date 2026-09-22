@@ -204,6 +204,23 @@ class BatchInfo {
     this.isArchived = false,
   });
 }
+
+// ===================== 全局Isar实例 =====================
+@collection
+class RecordExtra {
+  Id id = Isar.autoIncrement;
+  @Index(unique: true)
+  String goodsCode; // 关联 ScanRecord.goodsCode（货码唯一）
+  String palletId = "";   // 托号，空串=非整托记录
+  String mesItemName = ""; // 物料描述（MES返回名称字段）
+  String mesLotNo = "";    // 批次（MES返回LOT_NO）
+  RecordExtra({
+    required this.goodsCode,
+    this.palletId = "",
+    this.mesItemName = "",
+    this.mesLotNo = "",
+  });
+}
 // ===================== 全局Isar实例 =====================
 late Isar _globalIsar;
 // ===================== 程序入口 =====================
@@ -212,7 +229,7 @@ void main() async {
   await Isar.initializeIsarCore(download: true);
   final dir = await getApplicationDocumentsDirectory();
   _globalIsar = await Isar.open(
-    [ScanRecordSchema, BatchInfoSchema],
+    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema],
     directory: dir.path,
   );
   runApp(const MyApp());
@@ -278,6 +295,12 @@ final GlobalKey _keyScanInputArea = GlobalKey();
   bool _recordPanelExpanded = false;
   late TabController _tabController;
   List<String> _selectedBatchIds = [];
+  // ===== 整托合并模式状态 =====
+  bool _palletMode = false;                     //整托开关
+  String? _currentPalletId;                     //当前托号（首码自动创建）
+  List<Map<String, dynamic>> _palletSummary = []; //本托汇总 [{partNo,itemName,boxes,qty}]
+  int _palletTotalBoxes = 0;                    //本托已扫框数
+  String _fmtQty(double q) => q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
 
   HttpServer? _webServer;
   bool _webServiceRunning = false;
@@ -308,6 +331,102 @@ _mainScrollCtrl.dispose(); //新增
     setState(() {
       _normalCount = records.where((r) => !r.isCancel).length;
       _cancelCount = records.where((r) => r.isCancel).length;
+    });
+  }
+
+  ///【整托：刷新当前托汇总卡片，按零件号分组累加数量】
+  Future<void> _refreshPalletSummary() async {
+    if (!_palletMode || _currentPalletId == null) {
+      setState(() {
+        _palletSummary = [];
+        _palletTotalBoxes = 0;
+      });
+      return;
+    }
+    //取本托所有未作废记录（含MES失败记录，零件号空归入"未知"）
+    final palletCodes = await _isar.recordExtras
+        .filter()
+        .palletIdEqualTo(_currentPalletId!)
+        .findAll();
+    final codeSet = palletCodes.map((e) => e.goodsCode).toSet();
+    final extraMap = {for (var e in palletCodes) e.goodsCode: e};
+    final records = await _isar.scanRecords
+        .filter()
+        .batchIdEqualTo(_currentBatchId!)
+        .isCancelEqualTo(false)
+        .findAll();
+    final Map<String, Map<String, dynamic>> grouped = {};
+    int totalBoxes = 0;
+    for (final r in records) {
+      if (!codeSet.contains(r.goodsCode)) continue;
+      totalBoxes++;
+      final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
+      final g = grouped.putIfAbsent(pn, () => {"partNo": pn, "itemName": "", "boxes": 0, "qty": 0.0});
+      g["boxes"] = (g["boxes"] as int) + 1;
+      g["qty"] = (g["qty"] as double) + (r.mesQty ?? 0);
+      final name = extraMap[r.goodsCode]?.mesItemName ?? "";
+      if ((g["itemName"] as String).isEmpty && name.isNotEmpty) g["itemName"] = name;
+    }
+    final list = grouped.values.toList()
+      ..sort((a, b) => (b["boxes"] as int).compareTo(a["boxes"] as int));
+    setState(() {
+      _palletSummary = list;
+      _palletTotalBoxes = totalBoxes;
+    });
+  }
+
+  ///【整托：结束当前托，释放货位/站台，准备开下一托】
+  Future<void> _endPallet() async {
+    if (_currentPalletId == null) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("结束本托"),
+        content: Text("本托已扫 $_palletTotalBoxes 框，确认结束并释放货位，开始下一托？"),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认结托")),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    // AGV站台：结托后该站台才算占用完毕，保留选中清除以便扫下一托
+    setState(() {
+      _currentPalletId = null;
+      _palletSummary = [];
+      _palletTotalBoxes = 0;
+      _selectedStation = null;
+      _selectedGroundLoc = null;
+      _containerType = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("本托已结束，请选择新货位开下一托")));
+  }
+
+  ///【整托：开关切换】
+  Future<void> _togglePalletMode(bool on) async {
+    if (on == _palletMode) return;
+    if (!on && _currentPalletId != null) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("关闭整托模式"),
+          content: const Text("当前托尚未结束，关闭将结束本托并释放货位，确认？"),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认")),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    setState(() {
+      _palletMode = on;
+      _currentPalletId = null;
+      _palletSummary = [];
+      _palletTotalBoxes = 0;
+      _selectedStation = null;
+      _selectedGroundLoc = null;
+      _containerType = null;
     });
   }
   Future<void> _loadLastBatch() async {
@@ -367,6 +486,10 @@ _mainScrollCtrl.dispose(); //新增
       _selectedTags.clear(); //新建批次清空多选标签
       _remarkInputCtrl.clear();
 _containerType = null;
+      // 新批次开始，结束未完成的托
+      _currentPalletId = null;
+      _palletSummary = [];
+      _palletTotalBoxes = 0;
 
     });
     _refreshRecord();
@@ -526,8 +649,18 @@ _containerType = null;
             .batchIdEqualTo(_currentBatchId!)
             .stationNoEqualTo(_selectedStation)
             .isCancelEqualTo(false)
-            .findFirst();
-        if (existStationRecord != null) {
+            .findAll();
+        // 整托模式：本托内的记录不算占用，允许同托多码共用站台；非本托记录仍拦截
+        String? occupiedByOtherPallet;
+        for (final rec in existStationRecord) {
+          final extra = await _isar.recordExtras.filter().goodsCodeEqualTo(rec.goodsCode).findFirst();
+          final recPallet = extra?.palletId ?? "";
+          if (!(_palletMode && _currentPalletId != null && recPallet == _currentPalletId && recPallet.isNotEmpty)) {
+            occupiedByOtherPallet = rec.goodsCode;
+            break;
+          }
+        }
+        if (occupiedByOtherPallet != null) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${_selectedStation}站台已登记货物，不可再次使用！")));
           }
@@ -546,11 +679,21 @@ _containerType = null;
         if(finalRemark.isNotEmpty) finalRemark += "｜";
         finalRemark += _remarkInputCtrl.text.trim();
       }
+      // =========整托模式：首码自动建托号=========
+      if (_palletMode && _currentPalletId == null) {
+        final ts = DateTime.now();
+        setState(() {
+          _currentPalletId = "TP${ts.millisecondsSinceEpoch}";
+        });
+      }
+      final String palletIdForSave = _palletMode ? (_currentPalletId ?? "") : "";
 
 // ===================== MES接口请求【替换为GET版本，适配抓包接口】=====================
 String? mesPartNo;
 double? mesQty;
 String? mesCreateTime;
+String mesItemName = "";
+String mesLotNo = "";
 try {
   final mesCfg = await MesConfig.getConfig();
   String baseUrl = "http://${mesCfg["host"]}:${mesCfg["port"]}";
@@ -639,6 +782,8 @@ try {
         mesPartNo = (row["PartCode"] ?? row["MITEM_CODE"])?.toString();
         mesQty = (row["QTY"] as num?)?.toDouble();
         mesCreateTime = row["DATETIME_CREATED"]?.toString();
+        mesItemName = (row["MITEM_NAME"] ?? row["MitemName"] ?? row["mitemName"] ?? "").toString();
+        mesLotNo = (row["LOT_NO"] ?? row["lotNo"] ?? "").toString();
       }
     } else {
       // ===== Token失效识别③：success=false 且 message 指向会话/授权问题 =====
@@ -669,7 +814,26 @@ try {
 }
 
 
-final rec = ScanRecord(
+      if(_palletMode && _currentPalletId != null && (mesPartNo?.isNotEmpty ?? false)){
+        // 非首码时：若零件号在本托未出现过，轻提示防误扫（不拦截）
+        final codesInPallet = await _isar.recordExtras.filter().palletIdEqualTo(_currentPalletId!).findAll();
+        final pCodes = codesInPallet.map((e) => e.goodsCode).toSet();
+        final pRecords = await _isar.scanRecords
+            .filter()
+            .batchIdEqualTo(_currentBatchId!)
+            .isCancelEqualTo(false)
+            .findAll();
+        final knownParts = pRecords
+            .where((r) => pCodes.contains(r.goodsCode) && r.mesPartNo != null)
+            .map((r) => r.mesPartNo)
+            .toSet();
+        if (knownParts.isNotEmpty && !knownParts.contains(mesPartNo)) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("⚠️ 本托出现新零件号 $mesPartNo，请确认属于同一托")));
+          }
+        }
+      }
+      final rec = ScanRecord(
   scanTime: DateTime.now(),
   workType: _workType,
   stationNo: _workType == 0 ? _selectedStation : null,
@@ -685,6 +849,15 @@ final rec = ScanRecord(
 );
       await _isar.writeTxn(() async {
         await _isar.scanRecords.put(rec);
+        // 扩展信息写入新表（同货码旧扩展记录先清掉，防作废重扫唯一索引冲突）
+        await _isar.recordExtras.filter().goodsCodeEqualTo(code).deleteAll();
+        final extraRec = RecordExtra(
+          goodsCode: code,
+          palletId: palletIdForSave,
+          mesItemName: mesItemName,
+          mesLotNo: mesLotNo,
+        );
+        await _isar.recordExtras.put(extraRec);
         if(_workType ==0 && _selectedStation != null){
           BatchInfo? batch = await _getCurrentBatch();
           if(batch != null){
@@ -703,18 +876,21 @@ final rec = ScanRecord(
       setState((){
         _selectedTags.clear(); //录入完成清空多选标签
         _remarkInputCtrl.clear();
-_containerType = null; // 新增：保存成功，容器类型取消选中
-if(_workType == 1){
+        if (!_palletMode) {
+          _containerType = null; // 新增：保存成功，容器类型取消选中
+        }
+        if(_workType == 1 && !_palletMode){
           _selectedGroundLoc = null; // ✅人工模式，录入成功清空地面货位
         }
       });
-      if(_workType ==0){
+      if(_workType ==0 && !_palletMode){
         setState((){
           _selectedStation = null;
         });
       }
       await _refreshRecord();
       await _refreshBatchStat();
+      await _refreshPalletSummary();
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("采集保存成功")));
       //【新增】保存完成，自动激活输入框，准备PDA下一次扫码
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -760,9 +936,13 @@ if(_workType == 1){
       _recordList = all;
     });
   }
-  //====修改：支持多批次合并导出｜改动2：函数改为异步，移除同步查询
+  //====修改：支持多批次合并导出｜改动2：函数改为异步，移除同步查询｜整托：托号列+汇总段
   Future<String> _generateCsvText({List<String>? targetBatchIds}) async {
-  String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期\n";
+  String csvField(String v){ //含逗号/引号的字段加引号转义，保证台账不串列
+    if (v.contains(",") || v.contains("\"")) return "\"${v.replaceAll("\"", "\"\"")}\"";
+    return v;
+  }
+  String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期,托号\n";
 
 
     String content = header;
@@ -776,6 +956,9 @@ if(_workType == 1){
       targetRecords = _recordList;
     }
     targetRecords.sort((a,b)=>a.scanTime.compareTo(b.scanTime));
+    //预取所有扩展信息（托号/物料名）
+    final extras = await _isar.recordExtras.where().findAll();
+    final Map<String,RecordExtra> extraMap = {for (var e in extras) e.goodsCode: e};
     for (var r in targetRecords) {
       String timeStr = r.scanTime.toString().substring(0, 19);
       String wt = r.workType.toString();
@@ -789,9 +972,40 @@ String container = r.containerType ?? "";
 String pn = r.mesPartNo ?? "";
 String qty = r.mesQty?.toString() ?? "";
 String pd = r.mesCreateTime ?? "";
-content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\n";
+String pid = extraMap[code]?.palletId ?? "";
+content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,$pid\n";
 
 
+    }
+    // ===== 整托汇总段：一行 = 托(货位)+零件号；同零件号多码标签号拼接、数量累加 =====
+    final Map<String, List<ScanRecord>> palletGroups = {};
+    for (final r in targetRecords) {
+      if (r.isCancel) continue;
+      final pid = extraMap[r.goodsCode]?.palletId ?? "";
+      if (pid.isEmpty) continue;
+      palletGroups.putIfAbsent(pid, () => []).add(r);
+    }
+    if (palletGroups.isNotEmpty) {
+      content += "\n===整托汇总(一行=托+零件号)===\n";
+      content += "托号,作业类型,站台编号,地面货位编码,容器类型,零件号,物料名称,框数,标签号(分号分隔),数量合计\n";
+      final keys = palletGroups.keys.toList()..sort();
+      for (final pid in keys) {
+        final rs = palletGroups[pid]!..sort((a,b)=>a.scanTime.compareTo(b.scanTime));
+        // 同托内按零件号再分组
+        final Map<String, List<ScanRecord>> byPart = {};
+        for (final r in rs) {
+          final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
+          byPart.putIfAbsent(pn, () => []).add(r);
+        }
+        for (final entry in byPart.entries) {
+          final rowsOfPart = entry.value;
+          final codes = rowsOfPart.map((e) => e.goodsCode).join("；");
+          final names = rowsOfPart.map((e) => extraMap[e.goodsCode]?.mesItemName ?? "").where((e) => e.isNotEmpty).toSet().join("；");
+          final totalQty = rowsOfPart.fold<double>(0, (s, e) => s + (e.mesQty ?? 0));
+          final loc0 = rowsOfPart.first;
+          content += "${csvField(pid)},${loc0.workType},${csvField(loc0.stationNo ?? "")},${csvField(loc0.groundLocation ?? "")},${csvField(loc0.containerType ?? "")},${csvField(entry.key)},${csvField(names)},${rowsOfPart.length},${csvField(codes)},${_fmtQty(totalQty)}\n";
+        }
+      }
     }
     return content;
   }
@@ -1302,7 +1516,12 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\
                                       ]));
                                       if(ok==true){
                                         await _isar.writeTxn(()async{
+                                          // 先收集货码，连带清理扩展表，防托号串批
+                                          final delCodes = await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).findAll();
                                           await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).deleteAll();
+                                          for(final dr in delCodes){
+                                            await _isar.recordExtras.filter().goodsCodeEqualTo(dr.goodsCode).deleteAll();
+                                          }
                                           await _isar.batchInfos.delete(b.id);
                                         });
                                         //如果删除的是当前批次，则自动切换可用批次
@@ -1476,6 +1695,53 @@ Row(
     ),
   ],
 ),
+
+// ===== 整托合并模式：开关 + 当前托汇总卡片 =====
+Container(
+  margin: const EdgeInsets.only(top:12),
+  padding: const EdgeInsets.symmetric(horizontal:12, vertical:6),
+  decoration: BoxDecoration(
+    color: _palletMode ? const Color(0xFFF0FFF4) : Colors.white,
+    borderRadius: BorderRadius.circular(12),
+    border: Border.all(color: _palletMode ? Colors.green.shade300 : Colors.grey.shade300),
+  ),
+  child: Row(
+    children: [
+      const Text("整托合并模式",style: TextStyle(fontSize:15,fontWeight: FontWeight.w500)),
+      const SizedBox(width:6),
+      Expanded(
+        child: Text(_palletMode ? (_currentPalletId==null ? "已开启，扫码自动开托" : "当前托：$_currentPalletId") : "一托多码按零件号累加数量",
+          style: TextStyle(fontSize:12,color:Colors.grey.shade600),overflow: TextOverflow.ellipsis),
+      ),
+      if (_palletMode && _currentPalletId != null)
+        TextButton(onPressed: _endPallet, child: const Text("结束本托",style: TextStyle(color:Color(0xFF515BD4)))),
+      Switch(value: _palletMode, activeColor: Colors.green, onChanged: _togglePalletMode),
+    ],
+  ),
+),
+if (_palletMode && _palletTotalBoxes > 0)
+  Container(
+    width: double.infinity,
+    margin: const EdgeInsets.only(top:8),
+    padding: const EdgeInsets.all(12),
+    decoration: BoxDecoration(
+      color: const Color(0xFFF7F8FF),
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: const Color(0xFFC7CDF0)),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text("当前托汇总（已扫 $_palletTotalBoxes 框）",style: const TextStyle(fontSize:14,fontWeight: FontWeight.bold,color:Color(0xFF515BD4))),
+        const SizedBox(height:6),
+        ..._palletSummary.map((g) => Padding(
+          padding: const EdgeInsets.symmetric(vertical:2),
+          child: Text("${g["partNo"]}  ${g["itemName"].toString().isNotEmpty ? g["itemName"] : ""}  ${g["boxes"]}框  数量合计：${_fmtQty(g["qty"] as double)}",
+            style: const TextStyle(fontSize:13)),
+        )),
+      ],
+    ),
+  ),
 
                const SizedBox(height:12),
 Container(
@@ -1744,6 +2010,10 @@ SingleChildScrollView(
             _selectedStation = null;
           }
 _containerType = null;
+          // 切换作业模式：结束当前托，防止跨托串号
+          _currentPalletId = null;
+          _palletSummary = [];
+          _palletTotalBoxes = 0;
 
         });
       },
@@ -1843,11 +2113,17 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
   }
 
 Future<void> _exportThisBatch() async {
-  //【修改这里，增加MES三列】
-  String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期\n";
+  String csvField(String v){
+    if (v.contains(",") || v.contains("\"")) return "\"${v.replaceAll("\"", "\"\"")}\"";
+    return v;
+  }
+  //【修改这里，增加MES三列｜整托：托号列+汇总段】
+  String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期,托号\n";
   String content = header;
   List<ScanRecord> targetRecords = _records;
   targetRecords.sort((a, b) => a.scanTime.compareTo(b.scanTime));
+  final extras = await _isar.recordExtras.where().findAll();
+  final Map<String,RecordExtra> extraMap = {for (var e in extras) e.goodsCode: e};
   for (var r in targetRecords) {
     String timeStr = r.scanTime.toString().substring(0, 19);
     String wt = r.workType.toString();
@@ -1861,7 +2137,37 @@ Future<void> _exportThisBatch() async {
     String pn = r.mesPartNo ?? "";
     String qty = r.mesQty?.toString() ?? "";
     String pd = r.mesCreateTime ?? "";
-    content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd\n";
+    String pid = extraMap[code]?.palletId ?? "";
+    content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,$pid\n";
+  }
+  // 整托汇总段：一行 = 托(货位)+零件号
+  final Map<String, List<ScanRecord>> palletGroups = {};
+  for (final r in targetRecords) {
+    if (r.isCancel) continue;
+    final pid = extraMap[r.goodsCode]?.palletId ?? "";
+    if (pid.isEmpty) continue;
+    palletGroups.putIfAbsent(pid, () => []).add(r);
+  }
+  if (palletGroups.isNotEmpty) {
+    content += "\n===整托汇总(一行=托+零件号)===\n";
+    content += "托号,作业类型,站台编号,地面货位编码,容器类型,零件号,物料名称,框数,标签号(分号分隔),数量合计\n";
+    final keys = palletGroups.keys.toList()..sort();
+    for (final pid in keys) {
+      final rs = palletGroups[pid]!..sort((a,b)=>a.scanTime.compareTo(b.scanTime));
+      final Map<String, List<ScanRecord>> byPart = {};
+      for (final r in rs) {
+        final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
+        byPart.putIfAbsent(pn, () => []).add(r);
+      }
+      for (final entry in byPart.entries) {
+        final rowsOfPart = entry.value;
+        final codes = rowsOfPart.map((e) => e.goodsCode).join("；");
+        final names = rowsOfPart.map((e) => extraMap[e.goodsCode]?.mesItemName ?? "").where((e) => e.isNotEmpty).toSet().join("；");
+        final totalQty = rowsOfPart.fold<double>(0, (s, e) => s + (e.mesQty ?? 0));
+        final loc0 = rowsOfPart.first;
+        content += "${csvField(pid)},${loc0.workType},${csvField(loc0.stationNo ?? "")},${csvField(loc0.groundLocation ?? "")},${csvField(loc0.containerType ?? "")},${csvField(entry.key)},${csvField(names)},${rowsOfPart.length},${csvField(codes)},${_fmtQtyLocal(totalQty)}\n";
+      }
+    }
   }
   final dir = await getExternalStorageDirectory();
   if (dir == null) return;
@@ -1872,6 +2178,8 @@ Future<void> _exportThisBatch() async {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
   }
 }
+
+  String _fmtQtyLocal(double q) => q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
 
 
   @override
