@@ -585,11 +585,16 @@ try {
   final Map<String,dynamic> mesJson = jsonDecode(respBody);
   //解析抓包返回的JSON结构
   if(mesJson["success"] == true && mesJson["data"] != null && mesJson["data"]["data"] != null){
-    // 抓包返回 data.data 是单个对象，不是数组，修正此处！
-    final row = mesJson["data"]["data"];
-    mesPartNo = row["MITEM_CODE"]?.toString();
-    mesQty = (row["QTY"] as num?)?.toDouble();
-    mesCreateTime = row["DATETIME_CREATED"]?.toString();
+    // 实测返回为分页结构：data.recordsTotal + data.data 数组，取第一条记录；兼容单对象形态
+    final rawData = mesJson["data"]["data"];
+    final Map<String, dynamic>? row = rawData is List
+        ? (rawData.isEmpty ? null : rawData.first as Map<String, dynamic>)
+        : (rawData is Map<String, dynamic> ? rawData : null);
+    if(row != null){
+      mesPartNo = row["MITEM_CODE"]?.toString();
+      mesQty = (row["QTY"] as num?)?.toDouble();
+      mesCreateTime = row["DATETIME_CREATED"]?.toString();
+    }
   }
 } catch (mesErr) {
   if(mounted){
