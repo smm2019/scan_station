@@ -2115,10 +2115,15 @@ Future<bool> _testMesLogin() async {
       if(pubElements == null || pubElements.length <2){
         throw Exception("公钥PEM解析失败：公钥序列元素不足");
       }
-      final modulus = pubElements[0] as ASN1Integer;
-      final exponent = pubElements[1] as ASN1Integer;
-      // RSAPublicKey构造函数参数顺序是(exponent, modulus)；取整数值用.integer
-      final pubKey = RSAPublicKey(exponent.integer!, modulus.integer!);
+      final int1 = pubElements[0] as ASN1Integer;
+      final int2 = pubElements[1] as ASN1Integer;
+      // 按数值大小自动识别：模数n是几百字节的大数，指数e通常是65537；
+      // 服务端若把顺序存成{e,n}，这里自动换回来，避免误把e当n导致"Input data too large"
+      final BigInt n = (int1.integer! > int2.integer!) ? int1.integer! : int2.integer!;
+      final BigInt e = (int1.integer! > int2.integer!) ? int2.integer! : int1.integer!;
+      debugPrint("【阶段2】模数位数=${n.bitLength} 指数=$e");
+      // RSAPublicKey构造函数参数顺序是(exponent, modulus)
+      final pubKey = RSAPublicKey(e, n);
       // PKCS1-v1_5填充：直接实例化，不依赖注册表别名
       final cipher = PKCS1Encoding(RSAEngine())
         ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
