@@ -2068,10 +2068,15 @@ Future<bool> _testMesLogin() async {
     final String keyToken = validateResult["keyToken"]!;
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
-    // =========阶段2：RSA加密密码【修复：把encryptedPwd提到try外面，修复PEMParser】=========
-    String encryptedPwd = ""; // ✅ 提前声明变量，扩大作用域！！
+    // =====【诊断v2】全程收集关键数据，失败时弹窗展示，截图即可定位 =====
+    final diag = StringBuffer();
+    String hexOf(List<int> b, int n) =>
+        b.take(n).map((x) => x.toRadixString(16).padLeft(2, '0')).join(' ');
+    diag.writeln("【诊断v2】公钥长度=${pubPem.length}");
+    diag.writeln("公钥原文(前100字符)=${pubPem.length > 100 ? pubPem.substring(0, 100) : pubPem}");
+    // =========阶段2：RSA加密密码=========
+    String encryptedPwd = "";
     try{
-      // =====【修复Tag45报错】清洗→base64解码→识别双重编码→DER二进制 =====
       var b64 = pubPem
           .replaceAll(r'\r\n', '')
           .replaceAll(r'\n', '')
@@ -2081,11 +2086,11 @@ Future<bool> _testMesLogin() async {
       while (b64.length % 4 != 0) {
         b64 = "$b64="; // 补齐服务端可能省略的base64末尾padding
       }
+      diag.writeln("清洗后base64长度=${b64.length}");
       var pemBytes = Uint8List.fromList(base64.decode(b64));
-      debugPrint("【阶段2】解码后前4字节=${pemBytes.take(4).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}");
-      // 防双重base64：若解出来仍是PEM文本（首字节0x2D即'-'，正是Tag45的来源），剥头后再解码一次
+      diag.writeln("第一次解码后长度=${pemBytes.length} 前16字节=${hexOf(pemBytes, 16)}");
+      // 防双重base64：若解出来仍是PEM文本（首字节0x2D即'-'），剥头后再解码一次
       if (pemBytes.isNotEmpty && pemBytes[0] == 0x2D) {
-        debugPrint("【阶段2】检测到公钥被双重base64编码，进行第二次解码");
         final innerText = String.fromCharCodes(pemBytes);
         var innerB64 = innerText
             .replaceAll(RegExp(r'-----[a-zA-Z0-9 ]+-----'), '')
@@ -2094,33 +2099,42 @@ Future<bool> _testMesLogin() async {
           innerB64 = "$innerB64=";
         }
         pemBytes = Uint8List.fromList(base64.decode(innerB64));
+        diag.writeln("检测到双重base64→第二次解码后长度=${pemBytes.length} 前16字节=${hexOf(pemBytes, 16)}");
       }
       // 解析 SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
       final asn1Parser = ASN1Parser(pemBytes);
-      final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
-      final topElements = topLevelSeq.elements;
-      if(topElements == null || topElements.length < 2){
-        throw Exception("公钥PEM解析失败：顶层序列元素不足");
+      final topLevel = asn1Parser.nextObject();
+      diag.writeln("顶层类型=${topLevel.runtimeType}");
+      if (topLevel is! ASN1Sequence ||
+          topLevel.elements == null ||
+          topLevel.elements!.length < 2) {
+        throw Exception("顶层不是含≥2元素的SEQUENCE，实际类型=${topLevel.runtimeType}");
       }
+      final topElements = topLevel.elements!;
+      diag.writeln("顶层元素数=${topElements.length} 类型=${topElements.map((x) => x.runtimeType).join(',')}");
       // SPKI第2个元素是BIT STRING：其value字节去掉首字节(unusedbits)才是内层RSAPublicKey
       final ASN1Sequence pubKeySeq;
       if (topElements[1] is ASN1BitString) {
         final bitString = topElements[1] as ASN1BitString;
         final innerDer = Uint8List.fromList(bitString.valueBytes!.sublist(1));
+        diag.writeln("走SPKI分支 内层长度=${innerDer.length} 前16字节=${hexOf(innerDer, 16)}");
         pubKeySeq = ASN1Parser(innerDer).nextObject() as ASN1Sequence;
       } else {
-        pubKeySeq = topLevelSeq; // 兜底：服务端直接返回RSAPublicKey结构
+        diag.writeln("走裸RSAPublicKey分支");
+        pubKeySeq = topLevel; // 兜底：服务端直接返回RSAPublicKey结构
       }
       final pubElements = pubKeySeq.elements;
       if(pubElements == null || pubElements.length <2){
         throw Exception("公钥PEM解析失败：公钥序列元素不足");
       }
+      diag.writeln("公钥序列元素数=${pubElements.length} 类型=${pubElements.map((x) => x.runtimeType).join(',')}");
       final int1 = pubElements[0] as ASN1Integer;
       final int2 = pubElements[1] as ASN1Integer;
-      // 按数值大小自动识别：模数n是几百字节的大数，指数e通常是65537；
-      // 服务端若把顺序存成{e,n}，这里自动换回来，避免误把e当n导致"Input data too large"
+      diag.writeln("元素0位数=${int1.integer?.bitLength} 元素1位数=${int2.integer?.bitLength}");
+      // 按数值大小自动识别：模数n是大数，指数e通常是65537
       final BigInt n = (int1.integer! > int2.integer!) ? int1.integer! : int2.integer!;
       final BigInt e = (int1.integer! > int2.integer!) ? int2.integer! : int1.integer!;
+      diag.writeln("最终采用 模数位数=${n.bitLength} 指数=$e");
       debugPrint("【阶段2】模数位数=${n.bitLength} 指数=$e");
       // RSAPublicKey构造函数参数顺序是(exponent, modulus)
       final pubKey = RSAPublicKey(e, n);
@@ -2134,7 +2148,7 @@ Future<bool> _testMesLogin() async {
       debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
     }catch(e,stack){
       debugPrint("【阶段2 RSA加密异常】$e \n $stack");
-      rethrow;
+      throw Exception("RSA加密失败：$e\n----诊断----\n$diag");
     }
     // =========阶段2结束=========
     // =========阶段3：提交登录请求，获取token=========
@@ -2196,10 +2210,16 @@ Future<bool> _testMesLogin() async {
     String errMsg = e.toString();
     debugPrint("MES登录异常:$errMsg");
     if(mounted){
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("❌登录失败：$errMsg"),
-          duration: const Duration(seconds: 6),
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text("❌ 登录失败"),
+          content: SingleChildScrollView(
+            child: SelectableText(errMsg, style: const TextStyle(fontSize: 12)),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭")),
+          ],
         ),
       );
     }
