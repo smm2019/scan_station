@@ -2177,18 +2177,60 @@ Future<bool> _testMesLogin() async {
     if(loginJson["success"] != true){
       throw Exception("阶段3失败：登录接口success=false，返回内容：${loginResp.body}");
     }
-    if(loginJson["data"] == null || loginJson["data"]["token"] == null){
-      throw Exception("阶段3失败：登录成功但是没有返回token，返回：${loginResp.body}");
+    final dataObj = loginJson["data"];
+    if (dataObj is! Map) {
+      throw Exception("阶段3失败：返回的data不是对象：${loginResp.body}");
     }
-    String token = loginJson["data"]["token"];
+    // ===== token获取：实测鼎捷MES把token放在 signin2 响应头 "token"(小写)，优先取头，再兜底体 =====
+    String token = "";
+    for (final h in ["token", "access-token", "accesstoken", "x-token", "x-access-token", "authorization"]) {
+      final v = loginResp.headers[h];
+      if (v != null && v.trim().isNotEmpty) {
+        token = v.trim().replaceFirst(RegExp(r'^Bearer\s+', caseSensitive: false), '');
+        debugPrint("【阶段3】token来自响应头 $h");
+        break;
+      }
+    }
+    if (token.isEmpty) {
+      // 兜底：个别版本可能把token放在响应体
+      for (final k in ["token", "Token", "access_token", "accessToken", "AccessToken"]) {
+        final v = dataObj[k]?.toString();
+        if (v != null && v.isNotEmpty) { token = v; break; }
+      }
+    }
+    if (token.isEmpty) {
+      final headerDump = loginResp.headers.entries.map((e) => "${e.key}: ${e.value}").join("\n");
+      throw Exception("阶段3失败：登录成功但响应体和响应头都没找到token。\n----响应头----\n$headerDump");
+    }
     _token = token;
     debugPrint("【阶段3成功】获取token：$token");
 
-    // 【移除独立阶段4，直接在这里解析用户信息并保存】
-    final String orgId = loginJson["data"]["orgId"]?.toString() ?? "";
-    final String userId = loginJson["data"]["userId"]?.toString() ?? "";
-    final String userName = loginJson["data"]["userName"]?.toString() ?? "";
-    final String displayName = loginJson["data"]["displayName"]?.toString() ?? "";
+    // ===== 用户信息解析：兼容camelCase与服务器实际的snake_case =====
+    String pick(List<String> keys) {
+      for (final k in keys) {
+        final v = dataObj[k]?.toString();
+        if (v != null && v.isNotEmpty) return v;
+      }
+      return "";
+    }
+    final String userId = pick(["userId", "user_id", "UserInfoId", "userinfo_id"]);
+    final String userName = pick(["userName", "user_name"]);
+    final String displayName = pick(["displayName", "display_name"]);
+    String orgId = pick(["orgId", "org_id"]);
+    if (orgId.isEmpty && dataObj["organizations"] is List) {
+      // 从组织列表取默认组织（is_default=true 或 str_default=Y）
+      final orgs = dataObj["organizations"] as List;
+      for (final o in orgs) {
+        if (o is Map && (o["is_default"] == true || o["str_default"]?.toString() == "Y")) {
+          orgId = o["id"]?.toString() ?? "";
+          break;
+        }
+      }
+      if (orgId.isEmpty && orgs.first is Map) {
+        orgId = (orgs.first as Map)["id"]?.toString() ?? "";
+      }
+    }
+    debugPrint("【阶段3】userId=$userId userName=$userName displayName=$displayName orgId=$orgId");
     await MesConfig.saveLoginInfo(
       token: token,
       orgId: orgId,
