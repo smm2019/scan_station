@@ -2069,44 +2069,40 @@ Future<bool> _testMesLogin() async {
     String pubPem = validateResult["publicKey"]!;
     debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
 
-                                    // =========阶段2：RSA加密密码【完美防报错版】=========
-try{
-  String pemContent;
-  // 判断是否已经包含PEM头尾标记，没有就自动包装
-  if(pubPem.contains("-----BEGIN PUBLIC KEY-----")){
-    pemContent = pubPem;
-  }else{
-    pemContent = '''-----BEGIN PUBLIC KEY-----
+    // =========阶段2：RSA加密密码【修复：把encryptedPwd提到try外面，修复PEMParser】=========
+    String encryptedPwd = ""; // ✅ 提前声明变量，扩大作用域！！
+    try{
+      String pemContent;
+      // 判断是否已经包含PEM头尾标记，没有就自动包装
+      if(pubPem.contains("-----BEGIN PUBLIC KEY-----")){
+        pemContent = pubPem;
+      }else{
+        pemContent = '''-----BEGIN PUBLIC KEY-----
 $pubPem
 -----END PUBLIC KEY-----''';
-  }
+      }
+      // ✅ 修复PEMParser：完整导入类，使用ASN1Parser读取PEM
+      final pemBytes = Uint8List.fromList(utf8.encode(pemContent));
+      final asn1Parser = ASN1Parser(pemBytes);
+      final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
+      final pubKeySeq = topLevelSeq.elements[1] as ASN1Sequence;
+      final modulus = pubKeySeq.elements[0] as ASN1Integer;
+      final exponent = pubKeySeq.elements[1] as ASN1Integer;
+      final pubKey = RSAPublicKey(modulus.value!, exponent.value!);
 
-  // 1. 使用官方标准 PEM 解析器，直接获取 RSAPublicKey 对象
-  final pemParser = PEMParser(pemContent); 
-  final pemObj = pemParser.next();
-  if(pemObj == null){
-    throw Exception("PEM解析失败，pemObj为空");
-  }
-  final pubKey = pemObj.publicKey as RSAPublicKey;
-
-  // 2. 使用 PKCS1-v1_5 填充方式加密
-  final cipher = AsymmetricBlockCipher('RSA/PKCS1')
-    ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
-
-  // 3. 执行加密并转为 Base64 字符串
-  Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
-  Uint8List encryptedRaw = cipher.process(dataRaw);
-  String encryptedPwd = base64.encode(encryptedRaw);
-
-  debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
-}catch(e,stack){
-  debugPrint("【阶段2 RSA加密异常】$e \n $stack");
-  rethrow;
-}
-// =========阶段2结束=========
-
-
-
+      // 使用 PKCS1-v1_5 填充方式加密
+      final cipher = AsymmetricBlockCipher('RSA/PKCS1')
+        ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+      // 执行加密并转为 Base64 字符串
+      Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
+      Uint8List encryptedRaw = cipher.process(dataRaw);
+      encryptedPwd = base64.encode(encryptedRaw);
+      debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
+    }catch(e,stack){
+      debugPrint("【阶段2 RSA加密异常】$e \n $stack");
+      rethrow;
+    }
+    // =========阶段2结束=========
     // =========阶段3：提交登录请求，获取token=========
     debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
     final loginResp = await http.post(
@@ -2163,7 +2159,6 @@ $pubPem
     return false;
   }
 }
-
 
 
 
