@@ -606,7 +606,8 @@ try {
       mesErrMsg = "查询结果为空(recordsTotal=${mesJson["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确";
     } else {
       final row = rows.first as Map;
-      mesPartNo = row["MITEM_CODE"]?.toString();
+      // 零件号取 PartCode（如 6608462082-A）；MITEM_CODE 是物料码，仅作兜底
+      mesPartNo = (row["PartCode"] ?? row["MITEM_CODE"])?.toString();
       mesQty = (row["QTY"] as num?)?.toDouble();
       mesCreateTime = row["DATETIME_CREATED"]?.toString();
     }
