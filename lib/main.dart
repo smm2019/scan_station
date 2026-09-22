@@ -15,7 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
 
-import 'package:pointycastle/export.dart' hide Padding;
+import 'package:pointycastle/export.dart' hide Padding, State;
 import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
 
