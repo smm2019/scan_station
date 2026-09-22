@@ -2082,13 +2082,21 @@ $pubPem
 -----END PUBLIC KEY-----''';
       }
       // ✅ 修复PEMParser：完整导入类，使用ASN1Parser读取PEM
-      final pemBytes = Uint8List.fromList(utf8.encode(pemContent));
-      final asn1Parser = ASN1Parser(pemBytes);
-      final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
-      final pubKeySeq = topLevelSeq.elements[1] as ASN1Sequence;
-      final modulus = pubKeySeq.elements[0] as ASN1Integer;
-      final exponent = pubKeySeq.elements[1] as ASN1Integer;
-      final pubKey = RSAPublicKey(modulus.value!, exponent.value!);
+final asn1Parser = ASN1Parser(pemBytes);
+final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
+final topElements = topLevelSeq.elements;
+if(topElements == null || topElements.length < 2){
+  throw Exception("公钥PEM解析失败：顶层序列元素不足");
+}
+final pubKeySeq = topElements[1] as ASN1Sequence;
+
+final pubElements = pubKeySeq.elements;
+if(pubElements == null || pubElements.length <2){
+  throw Exception("公钥PEM解析失败：公钥序列元素不足");
+}
+final modulus = pubElements[0] as ASN1Integer;
+final exponent = pubElements[1] as ASN1Integer;
+final pubKey = RSAPublicKey(modulus.value!, exponent.value!);
 
       // 使用 PKCS1-v1_5 填充方式加密
       final cipher = AsymmetricBlockCipher('RSA/PKCS1')
