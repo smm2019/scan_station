@@ -2071,31 +2071,56 @@ Future<bool> _testMesLogin() async {
     // =========阶段2：RSA加密密码【修复：把encryptedPwd提到try外面，修复PEMParser】=========
     String encryptedPwd = ""; // ✅ 提前声明变量，扩大作用域！！
     try{
-      String pemContent;
-      // 判断是否已经包含PEM头尾标记，没有就自动包装
-      if(pubPem.contains("-----BEGIN PUBLIC KEY-----")){
-        pemContent = pubPem;
-      }else{
-        pemContent = '''-----BEGIN PUBLIC KEY----- $pubPem -----END PUBLIC KEY-----''';
+      // =====【修复Tag45报错】清洗→base64解码→识别双重编码→DER二进制 =====
+      var b64 = pubPem
+          .replaceAll(r'\r\n', '')
+          .replaceAll(r'\n', '')
+          .replaceAll(r'\r', '')
+          .replaceAll(RegExp(r'-----[a-zA-Z0-9 ]+-----'), '')
+          .replaceAll(RegExp(r'[^A-Za-z0-9+/=]'), '');
+      while (b64.length % 4 != 0) {
+        b64 = "$b64="; // 补齐服务端可能省略的base64末尾padding
       }
-      // ✅ 修复PEMParser：完整导入类，使用ASN1Parser读取PEM
-      final pemBytes = Uint8List.fromList(utf8.encode(pemContent));
+      var pemBytes = Uint8List.fromList(base64.decode(b64));
+      debugPrint("【阶段2】解码后前4字节=${pemBytes.take(4).map((b) => b.toRadixString(16).padLeft(2, '0')).join(' ')}");
+      // 防双重base64：若解出来仍是PEM文本（首字节0x2D即'-'，正是Tag45的来源），剥头后再解码一次
+      if (pemBytes.isNotEmpty && pemBytes[0] == 0x2D) {
+        debugPrint("【阶段2】检测到公钥被双重base64编码，进行第二次解码");
+        final innerText = String.fromCharCodes(pemBytes);
+        var innerB64 = innerText
+            .replaceAll(RegExp(r'-----[a-zA-Z0-9 ]+-----'), '')
+            .replaceAll(RegExp(r'[^A-Za-z0-9+/=]'), '');
+        while (innerB64.length % 4 != 0) {
+          innerB64 = "$innerB64=";
+        }
+        pemBytes = Uint8List.fromList(base64.decode(innerB64));
+      }
+      // 解析 SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
       final asn1Parser = ASN1Parser(pemBytes);
       final topLevelSeq = asn1Parser.nextObject() as ASN1Sequence;
       final topElements = topLevelSeq.elements;
       if(topElements == null || topElements.length < 2){
         throw Exception("公钥PEM解析失败：顶层序列元素不足");
       }
-      final pubKeySeq = topElements[1] as ASN1Sequence;
+      // SPKI第2个元素是BIT STRING：其value字节去掉首字节(unusedbits)才是内层RSAPublicKey
+      final ASN1Sequence pubKeySeq;
+      if (topElements[1] is ASN1BitString) {
+        final bitString = topElements[1] as ASN1BitString;
+        final innerDer = Uint8List.fromList(bitString.valueBytes!.sublist(1));
+        pubKeySeq = ASN1Parser(innerDer).nextObject() as ASN1Sequence;
+      } else {
+        pubKeySeq = topLevelSeq; // 兜底：服务端直接返回RSAPublicKey结构
+      }
       final pubElements = pubKeySeq.elements;
       if(pubElements == null || pubElements.length <2){
         throw Exception("公钥PEM解析失败：公钥序列元素不足");
       }
-final modulus = pubElements[0] as ASN1Integer;
-final exponent = pubElements[1] as ASN1Integer;
-final pubKey = RSAPublicKey(exponent.integer!, modulus.integer!);
-      // 使用 PKCS1-v1_5 填充方式加密
-      final cipher = AsymmetricBlockCipher('RSA/PKCS1')
+      final modulus = pubElements[0] as ASN1Integer;
+      final exponent = pubElements[1] as ASN1Integer;
+      // RSAPublicKey构造函数参数顺序是(exponent, modulus)；取整数值用.integer
+      final pubKey = RSAPublicKey(exponent.integer!, modulus.integer!);
+      // PKCS1-v1_5填充：直接实例化，不依赖注册表别名
+      final cipher = PKCS1Encoding(RSAEngine())
         ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
       // 执行加密并转为 Base64 字符串
       Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
