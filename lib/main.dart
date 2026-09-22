@@ -15,7 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
 
-import 'package:pointycastle/pointycastle.dart' hide Padding;
+import 'package:pointycastle/export.dart' hide Padding;
 import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
 
@@ -2093,7 +2093,8 @@ Future<bool> _testMesLogin() async {
       }
 final modulus = pubElements[0] as ASN1Integer;
 final exponent = pubElements[1] as ASN1Integer;
-final pubKey = RSAPublicKey(modulus.value!, exponent.value!); // ✅ 适配3.7.4
+//final pubKey = RSAPublicKey(modulus.value!, exponent.value!); // ✅ 适配3.7.4
+final pubKey = RSAPublicKey(exponent.integer!, module.integer!);
       // 使用 PKCS1-v1_5 填充方式加密
       final cipher = AsymmetricBlockCipher('RSA/PKCS1')
         ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
