@@ -2136,8 +2136,9 @@ Future<bool> _testMesLogin() async {
       final BigInt e = (int1.integer! > int2.integer!) ? int2.integer! : int1.integer!;
       diag.writeln("最终采用 模数位数=${n.bitLength} 指数=$e");
       debugPrint("【阶段2】模数位数=${n.bitLength} 指数=$e");
-      // RSAPublicKey构造函数参数顺序是(exponent, modulus)
-      final pubKey = RSAPublicKey(e, n);
+      // ⚠️pointycastle的RSAPublicKey构造函数参数顺序是(modulus, exponent)——模数在前！
+      // 之前误写成RSAPublicKey(e, n)，把17位的指数当成模数，导致"Input data too large"
+      final pubKey = RSAPublicKey(n, e);
       // PKCS1-v1_5填充：直接实例化，不依赖注册表别名
       final cipher = PKCS1Encoding(RSAEngine())
         ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
