@@ -2091,9 +2091,9 @@ Future<bool> _testMesLogin() async {
       if(pubElements == null || pubElements.length <2){
         throw Exception("公钥PEM解析失败：公钥序列元素不足");
       }
-      final modulus = pubElements[0] as ASN1Integer;
-      final exponent = pubElements[1] as ASN1Integer;
-      final pubKey = RSAPublicKey(modulus.value!, exponent.value!);
+final modulus = pubElements[0] as ASN1Integer;
+final exponent = pubElements[1] as ASN1Integer;
+final pubKey = RSAPublicKey(modulus.bigInteger!, exponent.bigInteger!);
       // 使用 PKCS1-v1_5 填充方式加密
       final cipher = AsymmetricBlockCipher('RSA/PKCS1')
         ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
