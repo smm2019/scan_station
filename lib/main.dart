@@ -251,6 +251,52 @@ class RecordExtra {
 }
 // ===================== 全局Isar实例 =====================
 late Isar _globalIsar;
+
+// ===== 整托模式·末段子表：与主表同12列结构，按托聚合一行 =====
+// 一行 = 一托×一个零件号：货物标签"; "拼接、MES数量累加、采集时间取该组首码、托号填列；
+// 非整托有效记录逐码原样一行（托号留空）。本批次无整托记录时不输出该段。
+String _buildPalletAggCsv(List<ScanRecord> records, Map<String, RecordExtra> extraMap) {
+  String cf(String v) {
+    if (v.contains(",") || v.contains("\"") || v.contains("\n")) return "\"${v.replaceAll("\"", "\"\"")}\"";
+    return v;
+  }
+  String fq(double q) => q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
+  final Map<String, List<ScanRecord>> groups = {}; //插入顺序=首扫时间顺序
+  bool hasPallet = false;
+  for (final r in records) {
+    if (r.isCancel) continue;
+    final pid = extraMap[r.goodsCode]?.palletId ?? "";
+    if (pid.isEmpty) {
+      groups.putIfAbsent("SINGLE|${r.goodsCode}|${r.id}", () => []).add(r);
+    } else {
+      hasPallet = true;
+      final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
+      groups.putIfAbsent("$pid|$pn", () => []).add(r);
+    }
+  }
+  if (!hasPallet) return "";
+  String s = "\n===整托汇总·主表同列版(一行=托+零件号，多码拼接、数量累加)===\n";
+  s += "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期,托号\n";
+  for (final entry in groups.entries) {
+    final rs = entry.value;
+    final first = rs.first;
+    final timeStr = first.scanTime.toString().substring(0, 19);
+    String st = "", gl = "", container = "", batch = "";
+    for (final e in rs) {
+      if (st.isEmpty) st = e.stationNo ?? "";
+      if (gl.isEmpty) gl = e.groundLocation ?? "";
+      if (container.isEmpty) container = e.containerType ?? "";
+      if (batch.isEmpty) batch = e.mesCreateTime ?? "";
+    }
+    final codes = rs.map((e) => e.goodsCode).join("; ");
+    final remarks = rs.map((e) => e.remark).where((e) => e.trim().isNotEmpty).toSet().join("；");
+    final pn = (first.mesPartNo?.isNotEmpty ?? false) ? first.mesPartNo! : (entry.key.contains("|") && !entry.key.startsWith("SINGLE|") ? entry.key.substring(entry.key.indexOf("|") + 1) : "");
+    final totalQty = rs.fold<double>(0, (sum, e) => sum + (e.mesQty ?? 0));
+    final pid = entry.key.startsWith("SINGLE|") ? "" : entry.key.substring(0, entry.key.indexOf("|"));
+    s += "$timeStr,${first.workType},${cf(st)},${cf(gl)},${cf(container)},${cf(codes)},${cf(remarks)},正常,${cf(pn)},${fq(totalQty)},${cf(batch)},${cf(pid)}\n";
+  }
+  return s;
+}
 // ===================== 程序入口 =====================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1050,6 +1096,8 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
         }
       }
     }
+    // ===== 整托末段子表：主表同12列，按托聚合一行 =====
+    content += _buildPalletAggCsv(targetRecords, extraMap);
     return content;
   }
   Future<void> _saveCsvToFile({List<String>? batchIds}) async {
@@ -2213,6 +2261,8 @@ Future<void> _exportThisBatch() async {
       }
     }
   }
+  // ===== 整托末段子表：主表同12列，按托聚合一行 =====
+  content += _buildPalletAggCsv(targetRecords, extraMap);
   final dir = await getExternalStorageDirectory();
   if (dir == null) return;
   String filePath = "${dir.path}/采集_${widget.batch.batchId}.csv";
