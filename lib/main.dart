@@ -338,10 +338,20 @@ final GlobalKey _keyScanInputArea = GlobalKey();
   void initState() {
     super.initState();
     _isar = _globalIsar;
-    _loadLastBatch();
-    _refreshRecord();
     //初始化Tab控制器
     _tabController = TabController(length: 2, vsync: this);
+    //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
+    //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
+    _initLoadData();
+  }
+  ///【修复BUG：新增】启动数据加载：先恢复当前批次号，再刷新记录列表与统计
+  Future<void> _initLoadData() async {
+    await _loadLastBatch();          // 恢复 _currentBatchId（或弹窗新建批次）
+    if (!mounted) return;
+    if (_currentBatchId == null) return; // 用户取消新建，保持空状态
+    await _refreshRecord();           // 加载本批次采集记录
+    await _refreshBatchStat();        // 刷新正常/作废统计
+    if (_palletMode) await _refreshPalletSummary();
   }
   @override
   void dispose() {
