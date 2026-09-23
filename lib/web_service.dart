@@ -8,6 +8,7 @@
 //   GET  /api/status       当前批次号
 //   GET  /api/batches      全部批次（含记录数、归档标记），新批次在前
 //   GET  /api/batch        ?batch=id 单批次详情（批次信息+记录明细+整托汇总）
+//   GET  /api/stats        全量统计看板（汇总/近7天采集量/零件TOP/货位TOP）
 //   GET  /api/export       ?batch=id1,id2 下载CSV；不传=当前批次；多个=合并导出
 //   GET  /api/baseline     已上传基准文件列表
 //   POST /api/baseline     multipart 上传基准CSV，同名替换
@@ -43,6 +44,8 @@ Handler createCollectWebService({
             return await _apiListBatches();
           case '/api/batch':
             return await _apiBatchDetail(req);
+          case '/api/stats':
+            return await _apiStats();
           case '/api/baseline':
             return await _apiListBaselines();
           case '/api/export':
@@ -170,6 +173,108 @@ Future<Response> _apiBatchDetail(Request req) async {
     },
     'records': recOut,
     'pallets': palletOut,
+  });
+}
+
+// ---------- 统计看板（全量汇总，供网页图表） ----------
+Future<Response> _apiStats() async {
+  final batches = await _globalIsar.batchInfos.where().findAll();
+  final records = await _globalIsar.scanRecords.where().findAll();
+  final extras = await _globalIsar.recordExtras.where().findAll();
+  final Map<String, RecordExtra> extraMap = {for (final e in extras) e.goodsCode: e};
+
+  final int totalRecords = records.length;
+  final int validRecords = records.where((r) => !r.isCancel).length;
+  final int cancelRecords = totalRecords - validRecords;
+
+  // 托盘数：非作废记录里出现过的不同托号
+  final Set<String> palletSet = {};
+  for (final r in records) {
+    if (r.isCancel) continue;
+    final pid = extraMap[r.goodsCode]?.palletId ?? '';
+    if (pid.isNotEmpty) palletSet.add(pid);
+  }
+
+  // 总数量（MES数量求和，仅有效记录）
+  double totalQty = 0;
+  for (final r in records) {
+    if (r.isCancel) continue;
+    totalQty += (r.mesQty ?? 0);
+  }
+
+  // 近7天每日采集量（按采集日期，含今天）
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final days = <String>[];
+  final dayCount = <String, int>{};
+  for (var i = 6; i >= 0; i--) {
+    final d = today.subtract(Duration(days: i));
+    final key = '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+    days.add(key);
+    dayCount[key] = 0;
+  }
+  for (final r in records) {
+    final t = r.scanTime;
+    final key = '${t.year.toString().padLeft(4, '0')}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
+    if (dayCount.containsKey(key)) dayCount[key] = dayCount[key]! + 1;
+  }
+
+  // 零件号 TOP10（按数量）
+  final Map<String, double> partQty = {};
+  final Map<String, int> partCnt = {};
+  for (final r in records) {
+    if (r.isCancel) continue;
+    final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : '未关联零件号';
+    partQty[pn] = (partQty[pn] ?? 0) + (r.mesQty ?? 0);
+    partCnt[pn] = (partCnt[pn] ?? 0) + 1;
+  }
+  final partTop = partQty.entries.toList()
+    ..sort((a, b) => b.value.compareTo(a.value));
+  final partOut = partTop.take(10).map((e) => {
+    'name': e.key, 'qty': _fmtQtyWeb(e.value), 'count': partCnt[e.key] ?? 0,
+  }).toList();
+
+  // 货位/站台 TOP10（按记录数）
+  final Map<String, int> locCnt = {};
+  for (final r in records) {
+    if (r.isCancel) continue;
+    final loc = (r.stationNo?.isNotEmpty ?? false) ? r.stationNo! : ((r.groundLocation?.isNotEmpty ?? false) ? r.groundLocation! : '未指定');
+    locCnt[loc] = (locCnt[loc] ?? 0) + 1;
+  }
+  final locTop = locCnt.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+  final locOut = locTop.take(10).map((e) => {'name': e.key, 'count': e.value}).toList();
+
+  // 作业类型占比
+  final int agvCnt = records.where((r) => r.workType == 0 && !r.isCancel).length;
+  final int manualCnt = validRecords - agvCnt;
+
+  // 批次状态
+  int archivedCnt = 0;
+  for (final b in batches) {
+    if (b.isArchived) archivedCnt++;
+  }
+
+  return _jsonResponse({
+    'generatedAt': now.toString().substring(0, 19),
+    'summary': {
+      'batchCount': batches.length,
+      'archivedBatch': archivedCnt,
+      'activeBatch': batches.length - archivedCnt,
+      'totalRecords': totalRecords,
+      'validRecords': validRecords,
+      'cancelRecords': cancelRecords,
+      'palletCount': palletSet.length,
+      'totalQty': _fmtQtyWeb(totalQty),
+      'partCount': partQty.length,
+      'locCount': locCnt.length,
+    },
+    'trend': {
+      'days': days,
+      'counts': days.map((d) => dayCount[d]).toList(),
+    },
+    'partTop': partOut,
+    'locTop': locOut,
+    'workType': {'agv': agvCnt, 'manual': manualCnt},
   });
 }
 
@@ -342,7 +447,21 @@ const String _kWebPortalHtml = r'''
   .del{background:#FDECEC;color:#C0392B;border-radius:20px;padding:1px 8px;font-size:11px}
   .norm{background:#E9F7F0;color:var(--ok);border-radius:20px;padding:1px 8px;font-size:11px}
   .empty{font-size:13px;color:var(--muted);padding:10px 0}
-  @media (max-width:640px){header h1{font-size:17px}.card{padding:12px}.mask{padding:8px}}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
+  .panel{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#FCFDFF}
+  .panel .msec{margin:0 0 10px}
+  .chartbox{min-height:120px}
+  .chartbox svg{display:block;width:100%;height:auto}
+  .stat.big{background:var(--blue-l);border-color:transparent}
+  .stat.big b{color:var(--blue)}
+  .hbar-row{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:12px}
+  .hbar-name{width:132px;flex:none;text-align:right;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hbar-track{flex:1;background:#EEF0F8;border-radius:5px;height:16px;position:relative;overflow:hidden}
+  .hbar-fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--blue),#8B93EE)}
+  .hbar-val{width:74px;flex:none;color:var(--muted)}
+  .legend{display:flex;gap:16px;justify-content:center;margin-top:8px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  @media (max-width:640px){header h1{font-size:17px}.card{padding:12px}.mask{padding:8px}.grid2{grid-template-columns:1fr}.hbar-name{width:88px}}
 </style>
 </head>
 <body>
@@ -351,6 +470,30 @@ const String _kWebPortalHtml = r'''
     <h1>仓库采集数据门户</h1>
     <div class="sub" id="statusLine">正在连接手机服务…</div>
   </header>
+
+  <div class="card">
+    <h2>统计看板</h2>
+    <div class="tip">全量采集数据汇总（含作废统计）。<button class="btn sm ghost" style="margin-left:8px" onclick="loadStats()">刷新看板</button></div>
+    <div class="stats" id="statCards"><div class="empty">加载中…</div></div>
+    <div class="grid2">
+      <div class="panel">
+        <div class="msec">近 7 天采集量</div>
+        <div id="trendBox" class="chartbox"></div>
+      </div>
+      <div class="panel">
+        <div class="msec">作业类型占比</div>
+        <div id="pieBox" class="chartbox"></div>
+      </div>
+      <div class="panel">
+        <div class="msec">零件号 TOP10（按数量）</div>
+        <div id="partBox" class="chartbox"></div>
+      </div>
+      <div class="panel">
+        <div class="msec">货位/站台 TOP10（按记录数）</div>
+        <div id="locBox" class="chartbox"></div>
+      </div>
+    </div>
+  </div>
 
   <div class="card">
     <h2>上传盘点基准 CSV</h2>
@@ -529,6 +672,74 @@ function renderDetail(d){
 }
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();});
 
+// ===== 统计看板（纯内联SVG，零外部依赖，离线可用） =====
+async function loadStats(){
+  try{
+    const d=await jget('/api/stats');
+    renderStatCards(d.summary||{});
+    renderTrend(d.trend||{days:[],counts:[]});
+    renderPie(d.workType||{agv:0,manual:0});
+    renderHBar('partBox',(d.partTop||[]).map(x=>({name:x.name,val:parseFloat(x.qty)||0,extra:x.qty+' · '+x.count+'条'})));
+    renderHBar('locBox',(d.locTop||[]).map(x=>({name:x.name,val:x.count,extra:x.count+'条'})));
+  }catch(e){
+    document.getElementById('statCards').innerHTML='<div class="empty">看板加载失败：'+esc(e.message)+'</div>';
+  }
+}
+
+function renderStatCards(s){
+  const items=[
+    ['批次',s.batchCount??0],['进行中',s.activeBatch??0],['记录总数',s.totalRecords??0],
+    ['有效记录',s.validRecords??0],['作废',s.cancelRecords??0],['托盘数',s.palletCount??0],
+    ['数量合计',s.totalQty??0],['零件种类',s.partCount??0],['占用货位',s.locCount??0],
+  ];
+  document.getElementById('statCards').innerHTML=items.map((t,i)=>
+    '<div class="stat'+(i<3?' big':'')+'">'+esc(t[0])+'<b>'+esc(t[1])+'</b></div>').join('');
+}
+
+function renderTrend(t){
+  const days=t.days||[],counts=t.counts||[];
+  const box=document.getElementById('trendBox');
+  if(!days.length){box.innerHTML='<div class="empty">暂无数据</div>';return;}
+  const W=460,H=170,pad=26,max=Math.max(...counts,1);
+  const bw=(W-pad*2)/days.length;
+  let bars='',labels='';
+  days.forEach((d,i)=>{
+    const h=(H-pad*2)*(counts[i]/max);
+    const x=pad+i*bw+bw*0.18,w=bw*0.64,y=H-pad-h;
+    bars+='<rect x="'+x.toFixed(1)+'" y="'+y.toFixed(1)+'" width="'+w.toFixed(1)+'" height="'+Math.max(h,1).toFixed(1)+'" rx="3" fill="#515BD4" opacity="'+(i===days.length-1?'1':'0.78')+'"></rect>';
+    if(counts[i]>0)bars+='<text x="'+(x+w/2).toFixed(1)+'" y="'+(y-4).toFixed(1)+'" font-size="11" fill="#1F2430" text-anchor="middle">'+counts[i]+'</text>';
+    labels+='<text x="'+(x+w/2).toFixed(1)+'" y="'+(H-8)+'" font-size="10" fill="#7A8194" text-anchor="middle">'+esc(d.slice(5))+'</text>';
+  });
+  box.innerHTML='<svg viewBox="0 0 '+W+' '+H+'">'+bars+labels+'</svg>';
+}
+
+function renderPie(wt){
+  const box=document.getElementById('pieBox');
+  const a=wt.agv||0,m=wt.manual||0,total=a+m;
+  if(!total){box.innerHTML='<div class="empty">暂无有效记录</div>';return;}
+  const frac=a/total,R=52,cx=90,cy=78,C=2*Math.PI*R;
+  const seg1=frac*C;
+  box.innerHTML='<svg viewBox="0 0 180 156">'
+    +'<circle cx="'+cx+'" cy="'+cy+'" r="'+R+'" fill="none" stroke="#515BD4" stroke-width="26"></circle>'
+    +'<circle cx="'+cx+'" cy="'+cy+'" r="'+R+'" fill="none" stroke="#1E9E6A" stroke-width="26" stroke-dasharray="'+(C-seg1).toFixed(2)+' '+seg1.toFixed(2)+'" stroke-dashoffset="'+(-seg1).toFixed(2)+'" transform="rotate(-90 '+cx+' '+cy+')"></circle>'
+    +'<text x="'+cx+'" y="'+(cy+5)+'" font-size="15" font-weight="bold" fill="#1F2430" text-anchor="middle">'+total+'</text>'
+    +'</svg>'
+    +'<div class="legend"><span><i style="background:#515BD4"></i>AGV站台 '+a+'（'+(a/total*100).toFixed(0)+'%）</span>'
+    +'<span><i style="background:#1E9E6A"></i>人工货位 '+m+'（'+(m/total*100).toFixed(0)+'%）</span></div>';
+}
+
+function renderHBar(id,rows){
+  const box=document.getElementById(id);
+  if(!rows.length){box.innerHTML='<div class="empty">暂无数据</div>';return;}
+  const max=Math.max(...rows.map(r=>r.val),1);
+  box.innerHTML=rows.map(r=>{
+    const pct=Math.max(r.val/max*100,2);
+    return '<div class="hbar-row"><div class="hbar-name" title="'+esc(r.name)+'">'+esc(r.name)+'</div>'
+      +'<div class="hbar-track"><div class="hbar-fill" style="width:'+pct.toFixed(1)+'%"></div></div>'
+      +'<div class="hbar-val">'+esc(r.extra)+'</div></div>';
+  }).join('');
+}
+
 function showMsg(id,text,ok){
   const el=document.getElementById(id);
   el.textContent=text;el.className='msg '+(ok?'ok':'err');
@@ -570,7 +781,7 @@ async function loadAll(){
   try{await loadStatus();await loadBatches();}
   catch(e){showMsg('upMsg','加载批次失败：'+e.message,false);}
 }
-loadAll();loadBaselines();
+loadAll();loadBaselines();loadStats();
 </script>
 </body>
 </html>

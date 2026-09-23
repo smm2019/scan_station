@@ -30,3 +30,7 @@ dev_dependencies:
   json_serializable: ^6.8.0
 
 flutter:
+  # 【关键修复】声明使用 Material Design 图标字体。
+  # 此前该节点为空，Flutter 不会把 MaterialIcons 图标字体打包进 APK，
+  # 导致 PDA 上所有 Icons.xxx 渲染成"带叉方框"（豆腐块）。
+  uses-material-design: true
