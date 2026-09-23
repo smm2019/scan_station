@@ -320,7 +320,17 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
     if (picked == null || !mounted) return;
     final fname = picked.split(RegExp(r"[\\/]")).last;
     final key = "$fname@${File(picked).statSync().modified.millisecondsSinceEpoch}";
-    final res = await importBaselineFile(picked, key, isBook ? "book" : "part");
+    BaselineParseResult res;
+    try {
+      res = await importBaselineFile(picked, key, isBook ? "book" : "part");
+    } catch (e) {
+      if (!mounted) return;
+      final isFmt = e.toString().contains("FormatException") || e.toString().contains("utf-8") || e.toString().contains("Invalid UTF-8");
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(isFmt
+          ? "「$fname」不是UTF-8编码（多为WPS直接另存的ANSI/GBK格式）。请用最新版网页门户重新上传，会自动转码。"
+          : "导入失败：$e")));
+      return;
+    }
     if (!mounted) return;
     final want = isBook ? "book" : "part";
     if (res.kind == "unknown") {

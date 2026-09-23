@@ -762,8 +762,19 @@ async function loadBaselines(){
 async function uploadBaseline(){
   const inp=document.getElementById('baseFile');
   if(!inp.files.length){showMsg('upMsg','请先选择基准CSV文件',false);return;}
+  const f0=inp.files[0];
+  let blob=f0, conv='';
+  try{
+    //WPS/Excel另存CSV默认ANSI(GBK)，App端只认UTF-8：浏览器端统一转码后上传
+    const u8=new Uint8Array(await f0.arrayBuffer());
+    let text=null;
+    const bom=u8.length>2&&u8[0]===0xEF&&u8[1]===0xBB&&u8[2]===0xBF;
+    try{text=new TextDecoder('utf-8',{fatal:true}).decode(bom?u8.subarray(3):u8);}
+    catch(e){text=new TextDecoder('gbk').decode(u8);conv='（检测到GBK编码，已自动转为UTF-8）';}
+    blob=new Blob([new TextEncoder().encode(text)],{type:'text/csv;charset=utf-8'});
+  }catch(e){/* 转码失败则按原文件上传 */}
   const fd=new FormData();
-  fd.append('file',inp.files[0]);
+  fd.append('file',blob,f0.name);
   const btn=document.getElementById('btnUpload');btn.disabled=true;btn.textContent='上传中…';
   try{
     const r=await fetch('/api/baseline',{method:'POST',body:fd});
