@@ -22,6 +22,7 @@ import 'package:http/http.dart' as http;
 
 
 part 'main.g.dart';
+part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -1086,13 +1087,11 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
       return;
     }
     _localIpAddress = ip;
-    final handler = Pipeline().addHandler((Request req) async {
-      final csvContent = await _generateCsvText();
-      return Response.ok(csvContent, headers: {
-        "Content-Type": "text/csv;charset=utf-8",
-        "Content-Disposition": "attachment;filename=agv_data_${_currentBatchId}.csv"
-      });
-    });
+    // ===== 网页门户：批次列表 / 任意批次下载 / 基准CSV上传（原"一律返回当前批次CSV"已升级） =====
+    final handler = createCollectWebService(
+      csvForBatches: (ids) => _generateCsvText(targetBatchIds: ids.isEmpty ? null : ids),
+      currentBatchId: () => _currentBatchId,
+    );
     try {
       _webServer = await shelf_io.serve(handler, "0.0.0.0", _webPort);
       setState(() {
