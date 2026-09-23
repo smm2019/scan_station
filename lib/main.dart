@@ -23,6 +23,7 @@ import 'package:http/http.dart' as http;
 
 part 'main.g.dart';
 part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传
+part 'inventory_page.dart'; // 盘点模式：任务/基准绑定/扫码判定/差异报表
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -225,11 +226,20 @@ class BatchInfo {
   //====本次新增字段====
   String batchRemark = "";
   bool isArchived = false;
+  int taskKind = 0; //0=采集批次，1=盘点任务（盘点独立于采集批次体系展示）
+  //====盘点任务元数据（taskKind==1 时有效）====
+  String invBookKey = "";  //绑定的账面基准 fileKey
+  String invLocKey = "";   //绑定的货位基准 fileKey
+  bool blindMode = true;   //盲盘：现场不显示账面数量对照
   BatchInfo({
     required this.batchId,
     required this.createTime,
     this.batchRemark = "",
     this.isArchived = false,
+    this.taskKind = 0,
+    this.invBookKey = "",
+    this.invLocKey = "",
+    this.blindMode = true,
   });
 }
 
@@ -248,6 +258,194 @@ class RecordExtra {
     this.mesItemName = "",
     this.mesLotNo = "",
   });
+}
+// ===================== 盘点·基准CSV解析 =====================
+
+/// 解析一行CSV（支持双引号包裹、"" 转义、字段内含逗号）
+List<String> _parseCsvLine(String line) {
+  final out = <String>[];
+  final cur = StringBuffer();
+  bool inQuote = false;
+  for (var i = 0; i < line.length; i++) {
+    final ch = line[i];
+    if (inQuote) {
+      if (ch == '"') {
+        if (i + 1 < line.length && line[i + 1] == '"') { cur.write('"'); i++; }
+        else { inQuote = false; }
+      } else { cur.write(ch); }
+    } else {
+      if (ch == '"') { inQuote = true; }
+      else if (ch == ',') { out.add(cur.toString().trim()); cur.clear(); }
+      else { cur.write(ch); }
+    }
+  }
+  out.add(cur.toString().trim());
+  return out;
+}
+
+/// 列名匹配：在表头里找候选关键字（先精确包含，再模糊），返回列下标或-1
+int _findCol(List<String> header, List<String> keys) {
+  for (var k = 0; k < header.length; k++) {
+    final h = header[k].replaceAll(RegExp(r"\s"), "");
+    for (final key in keys) { if (h == key) return k; }
+  }
+  for (var k = 0; k < header.length; k++) {
+    final h = header[k].replaceAll(RegExp(r"\s"), "");
+    for (final key in keys) { if (h.contains(key)) return k; }
+  }
+  return -1;
+}
+
+/// 数量解析：容忍 "1,234.00"、"60"、空、"-"
+double _parseQtyCell(String v) {
+  var s = v.replaceAll(RegExp(r"[,\s]"), "").replaceAll("，", "");
+  if (s.isEmpty || s == "-" || s == "—" || s == "/") return 0;
+  return double.tryParse(s) ?? 0;
+}
+
+class BaselineParseResult {
+  String kind = "unknown";        //book=账面基准 part=货位基准 unknown=未识别
+  final List<BaselineBook> books = [];
+  final List<BaselineLoc> locs = [];
+  int dirtyRows = 0;            //数量非法/关键字段缺失而跳过的行数
+  String message = "";
+}
+
+/// 解析基准CSV并判定类型。book：零件号+库存类列；part：货位编码+零件号+数量
+BaselineParseResult parseBaselineCsv(String rawContent, String fileKey) {
+  final res = BaselineParseResult();
+  var text = rawContent;
+  if (text.isNotEmpty && text.codeUnitAt(0) == 0xFEFF) text = text.substring(1); //去BOM
+  text = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  final lines = text.split("\n").where((l) => l.trim().isNotEmpty).toList();
+  if (lines.length < 2) { res.kind = "unknown"; res.message = "文件行数不足（需表头+数据行）"; return res; }
+
+  final header = _parseCsvLine(lines.first);
+  final colPart = _findCol(header, ["零件号", "PartCode", "零件编号", "料号", "物料编码", "物料号", "Part No", "partno", "零件代码"]);
+  final colQty = _findCol(header, ["期末库存", "库存数量", "账面数量", "在库数量", "结存数量", "账面库存", "数量", "Qty", "库存"]);
+  final colLoc = _findCol(header, ["货位编码", "货位", "库位", "库位编码", "货架位", "储位", "Location", "货位号"]);
+  final colName = _findCol(header, ["物料名称", "零件名称", "品名", "物料描述", "MITEM_NAME", "名称"]);
+  final colCode = _findCol(header, ["标签号", "货物标签", "货码", "标签", "LabelNo", "条码"]);
+
+  final isLocBase = colLoc >= 0 && colPart >= 0 && colQty >= 0;
+  final isBookBase = colPart >= 0 && colQty >= 0;
+  if (isLocBase) { res.kind = "part"; }
+  else if (isBookBase) { res.kind = "book"; }
+  else {
+    res.kind = "unknown";
+    res.message = "未识别的基准表头。零件号列:${colPart >= 0 ? "已找到" : "缺失"}、数量列:${colQty >= 0 ? "已找到" : "缺失"}"
+        "${colLoc >= 0 ? "、货位列:已找到(但缺零件号或数量列)" : ""}";
+    return res;
+  }
+
+  final Map<String, BaselineBook> bookMap = {};
+  final Map<String, BaselineLoc> locMap = {};
+  for (var i = 1; i < lines.length; i++) {
+    final cols = _parseCsvLine(lines[i]);
+    String cell(int idx) => (idx >= 0 && idx < cols.length) ? cols[idx] : "";
+    final part = cell(colPart);
+    if (part.isEmpty) continue; //空零件号行直接忽略（多为小计/空行）
+    final qty = _parseQtyCell(cell(colQty));
+    if (res.kind == "book") {
+      if (bookMap.containsKey(part)) {
+        bookMap[part]!.bookQty += qty;
+      } else {
+        bookMap[part] = BaselineBook(fileKey: fileKey, partNo: part, itemName: cell(colName), bookQty: qty);
+      }
+    } else {
+      final loc = cell(colLoc);
+      if (loc.isEmpty) { res.dirtyRows++; continue; }
+      final key = "$loc|$part";
+      if (locMap.containsKey(key)) {
+        final old = locMap[key]!;
+        old.qty += qty;
+        final gc = cell(colCode);
+        if (gc.isNotEmpty && old.goodsCode.isEmpty) old.goodsCode = gc;
+      } else {
+        locMap[key] = BaselineLoc(fileKey: fileKey, locCode: loc, partNo: part, qty: qty, goodsCode: cell(colCode));
+      }
+    }
+  }
+  res.books.addAll(bookMap.values);
+  res.locs.addAll(locMap.values);
+  if (res.kind == "book" && res.books.isEmpty) { res.kind = "unknown"; res.message = "表头可识别，但未解析到任何含零件号的数据行"; }
+  if (res.kind == "part" && res.locs.isEmpty) { res.kind = "unknown"; res.message = "表头可识别，但未解析到任何含货位+零件号的数据行"; }
+  return res;
+}
+
+// ===================== 盘点·判定与差异计算 =====================
+
+/// 单码判定结果（对应 InventoryScan.flag）
+class InvJudge {
+  final int flag;
+  final String msg;
+  final String level; //green/orange/yellow/red/purple
+  const InvJudge(this.flag, this.level, this.msg);
+}
+
+/// 状态机判定（按优先级短路）。调用方需已完成重复码检测。
+/// locBookQty: 该货位该零件的台账数量；scannedQtyInLoc: 本任务该货位该零件已扫合计（含本次）
+InvJudge judgeInventory({
+  required bool partInBook,
+  required bool partInLoc,
+  required double scannedQtyInLoc,
+  required double locBookQty,
+}) {
+  if (!partInBook) {
+    return const InvJudge(3, "red", "账外物料：该零件号账面基准中不存在");
+  }
+  if (!partInLoc) {
+    return const InvJudge(4, "yellow", "串位提示：该货位台账无此零件，仍已记录");
+  }
+  if (locBookQty > 0 && scannedQtyInLoc > locBookQty) {
+    return const InvJudge(5, "yellow", "超量：本货位该零件实扫已超台账数量");
+  }
+  return const InvJudge(0, "green", "正常");
+}
+
+/// 账面基准（零件号级）：来源=基础数据表导出CSV，fileKey=基准文件标识（文件名+mtime）
+@collection
+class BaselineBook {
+  Id id = Isar.autoIncrement;
+  String fileKey;
+  @Index(unique: true)
+  String partNo;
+  String itemName = "";
+  double bookQty = 0; //期末库存
+  BaselineBook({required this.fileKey, required this.partNo, this.itemName = "", this.bookQty = 0});
+}
+
+/// 货位基准（货位×零件级）：来源=二楼货架列表导出CSV
+@collection
+class BaselineLoc {
+  Id id = Isar.autoIncrement;
+  String fileKey;
+  @Index()
+  String locCode; //货位编码 NB02-A-01-1F
+  @Index()
+  String partNo;
+  double qty = 0;
+  String goodsCode = ""; //台账预登记货码（可空，仅参考，不做拦截）
+  BaselineLoc({required this.fileKey, required this.locCode, required this.partNo, this.qty = 0, this.goodsCode = ""});
+}
+
+/// 盘点扫描流水：一次盘点任务内每扫一码一行，独立于 ScanRecord，不污染采集数据
+@collection
+class InventoryScan {
+  Id id = Isar.autoIncrement;
+  @Index()
+  String taskId; //盘点任务号（=BatchInfo.batchId，前缀INV）
+  @Index()
+  String goodsCode; //实扫货码
+  String locCode = ""; //扫码时绑定的盘点货位
+  DateTime scanTime;
+  String partNo = ""; //MES反查
+  String itemName = "";
+  String lotNo = ""; //MES LOT_NO
+  double qty = 0; //MES QTY
+  int flag = 0; //判定：0正常 1重复 2MES无码 3账外料 4串位 5超量 6批次不符(挂起)
+  String remark = "";
+  InventoryScan({required this.taskId, required this.goodsCode, required this.scanTime, this.locCode = ""});
 }
 // ===================== 全局Isar实例 =====================
 late Isar _globalIsar;
@@ -297,13 +495,118 @@ String _buildPalletAggCsv(List<ScanRecord> records, Map<String, RecordExtra> ext
   }
   return s;
 }
+// ===================== MES单码查询（盘点页复用；采集页内联逻辑保持不变） =====================
+/// 返回：成功 {ok:true, partNo, qty, createTime, itemName, lotNo}
+///      失败 {ok:false, msg}；Token失效 msg 以"MES登录已失效"开头，供上层单独提示重登。
+Future<Map<String, dynamic>> mesQueryLabel(String labelNo) async {
+  try {
+    final mesCfg = await MesConfig.getConfig();
+    String baseUrl = "http://${mesCfg["host"]}:${mesCfg["port"]}";
+    String token = mesCfg["token"];
+    if (token.isEmpty) return {'ok': false, 'msg': 'MES Token为空，请到设置页登录MES'};
+    final uri = Uri.parse("$baseUrl/api/station/label/GetLableList").replace(queryParameters: {
+      "start": "0", "length": "20", "mitemCode": "", "mitemName": "", "warehouseCode": "",
+      "baseCode": "", "baseName": "", "districtCode": "", "locCode": "", "supplierCode": "",
+      "lotNo": "", "labelNo": labelNo, "status": "", "poNo": "", "bDate": "", "eDate": "",
+      "warehouse": "", "mitemSize": "", "supplier": "",
+    });
+    final httpClient = HttpClient();
+    final req = await httpClient.getUrl(uri);
+    req.headers.set("Culture", "zh-CN");
+    req.headers.set("EnterpriseId", "*");
+    String moduleId = (mesCfg["moduleId"] ?? "").toString().trim();
+    if (moduleId.isEmpty) moduleId = (await MesConfig.getModuleId()).trim();
+    if (moduleId.isEmpty) moduleId = "CE7F61BD526C424996CF6CE00211B86A";
+    String orgIdHdr = (mesCfg["orgId"] ?? "").toString().trim();
+    if (orgIdHdr.isEmpty) orgIdHdr = (await MesConfig.getOrgId()).trim();
+    req.headers.set("ModuleId", moduleId);
+    req.headers.set("OrgId", orgIdHdr);
+    req.headers.set("ModulePage", "/h5/pages/LABEL/MitemLabelQuery/index.html");
+    req.headers.set("X-TZ-Offset", "-480");
+    req.headers.set("Token", token);
+    req.headers.set("Accept", "*/*");
+    req.headers.set("Content-Type", "application/json; charset=utf-8");
+    final resp = await req.close();
+    final respBody = await resp.transform(utf8.decoder).join();
+    if (resp.statusCode == 401 || resp.statusCode == 403) {
+      return {'ok': false, 'msg': 'MES登录已失效(HTTP ${resp.statusCode})，请到设置页重新登录MES'};
+    }
+    dynamic decoded;
+    try { decoded = jsonDecode(respBody); } catch (_) { decoded = null; }
+    if (decoded is! Map<String, dynamic>) {
+      return {'ok': false, 'msg': 'MES登录已失效，响应非JSON，请到设置页重新登录MES'};
+    }
+    if (decoded["success"] == true && decoded["data"] != null) {
+      final rawData = decoded["data"]["data"];
+      final List rows = rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
+      if (rows.isEmpty) return {'ok': false, 'msg': 'MES查询结果为空（该货码无在库标签）'};
+      final row = rows.first as Map;
+      return {
+        'ok': true,
+        'partNo': (row["PartCode"] ?? row["MITEM_CODE"])?.toString() ?? '',
+        'qty': (row["QTY"] as num?)?.toDouble() ?? 0,
+        'createTime': row["DATETIME_CREATED"]?.toString() ?? '',
+        'itemName': (row["MITEM_NAME"] ?? row["MitemName"] ?? row["mitemName"] ?? "").toString(),
+        'lotNo': (row["LOT_NO"] ?? row["lotNo"] ?? "").toString(),
+      };
+    }
+    final String msg = decoded["message"]?.toString() ?? '';
+    final bool auth = RegExp(r"token|session|unauthor|forbidden|invalid|expire|过期|失效|未授权|未登录|重新登录|登录", caseSensitive: false).hasMatch(msg);
+    return {'ok': false, 'msg': auth ? 'MES登录已失效：$msg，请到设置页重新登录MES' : 'MES接口返回异常：$msg'};
+  } catch (e) {
+    return {'ok': false, 'msg': 'MES查询异常：$e'};
+  }
+}
+
+// ===================== 盘点·任务/基准/差异服务 =====================
+/// 盘点基准文件目录（与网页上传的 baseline/ 同目录）
+Future<Directory> _inventoryBaselineDir() async {
+  final docs = await getApplicationDocumentsDirectory();
+  final dir = Directory('${docs.path}/baseline');
+  if (!await dir.exists()) await dir.create(recursive: true);
+  return dir;
+}
+
+/// 列出 baseline 目录下可用作基准的 CSV/TXT（按修改时间倒序）
+Future<List<Map<String, dynamic>>> listBaselineFiles() async {
+  final dir = await _inventoryBaselineDir();
+  final files = dir.listSync().whereType<File>().where((f) {
+    final n = f.path.toLowerCase();
+    return n.endsWith('.csv') || n.endsWith('.txt');
+  }).toList()
+    ..sort((a, b) => b.statSync().modified.compareTo(a.statSync().modified));
+  return files.map((f) {
+    final st = f.statSync();
+    final name = f.uri.pathSegments.last;
+    final key = '$name@${st.modified.millisecondsSinceEpoch}';
+    return {'name': name, 'path': f.path, 'fileKey': key, 'size': st.size, 'mtime': st.modified.toIso8601String()};
+  }).toList();
+}
+
+/// 把某个基准文件解析入库（同名 fileKey 覆盖式重导：先删该 kind 旧数据再写）。
+/// kind: book=账面基准 / part=货位基准
+Future<BaselineParseResult> importBaselineFile(String path, String fileKey, String kind) async {
+  final raw = await File(path).readAsString(encoding: utf8);
+  final res = parseBaselineCsv(raw, fileKey);
+  if (res.kind == "unknown") return res;
+  await _globalIsar.writeTxn(() async {
+    if (res.kind == "book") {
+      await _globalIsar.baselineBooks.where().deleteAll();
+      await _globalIsar.baselineBooks.putAll(res.books);
+    } else {
+      await _globalIsar.baselineLocs.where().deleteAll();
+      await _globalIsar.baselineLocs.putAll(res.locs);
+    }
+  });
+  return res;
+}
 // ===================== 程序入口 =====================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Isar.initializeIsarCore(download: true);
   final dir = await getApplicationDocumentsDirectory();
   _globalIsar = await Isar.open(
-    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema],
+    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema],
     directory: dir.path,
   );
   runApp(const MyApp());
@@ -385,7 +688,7 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     super.initState();
     _isar = _globalIsar;
     //初始化Tab控制器
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
     _initLoadData();
@@ -515,6 +818,7 @@ _mainScrollCtrl.dispose(); //新增
   }
   Future<void> _loadLastBatch() async {
     List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
+    allBatch = allBatch.where((b)=>b.taskKind == 0).toList(); //盘点任务不进入采集批次体系
     if(allBatch.isNotEmpty){
       //只筛选未归档批次作为可采集候选
   final active = allBatch.where((b)=>!b.isArchived).toList();
@@ -1454,6 +1758,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
   Widget _buildHistoryBatchPage(){
     return FutureBuilder<List<BatchInfo>>(
       future: _isar.batchInfos.where().findAll().then((list){
+        list = list.where((b)=>b.taskKind == 0).toList(); //只显示采集批次
         list.sort((a,b)=>b.createTime.compareTo(a.createTime)); //按创建时间倒序，最新在上
         return list;
       }),
@@ -1711,6 +2016,7 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
           tabs: const [
             Tab(text: "采集录入"),
             Tab(text: "历史批次"),
+            Tab(text: "盘点"),
           ],
         ),
       ),
@@ -2012,7 +2318,9 @@ SingleChildScrollView(
             ),
           ),
                   //历史批次页面
-          _buildHistoryBatchPage()
+          _buildHistoryBatchPage(),
+          //盘点模式页面
+          const InventoryHomePage()
         ],
       ),
     bottomNavigationBar: BottomNavigationBar(

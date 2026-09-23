@@ -78,6 +78,7 @@ Response _textResponse(String msg, {int status = 200}) {
 // ---------- 批次列表 ----------
 Future<Response> _apiListBatches() async {
   final batches = await _globalIsar.batchInfos.where().findAll();
+  batches.removeWhere((b) => b.taskKind == 1); //盘点任务不进采集批次列表
   batches.sort((a, b) => b.createTime.compareTo(a.createTime));
   final out = <Map<String, dynamic>>[];
   for (final b in batches) {
@@ -179,6 +180,7 @@ Future<Response> _apiBatchDetail(Request req) async {
 // ---------- 统计看板（全量汇总，供网页图表） ----------
 Future<Response> _apiStats() async {
   final batches = await _globalIsar.batchInfos.where().findAll();
+  batches.removeWhere((b) => b.taskKind == 1); //批次口径仅统计采集任务
   final records = await _globalIsar.scanRecords.where().findAll();
   final extras = await _globalIsar.recordExtras.where().findAll();
   final Map<String, RecordExtra> extraMap = {for (final e in extras) e.goodsCode: e};
