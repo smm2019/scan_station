@@ -150,6 +150,32 @@ class MesConfig {
 
 // =========【MesConfig结束】=========
 
+// ===================== 声音/震动设置（持久化） =====================
+class AppSettings {
+  static const String keySound = "app_sound_enabled";
+  static const String keyVibration = "app_vibration_enabled";
+
+  static Future<bool> getSoundEnabled() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getBool(keySound) ?? true;
+  }
+
+  static Future<bool> getVibrationEnabled() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getBool(keyVibration) ?? true;
+  }
+
+  static Future<void> setSoundEnabled(bool v) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool(keySound, v);
+  }
+
+  static Future<void> setVibrationEnabled(bool v) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool(keyVibration, v);
+  }
+}
+
 
 // ===================== Isar数据库模型 =====================
 
@@ -595,8 +621,13 @@ _containerType = null;
   }
   Future<void> _scanSuccessAction() async {
     try {
-      if ((await Vibration.hasVibrator()) ?? false) {
-        await Vibration.vibrate(duration: 80);
+      if (await AppSettings.getVibrationEnabled()) {
+        if ((await Vibration.hasVibrator()) ?? false) {
+          await Vibration.vibrate(duration: 80);
+        }
+      }
+      if (await AppSettings.getSoundEnabled()) {
+        await SystemSound.play(SystemSoundType.click);
       }
     } catch (_) {}
   }
@@ -1364,7 +1395,10 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
   //====本次【修改重点】历史批次页面【完全对齐截图布局】====
   Widget _buildHistoryBatchPage(){
     return FutureBuilder<List<BatchInfo>>(
-      future: _isar.batchInfos.where().findAll(),
+      future: _isar.batchInfos.where().findAll().then((list){
+        list.sort((a,b)=>b.createTime.compareTo(a.createTime)); //按创建时间倒序，最新在上
+        return list;
+      }),
       builder: (ctx,snap){
         if(!snap.hasData) return const Center(child: CircularProgressIndicator());
         final batches = snap.data!;
@@ -1959,10 +1993,10 @@ SingleChildScrollView(
             });
           }
       else if(idx ==2){
-  //跳转MES服务器配置页面
+  //跳转设置菜单页（内含MES服务器设置、声音震动设置等）
   Navigator.push(
     context,
-    MaterialPageRoute(builder: (context)=>const MesSettingPage()),
+    MaterialPageRoute(builder: (context)=>const SettingsMenuPage()),
   );
 }
 
@@ -2339,6 +2373,153 @@ _detailItem("MES生产日期", r.mesCreateTime ?? "无"),
     );
   }
 }
+// ===================== 设置菜单主页 =====================
+class SettingsMenuPage extends StatelessWidget {
+  const SettingsMenuPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("设置"),
+        backgroundColor: const Color(0xFF515BD4),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          _settingTile(
+            context, icon: Icons.cloud_outlined, color: const Color(0xFF515BD4),
+            title: "MES服务器设置", subtitle: "服务地址 / 账号登录 / 退出登录",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const MesSettingPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.volume_up_outlined, color: Colors.teal,
+            title: "声音和震动设置", subtitle: "扫码成功提示音与震动开关",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const SoundVibrationPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.phone_android_outlined, color: Colors.deepOrange,
+            title: "WiFi局域网服务", subtitle: "开启后电脑浏览器下载采集CSV",
+            onTap: () {
+              // 通过回调方式不可靠，直接提示用户到"导出"菜单开启
+              ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("请在底部「导出」菜单中开启 WiFi 局域网服务")));
+            },
+          ),
+          _settingTile(
+            context, icon: Icons.info_outline, color: Colors.blueGrey,
+            title: "关于", subtitle: "AGV货位采集器",
+            onTap: () => showDialog(context: context, builder: (ctx) => AlertDialog(
+              title: const Text("关于"),
+              content: const Text("AGV货位采集器 v1.0\n适配工业PDA\n支持MES标签查询与整托合并采集"),
+              actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("关闭"))],
+            )),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _settingTile(BuildContext context, {required IconData icon, required Color color,
+      required String title, required String subtitle, required VoidCallback onTap}) {
+    return Card(
+      margin: const EdgeInsets.only(bottom:12),
+      child: ListTile(
+        leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), child: Icon(icon, color: color)),
+        title: Text(title, style: const TextStyle(fontSize:16, fontWeight: FontWeight.w500)),
+        subtitle: Text(subtitle, style: TextStyle(fontSize:12, color: Colors.grey.shade600)),
+        trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+// ===================== 声音和震动设置页 =====================
+class SoundVibrationPage extends StatefulWidget {
+  const SoundVibrationPage({super.key});
+  @override
+  State<SoundVibrationPage> createState() => _SoundVibrationPageState();
+}
+
+class _SoundVibrationPageState extends State<SoundVibrationPage> {
+  bool _sound = true;
+  bool _vibration = true;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final s = await AppSettings.getSoundEnabled();
+    final v = await AppSettings.getVibrationEnabled();
+    setState(() { _sound = s; _vibration = v; _loaded = true; });
+  }
+
+  Future<void> _preview() async {
+    if (_sound) await SystemSound.play(SystemSoundType.click);
+    if (_vibration) {
+      try { if ((await Vibration.hasVibrator()) ?? false) await Vibration.vibrate(duration: 120); } catch (_) {}
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loaded) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text("声音和震动设置"),
+        backgroundColor: const Color(0xFF515BD4),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          Card(
+            child: SwitchListTile(
+              title: const Text("扫码成功提示音", style: TextStyle(fontSize:16)),
+              subtitle: const Text("每次采集保存成功后播放提示音", style: TextStyle(fontSize:12)),
+              value: _sound,
+              activeColor: const Color(0xFF515BD4),
+              onChanged: (v) async {
+                await AppSettings.setSoundEnabled(v);
+                setState(() => _sound = v);
+                if (v) await SystemSound.play(SystemSoundType.click);
+              },
+            ),
+          ),
+          Card(
+            child: SwitchListTile(
+              title: const Text("扫码成功震动", style: TextStyle(fontSize:16)),
+              subtitle: const Text("每次采集保存成功后震动反馈", style: TextStyle(fontSize:12)),
+              value: _vibration,
+              activeColor: const Color(0xFF515BD4),
+              onChanged: (v) async {
+                await AppSettings.setVibrationEnabled(v);
+                setState(() => _vibration = v);
+                if (v) {
+                  try { if ((await Vibration.hasVibrator()) ?? false) await Vibration.vibrate(duration: 120); } catch (_) {}
+                }
+              },
+            ),
+          ),
+          const SizedBox(height:16),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.grey.shade200, foregroundColor: Colors.black87, minimumSize: const Size(double.infinity, 48)),
+            onPressed: _preview,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text("试听测试（按当前开关反馈一次）"),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class MesSettingPage extends StatefulWidget {
   const MesSettingPage({super.key});
 
