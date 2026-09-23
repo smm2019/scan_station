@@ -13,6 +13,7 @@ dependencies:
   vibration: 1.8.4
   path_provider: 2.1.3
   shelf: 1.4.1
+# (上传转码由浏览器完成，无需额外依赖)
   permission_handler: ^11.1.0
   http: ^1.2.1   # ==========新增这一行，用于MES接口http请求
   shared_preferences: ^2.2.3 # 新增，用来保存MES登录信息、token、MES服务器IP端口

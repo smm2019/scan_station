@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
+import 'package:mime/mime.dart';
 import 'dart:convert';
 // =========【改动1：新增权限依赖导入】=========
 import 'package:permission_handler/permission_handler.dart';
