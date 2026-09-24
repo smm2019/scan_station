@@ -376,7 +376,19 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
       invLocKey: _locKey,
       blindMode: _blind,
     );
-    await _globalIsar.batchInfos.put(task);
+    try {
+      await _globalIsar.batchInfos.put(task);
+    } catch (e) {
+      if (!mounted) return;
+      final s = e.toString();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        duration: const Duration(seconds: 6),
+        content: Text(s.contains("No space") || s.contains("disk") || s.contains("Read-only")
+            ? "创建失败：手机存储空间不足或目录只读（$e）"
+            : "创建失败：$e"),
+      ));
+      return;
+    }
     if (!mounted) return;
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _InvScanPage(task: task)));
   }
