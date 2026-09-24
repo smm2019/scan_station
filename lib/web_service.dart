@@ -12,6 +12,8 @@
 //   GET  /api/export       ?batch=id1,id2 下载CSV；不传=当前批次；多个=合并导出
 //   GET  /api/baseline     已上传基准文件列表
 //   POST /api/baseline     multipart 上传基准CSV，同名替换
+//   GET  /api/inventory    盘点任务列表+差异汇总 JSON
+//   GET  /api/inventory/export  ?task=INVxx&type=part|loc|abnormal 分类型CSV下载
 //
 // 基准文件保存位置：应用文档目录下 baseline/ 子目录，供盘点复核模式读取。
 
@@ -50,6 +52,10 @@ Handler createCollectWebService({
             return await _apiListBaselines();
           case '/api/export':
             return await _apiExportCsv(req, csvForBatches, currentBatchId);
+          case '/api/inventory':
+            return await _apiInventory();
+          case '/api/inventory/export':
+            return await _apiInventoryExport(req);
         }
       } else if (req.method == 'POST' && seg == '/api/baseline') {
         return await _apiUploadBaseline(req);
@@ -389,6 +395,123 @@ Future<Response> _apiListBaselines() async {
   return _jsonResponse(out);
 }
 
+// ---------- 盘点报表：任务列表 + 差异汇总 ----------
+Future<Response> _apiInventory() async {
+  final tasks = await _globalIsar.batchInfos.filter().taskKindEqualTo(1).findAll();
+  tasks.sort((a, b) => b.createTime.compareTo(a.createTime));
+  final out = <Map<String, dynamic>>[];
+  for (final t in tasks) {
+    final d = await computeInvDiff(t);
+    int gain = 0, loss = 0, outsideParts = 0;
+    for (final p in d.parts) {
+      final diff = p.realQty - p.bookQty;
+      if (diff > 1e-6) {
+        gain++;
+      } else if (diff < -1e-6) {
+        loss++;
+      }
+      if (p.outsideBoxes > 0) outsideParts++;
+    }
+    final diffLocs = d.locs.where((l) => (l.realQty - l.bookQty).abs() > 1e-6).length;
+    final movePairs = invPairMoveSuggest(d).length ~/ 2;
+    final bookParts = d.parts.where((p) => p.bookQty > 0).length;
+    final covered = d.parts.where((p) => p.bookQty > 0 && p.realBoxes > 0).length;
+    out.add({
+      'batchId': t.batchId,
+      'remark': t.batchRemark,
+      'createTime': t.createTime,
+      'archived': t.isArchived,
+      'blindMode': t.blindMode,
+      'bookBound': t.invBookKey.isNotEmpty,
+      'locBound': t.invLocKey.isNotEmpty,
+      'total': d.totalScans,
+      'valid': d.validScans,
+      'dup': d.dup.length,
+      'mesFail': d.mesFail.length,
+      'bookParts': bookParts,
+      'covered': covered,
+      'gain': gain,
+      'loss': loss,
+      'outsideParts': outsideParts,
+      'diffLocs': diffLocs,
+      'movePairs': movePairs,
+    });
+  }
+  return _jsonResponse(out);
+}
+
+// ---------- 盘点报表：分类型CSV下载（part零件级 / loc货位级 / abnormal异常明细） ----------
+Future<Response> _apiInventoryExport(Request req) async {
+  final tid = (req.url.queryParameters['task'] ?? '').trim();
+  final type = (req.url.queryParameters['type'] ?? 'part').trim();
+  if (tid.isEmpty) return _textResponse('缺少 task 参数', status: 400);
+  if (type != 'part' && type != 'loc' && type != 'abnormal') {
+    return _textResponse('type 仅支持 part / loc / abnormal', status: 400);
+  }
+  final t = await _globalIsar.batchInfos.filter().batchIdEqualTo(tid).findFirst();
+  if (t == null || t.taskKind != 1) return _textResponse('盘点任务不存在：$tid', status: 404);
+  final d = await computeInvDiff(t);
+  final rows = <String>[];
+  final String asciiName, cnName;
+  if (type == 'part') {
+    asciiName = 'inv_part_${t.batchId}.csv';
+    cnName = '盘点零件差异_${t.batchId}.csv';
+    rows.add('零件号,物料名称,期末库存,实盘数量,差异数量,差异类型,账外扫入,双基准矛盾');
+    for (final p in d.parts) {
+      final diff = p.realQty - p.bookQty;
+      String k;
+      if (diff.abs() < 1e-6 && p.outsideBoxes == 0) {
+        k = '正常';
+      } else if (diff < -1e-6) {
+        k = '盘亏';
+      } else if (diff > 1e-6) {
+        k = '盘盈';
+      } else {
+        k = '正常(有账外扫入)';
+      }
+      if (p.outsideBoxes > 0 && p.bookQty == 0 && p.realBoxes == 0) k = '账外料';
+      rows.add([
+        _invCsvField(p.partNo), _invCsvField(p.itemName),
+        _fmtInvNum(p.bookQty), _fmtInvNum(p.realQty), _fmtInvNum(diff), k,
+        p.outsideBoxes > 0 ? _fmtInvNum(p.outsideQty) : '',
+        p.warnFlag == 7 ? '货位台账合计≠账面，先核两版账' : '',
+      ].join(','));
+    }
+  } else if (type == 'loc') {
+    asciiName = 'inv_loc_${t.batchId}.csv';
+    cnName = '盘点货位差异_${t.batchId}.csv';
+    final mv = invPairMoveSuggest(d);
+    rows.add('货位编码,零件号,台账数量,实盘数量,差异,定位/建议');
+    for (final l in d.locs) {
+      final diff = l.realQty - l.bookQty;
+      if (diff.abs() < 1e-6) continue;
+      final note = mv['${l.locCode}|${l.partNo}'] ?? '';
+      rows.add([
+        _invCsvField(l.locCode), _invCsvField(l.partNo),
+        _fmtInvNum(l.bookQty), _fmtInvNum(l.realQty), _fmtInvNum(diff), _invCsvField(note),
+      ].join(','));
+    }
+  } else {
+    asciiName = 'inv_abnormal_${t.batchId}.csv';
+    cnName = '盘点异常明细_${t.batchId}.csv';
+    rows.add('异常类型,货物标签,扫码货位,扫码时间,备注');
+    for (final f in d.mesFail) {
+      rows.add(['MES无码', _invCsvField(f.goodsCode), _invCsvField(f.locCode),
+        f.scanTime.toString().substring(0, 19), _invCsvField(f.remark)].join(','));
+    }
+    for (final p in d.dup) {
+      rows.add(['重复码', _invCsvField(p.goodsCode), _invCsvField(p.locCode),
+        p.scanTime.toString().substring(0, 19), '已在同任务扫过'].join(','));
+    }
+  }
+  //UTF-8 BOM + CRLF：Excel/WPS 双击打开不乱码，可直接回填
+  final csv = '\uFEFF' + rows.join('\r\n') + '\r\n';
+  return Response.ok(csv, headers: {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': "attachment; filename=\"$asciiName\"; filename*=UTF-8''${Uri.encodeComponent(cnName)}",
+  });
+}
+
 // ==================== 门户页面（HTML+CSS+JS，raw字符串，不做插值） ====================
 const String _kWebPortalHtml = r'''
 <!DOCTYPE html>
@@ -463,6 +586,14 @@ const String _kWebPortalHtml = r'''
   .hbar-val{width:74px;flex:none;color:var(--muted)}
   .legend{display:flex;gap:16px;justify-content:center;margin-top:8px;font-size:12px;color:var(--muted);flex-wrap:wrap}
   .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .prog{display:flex;align-items:center;gap:6px;min-width:120px}
+  .prog-track{flex:1;height:10px;background:#EEF0F8;border-radius:5px;overflow:hidden}
+  .prog-fill{height:100%;border-radius:5px;background:linear-gradient(90deg,var(--blue),#8B93EE)}
+  .prog-fill.done{background:linear-gradient(90deg,var(--ok),#4CC38A)}
+  .prog-txt{font-size:12px;color:var(--muted);width:64px;flex:none}
+  .gain{color:var(--warn);font-weight:bold}
+  .loss{color:#C0392B;font-weight:bold}
+  .mv{color:var(--blue);font-weight:bold}
   @media (max-width:640px){header h1{font-size:17px}.card{padding:12px}.mask{padding:8px}.grid2{grid-template-columns:1fr}.hbar-name{width:88px}}
 </style>
 </head>
@@ -507,6 +638,21 @@ const String _kWebPortalHtml = r'''
     </div>
     <div class="msg" id="upMsg"></div>
     <ul class="files" id="baseList"></ul>
+  </div>
+
+  <div class="card">
+    <h2>盘点报表</h2>
+    <div class="tip">盘点任务进度与差异总览，无需碰手机即可查看；下载的 CSV 已带 UTF-8 BOM，Excel/WPS 双击打开不乱码，可直接回填台账。<button class="btn sm ghost" style="margin-left:8px" onclick="loadInventory()">刷新报表</button></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>盘点任务</th><th>创建时间</th><th>状态</th><th>盘点进度</th><th>差异总览</th><th>异常</th><th>下载（可直接回填Excel）</th>
+          </tr>
+        </thead>
+        <tbody id="invBody"><tr><td colspan="7" class="cnt">加载中…</td></tr></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="card">
@@ -747,6 +893,40 @@ function showMsg(id,text,ok){
   el.textContent=text;el.className='msg '+(ok?'ok':'err');
 }
 
+// ===== 盘点报表 =====
+function invCsvUrl(task,type){return '/api/inventory/export?task='+encodeURIComponent(task)+'&type='+encodeURIComponent(type);}
+async function loadInventory(){
+  const tb=document.getElementById('invBody');
+  tb.innerHTML='<tr><td colspan="7" class="cnt">加载中…</td></tr>';
+  let list;
+  try{list=await jget('/api/inventory');}
+  catch(e){tb.innerHTML='<tr><td colspan="7" class="cnt">加载失败：'+esc(e.message)+'</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="7" class="cnt">暂无盘点任务，请在手机 App 盘点模式中创建</td></tr>';return;}
+  tb.innerHTML=list.map(t=>{
+    const st=t.archived?'<span class="tag arch">已结束</span>':'<span class="tag act">盘点中</span>';
+    const pct=t.bookParts>0?Math.min(100,Math.round(t.covered/t.bookParts*100)):0;
+    const prog='<div class="prog"><div class="prog-track"><div class="prog-fill'+(t.archived||pct>=100?' done':'')+'" style="width:'+pct+'%"></div></div><span class="prog-txt">'+t.covered+'/'+t.bookParts+'</span></div>';
+    const diff='<span class="gain">盘盈 '+t.gain+' 项</span> / <span class="loss">盘亏 '+t.loss+' 项</span>'
+      +(t.outsideParts?' / <span style="color:#7C3AED;font-weight:bold">账外 '+t.outsideParts+' 种</span>':'')
+      +(t.movePairs?' / <span class="mv">疑似串位 '+t.movePairs+' 对</span>':'')
+      +(t.bookParts===0?' <span class="cnt">(账面基准为空)</span>':'');
+    const abn=(t.dup||t.mesFail)?('重复 '+t.dup+' · MES无码 '+t.mesFail):'<span class="cnt">无</span>';
+    return '<tr>'
+      +'<td><b>'+esc(t.remark||t.batchId)+'</b><br><span class="cnt">'+esc(t.batchId)+' · '+(t.blindMode?'盲盘':'监督')+(t.bookBound?'':' · ⚠️未绑账面基准')+(t.locBound?'':' · 未绑货位基准')+'</span></td>'
+      +'<td>'+esc(t.createTime.substring(0,16))+'</td>'
+      +'<td>'+st+'</td>'
+      +'<td>'+prog+'<br><span class="cnt">已扫 '+t.total+' 码 · 有效 '+t.valid+'</span></td>'
+      +'<td>'+diff+'</td>'
+      +'<td>'+abn+'</td>'
+      +'<td class="row" style="gap:6px">'
+        +'<button class="btn sm ghost" onclick="location.href=invCsvUrl(\''+esc(t.batchId)+'\',\'part\')">零件差异</button>'
+        +'<button class="btn sm ghost" onclick="location.href=invCsvUrl(\''+esc(t.batchId)+'\',\'loc\')">货位差异</button>'
+        +(t.dup||t.mesFail?'<button class="btn sm ghost" onclick="location.href=invCsvUrl(\''+esc(t.batchId)+'\',\'abnormal\')">异常明细</button>':'')
+      +'</td>'
+      +'</tr>';
+  }).join('');
+}
+
 async function loadBaselines(){
   try{
     const list=await jget('/api/baseline');
@@ -794,7 +974,7 @@ async function loadAll(){
   try{await loadStatus();await loadBatches();}
   catch(e){showMsg('upMsg','加载批次失败：'+e.message,false);}
 }
-loadAll();loadBaselines();loadStats();
+loadAll();loadBaselines();loadStats();loadInventory();
 </script>
 </body>
 </html>
