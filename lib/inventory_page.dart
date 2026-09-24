@@ -377,7 +377,9 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
       blindMode: _blind,
     );
     try {
-      await _globalIsar.batchInfos.put(task);
+      await _globalIsar.writeTxn(() async {
+        await _globalIsar.batchInfos.put(task);
+      });
     } catch (e) {
       if (!mounted) return;
       final s = e.toString();
@@ -614,7 +616,9 @@ class _InvScanPageState extends State<_InvScanPage> {
           }
         }
       }
-      await _globalIsar.inventoryScans.put(rec);
+      await _globalIsar.writeTxn(() async {
+        await _globalIsar.inventoryScans.put(rec);
+      });
       // 震动/声音提示：异常强提醒
       try {
         if (judge.level == "red" || judge.level == "purple") {
@@ -685,7 +689,9 @@ class _InvScanPageState extends State<_InvScanPage> {
     if (ok != true || !mounted) return;
     final task = widget.task;
     task.isArchived = true;
-    await _globalIsar.batchInfos.put(task);
+    await _globalIsar.writeTxn(() async {
+      await _globalIsar.batchInfos.put(task);
+    });
     if (!mounted) return;
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => _InvDiffPage(task: task)));
   }
