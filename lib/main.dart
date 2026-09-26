@@ -10,6 +10,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:mime/mime.dart';
 import 'dart:convert';
+import 'dart:async'; //app_auth 心跳 Timer
 // =========【改动1：新增权限依赖导入】=========
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart'; //新增导入
@@ -24,6 +25,7 @@ import 'package:http/http.dart' as http;
 part 'main.g.dart';
 part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传
 part 'inventory_page.dart'; // 盘点模式：任务/基准绑定/扫码判定/差异报表
+part 'app_auth.dart'; // 账号登录+角色+服务端鉴权：登录门禁/心跳/远程停用/用户管理
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -896,7 +898,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: "AGV货位采集器",
       theme: ThemeData(primarySwatch: Colors.blue),
-      home: const MainPage(),
+      home: const AuthGate(), //登录门禁：无有效会话显示登录页
       debugShowCheckedModeBanner: false,
     );
   }
@@ -1273,6 +1275,12 @@ _containerType = null;
   }
   Future<void> _saveRecord(String code) async {
     if(_isSaving) return;
+    // 服务端功能门禁：角色未开通"采集录入"则拒绝保存
+    if (!Auth.can("collect")) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${Auth.user?.roleName ?? "当前角色"}未开通采集录入权限，请联系管理员"), backgroundColor: Colors.red));
+      _isSaving = false;
+      return;
+    }
     _isSaving = true;
 // ==========【新增前置校验，从这里开始】==========
     try {
@@ -2941,6 +2949,12 @@ class SettingsMenuPage extends StatelessWidget {
         children: [
           _settingTile(
             context, icon: Icons.cloud_outlined, color: const Color(0xFF515BD4),
+            title: "账号与权限", subtitle: "当前账号 / 修改密码 / 用户与功能管理",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const AccountPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.dns_outlined, color: const Color(0xFF3F51B5),
             title: "MES服务器设置", subtitle: "服务地址 / 账号登录 / 退出登录",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const MesSettingPage())),
