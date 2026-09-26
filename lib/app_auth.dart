@@ -202,7 +202,12 @@ class _LoginPageState extends State<LoginPage> {
     if (!mounted) return;
     setState(() => _busy = false);
     if (r["ok"] == true) {
-      await AuthStore.saveSession(r["token"], AuthUser.fromJson(Map<String, dynamic>.from(r["user"])), Map<String, dynamic>.from(r["features"] ?? {}));
+      final lu = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
+      final lf = Map<String, bool>.from(r["features"] ?? {});
+      await AuthStore.saveSession(r["token"], lu, lf);
+      // 修复：登录成功必须立即刷新全局会话，否则 Auth.user 仍是上次登录账号的残留
+      Auth.user = lu;
+      Auth.features = lf;
       widget.onLoggedIn();
       if (Auth.user!.mustChangePw) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("首次登录，请尽快在 设置→账号与权限 修改密码"), backgroundColor: Colors.orange));
@@ -294,7 +299,7 @@ class _AccountPageState extends State<AccountPage> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                 child: Wrap(spacing: 8, runSpacing: 8, children: [
-                  for (final e in {"collect": "采集录入", "inventory": "盘点模式", "export": "导出下载", "mes_query": "MES查询", "requisition": "领料下单", "receive_confirm": "签收确认", "admin_panel": "管理后台"}.entries)
+                  for (final e in {"collect": "采集录入", "inventory": "盘点模式", "export": "导出下载", "mes_query": "MES查询", "direct_transfer": "直调转单", "requisition": "领料下单", "receive_confirm": "签收确认", "admin_panel": "管理后台"}.entries)
                     Chip(
                       label: Text(e.value, style: TextStyle(fontSize: 12, color: Auth.can(e.key) ? const Color(0xFF3F51B5) : Colors.grey)),
                       backgroundColor: Auth.can(e.key) ? const Color(0xFF3F51B5).withOpacity(0.08) : Colors.grey.withOpacity(0.08),
@@ -314,6 +319,7 @@ class _AccountPageState extends State<AccountPage> {
                 actions: [TextButton(onPressed: () => Navigator.pop(context, false), child: const Text("取消")), TextButton(onPressed: () => Navigator.pop(context, true), child: const Text("退出"))]));
               if (yes != true || !context.mounted) return;
               await AuthApi.logout();
+              Auth.user = null; Auth.features = {}; // 清空全局会话，防残留身份
               if (!context.mounted) return;
               // 清会话后重建 AuthGate：无会话自动落到登录页
               Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(

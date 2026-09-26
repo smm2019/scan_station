@@ -20,11 +20,11 @@ const ROLES = ['material', 'warehouse', 'admin']; // 物料员 / 仓管员 / 管
 const ROLE_NAMES = { material: '物料员', warehouse: '仓管员', admin: '管理员' };
 // 按角色功能开关（管理员可在线改；App 登录与心跳时拉取）
 const DEFAULT_FEATURES = {
-  material: { collect: false, inventory: false, export: true, mes_query: true, requisition: true, receive_confirm: true, admin_panel: false },
-  warehouse: { collect: true, inventory: true, export: true, mes_query: true, requisition: false, receive_confirm: false, admin_panel: false },
-  admin: { collect: true, inventory: true, export: true, mes_query: true, requisition: true, receive_confirm: true, admin_panel: true },
+  material: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: true, receive_confirm: true, admin_panel: false },
+  warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, admin_panel: false },
+  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, admin_panel: true },
 };
-const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', requisition: '领料下单', receive_confirm: '签收确认', admin_panel: '管理后台' };
+const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', admin_panel: '管理后台' };
 
 // ---------------- 存储 ----------------
 function defaultDb() {
@@ -40,7 +40,17 @@ function defaultDb() {
 }
 function loadDb() {
   if (!fs.existsSync(DB_FILE)) { const d = defaultDb(); saveDb(d); console.log('[init] 已创建初始账号 admin / admin123（首次登录需改密）'); return d; }
-  return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  const d = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  // 合并新增功能键：旧数据文件缺的键按默认值补齐（已有键保留管理员改过的值）
+  let merged = false;
+  for (const role of ROLES) {
+    d.features[role] = d.features[role] || {};
+    for (const [k, v] of Object.entries(DEFAULT_FEATURES[role] || {})) {
+      if (!(k in d.features[role])) { d.features[role][k] = v; merged = true; }
+    }
+  }
+  if (merged) { saveDb(d); console.log('[init] 功能开关已合并新增键'); }
+  return d;
 }
 function saveDb(db) { // 原子写：临时文件 + rename
   fs.mkdirSync(DATA_DIR, { recursive: true });

@@ -26,6 +26,7 @@ part 'main.g.dart';
 part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传
 part 'inventory_page.dart'; // 盘点模式：任务/基准绑定/扫码判定/差异报表
 part 'app_auth.dart'; // 账号登录+角色+服务端鉴权：登录门禁/心跳/远程停用/用户管理
+part 'direct_transfer_page.dart'; // MES直调：扫转入货位+物料标签累计，提交SaveTRBarcodes转单
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -968,7 +969,7 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     super.initState();
     _isar = _globalIsar;
     //初始化Tab控制器
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 4, vsync: this);
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
     _initLoadData();
@@ -1477,10 +1478,14 @@ try {
       await _refreshBatchStat();
       await _refreshPalletSummary();
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("采集保存成功")));
-      //【新增】保存完成，自动激活输入框，准备PDA下一次扫码
+      //【修复】保存后重挂扫码框焦点：节点可能自认为仍有焦点但原生输入连接已断，
+      //PDA扫码枪按键进不来；先 unfocus 释放，再隔一帧重新申请，强制重建输入连接
+      _goodsFocusNode.unfocus();
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if(mounted){
-          _goodsFocusNode.requestFocus();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if(mounted) _goodsFocusNode.requestFocus();
+          });
         }
       });
     }catch(e){
@@ -2209,6 +2214,7 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
             Tab(text: "采集录入"),
             Tab(text: "历史批次"),
             Tab(text: "盘点"),
+            Tab(text: "直调"),
           ],
         ),
       ),
@@ -2512,7 +2518,9 @@ SingleChildScrollView(
                   //历史批次页面
           _buildHistoryBatchPage(),
           //盘点模式页面
-          const InventoryHomePage()
+          const InventoryHomePage(),
+          //MES直调页面
+          const DirectTransferPage()
         ],
       ),
     bottomNavigationBar: BottomNavigationBar(
