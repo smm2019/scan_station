@@ -495,10 +495,288 @@ String _buildPalletAggCsv(List<ScanRecord> records, Map<String, RecordExtra> ext
   }
   return s;
 }
-// ===================== MES单码查询（盘点页复用；采集页内联逻辑保持不变） =====================
-/// 返回：成功 {ok:true, partNo, qty, createTime, itemName, lotNo}
-///      失败 {ok:false, msg}；Token失效 msg 以"MES登录已失效"开头，供上层单独提示重登。
+// ===================== MES登录（手动登录与静默重登共用） =====================
+/// 阶段1：获取RSA公钥与一次性KeyToken
+Future<Map<String, String>?> getValidateKey2(String serverIp, String serverPort, String userId, int timeoutSec) async {
+  try {
+    final baseUrl = "http://$serverIp:$serverPort";
+    final uri = Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
+    final headers = {
+      "Accept": "*/*",
+      "Accept-Encoding": "gzip, deflate",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Culture": "zh-CN",
+    };
+    debugPrint("【阶段1】请求getvalidatekey2：$uri");
+    final resp = await http.get(uri, headers: headers).timeout(Duration(seconds: timeoutSec));
+    debugPrint("【阶段1】接口返回code:${resp.statusCode}");
+    if (resp.statusCode == 200) {
+      final jsonObj = jsonDecode(resp.body);
+      bool success = jsonObj["success"] ?? false;
+      if (!success) {
+        debugPrint("【阶段1】接口返回失败：${jsonObj["message"]}");
+        return null;
+      }
+      final data = jsonObj["data"];
+      String publicKey = data["PublicKey"];
+      String keyToken = data["KeyToken"];
+      debugPrint("【阶段1】获取公钥成功，KeyToken=$keyToken");
+      return {
+        "publicKey": publicKey,
+        "keyToken": keyToken,
+      };
+    } else {
+      debugPrint("【阶段1】http请求失败，status=${resp.statusCode}");
+      return null;
+    }
+  } catch (e) {
+    debugPrint("【阶段1】异常：$e");
+    return null;
+  }
+}
+
+/// 阶段2：公钥PEM→RSA(PKCS#1 v1.5)加密密码，返回Base64密文。失败抛异常（含诊断信息）
+String rsaEncryptPassword(String pubPem, String plainPwd) {
+  final diag = StringBuffer();
+  String hexOf(List<int> b, int n) =>
+      b.take(n).map((x) => x.toRadixString(16).padLeft(2, '0')).join(' ');
+  diag.writeln("【诊断v2】公钥长度=${pubPem.length}");
+  diag.writeln("公钥原文(前100字符)=${pubPem.length > 100 ? pubPem.substring(0, 100) : pubPem}");
+  try {
+    var b64 = pubPem
+        .replaceAll(r'\r\n', '')
+        .replaceAll(r'\n', '')
+        .replaceAll(r'\r', '')
+        .replaceAll(RegExp(r'-----[a-zA-Z0-9 ]+-----'), '')
+        .replaceAll(RegExp(r'[^A-Za-z0-9+/=]'), '');
+    while (b64.length % 4 != 0) {
+      b64 = "$b64="; // 补齐服务端可能省略的base64末尾padding
+    }
+    diag.writeln("清洗后base64长度=${b64.length}");
+    var pemBytes = Uint8List.fromList(base64.decode(b64));
+    diag.writeln("第一次解码后长度=${pemBytes.length} 前16字节=${hexOf(pemBytes, 16)}");
+    // 防双重base64：若解出来仍是PEM文本（首字节0x2D即'-'），剥头后再解码一次
+    if (pemBytes.isNotEmpty && pemBytes[0] == 0x2D) {
+      final innerText = String.fromCharCodes(pemBytes);
+      var innerB64 = innerText
+          .replaceAll(RegExp(r'-----[a-zA-Z0-9 ]+-----'), '')
+          .replaceAll(RegExp(r'[^A-Za-z0-9+/=]'), '');
+      while (innerB64.length % 4 != 0) {
+        innerB64 = "$innerB64=";
+      }
+      pemBytes = Uint8List.fromList(base64.decode(innerB64));
+      diag.writeln("检测到双重base64→第二次解码后长度=${pemBytes.length} 前16字节=${hexOf(pemBytes, 16)}");
+    }
+    // 解析 SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
+    final asn1Parser = ASN1Parser(pemBytes);
+    final topLevel = asn1Parser.nextObject();
+    diag.writeln("顶层类型=${topLevel.runtimeType}");
+    if (topLevel is! ASN1Sequence ||
+        topLevel.elements == null ||
+        topLevel.elements!.length < 2) {
+      throw Exception("顶层不是含≥2元素的SEQUENCE，实际类型=${topLevel.runtimeType}");
+    }
+    final topElements = topLevel.elements!;
+    diag.writeln("顶层元素数=${topElements.length} 类型=${topElements.map((x) => x.runtimeType).join(',')}");
+    // SPKI第2个元素是BIT STRING：其value字节去掉首字节(unusedbits)才是内层RSAPublicKey
+    final ASN1Sequence pubKeySeq;
+    if (topElements[1] is ASN1BitString) {
+      final bitString = topElements[1] as ASN1BitString;
+      final innerDer = Uint8List.fromList(bitString.valueBytes!.sublist(1));
+      diag.writeln("走SPKI分支 内层长度=${innerDer.length} 前16字节=${hexOf(innerDer, 16)}");
+      pubKeySeq = ASN1Parser(innerDer).nextObject() as ASN1Sequence;
+    } else {
+      diag.writeln("走裸RSAPublicKey分支");
+      pubKeySeq = topLevel; // 兜底：服务端直接返回RSAPublicKey结构
+    }
+    final pubElements = pubKeySeq.elements;
+    if (pubElements == null || pubElements.length < 2) {
+      throw Exception("公钥PEM解析失败：公钥序列元素不足");
+    }
+    diag.writeln("公钥序列元素数=${pubElements.length} 类型=${pubElements.map((x) => x.runtimeType).join(',')}");
+    final int1 = pubElements[0] as ASN1Integer;
+    final int2 = pubElements[1] as ASN1Integer;
+    diag.writeln("元素0位数=${int1.integer?.bitLength} 元素1位数=${int2.integer?.bitLength}");
+    // 按数值大小自动识别：模数n是大数，指数e通常是65537
+    final BigInt n = (int1.integer! > int2.integer!) ? int1.integer! : int2.integer!;
+    final BigInt e = (int1.integer! > int2.integer!) ? int2.integer! : int1.integer!;
+    diag.writeln("最终采用 模数位数=${n.bitLength} 指数=$e");
+    debugPrint("【阶段2】模数位数=${n.bitLength} 指数=$e");
+    // ⚠️pointycastle的RSAPublicKey构造函数参数顺序是(modulus, exponent)——模数在前！
+    final pubKey = RSAPublicKey(n, e);
+    // PKCS1-v1_5填充：直接实例化，不依赖注册表别名
+    final cipher = PKCS1Encoding(RSAEngine())
+      ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
+    // 执行加密并转为 Base64 字符串
+    Uint8List dataRaw = Uint8List.fromList(utf8.encode(plainPwd));
+    Uint8List encryptedRaw = cipher.process(dataRaw);
+    final encryptedPwd = base64.encode(encryptedRaw);
+    debugPrint("【阶段2成功】加密完成");
+    return encryptedPwd;
+  } catch (e, stack) {
+    debugPrint("【阶段2 RSA加密异常】$e \n $stack");
+    throw Exception("RSA加密失败：$e\n----诊断----\n$diag");
+  }
+}
+
+/// 三阶段完整登录：返回 token/orgId/userId/userName/displayName/moduleId；失败抛异常（带诊断详情，供手动登录弹窗）
+Future<Map<String, String>> mesPerformLogin({
+  required String ip,
+  required String port,
+  required String account,
+  required String pwd,
+  required int timeoutSec,
+}) async {
+  // =========阶段1：获取RSA公钥 KeyToken=========
+  final validateResult = await getValidateKey2(ip, port, account, timeoutSec);
+  if (validateResult == null) {
+    throw Exception("阶段1失败：获取公钥接口返回空，请检查账号/服务器地址");
+  }
+  final String keyToken = validateResult["keyToken"]!;
+  // =========阶段2：RSA加密密码=========
+  final String encryptedPwd = rsaEncryptPassword(validateResult["publicKey"]!, pwd);
+  // =========阶段3：提交登录请求，获取token=========
+  final String baseUrl = "http://$ip:$port";
+  debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
+  final loginResp = await http.post(
+    Uri.parse("$baseUrl/platform/sign/signin2"),
+    headers: {
+      "Content-Type": "application/json;charset=utf-8",
+      "Accept": "*/*",
+      "Accept-Encoding": "gzip, deflate",
+      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+      "Culture": "zh-CN",
+      "EnterpriseId": "*",
+      "X-TZ-Offset": "-480",
+      "Referer": "$baseUrl/h5/login.html",
+      "Origin": "$baseUrl",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0 Safari/537.36 Edg/153.0.0",
+    },
+    body: jsonEncode([account, encryptedPwd, keyToken]),
+  ).timeout(Duration(seconds: timeoutSec));
+  if (loginResp.statusCode != 200) {
+    throw Exception("阶段3失败：登录接口Http状态码${loginResp.statusCode}，返回：${loginResp.body}");
+  }
+  final loginJson = jsonDecode(loginResp.body);
+  if (loginJson["success"] != true) {
+    throw Exception("阶段3失败：登录接口success=false，返回内容：${loginResp.body}");
+  }
+  final dataObj = loginJson["data"];
+  if (dataObj is! Map) {
+    throw Exception("阶段3失败：返回的data不是对象：${loginResp.body}");
+  }
+  // ===== token获取：实测鼎捷MES把token放在 signin2 响应头 "token"(小写)，优先取头，再兜底体 =====
+  String token = "";
+  for (final h in ["token", "access-token", "accesstoken", "x-token", "x-access-token", "authorization"]) {
+    final v = loginResp.headers[h];
+    if (v != null && v.trim().isNotEmpty) {
+      token = v.trim().replaceFirst(RegExp(r'^Bearer\s+', caseSensitive: false), '');
+      debugPrint("【阶段3】token来自响应头 $h");
+      break;
+    }
+  }
+  if (token.isEmpty) {
+    for (final k in ["token", "Token", "access_token", "accessToken", "AccessToken"]) {
+      final v = dataObj[k]?.toString();
+      if (v != null && v.isNotEmpty) { token = v; break; }
+    }
+  }
+  if (token.isEmpty) {
+    final headerDump = loginResp.headers.entries.map((e) => "${e.key}: ${e.value}").join("\n");
+    throw Exception("阶段3失败：登录成功但响应体和响应头都没找到token。\n----响应头----\n$headerDump");
+  }
+  // ===== 用户信息解析：兼容camelCase与服务器实际的snake_case =====
+  String pick(List<String> keys) {
+    for (final k in keys) {
+      final v = dataObj[k]?.toString();
+      if (v != null && v.isNotEmpty) return v;
+    }
+    return "";
+  }
+  final String userId = pick(["userId", "user_id", "UserInfoId", "userinfo_id"]);
+  final String userName = pick(["userName", "user_name"]);
+  final String displayName = pick(["displayName", "display_name"]);
+  String orgId = pick(["orgId", "org_id"]);
+  if (orgId.isEmpty && dataObj["organizations"] is List) {
+    // 从组织列表取默认组织（is_default=true 或 str_default=Y）
+    final orgs = dataObj["organizations"] as List;
+    for (final o in orgs) {
+      if (o is Map && (o["is_default"] == true || o["str_default"]?.toString() == "Y")) {
+        orgId = o["id"]?.toString() ?? "";
+        break;
+      }
+    }
+    if (orgId.isEmpty && orgs.first is Map) {
+      orgId = (orgs.first as Map)["id"]?.toString() ?? "";
+    }
+  }
+  // 查询接口的 ModuleId 来自登录响应头
+  final String loginModuleId = (loginResp.headers["moduleid"] ?? "").trim();
+  debugPrint("【阶段3成功】token获取成功 orgId=$orgId ModuleId=$loginModuleId");
+  return {
+    "token": token,
+    "orgId": orgId,
+    "userId": userId,
+    "userName": userName,
+    "displayName": displayName,
+    "moduleId": loginModuleId,
+  };
+}
+
+/// 静默重登：用已存账号密码重走三阶段登录并刷新token。成功true；任何失败false（不弹窗不抛出）
+Future<bool> mesSilentLogin() async {
+  try {
+    final cfg = await MesConfig.getConfig();
+    final ip = cfg["host"].toString().trim();
+    final port = cfg["port"].toString().trim();
+    final account = cfg["account"].toString().trim();
+    final pwd = cfg["pwd"].toString().trim();
+    final int timeoutSec = (cfg["timeout"] as int?) ?? 10;
+    if (ip.isEmpty || account.isEmpty || pwd.isEmpty) {
+      debugPrint("MES静默重登跳过：账号/密码/地址未配置");
+      return false;
+    }
+    final r = await mesPerformLogin(ip: ip, port: port, account: account, pwd: pwd, timeoutSec: timeoutSec);
+    await MesConfig.saveLoginInfo(
+      token: r["token"]!,
+      orgId: r["orgId"]!,
+      userId: r["userId"]!,
+      userName: r["userName"]!,
+      displayName: r["displayName"]!,
+      moduleId: r["moduleId"]!,
+    );
+    debugPrint("MES静默重登成功");
+    return true;
+  } catch (e) {
+    debugPrint("MES静默重登失败：$e");
+    return false;
+  }
+}
+
+// ===================== MES单码查询（采集页/盘点页共用；失效自动静默重登并重试一次） =====================
+/// 返回：成功 {ok:true, partNo, qty, createTime, itemName, lotNo[, relogin:true 表示本次经历了自动重登]}
+///      失败 {ok:false, msg}；Token失效 msg 以"MES登录已失效"开头。
 Future<Map<String, dynamic>> mesQueryLabel(String labelNo) async {
+  var result = await _mesQueryOnce(labelNo);
+  final String failMsg = result["msg"]?.toString() ?? "";
+  final bool needRelogin = result["ok"] != true &&
+      (failMsg.startsWith("MES登录已失效") || failMsg.startsWith("MES Token为空"));
+  if (needRelogin) {
+    debugPrint("MES查询失效，尝试静默重登…");
+    final bool relogged = await mesSilentLogin();
+    if (relogged) {
+      result = await _mesQueryOnce(labelNo);
+      if (result["ok"] == true) {
+        result["relogin"] = true;
+      }
+    }
+  }
+  return result;
+}
+
+/// 单次查询（不含重登逻辑）
+Future<Map<String, dynamic>> _mesQueryOnce(String labelNo) async {
   try {
     final mesCfg = await MesConfig.getConfig();
     String baseUrl = "http://${mesCfg["host"]}:${mesCfg["port"]}";
@@ -529,17 +807,17 @@ Future<Map<String, dynamic>> mesQueryLabel(String labelNo) async {
     final resp = await req.close();
     final respBody = await resp.transform(utf8.decoder).join();
     if (resp.statusCode == 401 || resp.statusCode == 403) {
-      return {'ok': false, 'msg': 'MES登录已失效(HTTP ${resp.statusCode})，请到设置页重新登录MES'};
+      return {'ok': false, 'msg': 'MES登录已失效(HTTP ${resp.statusCode})，自动重登后仍失败，请到设置页重新登录MES'};
     }
     dynamic decoded;
     try { decoded = jsonDecode(respBody); } catch (_) { decoded = null; }
     if (decoded is! Map<String, dynamic>) {
-      return {'ok': false, 'msg': 'MES登录已失效，响应非JSON，请到设置页重新登录MES'};
+      return {'ok': false, 'msg': 'MES登录已失效，响应非JSON，自动重登后仍失败，请到设置页重新登录MES'};
     }
     if (decoded["success"] == true && decoded["data"] != null) {
       final rawData = decoded["data"]["data"];
       final List rows = rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
-      if (rows.isEmpty) return {'ok': false, 'msg': 'MES查询结果为空（该货码无在库标签）'};
+      if (rows.isEmpty) return {'ok': false, 'msg': 'MES查询结果为空(recordsTotal=${decoded["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确'};
       final row = rows.first as Map;
       return {
         'ok': true,
@@ -552,7 +830,7 @@ Future<Map<String, dynamic>> mesQueryLabel(String labelNo) async {
     }
     final String msg = decoded["message"]?.toString() ?? '';
     final bool auth = RegExp(r"token|session|unauthor|forbidden|invalid|expire|过期|失效|未授权|未登录|重新登录|登录", caseSensitive: false).hasMatch(msg);
-    return {'ok': false, 'msg': auth ? 'MES登录已失效：$msg，请到设置页重新登录MES' : 'MES接口返回异常：$msg'};
+    return {'ok': false, 'msg': auth ? 'MES登录已失效：$msg，自动重登后仍失败，请到设置页重新登录MES' : 'MES接口返回异常：$msg'};
   } catch (e) {
     return {'ok': false, 'msg': 'MES查询异常：$e'};
   }
@@ -1081,121 +1359,29 @@ _containerType = null;
       }
       final String palletIdForSave = _palletMode ? (_currentPalletId ?? "") : "";
 
-// ===================== MES接口请求【替换为GET版本，适配抓包接口】=====================
+// ===================== MES接口请求【统一走 mesQueryLabel：失效自动静默重登并重试一次】=====================
 String? mesPartNo;
 double? mesQty;
 String? mesCreateTime;
 String mesItemName = "";
 String mesLotNo = "";
 try {
-  final mesCfg = await MesConfig.getConfig();
-  String baseUrl = "http://${mesCfg["host"]}:${mesCfg["port"]}";
-  String token = mesCfg["token"];
-  if(token.isEmpty) throw Exception("MES Token为空，请先在设置页登录MES");
-  // 重点：接口名修正为 GetLableList（抓包原始拼写，少a，否则404）
-  final uri = Uri.parse("$baseUrl/api/station/label/GetLableList").replace(queryParameters: {
-    "start": "0",
-    "length": "20",
-    "mitemCode": "",
-    "mitemName": "",
-    "warehouseCode": "",
-    "baseCode": "",
-    "baseName": "",
-    "districtCode": "",
-    "locCode": "",
-    "supplierCode": "",
-    "lotNo": "",
-    "labelNo": code,
-    "status": "",
-    "poNo": "",
-    "bDate": "",
-    "eDate": "",
-    "warehouse": "",
-    "mitemSize": "",
-    "supplier": "",
-  });
-  final httpClient = HttpClient();
-  final mesRequest = await httpClient.getUrl(uri);
-  // 【全部复制抓包拿到的请求头】
-  mesRequest.headers.set("Culture","zh-CN");
-  mesRequest.headers.set("EnterpriseId","*");
-  // 改为从配置读取，不再硬编码ModuleId/OrgId；手填框为空时回退到登录下发值/抓包实测值，避免空请求头被服务端过滤成0条
-  String moduleId = (mesCfg["moduleId"] ?? "").toString().trim();
-  if (moduleId.isEmpty) moduleId = (await MesConfig.getModuleId()).trim();
-  if (moduleId.isEmpty) moduleId = "CE7F61BD526C424996CF6CE00211B86A"; // 抓包实测：标签查询模块ID
-  String orgIdHdr = (mesCfg["orgId"] ?? "").toString().trim();
-  if (orgIdHdr.isEmpty) orgIdHdr = (await MesConfig.getOrgId()).trim();
-  mesRequest.headers.set("ModuleId", moduleId);
-  mesRequest.headers.set("OrgId", orgIdHdr);
-  mesRequest.headers.set("ModulePage","/h5/pages/LABEL/MitemLabelQuery/index.html");
-  mesRequest.headers.set("X-TZ-Offset","-480");
-  mesRequest.headers.set("Token", token);
-  mesRequest.headers.set("Accept","*/*");
-  mesRequest.headers.set("Content-Type","application/json; charset=utf-8");
-
-  final resp = await mesRequest.close();
-  final respBody = await resp.transform(utf8.decoder).join();
-  final int httpCode = resp.statusCode;
-
-  // ===== Token失效识别①：HTTP状态码 401/403；②响应体不是JSON（错误页/空内容）=====
-  bool tokenInvalid = false;
-  Map<String,dynamic>? mesJson;
-  if(httpCode == 401 || httpCode == 403){
-    tokenInvalid = true;
-  } else {
-    try {
-      final decoded = jsonDecode(respBody);
-      if(decoded is Map<String,dynamic>) mesJson = decoded;
-    } catch (_) {
-      mesJson = null; //解析失败按失效/服务异常处理，不再抛FormatException
+  final mesResult = await mesQueryLabel(code);
+  if (mesResult["ok"] == true) {
+    final String pn = mesResult["partNo"]?.toString() ?? "";
+    final String ct = mesResult["createTime"]?.toString() ?? "";
+    mesPartNo = pn.isEmpty ? null : pn;
+    mesQty = (mesResult["qty"] as num?)?.toDouble();
+    mesCreateTime = ct.isEmpty ? null : ct;
+    mesItemName = mesResult["itemName"]?.toString() ?? "";
+    mesLotNo = mesResult["lotNo"]?.toString() ?? "";
+    if (mesResult["relogin"] == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("MES登录已自动续期，查询正常")));
     }
-    if(mesJson == null) tokenInvalid = true;
-  }
-
-  //解析抓包返回的JSON结构：分页结构 data.recordsTotal + data.data 数组，取第一条记录；兼容单对象形态
-  String? mesErrMsg;
-  bool msgComplete = false; //true=消息已自带完整上下文，直接显示；false=需加"MES查询失败："前缀
-  if(tokenInvalid){
-    final String previewRaw = respBody.trim();
-    final String preview = previewRaw.isEmpty
-        ? "(空响应)"
-        : (previewRaw.length > 100 ? "${previewRaw.substring(0,100)}…" : previewRaw);
-    mesErrMsg = "MES登录已失效(HTTP $httpCode)，请到设置页重新登录MES。服务器返回：$preview";
-    msgComplete = true;
-  } else {
-    final Map<String,dynamic> json = mesJson!;
-    if(json["success"] == true && json["data"] != null){
-      final rawData = json["data"]["data"];
-      final List rows = rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
-      if(rows.isEmpty){
-        mesErrMsg = "查询结果为空(recordsTotal=${json["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确";
-      } else {
-        final row = rows.first as Map;
-        // 零件号取 PartCode（如 6608462082-A）；MITEM_CODE 是物料码，仅作兜底
-        mesPartNo = (row["PartCode"] ?? row["MITEM_CODE"])?.toString();
-        mesQty = (row["QTY"] as num?)?.toDouble();
-        mesCreateTime = row["DATETIME_CREATED"]?.toString();
-        mesItemName = (row["MITEM_NAME"] ?? row["MitemName"] ?? row["mitemName"] ?? "").toString();
-        mesLotNo = (row["LOT_NO"] ?? row["lotNo"] ?? "").toString();
-      }
-    } else {
-      // ===== Token失效识别③：success=false 且 message 指向会话/授权问题 =====
-      final String msg = json["message"]?.toString() ?? "";
-      final bool msgLooksLikeAuth = RegExp(
-        r"token|session|unauthor|forbidden|invalid|expire|过期|失效|未授权|未登录|重新登录|登录",
-        caseSensitive: false,
-      ).hasMatch(msg);
-      if(msgLooksLikeAuth){
-        mesErrMsg = "MES登录已失效：$msg，请到设置页重新登录MES";
-        msgComplete = true;
-      } else {
-        mesErrMsg = "接口返回异常 success=${json["success"]} message=$msg";
-      }
-    }
-  }
-  if(mesErrMsg != null && mounted){
-    final String tip = msgComplete ? mesErrMsg : "MES查询失败：$mesErrMsg，仅保存本地采集信息";
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(tip)));
+  } else if (mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("MES查询失败：${mesResult["msg"]}，仅保存本地采集信息"))
+    );
   }
 } catch (mesErr) {
   if(mounted){
@@ -1205,8 +1391,6 @@ try {
   }
   //MES查询失败，字段保留null，不阻断保存流程
 }
-
-
       if(_palletMode && _currentPalletId != null && (mesPartNo?.isNotEmpty ?? false)){
         // 非首码时：若零件号在本托未出现过，轻提示防误扫（不拦截）
         final codesInPallet = await _isar.recordExtras.filter().palletIdEqualTo(_currentPalletId!).findAll();
@@ -2926,48 +3110,9 @@ final TextEditingController orgIdCtrl = TextEditingController();
     orgIdCtrl.text = cfg["orgId"];
     });
   }
-  // =========【独立提取到类顶层：获取公钥接口】=========
-  Future<Map<String, String>?> getValidateKey2(String serverIp, String serverPort, String userId, int timeoutSec) async {
-    try {
-      final baseUrl = "http://$serverIp:$serverPort";
-      final uri = Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
-      final headers = {
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Culture": "zh-CN",
-      };
-      debugPrint("【阶段1】请求getvalidatekey2：$uri");
-      // 增加timeout（解决问题4）
-      final resp = await http.get(uri, headers: headers).timeout(Duration(seconds: timeoutSec));
-      debugPrint("【阶段1】接口返回code:${resp.statusCode}");
-      if (resp.statusCode == 200) {
-        final jsonObj = jsonDecode(resp.body);
-        bool success = jsonObj["success"] ?? false;
-        if (!success) {
-          debugPrint("【阶段1】接口返回失败：${jsonObj["message"]}");
-          return null;
-        }
-        final data = jsonObj["data"];
-        String publicKey = data["PublicKey"];
-        String keyToken = data["KeyToken"];
-        debugPrint("【阶段1】获取公钥成功，KeyToken=$keyToken");
-        return {
-          "publicKey": publicKey,
-          "keyToken": keyToken,
-        };
-      } else {
-        debugPrint("【阶段1】http请求失败，status=${resp.statusCode}");
-        return null;
-      }
-    } catch (e) {
-      debugPrint("【阶段1】异常：$e");
-      return null;
-    }
-  }
+  // getValidateKey2 / RSA加密 / 三阶段登录 已提取为顶层共用函数（手动登录与静默重登共用）
 
-  // ========== MES登录方法（放在State内部，与build平级） ==========
+  // ========== MES登录方法（复用顶层 mesPerformLogin，失败弹窗含诊断详情） ==========
 Future<bool> _testMesLogin() async {
   final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
   // 先保存表单配置
@@ -2981,198 +3126,30 @@ Future<bool> _testMesLogin() async {
     moduleId: moduleIdCtrl.text.trim(),
     orgId: orgIdCtrl.text.trim(),
   );
-  final ip = hostCtrl.text.trim();
-  final port = portCtrl.text.trim();
-  String baseUrl = "http://$ip:$port";
   try {
-    // =========阶段1：获取RSA公钥 KeyToken=========
-    final validateResult = await getValidateKey2(ip, port, accountCtrl.text.trim(), timeoutSec);
-    if(validateResult == null){
-      throw Exception("阶段1失败：获取公钥接口返回空，请检查账号/服务器地址");
-    }
-    final String keyToken = validateResult["keyToken"]!;
-    String pubPem = validateResult["publicKey"]!;
-    debugPrint("【阶段2】开始RSA加密密码，原始PEM=$pubPem");
-    // =====【诊断v2】全程收集关键数据，失败时弹窗展示，截图即可定位 =====
-    final diag = StringBuffer();
-    String hexOf(List<int> b, int n) =>
-        b.take(n).map((x) => x.toRadixString(16).padLeft(2, '0')).join(' ');
-    diag.writeln("【诊断v2】公钥长度=${pubPem.length}");
-    diag.writeln("公钥原文(前100字符)=${pubPem.length > 100 ? pubPem.substring(0, 100) : pubPem}");
-    // =========阶段2：RSA加密密码=========
-    String encryptedPwd = "";
-    try{
-      var b64 = pubPem
-          .replaceAll(r'\r\n', '')
-          .replaceAll(r'\n', '')
-          .replaceAll(r'\r', '')
-          .replaceAll(RegExp(r'-----[a-zA-Z0-9 ]+-----'), '')
-          .replaceAll(RegExp(r'[^A-Za-z0-9+/=]'), '');
-      while (b64.length % 4 != 0) {
-        b64 = "$b64="; // 补齐服务端可能省略的base64末尾padding
-      }
-      diag.writeln("清洗后base64长度=${b64.length}");
-      var pemBytes = Uint8List.fromList(base64.decode(b64));
-      diag.writeln("第一次解码后长度=${pemBytes.length} 前16字节=${hexOf(pemBytes, 16)}");
-      // 防双重base64：若解出来仍是PEM文本（首字节0x2D即'-'），剥头后再解码一次
-      if (pemBytes.isNotEmpty && pemBytes[0] == 0x2D) {
-        final innerText = String.fromCharCodes(pemBytes);
-        var innerB64 = innerText
-            .replaceAll(RegExp(r'-----[a-zA-Z0-9 ]+-----'), '')
-            .replaceAll(RegExp(r'[^A-Za-z0-9+/=]'), '');
-        while (innerB64.length % 4 != 0) {
-          innerB64 = "$innerB64=";
-        }
-        pemBytes = Uint8List.fromList(base64.decode(innerB64));
-        diag.writeln("检测到双重base64→第二次解码后长度=${pemBytes.length} 前16字节=${hexOf(pemBytes, 16)}");
-      }
-      // 解析 SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
-      final asn1Parser = ASN1Parser(pemBytes);
-      final topLevel = asn1Parser.nextObject();
-      diag.writeln("顶层类型=${topLevel.runtimeType}");
-      if (topLevel is! ASN1Sequence ||
-          topLevel.elements == null ||
-          topLevel.elements!.length < 2) {
-        throw Exception("顶层不是含≥2元素的SEQUENCE，实际类型=${topLevel.runtimeType}");
-      }
-      final topElements = topLevel.elements!;
-      diag.writeln("顶层元素数=${topElements.length} 类型=${topElements.map((x) => x.runtimeType).join(',')}");
-      // SPKI第2个元素是BIT STRING：其value字节去掉首字节(unusedbits)才是内层RSAPublicKey
-      final ASN1Sequence pubKeySeq;
-      if (topElements[1] is ASN1BitString) {
-        final bitString = topElements[1] as ASN1BitString;
-        final innerDer = Uint8List.fromList(bitString.valueBytes!.sublist(1));
-        diag.writeln("走SPKI分支 内层长度=${innerDer.length} 前16字节=${hexOf(innerDer, 16)}");
-        pubKeySeq = ASN1Parser(innerDer).nextObject() as ASN1Sequence;
-      } else {
-        diag.writeln("走裸RSAPublicKey分支");
-        pubKeySeq = topLevel; // 兜底：服务端直接返回RSAPublicKey结构
-      }
-      final pubElements = pubKeySeq.elements;
-      if(pubElements == null || pubElements.length <2){
-        throw Exception("公钥PEM解析失败：公钥序列元素不足");
-      }
-      diag.writeln("公钥序列元素数=${pubElements.length} 类型=${pubElements.map((x) => x.runtimeType).join(',')}");
-      final int1 = pubElements[0] as ASN1Integer;
-      final int2 = pubElements[1] as ASN1Integer;
-      diag.writeln("元素0位数=${int1.integer?.bitLength} 元素1位数=${int2.integer?.bitLength}");
-      // 按数值大小自动识别：模数n是大数，指数e通常是65537
-      final BigInt n = (int1.integer! > int2.integer!) ? int1.integer! : int2.integer!;
-      final BigInt e = (int1.integer! > int2.integer!) ? int2.integer! : int1.integer!;
-      diag.writeln("最终采用 模数位数=${n.bitLength} 指数=$e");
-      debugPrint("【阶段2】模数位数=${n.bitLength} 指数=$e");
-      // ⚠️pointycastle的RSAPublicKey构造函数参数顺序是(modulus, exponent)——模数在前！
-      // 之前误写成RSAPublicKey(e, n)，把17位的指数当成模数，导致"Input data too large"
-      final pubKey = RSAPublicKey(n, e);
-      // PKCS1-v1_5填充：直接实例化，不依赖注册表别名
-      final cipher = PKCS1Encoding(RSAEngine())
-        ..init(true, PublicKeyParameter<RSAPublicKey>(pubKey));
-      // 执行加密并转为 Base64 字符串
-      Uint8List dataRaw = Uint8List.fromList(utf8.encode(pwdCtrl.text.trim()));
-      Uint8List encryptedRaw = cipher.process(dataRaw);
-      encryptedPwd = base64.encode(encryptedRaw);
-      debugPrint("【阶段2成功】加密完成，加密后密码：$encryptedPwd");
-    }catch(e,stack){
-      debugPrint("【阶段2 RSA加密异常】$e \n $stack");
-      throw Exception("RSA加密失败：$e\n----诊断----\n$diag");
-    }
-    // =========阶段2结束=========
-    // =========阶段3：提交登录请求，获取token=========
-    debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
-    final loginResp = await http.post(
-      Uri.parse("$baseUrl/platform/sign/signin2"),
-      headers: {
-        "Content-Type": "application/json;charset=utf-8",
-        "Accept": "*/*",
-        "Accept-Encoding": "gzip, deflate",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-        "Culture": "zh-CN",
-        "EnterpriseId": "*",
-        "X-TZ-Offset": "-480",
-        "Referer": "$baseUrl/h5/login.html",
-        "Origin": "$baseUrl",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0 Safari/537.36 Edg/153.0.0",
-      },
-      body: jsonEncode([accountCtrl.text.trim(), encryptedPwd, keyToken]),
-    ).timeout(Duration(seconds: timeoutSec));
-    if (loginResp.statusCode != 200) {
-      throw Exception("阶段3失败：登录接口Http状态码${loginResp.statusCode}，返回：${loginResp.body}");
-    }
-    final loginJson = jsonDecode(loginResp.body);
-    if(loginJson["success"] != true){
-      throw Exception("阶段3失败：登录接口success=false，返回内容：${loginResp.body}");
-    }
-    final dataObj = loginJson["data"];
-    if (dataObj is! Map) {
-      throw Exception("阶段3失败：返回的data不是对象：${loginResp.body}");
-    }
-    // ===== token获取：实测鼎捷MES把token放在 signin2 响应头 "token"(小写)，优先取头，再兜底体 =====
-    String token = "";
-    for (final h in ["token", "access-token", "accesstoken", "x-token", "x-access-token", "authorization"]) {
-      final v = loginResp.headers[h];
-      if (v != null && v.trim().isNotEmpty) {
-        token = v.trim().replaceFirst(RegExp(r'^Bearer\s+', caseSensitive: false), '');
-        debugPrint("【阶段3】token来自响应头 $h");
-        break;
-      }
-    }
-    if (token.isEmpty) {
-      // 兜底：个别版本可能把token放在响应体
-      for (final k in ["token", "Token", "access_token", "accessToken", "AccessToken"]) {
-        final v = dataObj[k]?.toString();
-        if (v != null && v.isNotEmpty) { token = v; break; }
-      }
-    }
-    if (token.isEmpty) {
-      final headerDump = loginResp.headers.entries.map((e) => "${e.key}: ${e.value}").join("\n");
-      throw Exception("阶段3失败：登录成功但响应体和响应头都没找到token。\n----响应头----\n$headerDump");
-    }
-    _token = token;
-    debugPrint("【阶段3成功】获取token：$token");
-
-    // ===== 用户信息解析：兼容camelCase与服务器实际的snake_case =====
-    String pick(List<String> keys) {
-      for (final k in keys) {
-        final v = dataObj[k]?.toString();
-        if (v != null && v.isNotEmpty) return v;
-      }
-      return "";
-    }
-    final String userId = pick(["userId", "user_id", "UserInfoId", "userinfo_id"]);
-    final String userName = pick(["userName", "user_name"]);
-    final String displayName = pick(["displayName", "display_name"]);
-    String orgId = pick(["orgId", "org_id"]);
-    if (orgId.isEmpty && dataObj["organizations"] is List) {
-      // 从组织列表取默认组织（is_default=true 或 str_default=Y）
-      final orgs = dataObj["organizations"] as List;
-      for (final o in orgs) {
-        if (o is Map && (o["is_default"] == true || o["str_default"]?.toString() == "Y")) {
-          orgId = o["id"]?.toString() ?? "";
-          break;
-        }
-      }
-      if (orgId.isEmpty && orgs.first is Map) {
-        orgId = (orgs.first as Map)["id"]?.toString() ?? "";
-      }
-    }
-    debugPrint("【阶段3】userId=$userId userName=$userName displayName=$displayName orgId=$orgId");
-    // 网页端查询接口的 ModuleId 来自登录响应头，此处一并保存供 GetLableList 请求头使用
-    final String loginModuleId = (loginResp.headers["moduleid"] ?? "").trim();
-    debugPrint("【阶段3】响应头ModuleId=$loginModuleId");
+    final r = await mesPerformLogin(
+      ip: hostCtrl.text.trim(),
+      port: portCtrl.text.trim(),
+      account: accountCtrl.text.trim(),
+      pwd: pwdCtrl.text.trim(),
+      timeoutSec: timeoutSec,
+    );
+    _token = r["token"];
+    debugPrint("【阶段3成功】获取token：${r["token"]}");
     await MesConfig.saveLoginInfo(
-      token: token,
-      orgId: orgId,
-      userId: userId,
-      userName: userName,
-      displayName: displayName,
-      moduleId: loginModuleId,
+      token: r["token"]!,
+      orgId: r["orgId"]!,
+      userId: r["userId"]!,
+      userName: r["userName"]!,
+      displayName: r["displayName"]!,
+      moduleId: r["moduleId"]!,
     );
     await MesConfig.saveConfig(
       host: hostCtrl.text,
       port: portCtrl.text,
       account: accountCtrl.text,
       pwd: pwdCtrl.text,
-      token: token,
+      token: r["token"]!,
       timeout: timeoutSec,
       moduleId: moduleIdCtrl.text.trim(),
       orgId: orgIdCtrl.text.trim(),
@@ -3198,8 +3175,6 @@ Future<bool> _testMesLogin() async {
     return false;
   }
 }
-
-
 
   @override
   void dispose() {
