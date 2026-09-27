@@ -56,6 +56,10 @@ Handler createCollectWebService({
             return await _apiInventory();
           case '/api/inventory/export':
             return await _apiInventoryExport(req);
+          case '/api/outbound':
+            return await _apiOutbound();
+          case '/api/outbound/export':
+            return await _apiOutboundExport(req);
         }
       } else if (req.method == 'POST' && seg == '/api/baseline') {
         return await _apiUploadBaseline(req);
@@ -512,6 +516,64 @@ Future<Response> _apiInventoryExport(Request req) async {
   });
 }
 
+// ---------- 出库台账：直调提交生成的出库单列表 ----------
+Future<Response> _apiOutbound() async {
+  final orders = await _globalIsar.outboundOrders.where().findAll();
+  orders.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+  final out = <Map<String, dynamic>>[];
+  for (final o in orders) {
+    List parts = const [];
+    double totalQty = 0;
+    int checked = 0;
+    try {
+      parts = (jsonDecode(o.itemsJson) as List);
+      for (final e in parts) {
+        totalQty += ((e["qty"] as num?)?.toDouble() ?? 0);
+        if (e["checked"] == true) checked++;
+      }
+    } catch (_) {}
+    out.add({
+      'orderNo': o.orderNo,
+      'createTime': DateTime.fromMillisecondsSinceEpoch(o.createdAt).toIso8601String(),
+      'toLoc': o.toLoc,
+      'operator': o.operator,
+      'status': o.status,
+      'labels': parts.length,
+      'checked': checked,
+      'totalQty': totalQty,
+    });
+  }
+  return _jsonResponse(out);
+}
+
+// ---------- 出库台账：单张出库单对照CSV下载 ----------
+Future<Response> _apiOutboundExport(Request req) async {
+  final no = (req.url.queryParameters['order'] ?? '').trim();
+  if (no.isEmpty) return _textResponse('缺少 order 参数', status: 400);
+  final all = await _globalIsar.outboundOrders.where().findAll();
+  final o = all.where((e) => e.orderNo == no).firstOrNull;
+  if (o == null) return _textResponse('出库单不存在：$no', status: 404);
+  final timeStr = DateTime.fromMillisecondsSinceEpoch(o.createdAt).toString().substring(0, 19);
+  final rows = <String>['单号,时间,转入货位,操作人,零件号,物料名字,数量,标签号,核对状态'];
+  try {
+    for (final e in (jsonDecode(o.itemsJson) as List)) {
+      rows.add([
+        _invCsvField(o.orderNo), _invCsvField(timeStr), _invCsvField(o.toLoc), _invCsvField(o.operator),
+        _invCsvField(e["code"]?.toString() ?? ''), _invCsvField(e["name"]?.toString() ?? ''),
+        _fmtInvNum((e["qty"] as num?)?.toDouble() ?? 0),
+        _invCsvField(e["barcode"]?.toString() ?? ''),
+        e["checked"] == true ? '已核对' : '未核对',
+      ].join(','));
+    }
+  } catch (_) {}
+  final csv = '\uFEFF' + rows.join('\r\n') + '\r\n';
+  final cnName = '出库台账_${o.orderNo}.csv';
+  return Response.ok(csv, headers: {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': "attachment; filename=\"outbound_${o.orderNo}.csv\"; filename*=UTF-8''${Uri.encodeComponent(cnName)}",
+  });
+}
+
 // ==================== 门户页面（HTML+CSS+JS，raw字符串，不做插值） ====================
 const String _kWebPortalHtml = r'''
 <!DOCTYPE html>
@@ -638,6 +700,21 @@ const String _kWebPortalHtml = r'''
     </div>
     <div class="msg" id="upMsg"></div>
     <ul class="files" id="baseList"></ul>
+  </div>
+
+  <div class="card">
+    <h2>出库台账</h2>
+    <div class="tip">直调提交自动生成的出库单，按标签逐行记录零件号/物料名字/数量/标签号；已核对进度以手机 App 内扫码为准。CSV 带 UTF-8 BOM，Excel/WPS 双击打开不乱码。<button class="btn sm ghost" style="margin-left:8px" onclick="loadOutbound()">刷新台账</button></div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>出库单号</th><th>时间</th><th>转入货位</th><th>操作人</th><th>标签数</th><th>数量合计</th><th>核对进度</th><th>下载</th>
+          </tr>
+        </thead>
+        <tbody id="obBody"><tr><td colspan="8" class="cnt">加载中…</td></tr></tbody>
+      </table>
+    </div>
   </div>
 
   <div class="card">
@@ -927,6 +1004,32 @@ async function loadInventory(){
   }).join('');
 }
 
+// ===== 出库台账 =====
+function obCsvUrl(order){return '/api/outbound/export?order='+encodeURIComponent(order);}
+async function loadOutbound(){
+  const tb=document.getElementById('obBody');
+  tb.innerHTML='<tr><td colspan="8" class="cnt">加载中…</td></tr>';
+  let list;
+  try{list=await jget('/api/outbound');}
+  catch(e){tb.innerHTML='<tr><td colspan="8" class="cnt">加载失败：'+esc(e.message)+'</td></tr>';return;}
+  if(!list.length){tb.innerHTML='<tr><td colspan="8" class="cnt">暂无出库单，请在手机 App 直调模块提交</td></tr>';return;}
+  tb.innerHTML=list.map(o=>{
+    const pct=o.labels>0?Math.min(100,Math.round(o.checked/o.labels*100)):0;
+    const prog='<div class="prog"><div class="prog-track"><div class="prog-fill'+(o.status===1||pct>=100?' done':'')+'" style="width:'+pct+'%"></div></div><span class="prog-txt">'+o.checked+'/'+o.labels+'</span></div>';
+    const st=o.status===1?'<span class="tag arch">已核对</span>':'<span class="tag act">待核对</span>';
+    return '<tr>'
+      +'<td><b>'+esc(o.orderNo)+'</b></td>'
+      +'<td>'+esc(o.createTime.substring(0,16).replace("T"," "))+'</td>'
+      +'<td>'+esc(o.toLoc)+'</td>'
+      +'<td>'+esc(o.operator)+'</td>'
+      +'<td>'+o.labels+'</td>'
+      +'<td>'+o.totalQty+'</td>'
+      +'<td>'+prog+'<br>'+st+'</td>'
+      +'<td><button class="btn sm ghost" onclick="location.href=obCsvUrl(\''+esc(o.orderNo)+'\')">对照CSV</button></td>'
+      +'</tr>';
+  }).join('');
+}
+
 async function loadBaselines(){
   try{
     const list=await jget('/api/baseline');
@@ -974,7 +1077,7 @@ async function loadAll(){
   try{await loadStatus();await loadBatches();}
   catch(e){showMsg('upMsg','加载批次失败：'+e.message,false);}
 }
-loadAll();loadBaselines();loadStats();loadInventory();
+loadAll();loadBaselines();loadStats();loadInventory();loadOutbound();
 </script>
 </body>
 </html>

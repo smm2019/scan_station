@@ -12,7 +12,7 @@ class DirectTransferPage extends StatefulWidget {
   State<DirectTransferPage> createState() => _DirectTransferPageState();
 }
 
-class _DirectTransferPageState extends State<DirectTransferPage> {
+class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticKeepAliveClientMixin {
   final _locCtrl = TextEditingController();
   final _labelCtrl = TextEditingController();
   final _locFocus = FocusNode();
@@ -23,6 +23,9 @@ class _DirectTransferPageState extends State<DirectTransferPage> {
   bool _singleScanOnly = false; // 权限：仅允许单次置码
   Map<String, String> _to = {}; // WAREHOUSE/DISTRICT/LOC 的 CODE+NAME
   List<Map<String, dynamic>> _rows = []; // 按零件号聚合：{MITEM_ID,MITEM_CODE,MITEM_NAME,UOM,REQ_QTY,Barcodes:[]}
+
+  @override
+  bool get wantKeepAlive => true; // 修复：TabBarView 切走时保留页面状态，未提交的已扫标签不再丢失
 
   @override
   void initState() {
@@ -205,7 +208,16 @@ class _DirectTransferPageState extends State<DirectTransferPage> {
       _toast("标签查询失败：${e.toString().replaceFirst("Exception: ", "")}");
     } finally {
       if (mounted) setState(() => _busy = false);
+      _refocusLabel(); // 修复：扫过一个码后光标回到标签框，支持连续扫码
     }
+  }
+
+  /// 重挂标签框焦点：先 unfocus 释放，隔一帧再申请，强制重建 PDA 扫码枪输入连接
+  void _refocusLabel() {
+    _labelFocus.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _labelFocus.requestFocus();
+    });
   }
 
   /// 查看/删除某零件号下的标签明细
@@ -296,6 +308,7 @@ class _DirectTransferPageState extends State<DirectTransferPage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context); // keep-alive mixin 要求：不调用则页面仍会被 TabBarView 回收
     // 服务端功能门禁
     if (!Auth.can("direct_transfer")) {
       return const Center(child: Text("当前角色未开通「直调」权限，请联系管理员", style: TextStyle(color: Colors.grey)));
@@ -311,7 +324,7 @@ class _DirectTransferPageState extends State<DirectTransferPage> {
           OutlinedButton.icon(
             style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
             onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const OutboundListPage())),
-            icon: const Icon(Icons.assignment_outlined, size: 18), label: const Text("出库单"),
+            icon: const Icon(Icons.inventory_2_outlined, size: 18), label: const Text("出库台账"),
           ),
         ]),
         const SizedBox(height: 10),
