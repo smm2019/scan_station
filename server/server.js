@@ -1,14 +1,14 @@
 // ===================== 豪斯特仓储协同 · 鉴权服务端 =====================
 // 零依赖 Node.js（v18+），仅用内置模块；数据存 ./data/db.json（原子写）。
 // 职责：账号登录发 token、角色与服务端鉴权、远程停用、按角色功能开关。
-// 启动：node server.js   （默认 0.0.0.0:8098，可用环境变量 PORT/HOST 覆盖）
+// 启动：node server.js   （默认 0.0.0.0:8099，可用环境变量 PORT/HOST 覆盖；8098 曾被旧进程占用弃用）
 'use strict';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const PORT = parseInt(process.env.PORT || '8098', 10);
+const PORT = parseInt(process.env.PORT || '8099', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
