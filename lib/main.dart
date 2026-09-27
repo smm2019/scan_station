@@ -27,6 +27,7 @@ part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/�
 part 'inventory_page.dart'; // 盘点模式：任务/基准绑定/扫码判定/差异报表
 part 'app_auth.dart'; // 账号登录+角色+服务端鉴权：登录门禁/心跳/远程停用/用户管理
 part 'direct_transfer_page.dart'; // MES直调：扫转入货位+物料标签累计，提交SaveTRBarcodes转单
+part 'outbound_page.dart'; // 出库单：直调提交落库→逐箱扫码备料核销→导出对照
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -887,7 +888,7 @@ void main() async {
   await Isar.initializeIsarCore(download: true);
   final dir = await getApplicationDocumentsDirectory();
   _globalIsar = await Isar.open(
-    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema],
+    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema, OutboundOrderSchema],
     directory: dir.path,
   );
   runApp(const MyApp());

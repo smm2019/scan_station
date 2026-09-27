@@ -275,7 +275,13 @@ class _DirectTransferPageState extends State<DirectTransferPage> {
         return m;
       }).toList();
       await _req("POST", "/api/v1/rawtransfer/SaveTRBarcodes", body: {"details": details});
-      _toast("提交成功", err: false);
+      // 提交成功 → 落库一张出库单（零件号/物料名字/数量/标签号），供仓管对照出库与逐箱备料
+      try {
+        final ob = await createOutboundOrder(_rows, _to);
+        _toast("提交成功，已生成出库单 ${ob.orderNo}", err: false);
+      } catch (e) {
+        _toast("提交成功，但出库单落库失败：$e");
+      }
       setState(() { _rows = []; _to = {}; _locCtrl.clear(); });
       _locFocus.requestFocus();
     } catch (e) {
@@ -301,6 +307,12 @@ class _DirectTransferPageState extends State<DirectTransferPage> {
           const Text("MES直调", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(width: 8),
           if (_singleScanOnly) const Chip(label: Text("单次置码", style: TextStyle(fontSize: 11)), visualDensity: VisualDensity.compact),
+          const Spacer(),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 10)),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const OutboundListPage())),
+            icon: const Icon(Icons.assignment_outlined, size: 18), label: const Text("出库单"),
+          ),
         ]),
         const SizedBox(height: 10),
         // 转入货位
