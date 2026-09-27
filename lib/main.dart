@@ -28,6 +28,7 @@ part 'inventory_page.dart'; // 盘点模式：任务/基准绑定/扫码判定/�
 part 'app_auth.dart'; // 账号登录+角色+服务端鉴权：登录门禁/心跳/远程停用/用户管理
 part 'direct_transfer_page.dart'; // MES直调：扫转入货位+物料标签累计，提交SaveTRBarcodes转单
 part 'outbound_page.dart'; // 出库单：直调提交落库→逐箱扫码备料核销→导出对照
+part 'inventory_stock_page.dart'; // 库存：期初+入库流水(采集派生)-出库流水(直调派生)，货架库位占用登记
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -256,11 +257,13 @@ class RecordExtra {
   String palletId = "";   // 托号，空串=非整托记录
   String mesItemName = ""; // 物料描述（MES返回名称字段）
   String mesLotNo = "";    // 批次（MES返回LOT_NO）
+  String operator = "";    // 采集操作人（登录账号姓名，库存入库流水用）
   RecordExtra({
     required this.goodsCode,
     this.palletId = "",
     this.mesItemName = "",
     this.mesLotNo = "",
+    this.operator = "",
   });
 }
 // ===================== 盘点·基准CSV解析 =====================
@@ -888,7 +891,7 @@ void main() async {
   await Isar.initializeIsarCore(download: true);
   final dir = await getApplicationDocumentsDirectory();
   _globalIsar = await Isar.open(
-    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema, OutboundOrderSchema],
+    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema, OutboundOrderSchema, InventoryOpeningSchema, ShelfPlacementSchema],
     directory: dir.path,
   );
   runApp(const MyApp());
@@ -970,7 +973,7 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     super.initState();
     _isar = _globalIsar;
     //初始化Tab控制器
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
     _initLoadData();
@@ -1443,6 +1446,7 @@ try {
           palletId: palletIdForSave,
           mesItemName: mesItemName,
           mesLotNo: mesLotNo,
+          operator: Auth.user?.name ?? Auth.user?.username ?? "",
         );
         await _isar.recordExtras.put(extraRec);
         if(_workType ==0 && _selectedStation != null){
@@ -2216,6 +2220,7 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
             Tab(text: "历史批次"),
             Tab(text: "盘点"),
             Tab(text: "直调"),
+            Tab(text: "库存"),
           ],
         ),
       ),
@@ -2521,7 +2526,9 @@ SingleChildScrollView(
           //盘点模式页面
           const InventoryHomePage(),
           //MES直调页面
-          const DirectTransferPage()
+          const DirectTransferPage(),
+          //库存页面（期初+入出库流水实时算库存，货架库位占用）
+          const InventoryStockPage()
         ],
       ),
     bottomNavigationBar: BottomNavigationBar(
