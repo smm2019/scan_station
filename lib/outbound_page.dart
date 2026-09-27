@@ -62,7 +62,9 @@ class _OutboundListPageState extends State<OutboundListPage> {
   }
 
   Future<void> _load() async {
-    final list = await _globalIsar.outboundOrders.where().sortByCreatedAt(desc: true).findAll();
+    // Isar 3.1 的 sortByXxx 不支持 desc 参数：取全量后内存按创建时间倒序
+    final list = await _globalIsar.outboundOrders.where().findAll();
+    list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     if (!mounted) return;
     setState(() { _orders = list; _loading = false; });
   }
