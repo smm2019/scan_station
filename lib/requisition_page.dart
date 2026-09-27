@@ -13,7 +13,10 @@ class RequisitionCache {
     for (final r in reqs) {
       if (!active.contains(r["status"])) continue;
       for (final it in List<Map>.from(r["items"] ?? [])) {
-        for (final c in List.from(it["issued"] ?? [])) { set.add(c.toString()); }
+        for (final x in List.from(it["issued"] ?? [])) {
+          // 新格式 {c:标签,q:件数}；旧格式纯字符串标签
+          set.add(x is Map ? (x["c"]?.toString() ?? "") : x.toString());
+        }
       }
     }
     final sp = await SharedPreferences.getInstance();
@@ -260,28 +263,63 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     }
   }
 
-  /// 扫码框提交：按当前目标零件号发一箱；扫满自动切到下一个未满行
+  /// 已发件数（兼容旧格式：纯字符串标签按0件计，仅提示不再自动满）
+  double _issuedQtyOf(Map item) {
+    double s = 0;
+    for (final x in List.from(item["issued"] ?? [])) {
+      if (x is Map) s += (x["q"] as num?)?.toDouble() ?? 0;
+    }
+    return s;
+  }
+  List<String> _issuedCodesOf(Map item) {
+    return List.from(item["issued"] ?? []).map((x) => x is Map ? (x["c"]?.toString() ?? "") : x.toString()).toList();
+  }
+
+  /// 扫码框提交：查 MES 取该箱件数，按件数计入目标零件行；发满自动切下一行
   Future<void> _scanIssue() async {
     final code = _scanCtrl.text.trim();
     _scanCtrl.clear();
     if (code.isEmpty) return;
+    if (_busy) return;
     final items = List<Map>.from(_r["items"] ?? []);
     var target = items.firstWhere((e) => e["partNo"] == _issuePart, orElse: () => const {});
     if (target.isEmpty) { widget.toast("请先点击选择要发料的零件行"); _refocusScan(); return; }
-    final issued = List<String>.from((target["issued"] ?? []).map((e) => e.toString()));
-    final qty = (target["qty"] as num?)?.toDouble() ?? 0;
-    if (issued.length >= qty) {
-      // 本行已满，自动切到下一个未满行
-      final next = items.firstWhere((e) => (List.from(e["issued"] ?? []).length) < ((e["qty"] as num?)?.toDouble() ?? 0), orElse: () => const {});
-      if (next.isEmpty) { _refocusScan(); return; }
-      setState(() => _issuePart = next["partNo"].toString());
-      target = next;
+    if (_issuedCodesOf(target).contains(code)) { widget.toast("标签 $code 已扫过"); _refocusScan(); return; }
+    setState(() => _busy = true);
+    String? scanErr;
+    double boxQty = 0;
+    try {
+      // 查 MES 拿该箱件数与零件号（复用采集页查询通道：失效自动重登）
+      final mes = await mesQueryLabel(code);
+      if (mes["ok"] != true) {
+        scanErr = "标签 $code MES查询失败：${mes["msg"]}";
+      } else {
+        final mp = mes["partNo"]?.toString() ?? "";
+        if (mp != target["partNo"]) { scanErr = "该箱零件号 $mp 与所选行 ${target["partNo"]} 不符"; }
+        boxQty = (mes["qty"] as num?)?.toDouble() ?? 0;
+      }
+    } catch (e) {
+      scanErr = "查询异常：$e";
     }
-    await _act("scan", {"barcode": code, "partNo": target["partNo"]});
-    // 发完后若目标行已满，自动切换
-    final nowTarget = items.firstWhere((e) => e["partNo"] == _issuePart, orElse: () => const {});
-    if (!nowTarget.isEmpty && List.from(nowTarget["issued"] ?? []).length >= ((nowTarget["qty"] as num?)?.toDouble() ?? 0)) {
-      final next = items.firstWhere((e) => (List.from(e["issued"] ?? []).length) < ((e["qty"] as num?)?.toDouble() ?? 0), orElse: () => const {});
+    if (scanErr != null) {
+      if (!mounted) return;
+      setState(() => _busy = false);
+      widget.toast(scanErr);
+      _refocusScan();
+      return;
+    }
+    final res = await AuthApi.reqAction(_r["id"].toString(), "scan", {"barcode": code, "partNo": target["partNo"], "qty": boxQty});
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (res["ok"] != true) { widget.toast((res["msg"] ?? "发料失败").toString()); _refocusScan(); return; }
+    setState(() => _r = Map.from(res["req"]));
+    final items2 = List<Map>.from(_r["items"] ?? []);
+    final nowT = items2.firstWhere((e) => e["partNo"] == _issuePart, orElse: () => const {});
+    final tGot = nowT.isEmpty ? 0.0 : _issuedQtyOf(nowT);
+    final tNeed = (nowT["qty"] as num?)?.toDouble() ?? 0.0;
+    widget.toast("已发 $code（$boxQty 件）累计 ${_fmtInvNum(tGot)}/${_fmtInvNum(tNeed)}", err: false);
+    if (tGot >= tNeed) {
+      final next = items2.firstWhere((e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0), orElse: () => const {});
       if (!next.isEmpty) setState(() => _issuePart = next["partNo"].toString());
     }
     _refocusScan();
@@ -311,6 +349,27 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               child: Text(_r["statusText"]?.toString() ?? st, style: TextStyle(fontSize: 12, color: widget.statusColor(st)))),
           ]),
           if ((_r["remark"]?.toString().isNotEmpty ?? false)) Text("备注：${_r["remark"]}", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          if ((_r["shortInfo"]?.toString().isNotEmpty ?? false)) Container(
+            margin: const EdgeInsets.only(top: 4), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(color: Colors.deepOrange.shade50, borderRadius: BorderRadius.circular(6)),
+            child: Text("⚠ 短装：${_r["shortInfo"]}", style: const TextStyle(fontSize: 12, color: Colors.deepOrange)),
+          ),
+          // 打印领料单：复制打印页链接，电脑浏览器打开 Ctrl+P
+          Align(alignment: Alignment.centerLeft, child: TextButton.icon(
+            style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4)),
+            onPressed: () async {
+              final server = await AuthStore.serverUrl();
+              final url = "$server/print/requisition?id=${_r["id"]}";
+              await Clipboard.setData(ClipboardData(text: url));
+              if (!mounted) return;
+              showDialog(context: context, builder: (dctx) => AlertDialog(
+                title: const Text("打印链接已复制"),
+                content: Text("在连接打印机的电脑浏览器打开：\n\n$url\n\n页面内点「打印本单」或按 Ctrl+P。零件号可鼠标选中复制，纸上有货位/实发空栏供手写。", style: const TextStyle(fontSize: 13)),
+                actions: [TextButton(onPressed: () => Navigator.pop(dctx), child: const Text("知道了"))],
+              ));
+            },
+            icon: const Icon(Icons.print_outlined, size: 18), label: const Text("打印领料单（复制链接到电脑）", style: TextStyle(fontSize: 13)),
+          )),
           const SizedBox(height: 8),
           // 发料扫码框（备料中且是仓管）
           if (st == 'accepted' && isWh) ...[
@@ -327,10 +386,13 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
           ],
           Expanded(child: ListView(children: [
             ...items.map((item) {
-              final issued = List<String>.from((item["issued"] ?? []).map((e) => e.toString()));
+              final codes = _issuedCodesOf(item);
+              final got = _issuedQtyOf(item);
               final qty = (item["qty"] as num?)?.toDouble() ?? 0;
-              final done = issued.length >= qty;
+              final done = got >= qty && qty > 0;
               final selected = _issuePart == item["partNo"].toString();
+              final boxQs = Map<String, double>.fromEntries(
+                List.from(item["issued"] ?? []).whereType<Map>().map((x) => MapEntry(x["c"]?.toString() ?? "", (x["q"] as num?)?.toDouble() ?? 0)));
               return Card(
                 shape: selected ? RoundedRectangleBorder(side: const BorderSide(color: Colors.teal, width: 2), borderRadius: BorderRadius.circular(12)) : null,
                 child: InkWell(
@@ -338,12 +400,12 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                   child: Padding(padding: const EdgeInsets.all(10), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Row(children: [
                       Expanded(child: Text("${item["partNo"]}  ${item["itemName"] ?? ""}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600))),
-                      Text("已发 ${issued.length}/$qty", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: done ? Colors.green : Colors.orange)),
+                      Text("已发 ${_fmtInvNum(got)}/${_fmtInvNum(qty)} 件", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: done ? Colors.green : Colors.orange)),
                       if (selected) const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.my_location, size: 16, color: Colors.teal)),
                     ]),
                     const SizedBox(height: 4),
                     Wrap(spacing: 6, runSpacing: 4, children: [
-                      ...issued.map((c) => Chip(label: Text(c, style: const TextStyle(fontSize: 10, color: Colors.white)), backgroundColor: Colors.green, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact)),
+                      ...codes.map((c) => Chip(label: Text(boxQs[c] != null && boxQs[c]! > 0 ? "$c·${_fmtInvNum(boxQs[c]!)}" : c, style: const TextStyle(fontSize: 10, color: Colors.white)), backgroundColor: Colors.green, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact)),
                     ]),
                   ])),
                 ),
@@ -371,6 +433,22 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               Expanded(flex: 2, child: ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
                 onPressed: _busy ? null : () => _act("accept"), icon: const Icon(Icons.how_to_reg), label: const Text("接单备料"))),
+            ],
+            if (st == 'accepted' && isWh) ...[
+              Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.deepOrange),
+                onPressed: _busy ? null : () async {
+                  // 短装完成：列出未发行与短装数，二次确认
+                  final shorts = items.where((e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0))
+                      .map((e) => "${e["partNo"]} 短${_fmtInvNum(((e["qty"] as num?)?.toDouble() ?? 0) - _issuedQtyOf(e))}件(实发${_fmtInvNum(_issuedQtyOf(e))})")
+                      .join("；");
+                  if (shorts.isEmpty) { widget.toast("各行均已发满，无需短装完成"); return; }
+                  final yes = await showDialog<bool>(context: context, builder: (dctx) => AlertDialog(
+                    title: const Text("短装完成"), content: Text("以下零件未发满：\n$shorts\n\n确认按实发数收尾并通知领料人？"),
+                    actions: [TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text("取消")),
+                      TextButton(onPressed: () => Navigator.pop(dctx, true), child: const Text("短装完成", style: TextStyle(color: Colors.deepOrange)))]));
+                  if (yes == true) await _act("short");
+                }, icon: const Icon(Icons.warning_amber_rounded, size: 16), label: const Text("短装完成"))),
+              const SizedBox(width: 8),
             ],
             if ((st == 'pending' || st == 'accepted') && (isOwner || Auth.isAdmin))
               Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),

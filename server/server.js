@@ -79,6 +79,58 @@ function notify(toUserId, type, text, reqId) {
 }
 function findReq(id) { return db.requisitions.find(r => r.id === id); }
 function reqView(r) { return { ...r, statusText: REQ_STATUS_TEXT[r.status] || r.status }; }
+function issuedOf(i) { return (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : { c: String(x.c || ''), q: Number(x.q) || 0 }); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+// 领料单打印页（A4，含零件号/物料名/申请数/已发数 + 手写货位/标签空栏；复制零件号可选文本）
+function renderReqPrint(r) {
+  const time = (r.createdAt || '').slice(0, 16).replace('T', ' ');
+  const rows = r.items.map((i, idx) => {
+    const got = issuedOf(i).reduce((s, e) => s + e.q, 0);
+    const codes = issuedOf(i).map(e => e.c).join(' ');
+    return `<tr>
+      <td>${idx + 1}</td>
+      <td class="pn selectable">${esc(i.partNo)}</td>
+      <td>${esc(i.itemName || '')}</td>
+      <td class="num">${esc(i.qty)}</td>
+      <td class="num">${got}${got >= (Number(i.qty) || 0) ? ' ✔' : ''}</td>
+      <td class="handwrite"></td>
+      <td class="handwrite small">${esc(codes)}</td>
+    </tr>`;
+  }).join('');
+  const pad = r.items.length < 6 ? Array.from({ length: 6 - r.items.length }).map((_, k) =>
+    `<tr><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="blank"></td><td class="handwrite blank"></td><td class="handwrite blank"></td></tr>`).join('') : '';
+  return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>领料单 ${esc(r.no)}</title>
+<style>
+  *{box-sizing:border-box}body{font-family:"Microsoft YaHei",Arial;margin:24px;color:#111}
+  h1{font-size:22px;text-align:center;margin:0 0 4px}
+  .meta{display:flex;justify-content:space-between;font-size:13px;margin:10px 0 6px}
+  .meta span{margin-right:18px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{border:1px solid #333;padding:6px 8px;text-align:left}
+  th{background:#f0f0f0;text-align:center}
+  .num{text-align:center}.pn{font-family:Consolas,monospace}
+  .handwrite{background:#fffef8}
+  .handwrite.small{font-size:11px;color:#666;font-family:Consolas,monospace}
+  .blank{height:30px}
+  .sign{margin-top:26px;font-size:13px;display:flex;justify-content:space-between}
+  .sign u{display:inline-block;min-width:120px;border-bottom:1px solid #333}
+  .tip{margin-top:14px;font-size:11px;color:#888}
+  @media print{body{margin:8mm}.noprint{display:none}}
+  .noprint{margin-bottom:14px}.noprint button{font-size:14px;padding:8px 18px;cursor:pointer}
+</style></head><body>
+  <div class="noprint"><button onclick="window.print()">🖨 打印本单（Ctrl+P 亦可）</button> <span style="font-size:12px;color:#666">零件号可直接鼠标选中复制</span></div>
+  <h1>领&nbsp;&nbsp;料&nbsp;&nbsp;单</h1>
+  <div class="meta"><span>单号：<b>${esc(r.no)}</b></span><span>领料人：${esc(r.byName)}</span><span>日期：${esc(time)}</span></div>
+  <div class="meta"><span>状态：${esc(REQ_STATUS_TEXT[r.status] || r.status)}</span><span>备注：${esc(r.remark || '')}</span></div>
+  ${r.shortInfo ? `<div class="meta"><span style="color:#c00">短装：${esc(r.shortInfo)}</span></div>` : ''}
+  <table><thead><tr>
+    <th style="width:6%">#</th><th style="width:22%">零件号</th><th style="width:24%">物料名称</th>
+    <th style="width:9%">申请数</th><th style="width:9%">已发数</th><th style="width:14%">货位(手写)</th><th style="width:16%">箱标签/实发(手写)</th>
+  </tr></thead><tbody>${rows}${pad}</tbody></table>
+  <div class="sign"><span>发料人：<u></u></span><span>领料人：<u></u></span><span>日期：<u></u></span></div>
+  <div class="tip">说明：申请数/已发数按件计；「货位」由仓管备料时手写实际取货库位，便于对照寻找；本单随货流转，双方签字后仓管留存。</div>
+</body></html>`;
+}
 
 let db = loadDb();
 const save = () => saveDb(db);
@@ -136,6 +188,16 @@ const server = http.createServer(async (req, res) => {
   try {
     // ---- 健康检查 ----
     if (req.method === 'GET' && p === '/health') return send(res, 200, { ok: true, time: new Date().toISOString() });
+
+    // ---- 领料单打印页（局域网内公开，凭单号打开，浏览器 Ctrl+P 打印）----
+    if (req.method === 'GET' && p === '/print/requisition') {
+      const rid = (url.searchParams.get('id') || '').trim();
+      const r = findReq(rid);
+      if (!r) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('领料单不存在'); return; }
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderReqPrint(r));
+      return;
+    }
 
     // ---- 登录 ----
     if (req.method === 'POST' && p === '/api/login') {
@@ -231,8 +293,8 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, notifications: mine });
         }
 
-        // 状态动作：/:id/accept|reject|scan|confirm|cancel
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|confirm|cancel)$/);
+        // 状态动作：/:id/accept|reject|scan|short|confirm|cancel
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|short|confirm|cancel)$/);
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
@@ -258,24 +320,43 @@ const server = http.createServer(async (req, res) => {
             if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可发料` });
             const code = String(b.barcode || '').trim();
             if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
-            const item = r.items.find(i => (i.issued || []).includes(code));
-            if (item) return send(res, 400, { ok: false, msg: `标签 ${code} 已扫过` });
-            let target = null;
-            for (const i of r.items) {
-              if (i.partNo === b.partNo) { target = i; break; }
-            }
+            // issued 统一为 [{c:标签, q:件数}]，兼容旧数据纯字符串（按1箱计）
+            const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : { c: String(x.c || ''), q: Number(x.q) || 0 });
+            if (r.items.some(i => normIssued(i).some(e => e.c === code))) return send(res, 400, { ok: false, msg: `标签 ${code} 已扫过` });
+            const target = r.items.find(i => i.partNo === b.partNo);
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
-            target.issued = target.issued || [];
-            target.issued.push(code);
-            hpush(`发料扫入 ${b.partNo} 标签 ${code}`);
-            const allDone = r.items.every(i => i.issued.length >= i.qty);
+            const q = Number(b.qty) || 0;
+            if (q <= 0) return send(res, 400, { ok: false, msg: '缺少该标签的件数(qty)' });
+            target.issued = normIssued(target);
+            target.issued.push({ c: code, q });
+            const got = target.issued.reduce((s, e) => s + e.q, 0);
+            hpush(`发料 ${b.partNo} 标签 ${code}（${q}件，累计 ${got}/${target.qty}）`);
+            const allDone = r.items.every(i => normIssued(i).reduce((s, e) => s + e.q, 0) >= (Number(i.qty) || 0));
             if (allDone) {
               r.status = 'ready';
-              hpush('全部发料完成，待签收');
+              hpush('全部发料完成（按件数），待签收');
               notify(r.by, 'req_ready', `你的领料单 ${r.no} 已备齐，请确认收货`, r.id);
               db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
                 notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）已备齐`, r.id));
             }
+          } else if (act === 'short') {
+            // 短装完成：备料中发不满（如申请800实发790），仓管确认收尾→已备齐，记录短装明细
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可短装完成' });
+            if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可短装完成` });
+            const norm = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : { c: String(x.c || ''), q: Number(x.q) || 0 });
+            const shorts = [];
+            for (const i of r.items) {
+              const got = norm(i).reduce((s, e) => s + e.q, 0);
+              const need = Number(i.qty) || 0;
+              i.issued = norm(i);
+              if (got < need) shorts.push(`${i.partNo} 短${need - got}件(实发${got})`);
+            }
+            if (shorts.length === 0) return send(res, 400, { ok: false, msg: '各行均已发满，请直接等待发料自动备齐' });
+            r.status = 'ready'; r.shortInfo = shorts.join('；');
+            hpush(`短装完成：${r.shortInfo}（${u.name}）`);
+            notify(r.by, 'req_ready', `你的领料单 ${r.no} 已备齐（短装：${r.shortInfo}），请确认收货`, r.id);
+            db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
+              notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）短装完成：${r.shortInfo}`, r.id));
           } else if (act === 'confirm') {
             if (!canRcv) return send(res, 403, { ok: false, msg: '当前角色未开通签收确认' });
             if (r.status !== 'ready') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可签收` });
