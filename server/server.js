@@ -36,6 +36,8 @@ function defaultDb() {
     }],
     sessions: {}, // token -> {userId, createdAt, lastSeen}
     features: JSON.parse(JSON.stringify(DEFAULT_FEATURES)),
+    requisitions: [], // 领料单
+    notifications: [], // 站内通知（拉取即已读）
   };
 }
 function loadDb() {
@@ -50,6 +52,11 @@ function loadDb() {
     }
   }
   if (merged) { saveDb(d); console.log('[init] 功能开关已合并新增键'); }
+  // 领料单/通知集合补齐（旧数据文件首次升级）
+  let added = false;
+  if (!Array.isArray(d.requisitions)) { d.requisitions = []; added = true; }
+  if (!Array.isArray(d.notifications)) { d.notifications = []; added = true; }
+  if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知集合'); }
   return d;
 }
 function saveDb(db) { // 原子写：临时文件 + rename
@@ -62,6 +69,16 @@ function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toStr
 function newId(p) { return p + '_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex'); }
 function newToken() { return crypto.randomBytes(24).toString('hex'); }
 function safeUser(u) { return { id: u.id, username: u.username, name: u.name, role: u.role, enabled: u.enabled, mustChangePw: !!u.mustChangePw }; }
+
+// ---------------- 领料单辅助 ----------------
+const REQ_STATUS_TEXT = { pending: '待接单', accepted: '备料中', ready: '已备齐', done: '已完成', rejected: '已拒绝', cancelled: '已取消' };
+function reqItemsText(r) { return r.items.map(i => `${i.partNo}×${i.qty}`).join('、'); }
+function notify(toUserId, type, text, reqId) {
+  db.notifications.push({ id: newId('n'), to: toUserId, type, text, reqId: reqId || '', time: new Date().toISOString(), read: false });
+  if (db.notifications.length > 500) db.notifications = db.notifications.slice(-500); // 只留最近500条防膨胀
+}
+function findReq(id) { return db.requisitions.find(r => r.id === id); }
+function reqView(r) { return { ...r, statusText: REQ_STATUS_TEXT[r.status] || r.status }; }
 
 let db = loadDb();
 const save = () => saveDb(db);
@@ -159,6 +176,125 @@ const server = http.createServer(async (req, res) => {
         u.passHash = hashPw(b.newPassword, u.salt);
         u.mustChangePw = false;
         save(); return send(res, 200, { ok: true, msg: '密码已修改' });
+      }
+
+      // ================= 领料单（登录即可访问，内部按角色+状态校验） =================
+      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/notifications') {
+        const canReq = (db.features[u.role] || {}).requisition === true;
+        const canRcv = (db.features[u.role] || {}).receive_confirm === true;
+        const isWh = u.role === 'warehouse' || u.role === 'admin';
+
+        // 下单
+        if (req.method === 'POST' && p === '/api/requisitions') {
+          if (!canReq) return send(res, 403, { ok: false, msg: '当前角色未开通领料下单' });
+          const b = await readBody(req);
+          const items = Array.isArray(b.items) ? b.items : [];
+          const clean = [];
+          for (const it of items) {
+            const partNo = String(it.partNo || '').trim();
+            const qty = Number(it.qty);
+            if (!partNo || !(qty > 0)) continue;
+            clean.push({ partNo, itemName: String(it.itemName || ''), qty, issued: [] });
+          }
+          if (!clean.length) return send(res, 400, { ok: false, msg: '至少一行有效的零件号+数量' });
+          if (clean.length > 20) return send(res, 400, { ok: false, msg: '一张单最多20行' });
+          const now = new Date();
+          const ts = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
+          const r = {
+            id: newId('rq'), no: `LL${ts}${String(db.requisitions.length % 100).padStart(2, '0')}`,
+            by: u.id, byName: u.name, items: clean, status: 'pending',
+            remark: String(b.remark || ''), createdAt: now.toISOString(), history: [],
+          };
+          db.requisitions.push(r);
+          db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
+            notify(x.id, 'req_new', `${u.name} 提交了领料单 ${r.no}：${reqItemsText(r)}`, r.id));
+          save();
+          console.log(`[req] ${u.name} 下单 ${r.no}`);
+          return send(res, 200, { ok: true, req: reqView(r) });
+        }
+
+        // 列表：物料员看自己的，仓管/管理员看全部；scope=todo 只看待办
+        if (req.method === 'GET' && p === '/api/requisitions') {
+          const q = (url.searchParams.get('scope') || '').trim();
+          let list = db.requisitions.slice().reverse();
+          if (u.role === 'material') list = list.filter(r => r.by === u.id);
+          if (q === 'todo') list = isWh ? list.filter(r => r.status === 'pending' || r.status === 'accepted')
+                                        : list.filter(r => r.status === 'ready' && r.by === u.id);
+          return send(res, 200, { ok: true, reqs: list.map(reqView) });
+        }
+
+        // 通知拉取（取回即标记已读）
+        if (req.method === 'GET' && p === '/api/notifications') {
+          const mine = db.notifications.filter(n => n.to === u.id && !n.read);
+          mine.forEach(n => n.read = true);
+          if (mine.length) save();
+          return send(res, 200, { ok: true, notifications: mine });
+        }
+
+        // 状态动作：/:id/accept|reject|scan|confirm|cancel
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|confirm|cancel)$/);
+        if (req.method === 'POST' && mAct) {
+          const r = findReq(mAct[1]);
+          if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
+          const act = mAct[2];
+          const b = await readBody(req);
+          const hpush = (text) => { r.history.push({ time: new Date().toISOString(), by: u.name, text }); };
+
+          if (act === 'accept') {
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可接单' });
+            if (r.status !== 'pending') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可接单` });
+            r.status = 'accepted'; r.acceptedBy = u.name;
+            hpush(`接单（${u.name}）`);
+            notify(r.by, 'req_accept', `你的领料单 ${r.no} 已由 ${u.name} 接单备料`, r.id);
+          } else if (act === 'reject') {
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可拒单' });
+            if (r.status !== 'pending') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可拒单` });
+            const reason = String(b.reason || '').trim() || '未说明';
+            r.status = 'rejected'; r.rejectReason = reason;
+            hpush(`拒单：${reason}`);
+            notify(r.by, 'req_reject', `你的领料单 ${r.no} 被 ${u.name} 拒绝：${reason}`, r.id);
+          } else if (act === 'scan') {
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可扫码发料' });
+            if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可发料` });
+            const code = String(b.barcode || '').trim();
+            if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
+            const item = r.items.find(i => (i.issued || []).includes(code));
+            if (item) return send(res, 400, { ok: false, msg: `标签 ${code} 已扫过` });
+            let target = null;
+            for (const i of r.items) {
+              if (i.partNo === b.partNo) { target = i; break; }
+            }
+            if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
+            target.issued = target.issued || [];
+            target.issued.push(code);
+            hpush(`发料扫入 ${b.partNo} 标签 ${code}`);
+            const allDone = r.items.every(i => i.issued.length >= i.qty);
+            if (allDone) {
+              r.status = 'ready';
+              hpush('全部发料完成，待签收');
+              notify(r.by, 'req_ready', `你的领料单 ${r.no} 已备齐，请确认收货`, r.id);
+              db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
+                notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）已备齐`, r.id));
+            }
+          } else if (act === 'confirm') {
+            if (!canRcv) return send(res, 403, { ok: false, msg: '当前角色未开通签收确认' });
+            if (r.status !== 'ready') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可签收` });
+            r.status = 'done'; r.confirmedBy = u.name; r.confirmedAt = new Date().toISOString();
+            hpush(`签收确认（${u.name}）`);
+            db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
+              notify(x.id, 'req_done', `${r.byName} 已签收领料单 ${r.no}`, r.id));
+          } else if (act === 'cancel') {
+            if (r.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅下单人或管理员可取消' });
+            if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可取消` });
+            r.status = 'cancelled';
+            hpush(`取消${b.reason ? '：' + b.reason : ''}`);
+            if (r.acceptedBy) db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
+              notify(x.id, 'req_cancel', `${u.name} 取消了领料单 ${r.no}`, r.id));
+          }
+          save();
+          return send(res, 200, { ok: true, req: reqView(r) });
+        }
+        return send(res, 404, { ok: false, msg: '接口不存在' });
       }
 
       const ae = requireAdmin(a);

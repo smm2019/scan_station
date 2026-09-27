@@ -29,6 +29,7 @@ part 'app_auth.dart'; // 账号登录+角色+服务端鉴权：登录门禁/心�
 part 'direct_transfer_page.dart'; // MES直调：扫转入货位+物料标签累计，提交SaveTRBarcodes转单
 part 'outbound_page.dart'; // 出库单：直调提交落库→逐箱扫码备料核销→导出对照
 part 'inventory_stock_page.dart'; // 库存：期初+入库流水(采集派生)-出库流水(直调派生)，货架库位占用登记
+part 'requisition_page.dart'; // 领料单：物料员下单/签收，仓管接单/扫码发料，服务端状态机
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -968,12 +969,14 @@ final GlobalKey _keyScanInputArea = GlobalKey();
   bool _webServiceRunning = false;
   String? _localIpAddress;
   static const int _webPort = 8090;
+  Timer? _notifTimer; //领料通知轮询
   @override
   void initState() {
     super.initState();
     _isar = _globalIsar;
     //初始化Tab控制器
-    _tabController = TabController(length: 5, vsync: this);
+    _tabController = TabController(length: 6, vsync: this);
+    _startNotifPolling();
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
     _initLoadData();
@@ -987,8 +990,28 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     await _refreshBatchStat();        // 刷新正常/作废统计
     if (_palletMode) await _refreshPalletSummary();
   }
+  /// 领料通知轮询：每30秒拉一次，未读消息弹横幅，点击跳领料页
+  void _startNotifPolling() {
+    _notifTimer?.cancel();
+    _notifTimer = Timer.periodic(const Duration(seconds: 30), (_) => _pollNotifications());
+  }
+  Future<void> _pollNotifications() async {
+    if (Auth.user == null) return;
+    final r = await AuthApi.notifications();
+    if (!mounted || r["ok"] != true) return;
+    final list = List<Map>.from(r["notifications"] ?? []);
+    if (list.isEmpty) return;
+    final first = list.first;
+    final text = first["text"]?.toString() ?? "领料单有新消息";
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(list.length > 1 ? "$text（共 ${list.length} 条新消息）" : text, maxLines: 2, overflow: TextOverflow.ellipsis),
+      backgroundColor: const Color(0xFF37474F), duration: const Duration(seconds: 6),
+      action: SnackBarAction(label: "查看", textColor: Colors.amber, onPressed: () => _tabController.animateTo(5)),
+    ));
+  }
   @override
   void dispose() {
+    _notifTimer?.cancel();
     _tabController.dispose();
     _goodsFocusNode.dispose(); //【新增】释放焦点资源
     _goodsInputCtrl.dispose();
@@ -2221,6 +2244,7 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
             Tab(text: "盘点"),
             Tab(text: "直调"),
             Tab(text: "库存"),
+            Tab(text: "领料"),
           ],
         ),
       ),
@@ -2528,7 +2552,9 @@ SingleChildScrollView(
           //MES直调页面
           const DirectTransferPage(),
           //库存页面（期初+入出库流水实时算库存，货架库位占用）
-          const InventoryStockPage()
+          const InventoryStockPage(),
+          //领料单页面
+          const RequisitionPage()
         ],
       ),
     bottomNavigationBar: BottomNavigationBar(

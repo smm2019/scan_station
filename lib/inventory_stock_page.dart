@@ -94,6 +94,10 @@ Future<_StockAgg> computeStock() async {
     } catch (_) {}
   }
 
+  // 领料单已发料标签（本地缓存，离线可用）：同样从在库中剔除
+  final reqIssued = await RequisitionCache.loadIssued();
+  outCodes.addAll(reqIssued);
+
   // 入库流水（采集派生；作废记录标记 cancelled 不参与库存）
   for (final r in records) {
     final cancelled = r.isCancel;

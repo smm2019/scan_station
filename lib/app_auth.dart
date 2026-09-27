@@ -91,6 +91,15 @@ class AuthApi {
   static Future<Map> deleteUser(String id) async => _req("DELETE", "/api/users/$id", token: await AuthStore.token());
   static Future<Map> config() async => _req("GET", "/api/config", token: await AuthStore.token());
   static Future<Map> setFeatures(Map features) async => _req("PATCH", "/api/config", body: {"features": features}, token: await AuthStore.token());
+
+  // ---- 领料单 ----
+  static Future<Map> reqCreate(List<Map> items, String remark) async =>
+      _req("POST", "/api/requisitions", body: {"items": items, "remark": remark}, token: await AuthStore.token());
+  static Future<Map> reqList({String scope = ""}) async =>
+      _req("GET", scope.isEmpty ? "/api/requisitions" : "/api/requisitions?scope=$scope", token: await AuthStore.token());
+  static Future<Map> reqAction(String id, String action, [Map? body]) async =>
+      _req("POST", "/api/requisitions/$id/$action", body: body ?? {}, token: await AuthStore.token());
+  static Future<Map> notifications() async => _req("GET", "/api/notifications", token: await AuthStore.token());
 }
 
 /// 全局会话（AuthGate 启动时填充；MainPage 等直接读静态成员）
