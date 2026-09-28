@@ -98,7 +98,9 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    if (!Auth.can("requisition") && !Auth.can("receive_confirm")) {
+    // 入口门禁：物料员看领料开关；仓管/管理员可进（接单发料由服务端按角色强制）
+    final role = Auth.user?.role ?? "";
+    if (!Auth.can("requisition") && !Auth.can("receive_confirm") && role != "warehouse" && role != "admin") {
       return const Center(child: Text("当前角色未开通领料功能，请联系管理员", style: TextStyle(color: Colors.grey)));
     }
     final canOrder = Auth.can("requisition");
