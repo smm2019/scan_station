@@ -28,6 +28,7 @@ part 'inventory_page.dart'; // 盘点模式：任务/基准绑定/扫码判定/�
 part 'app_auth.dart'; // 账号登录+角色+服务端鉴权：登录门禁/心跳/远程停用/用户管理
 part 'direct_transfer_page.dart'; // MES直调：扫转入货位+物料标签累计，提交SaveTRBarcodes转单
 part 'outbound_page.dart'; // 出库单：直调提交落库→逐箱扫码备料核销→导出对照
+part 'location_reg_page.dart'; // 位置登记：上架/移库/拣下统一入口 + WPS货架账本导入
 part 'inventory_stock_page.dart'; // 库存：期初+入库流水(采集派生)-出库流水(直调派生)，货架库位占用登记
 part 'requisition_page.dart'; // 领料单：物料员下单/签收，仓管接单/扫码发料，服务端状态机
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
@@ -237,6 +238,7 @@ class BatchInfo {
   String invBookKey = "";  //绑定的账面基准 fileKey
   String invLocKey = "";   //绑定的货位基准 fileKey
   bool blindMode = true;   //盲盘：现场不显示账面数量对照
+  List<String> invScope = []; //循环盘点范围：货架前缀列表（如 MB02-A-01），空=全盘
   BatchInfo({
     required this.batchId,
     required this.createTime,
@@ -246,6 +248,7 @@ class BatchInfo {
     this.invBookKey = "",
     this.invLocKey = "",
     this.blindMode = true,
+    this.invScope = const [],
   });
 }
 
@@ -2994,6 +2997,12 @@ class SettingsMenuPage extends StatelessWidget {
             title: "账号与权限", subtitle: "当前账号 / 修改密码 / 用户与功能管理",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AccountPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.shelves, color: Colors.teal,
+            title: "位置登记", subtitle: "上架 / 移库 / 拣下 / 导入WPS货架账本",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const LocationRegPage())),
           ),
           _settingTile(
             context, icon: Icons.dns_outlined, color: const Color(0xFF3F51B5),

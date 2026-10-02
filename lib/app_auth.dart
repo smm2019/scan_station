@@ -99,6 +99,12 @@ class AuthApi {
       _req("GET", scope.isEmpty ? "/api/requisitions" : "/api/requisitions?scope=$scope", token: await AuthStore.token());
   static Future<Map> reqAction(String id, String action, [Map? body]) async =>
       _req("POST", "/api/requisitions/$id/$action", body: body ?? {}, token: await AuthStore.token());
+  // 设置转入货位（loc）；行级转单回写(transfer)/跳过(skip) 直接走 reqAction
+  static Future<Map> reqSetLoc(String id, Map to) async => reqAction(id, "loc", {
+    "locCode": to["LOC_CODE"], "locName": to["LOC_NAME"],
+    "warehouseCode": to["WAREHOUSE_CODE"], "warehouseName": to["WAREHOUSE_NAME"],
+    "districtCode": to["DISTRICT_CODE"], "districtName": to["DISTRICT_NAME"],
+  });
   static Future<Map> notifications() async => _req("GET", "/api/notifications", token: await AuthStore.token());
 }
 

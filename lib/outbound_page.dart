@@ -12,10 +12,11 @@ class OutboundOrder {
   late String operator;     // 操作人姓名(账号)
   late int status;          // 0=未核对完 1=全部已核对
   late String itemsJson;    // [{code,name,qty,barcode,checked}]
+  String linkReqNo = "";    // 关联领料单号（领料发料转MES生成的出库单填写，直调为空）
 }
 
-/// 直调提交成功后调用：按零件号×标签逐行落库一张出库单
-Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<String, String> to) async {
+/// 直调/领料转单成功后调用：按零件号×标签逐行落库一张出库单
+Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<String, String> to, {String linkReqNo = ""}) async {
   final isar = _globalIsar;
   final now = DateTime.now();
   final ts = "${now.year}${now.month.toString().padLeft(2, "0")}${now.day.toString().padLeft(2, "0")}${now.hour.toString().padLeft(2, "0")}${now.minute.toString().padLeft(2, "0")}${now.second.toString().padLeft(2, "0")}";
@@ -23,8 +24,10 @@ Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<S
   for (final r in rows) {
     for (final b in (r["Barcodes"] as List)) {
       final bm = Map<String, dynamic>.from(b as Map);
+      final pn = (r["PART_NO"] ?? bm["PART_NO"])?.toString() ?? "";
       items.add({
-        "code": r["MITEM_CODE"]?.toString() ?? "",
+        "code": pn.isNotEmpty ? pn : (r["MITEM_CODE"]?.toString() ?? ""), // 真实零件号，查不到时回退物料编码
+        "mitemCode": r["MITEM_CODE"]?.toString() ?? "",
         "name": r["MITEM_NAME"]?.toString() ?? "",
         "qty": (bm["QTY"] as num?)?.toDouble() ?? 0.0,
         "barcode": (bm["SCAN_BARCODE"] ?? bm["LABEL_NO"])?.toString() ?? "",
@@ -39,6 +42,7 @@ Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<S
     ..toLoc = "${to["WAREHOUSE_NAME"] ?? ""}/${to["DISTRICT_NAME"] ?? ""}/${to["LOC_NAME"] ?? ""}"
     ..operator = user == null ? "-" : "${user.name}(${user.username})"
     ..status = 0
+    ..linkReqNo = linkReqNo
     ..itemsJson = jsonEncode(items);
   await isar.writeTxn(() => isar.outboundOrders.put(ob));
   return ob;

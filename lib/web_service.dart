@@ -60,6 +60,13 @@ Handler createCollectWebService({
             return await _apiOutbound();
           case '/api/outbound/export':
             return await _apiOutboundExport(req);
+          case '/api/stock':
+            return await _apiStock();
+          case '/api/stock/export':
+            return await _apiStockExport();
+          case '/api/board-url':
+            final s = (await AuthStore.serverUrl()).replaceAll(RegExp(r"/+$"), "");
+            return _jsonResponse({'ok': s.isNotEmpty, 'url': s.isEmpty ? '' : '$s/board/requisitions'});
         }
       } else if (req.method == 'POST' && seg == '/api/baseline') {
         return await _apiUploadBaseline(req);
@@ -432,6 +439,8 @@ Future<Response> _apiInventory() async {
       'valid': d.validScans,
       'dup': d.dup.length,
       'mesFail': d.mesFail.length,
+      'outScope': d.outsideScope.length,
+      'scope': t.invScope.join('、'),
       'bookParts': bookParts,
       'covered': covered,
       'gain': gain,
@@ -507,6 +516,10 @@ Future<Response> _apiInventoryExport(Request req) async {
       rows.add(['重复码', _invCsvField(p.goodsCode), _invCsvField(p.locCode),
         p.scanTime.toString().substring(0, 19), '已在同任务扫过'].join(','));
     }
+    for (final o in d.outsideScope) {
+      rows.add(['范围外', _invCsvField(o.goodsCode), _invCsvField(o.locCode),
+        o.scanTime.toString().substring(0, 19), '${o.partNo} ${o.remark}'].join(','));
+    }
   }
   //UTF-8 BOM + CRLF：Excel/WPS 双击打开不乱码，可直接回填
   final csv = '\uFEFF' + rows.join('\r\n') + '\r\n';
@@ -571,6 +584,62 @@ Future<Response> _apiOutboundExport(Request req) async {
   return Response.ok(csv, headers: {
     'Content-Type': 'text/csv; charset=utf-8',
     'Content-Disposition': "attachment; filename=\"outbound_${o.orderNo}.csv\"; filename*=UTF-8''${Uri.encodeComponent(cnName)}",
+  });
+}
+
+// ---------- 库存：实时聚合（与 App 库存Tab同口径 computeStock） ----------
+Future<Response> _apiStock() async {
+  final agg = await computeStock();
+  final parts = agg.parts.values.toList()..sort((a, b) => a.partNo.compareTo(b.partNo));
+  final shelf = <Map<String, dynamic>>[];
+  agg.byLoc.forEach((loc, boxes) {
+    shelf.add({'loc': loc, 'boxes': boxes.length, 'parts': boxes.map((b) => b.partNo).toSet().join('、')});
+  });
+  shelf.sort((a, b) => (a['loc'] as String).compareTo(b['loc'] as String));
+  return _jsonResponse({
+    'ok': true,
+    'parts': parts.map((p) => {'partNo': p.partNo, 'itemName': p.itemName, 'opening': p.opening, 'inQty': p.inQty,
+      'outQty': p.outQty, 'inBoxes': p.inBoxes, 'inStockQty': p.inStockQty, 'stock': p.stock}).toList(),
+    'shelf': shelf,
+    'unplaced': agg.unplaced.length,
+  });
+}
+
+Future<Response> _apiStockExport() async {
+  final agg = await computeStock();
+  final rows = <String>[];
+  rows.add('===零件库存汇总===');
+  rows.add('零件号,物料名字,期初,入库合计,出库合计,在库框数,在库数量,当前库存');
+  final parts = agg.parts.values.toList()..sort((a, b) => a.partNo.compareTo(b.partNo));
+  for (final p in parts) {
+    rows.add([_invCsvField(p.partNo), _invCsvField(p.itemName), _fmtInvNum(p.opening), _fmtInvNum(p.inQty),
+      _fmtInvNum(p.outQty), '${p.inBoxes}', _fmtInvNum(p.inStockQty), _fmtInvNum(p.stock)].join(','));
+  }
+  rows.add('');
+  rows.add('===货架库位占用===');
+  rows.add('库位,框数,零件号');
+  final locs = agg.byLoc.keys.toList()..sort();
+  for (final l in locs) {
+    final bs = agg.byLoc[l]!;
+    rows.add([_invCsvField(l), '${bs.length}', _invCsvField(bs.map((b) => b.partNo).toSet().join('、'))].join(','));
+  }
+  rows.add('');
+  rows.add('===在库框明细===');
+  rows.add('库位,标签号,零件号,物料名字,数量,容器');
+  for (final l in locs) {
+    for (final b in agg.byLoc[l]!) {
+      rows.add([_invCsvField(l), _invCsvField(b.barcode), _invCsvField(b.partNo), _invCsvField(b.itemName), _fmtInvNum(b.qty), _invCsvField(b.container)].join(','));
+    }
+  }
+  for (final b in agg.unplaced) {
+    rows.add(['未分配', _invCsvField(b.barcode), _invCsvField(b.partNo), _invCsvField(b.itemName), _fmtInvNum(b.qty), _invCsvField(b.container)].join(','));
+  }
+  final d = DateTime.now();
+  final ymd = '${d.year}${d.month.toString().padLeft(2, "0")}${d.day.toString().padLeft(2, "0")}';
+  final csv = '\uFEFF' + rows.join('\r\n') + '\r\n';
+  return Response.ok(csv, headers: {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': "attachment; filename=\"stock_$ymd.csv\"; filename*=UTF-8''${Uri.encodeComponent('库存汇总_$ymd.csv')}",
   });
 }
 
@@ -656,6 +725,9 @@ const String _kWebPortalHtml = r'''
   .gain{color:var(--warn);font-weight:bold}
   .loss{color:#C0392B;font-weight:bold}
   .mv{color:var(--blue);font-weight:bold}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+  .tab{border:1px solid var(--line);background:#fff;color:var(--muted);border-radius:20px;padding:7px 16px;font-size:14px;cursor:pointer}
+  .tab.on{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:bold}
   @media (max-width:640px){header h1{font-size:17px}.card{padding:12px}.mask{padding:8px}.grid2{grid-template-columns:1fr}.hbar-name{width:88px}}
 </style>
 </head>
@@ -666,7 +738,41 @@ const String _kWebPortalHtml = r'''
     <div class="sub" id="statusLine">正在连接手机服务…</div>
   </header>
 
-  <div class="card">
+  <nav class="tabs">
+    <button class="tab on" data-t="over" onclick="showTab('over')">总览</button>
+    <button class="tab" data-t="stock" onclick="showTab('stock')">库存</button>
+    <button class="tab" data-t="req" onclick="showTab('req')">领料</button>
+    <button class="tab" data-t="out" onclick="showTab('out')">出库</button>
+    <button class="tab" data-t="inv" onclick="showTab('inv')">盘点</button>
+    <button class="tab" data-t="batch" onclick="showTab('batch')">批次</button>
+  </nav>
+
+  <div class="card" id="card-stock" style="display:none">
+    <h2>库存</h2>
+    <div class="tip">库存 = 在库框合计（+可选期初），手机实时计算，与 App 库存页签一致。<button class="btn sm ghost" onclick="loadStock()">刷新</button> <button class="btn sm" onclick="location.href='/api/stock/export'">下载库存CSV</button></div>
+    <input id="stkSearch" oninput="loadStock()" placeholder="搜索零件号 / 物料名字" style="width:100%;padding:8px 12px;border:1px solid var(--line);border-radius:8px;font-size:14px;margin-bottom:10px">
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>零件号</th><th>物料名字</th><th>期初</th><th>入库合计</th><th>出库合计</th><th>在库框数</th><th>在库数量</th><th>当前库存</th></tr></thead>
+        <tbody id="stkBody"><tr><td colspan="8" class="cnt">加载中…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="msec">货架库位占用</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>库位</th><th>框数</th><th>零件号</th></tr></thead>
+        <tbody id="shkBody"><tr><td colspan="3" class="cnt">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" id="card-req" style="display:none">
+    <h2>领料工作台</h2>
+    <div class="tip" id="reqHint">领料单由鉴权服务器管理，下方为内嵌工作台（10 秒自动刷新）。<button class="btn sm ghost" onclick="if(boardUrl)window.open(boardUrl)">新窗口打开</button></div>
+    <iframe id="reqFrame" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>
+  </div>
+
+  <div class="card" id="card-stats">
     <h2>统计看板</h2>
     <div class="tip">全量采集数据汇总（含作废统计）。<button class="btn sm ghost" style="margin-left:8px" onclick="loadStats()">刷新看板</button></div>
     <div class="stats" id="statCards"><div class="empty">加载中…</div></div>
@@ -690,7 +796,7 @@ const String _kWebPortalHtml = r'''
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="card-base" style="display:none">
     <h2>上传盘点基准 CSV</h2>
     <div class="tip">供盘点复核模式使用：上传后保存到手机应用目录，同名文件会被替换。</div>
     <div class="row">
@@ -702,7 +808,7 @@ const String _kWebPortalHtml = r'''
     <ul class="files" id="baseList"></ul>
   </div>
 
-  <div class="card">
+  <div class="card" id="card-out" style="display:none">
     <h2>出库台账</h2>
     <div class="tip">直调提交自动生成的出库单，按标签逐行记录零件号/物料名字/数量/标签号；已核对进度以手机 App 内扫码为准。CSV 带 UTF-8 BOM，Excel/WPS 双击打开不乱码。<button class="btn sm ghost" style="margin-left:8px" onclick="loadOutbound()">刷新台账</button></div>
     <div class="tbl-wrap">
@@ -717,7 +823,7 @@ const String _kWebPortalHtml = r'''
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="card-inv" style="display:none">
     <h2>盘点报表</h2>
     <div class="tip">盘点任务进度与差异总览，无需碰手机即可查看；下载的 CSV 已带 UTF-8 BOM，Excel/WPS 双击打开不乱码，可直接回填台账。<button class="btn sm ghost" style="margin-left:8px" onclick="loadInventory()">刷新报表</button></div>
     <div class="tbl-wrap">
@@ -732,7 +838,7 @@ const String _kWebPortalHtml = r'''
     </div>
   </div>
 
-  <div class="card">
+  <div class="card" id="card-batch" style="display:none">
     <h2>历史批次</h2>
     <div class="tip">勾选多个批次可合并下载为一张 CSV（与 App 内合并导出口径一致，含整托汇总段）。</div>
     <div class="tbl-wrap">
@@ -987,9 +1093,9 @@ async function loadInventory(){
       +(t.outsideParts?' / <span style="color:#7C3AED;font-weight:bold">账外 '+t.outsideParts+' 种</span>':'')
       +(t.movePairs?' / <span class="mv">疑似串位 '+t.movePairs+' 对</span>':'')
       +(t.bookParts===0?' <span class="cnt">(账面基准为空)</span>':'');
-    const abn=(t.dup||t.mesFail)?('重复 '+t.dup+' · MES无码 '+t.mesFail):'<span class="cnt">无</span>';
+    const abn=(t.dup||t.mesFail||t.outScope)?('重复 '+t.dup+' · MES无码 '+t.mesFail+(t.outScope?' · 范围外 '+t.outScope:'')):'<span class="cnt">无</span>';
     return '<tr>'
-      +'<td><b>'+esc(t.remark||t.batchId)+'</b><br><span class="cnt">'+esc(t.batchId)+' · '+(t.blindMode?'盲盘':'监督')+(t.bookBound?'':' · ⚠️未绑账面基准')+(t.locBound?'':' · 未绑货位基准')+'</span></td>'
+      +'<td><b>'+esc(t.remark||t.batchId)+'</b><br><span class="cnt">'+esc(t.batchId)+' · '+(t.blindMode?'盲盘':'监督')+(t.scope?' · 范围:'+esc(t.scope):'')+(t.bookBound?'':' · ⚠️未绑账面基准')+(t.locBound?'':' · 未绑货位基准')+'</span></td>'
       +'<td>'+esc(t.createTime.substring(0,16))+'</td>'
       +'<td>'+st+'</td>'
       +'<td>'+prog+'<br><span class="cnt">已扫 '+t.total+' 码 · 有效 '+t.valid+'</span></td>'
@@ -998,7 +1104,7 @@ async function loadInventory(){
       +'<td class="row" style="gap:6px">'
         +'<button class="btn sm ghost" onclick="location.href=invCsvUrl(\''+esc(t.batchId)+'\',\'part\')">零件差异</button>'
         +'<button class="btn sm ghost" onclick="location.href=invCsvUrl(\''+esc(t.batchId)+'\',\'loc\')">货位差异</button>'
-        +(t.dup||t.mesFail?'<button class="btn sm ghost" onclick="location.href=invCsvUrl(\''+esc(t.batchId)+'\',\'abnormal\')">异常明细</button>':'')
+        +(t.dup||t.mesFail||t.outScope?'<button class="btn sm ghost" onclick="location.href=invCsvUrl(\''+esc(t.batchId)+'\',\'abnormal\')">异常明细</button>':'')
       +'</td>'
       +'</tr>';
   }).join('');
@@ -1077,7 +1183,35 @@ async function loadAll(){
   try{await loadStatus();await loadBatches();}
   catch(e){showMsg('upMsg','加载批次失败：'+e.message,false);}
 }
-loadAll();loadBaselines();loadStats();loadInventory();loadOutbound();
+// ===== Tab 导航与库存/工作台 =====
+let boardUrl='';
+function showTab(t){
+  const map={over:['card-stats'],stock:['card-stock'],req:['card-req'],out:['card-out'],inv:['card-inv','card-base'],batch:['card-batch']};
+  document.querySelectorAll('.wrap > .card').forEach(c=>c.style.display='none');
+  (map[t]||[]).forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='';});
+  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+}
+function fmt(n){n=Number(n)||0;return n===Math.round(n)?String(n):n.toFixed(2);}
+async function loadStock(){
+  const tb=document.getElementById('stkBody'), sh=document.getElementById('shkBody');
+  tb.innerHTML='<tr><td colspan="8" class="cnt">加载中…</td></tr>';
+  let d;
+  try{d=await jget('/api/stock');}
+  catch(e){tb.innerHTML='<tr><td colspan="8" class="cnt">加载失败：'+esc(e.message)+'</td></tr>';return;}
+  const q=(document.getElementById('stkSearch').value||'').trim().toLowerCase();
+  let parts=d.parts;
+  if(q)parts=parts.filter(p=>((p.partNo||'')+(p.itemName||'')).toLowerCase().includes(q));
+  tb.innerHTML=parts.length?parts.map(p=>'<tr><td><b>'+esc(p.partNo)+'</b></td><td>'+esc(p.itemName)+'</td><td>'+fmt(p.opening)+'</td><td>'+fmt(p.inQty)+'</td><td>'+fmt(p.outQty)+'</td><td>'+p.inBoxes+'</td><td>'+fmt(p.inStockQty)+'</td><td style="font-weight:bold;color:'+(p.stock<0?'#C0392B':'var(--ok)')+'">'+fmt(p.stock)+'</td></tr>').join(''):'<tr><td colspan="8" class="cnt">无匹配零件</td></tr>';
+  sh.innerHTML=(d.shelf.length||d.unplaced)?('<tr><td colspan="3" class="cnt">货架占用 '+d.shelf.length+' 个库位 · 未分配框 '+d.unplaced+'</td></tr>'+d.shelf.map(s=>'<tr><td><b>'+esc(s.loc)+'</b></td><td>'+s.boxes+'</td><td>'+esc(s.parts)+'</td></tr>').join('')):'<tr><td colspan="3" class="cnt">暂无货架占用数据（App 库存页签登记后显示）</td></tr>';
+}
+async function loadBoardUrl(){
+  try{
+    const d=await jget('/api/board-url');
+    if(d.ok){boardUrl=d.url;document.getElementById('reqFrame').src=d.url;}
+    else{document.getElementById('reqHint').textContent='手机 App 尚未配置鉴权服务器地址，领料工作台不可用（请在 App 登录页填写服务器地址后重新打开本页）';}
+  }catch(e){document.getElementById('reqHint').textContent='工作台地址获取失败：'+e.message;}
+}
+loadAll();loadBaselines();loadStats();loadInventory();loadOutbound();loadStock();loadBoardUrl();showTab('over');
 </script>
 </body>
 </html>

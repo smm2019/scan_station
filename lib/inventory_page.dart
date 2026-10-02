@@ -32,11 +32,22 @@ class InvLocDiff {
       : realQty = 0, realBoxes = 0;
 }
 
+/// 循环盘点：货位编码→货架前缀（去掉末尾 -1F/-2F 层号；无层号则整码即货架）
+String invShelfOf(String locCode) {
+  final m = RegExp(r"^(.*)-\d+F$").firstMatch(locCode.trim());
+  return m != null ? m.group(1)! : locCode.trim();
+}
+bool invLocInScope(String locCode, List<String> scope) {
+  if (scope.isEmpty) return true;
+  return scope.contains(invShelfOf(locCode));
+}
+
 class InvDiffResult {
   final List<InvPartDiff> parts = [];
   final List<InvLocDiff> locs = [];
   final List<InventoryScan> mesFail = [];
   final List<InventoryScan> dup = [];
+  final List<InventoryScan> outsideScope = []; //flag6：登记在未盘点货架，单列清单不盘盈亏
   int totalScans = 0;
   int validScans = 0;
 }
@@ -51,10 +62,16 @@ Future<InvDiffResult> computeInvDiff(BatchInfo task) async {
     if (s.flag == 1) r.dup.add(s);
     if (s.flag == 2) r.mesFail.add(s);
   }
-  final valid = scans.where((s) => s.flag != 1 && s.flag != 2).toList();
+  final valid = scans.where((s) => s.flag != 1 && s.flag != 2 && s.flag != 6).toList();
   r.validScans = valid.length;
+  r.outsideScope.addAll(scans.where((s) => s.flag == 6));
   final books = await _globalIsar.baselineBooks.where().findAll();
-  final locBase = await _globalIsar.baselineLocs.where().findAll();
+  var locBase = await _globalIsar.baselineLocs.where().findAll();
+  // 循环盘点：货位基准按范围过滤，报表只覆盖范围内零件/货位
+  final scope = task.invScope;
+  if (scope.isNotEmpty) {
+    locBase = locBase.where((l) => invLocInScope(l.locCode, scope)).toList();
+  }
 
   //零件号级：账面基准 ∪ 实扫出现过的零件号（账外料）
   final Map<String, InvPartDiff> pMap = {};
@@ -79,10 +96,19 @@ Future<InvDiffResult> computeInvDiff(BatchInfo task) async {
       pMap[s.partNo] = d;
     }
   }
-  pMap.forEach((pn, d) {
-    final la = locAgg[pn];
-    if (la != null && (la - d.bookQty).abs() > 1e-6) d.warnFlag = 7;
-  });
+  if (scope.isEmpty) {
+    pMap.forEach((pn, d) {
+      final la = locAgg[pn];
+      if (la != null && (la - d.bookQty).abs() > 1e-6) d.warnFlag = 7;
+    });
+  } else {
+    // 循环盘：账面改用范围内货位台账合计（全局账面 vs 局部实盘会造成假盘亏）
+    final inScopeParts = locAgg.keys.toSet();
+    pMap.removeWhere((pn, d) => !inScopeParts.contains(pn) && d.realBoxes == 0 && d.outsideBoxes == 0);
+    pMap.forEach((pn, d) {
+      if (inScopeParts.contains(pn)) d.bookQty = locAgg[pn] ?? 0;
+    });
+  }
   r.parts.addAll(pMap.values);
   r.parts.sort((a, b) {
     final da = (a.realQty - a.bookQty + a.outsideQty).abs();
@@ -153,7 +179,7 @@ String _invCsvField(String v) {
 /// 生成差异报表 CSV（零件级 + 货位级 + 异常清单）
 String buildInvDiffCsv(BatchInfo task, InvDiffResult d) {
   final mv = invPairMoveSuggest(d);
-  String s = "盘点任务,${_invCsvField(task.batchId)},${_invCsvField(task.batchRemark)},基准版本 账面:${_invCsvField(task.invBookKey)} 货位:${_invCsvField(task.invLocKey)}\n";
+  String s = "盘点任务,${_invCsvField(task.batchId)},${_invCsvField(task.batchRemark)},基准版本 账面:${_invCsvField(task.invBookKey)} 货位:${_invCsvField(task.invLocKey)},范围:${_invCsvField(task.invScope.isEmpty ? "全盘" : task.invScope.join("/"))}\n";
   s += "\n===零件号级差异(对齐基础数据表)===\n";
   s += "零件号,物料名称,期末库存,实盘数量,差异数量,账外扫入,差异类型,双基准矛盾\n";
   for (final p in d.parts) {
@@ -172,6 +198,13 @@ String buildInvDiffCsv(BatchInfo task, InvDiffResult d) {
     final diff = l.realQty - l.bookQty;
     final note = mv['${l.locCode}|${l.partNo}'] ?? '';
     s += "${_invCsvField(l.locCode)},${_invCsvField(l.partNo)},${_fmtInvNum(l.bookQty)},${_fmtInvNum(l.realQty)},${_fmtInvNum(diff)},${_invCsvField(note)}\n";
+  }
+  if (d.outsideScope.isNotEmpty) {
+    s += "\n===范围外清单(登记在未盘点货架，不计盘盈亏，待人工核对)===\n";
+    s += "货物标签,扫描货位,零件号,数量,备注\n";
+    for (final o in d.outsideScope) {
+      s += "${_invCsvField(o.goodsCode)},${_invCsvField(o.locCode)},${_invCsvField(o.partNo)},${_fmtInvNum(o.qty)},${_invCsvField(o.remark)}\n";
+    }
   }
   s += "\n===异常清单===\n";
   if (d.mesFail.isEmpty && d.dup.isEmpty) {
@@ -250,7 +283,7 @@ class _InventoryHomePageState extends State<InventoryHomePage> {
                               child: ListTile(
                                 leading: Icon(t.isArchived ? Icons.task_alt : Icons.fact_check_outlined, color: t.isArchived ? Colors.green : const Color(0xFF515BD4)),
                                 title: Text(t.batchRemark.isEmpty ? t.batchId : t.batchRemark, style: const TextStyle(fontWeight: FontWeight.w600)),
-                                subtitle: Text("${t.createTime.substring(0, 16)}  ·  已扫 $cnt 码  ·  ${t.blindMode ? "盲盘" : "监督"}\n账面基准:${t.invBookKey.isEmpty ? "未绑定" : "已绑定"} 货位基准:${t.invLocKey.isEmpty ? "未绑定" : "已绑定"}", style: const TextStyle(fontSize: 12)),
+                                subtitle: Text("${t.createTime.substring(0, 16)}  ·  已扫 $cnt 码  ·  ${t.blindMode ? "盲盘" : "监督"}  ·  ${t.invScope.isEmpty ? "全盘" : "循环盘：${t.invScope.join("/")}"}\n账面基准:${t.invBookKey.isEmpty ? "未绑定" : "已绑定"} 货位基准:${t.invLocKey.isEmpty ? "未绑定" : "已绑定"}", style: const TextStyle(fontSize: 12)),
                                 trailing: const Icon(Icons.chevron_right),
                                 onTap: () async {
                                   if (t.isArchived) {
@@ -287,6 +320,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
   bool _blind = true;
   String _bookKey = "", _bookName = "", _locKey = "", _locName = "";
   String _bookInfo = "", _locInfo = "";
+  final Set<String> _scope = {}; //循环盘点：勾选的货架前缀，空=全盘
   int _step = 0;
 
   @override
@@ -375,6 +409,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
       invBookKey: _bookKey,
       invLocKey: _locKey,
       blindMode: _blind,
+      invScope: _scope.toList(),
     );
     try {
       await _globalIsar.writeTxn(() async {
@@ -398,7 +433,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(backgroundColor: const Color(0xFF515BD4), title: Text("新建盘点任务（${_step + 1}/3）")),
+      appBar: AppBar(backgroundColor: const Color(0xFF515BD4), title: Text("新建盘点任务（${_step + 1}/4）")),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(14),
         child: Column(
@@ -427,6 +462,35 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
               const Text("说明：货位基准可不选——缺失时只能对总量盘盈盘亏，无法定位串位。同零件号重复行自动累加。", style: TextStyle(fontSize: 12, color: Colors.grey)),
             ],
             if (_step == 2) ...[
+              if (_locKey.isEmpty)
+                const Card(child: Padding(padding: EdgeInsets.all(14), child: Text("未绑定货位基准，无法圈定范围，本次为全盘盘点。\n想做循环盘点请在第二步绑定货位基准。", style: TextStyle(fontSize: 13))))
+              else
+                FutureBuilder<List<BaselineLoc>>(
+                  future: _globalIsar.baselineLocs.filter().fileKeyEqualTo(_locKey).findAll(),
+                  builder: (ctx, sn) {
+                    if (!sn.hasData) return const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()));
+                    final shelves = sn.data!.map((e) => invShelfOf(e.locCode)).toSet().toList()..sort();
+                    return Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                          const Text("勾选本次要盘的货架（不勾=全盘）。循环盘点建议每次 1~3 个货架。", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 6),
+                          ...shelves.map((sh) => CheckboxListTile(
+                            dense: true, contentPadding: EdgeInsets.zero, controlAffinity: ListTileControlAffinity.leading,
+                            title: Text(sh, style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
+                            value: _scope.contains(sh),
+                            onChanged: (v) => setState(() { if (v == true) { _scope.add(sh); } else { _scope.remove(sh); } }),
+                          )),
+                        ]),
+                      ),
+                    );
+                  },
+                ),
+              const SizedBox(height: 8),
+              const Text("范围外货架的零件即使账面有数，也不会出现在差异报表里，不会造成假盘亏。", style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ],
+            if (_step == 3) ...[
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -440,6 +504,8 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                       Text("账面基准：${_bookName.isEmpty ? "⚠️未选择（无法判定账外料）" : "$_bookName（$_bookInfo）"}"),
                       const SizedBox(height: 6),
                       Text("货位基准：${_locName.isEmpty ? "未选择（不做串位/超量判定）" : "$_locName（$_locInfo）"}"),
+                      const SizedBox(height: 6),
+                      Text("盘点范围：${_scope.isEmpty ? "全盘" : "循环盘 · ${_scope.join("、")}"}"),
                       const SizedBox(height: 6),
                       const Text("⚠️ 盘点期间请冻结出入库，否则产生虚假盘亏。", style: TextStyle(color: Colors.red, fontSize: 12)),
                     ],
@@ -455,7 +521,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                 Expanded(
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, disabledBackgroundColor: Colors.grey.shade300),
-                    onPressed: _step == 2
+                    onPressed: _step == 3
                         ? (_bookKey.isEmpty && _locKey.isEmpty ? null : _create)
                         : () {
                             if (_step == 1 && _bookKey.isEmpty && _locKey.isEmpty) {
@@ -464,7 +530,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                             }
                             setState(() => _step++);
                           },
-                    child: Text(_step == 2 ? "创建并开始盘点" : "下一步"),
+                    child: Text(_step == 3 ? "创建并开始盘点" : "下一步"),
                   ),
                 ),
               ],
@@ -509,7 +575,8 @@ class _InvScanPageState extends State<_InvScanPage> {
 
   Future<List<String>> _locOptions() async {
     final locs = await _globalIsar.baselineLocs.where().findAll();
-    return locs.map((e) => e.locCode).toSet().toList()..sort();
+    final scope = widget.task.invScope;
+    return locs.map((e) => e.locCode).toSet().where((c) => invLocInScope(c, scope)).toList()..sort();
   }
 
   Future<void> _pickLoc() async {
@@ -587,7 +654,22 @@ class _InvScanPageState extends State<_InvScanPage> {
             scannedInLoc += s.qty;
           }
           final locBook = locHit.fold<double>(0, (sum, e) => sum + e.qty);
-          if (bookHit.isEmpty && !locHit.isEmpty) {
+          // 循环盘点：零件登记在未盘点货架 → flag6 范围外（不计盘盈亏，报表单列）
+          bool outScope = false;
+          final scope = widget.task.invScope;
+          if (scope.isNotEmpty && bookHit.isNotEmpty && locHit.isEmpty) {
+            final allRows = await _globalIsar.baselineLocs.filter().partNoEqualTo(rec.partNo).findAll();
+            if (allRows.isNotEmpty && !allRows.any((e) => invLocInScope(e.locCode, scope))) {
+              outScope = true;
+              rec.flag = 6;
+              rec.remark = "台账登记于${allRows.map((e) => e.locCode).take(3).join("、")}${allRows.length > 3 ? "等" : ""}（未盘点货架）";
+              judge = InvJudge(6, "cyan", "范围外：「${rec.partNo}」登记在未盘点货架，已记录待核对");
+            }
+          }
+          if (outScope) {
+            // 范围外：保持 flag6，不进盘盈亏
+            judge = InvJudge(6, "cyan", "范围外：「${rec.partNo}」登记在未盘点货架，已记录待核对");
+          } else if (bookHit.isEmpty && !locHit.isEmpty) {
             //货位台账有、总账没有 → 双基准矛盾，按账外料口径记，并备注
             rec.flag = 3;
             rec.remark = "双基准矛盾：总账无此零件但货位台账登记";
@@ -671,6 +753,7 @@ class _InvScanPageState extends State<_InvScanPage> {
         "yellow" => const Color(0xFFD97706),
         "red" => const Color(0xFFC0392B),
         "purple" => const Color(0xFF7C3AED),
+        "cyan" => const Color(0xFF0891B2),
         _ => Colors.grey,
       };
 
@@ -826,7 +909,7 @@ class _InvScanPageState extends State<_InvScanPage> {
                     itemCount: _recent.length,
                     itemBuilder: (ctx, i) {
                       final s = _recent[i];
-                      final lv = s.flag == 0 ? "green" : (s.flag == 4 || s.flag == 5) ? "yellow" : (s.flag == 2 ? "purple" : "red");
+                      final lv = s.flag == 0 ? "green" : (s.flag == 4 || s.flag == 5) ? "yellow" : s.flag == 2 ? "purple" : s.flag == 6 ? "cyan" : "red";
                       return ListTile(
                         dense: true,
                         leading: CircleAvatar(radius: 12, backgroundColor: _levelColor(lv), child: Text("${s.flag}", style: const TextStyle(fontSize: 11, color: Colors.white))),
@@ -908,6 +991,8 @@ class _InvDiffPageState extends State<_InvDiffPage> {
                     Text("MES无码 ${d.mesFail.length}", style: const TextStyle(color: const Color(0xFF7C3AED))),
                     Text("零件差异 ${diffParts.length} 项", style: TextStyle(color: Colors.deepOrange.shade700)),
                     Text("货位差异 ${diffLocs.length} 行", style: TextStyle(color: Colors.deepOrange.shade700)),
+                    if (widget.task.invScope.isNotEmpty) Text("范围：${widget.task.invScope.join("/")}", style: const TextStyle(color: Color(0xFF0891B2), fontWeight: FontWeight.bold)),
+                    if (d.outsideScope.isNotEmpty) Text("范围外 ${d.outsideScope.length} 码", style: const TextStyle(color: Color(0xFF0891B2))),
                   ]),
                 ),
               ),
@@ -938,6 +1023,17 @@ class _InvDiffPageState extends State<_InvDiffPage> {
                   ),
                 );
               }),
+              if (d.outsideScope.isNotEmpty) ...[
+                const Padding(padding: EdgeInsets.fromLTRB(4, 14, 4, 6), child: Text("范围外清单（登记在未盘点货架，不计盘盈亏）", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+                ...d.outsideScope.map((o) => Card(
+                  child: ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.help_outline, color: Color(0xFF0891B2), size: 20),
+                    title: Text("${o.goodsCode}  →  ${o.partNo}", style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
+                    subtitle: Text("${o.scanTime.toString().substring(5, 16)}  @${o.locCode}  ${_fmtInvNum(o.qty)}  ${o.remark}", style: const TextStyle(fontSize: 11)),
+                  ),
+                )),
+              ],
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,

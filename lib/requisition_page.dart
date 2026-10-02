@@ -9,10 +9,12 @@ class RequisitionCache {
   static const String _kIssued = "req_issued_barcodes";
   static Future<void> saveIssued(List<Map> reqs) async {
     final set = <String>{};
-    const active = {'accepted', 'ready', 'done'}; // 仅这些状态的已发框算出库；取消/拒单退回库存
+    const active = {'accepted', 'ready', 'done'}; // 取消/拒单整单退回库存
     for (final r in reqs) {
       if (!active.contains(r["status"])) continue;
+      final finished = r["status"] == 'ready' || r["status"] == 'done'; // ready/done 时所有行必已 transfer/skip
       for (final it in List<Map>.from(r["items"] ?? [])) {
+        if (!finished && it["transferred"] != true) continue; // 备料中：只扣已转MES的行（扫而未转不算出库）
         for (final x in List.from(it["issued"] ?? [])) {
           // 新格式 {c:标签,q:件数}；旧格式纯字符串标签
           set.add(x is Map ? (x["c"]?.toString() ?? "") : x.toString());
@@ -243,13 +245,25 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   late Map _r;
   final _scanCtrl = TextEditingController();
   final _scanFocus = FocusNode();
+  final _locCtrl = TextEditingController();
+  final _locFocus = FocusNode();
   bool _busy = false;
   String? _issuePart; // 当前发料目标零件号：选定后扫码框连续发料
+  Map<String, String> _to = {}; // 转入货位（本单所有行转同一目标位）
+  bool _checkSap = false; // 转MES时是否开启SAP库存校验
+  final Map<String, Map<String, dynamic>> _boxData = {}; // 标签 -> 转单所需MES数据
+  Map<String, dynamic>? _lastBoxData; // 本次扫码抓到的MES数据
 
   @override
-  void initState() { super.initState(); _r = Map.from(widget.rq); }
+  void initState() {
+    super.initState();
+    _r = Map.from(widget.rq);
+    final tl = _r["toLoc"];
+    if (tl is Map) _to = tl.map((k, v) => MapEntry(k.toString(), v?.toString() ?? ""));
+    if ((_to["LOC_CODE"] ?? "").isEmpty) _to = {};
+  }
   @override
-  void dispose() { _scanCtrl.dispose(); _scanFocus.dispose(); super.dispose(); }
+  void dispose() { _scanCtrl.dispose(); _scanFocus.dispose(); _locCtrl.dispose(); _locFocus.dispose(); super.dispose(); }
 
   Future<void> _act(String action, [Map? body]) async {
     if (_busy) return;
@@ -290,6 +304,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     setState(() => _busy = true);
     String? scanErr;
     double boxQty = 0;
+    _lastBoxData = null;
     try {
       // 查 MES 拿该箱件数与零件号（复用采集页查询通道：失效自动重登）
       final mes = await mesQueryLabel(code);
@@ -299,6 +314,16 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         final mp = mes["partNo"]?.toString() ?? "";
         if (mp != target["partNo"]) { scanErr = "该箱零件号 $mp 与所选行 ${target["partNo"]} 不符"; }
         boxQty = (mes["qty"] as num?)?.toDouble() ?? 0;
+        // 抓转MES所需完整标签数据（物料ID/编码/名称/UOM）；失败不阻塞发料记账，转单时再补查
+        try {
+          final d = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
+            "barcode": code,
+            "warehouseCode": _to["WAREHOUSE_CODE"] ?? "",
+            "districtCode": _to["DISTRICT_CODE"] ?? "",
+            "locCode": _to["LOC_CODE"] ?? "",
+          });
+          if (d != null) _lastBoxData = Map<String, dynamic>.from(d);
+        } catch (_) {}
       }
     } catch (e) {
       scanErr = "查询异常：$e";
@@ -314,7 +339,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     if (!mounted) return;
     setState(() => _busy = false);
     if (res["ok"] != true) { widget.toast((res["msg"] ?? "发料失败").toString()); _refocusScan(); return; }
-    setState(() => _r = Map.from(res["req"]));
+    setState(() {
+      _r = Map.from(res["req"]);
+      _boxData[code] = _lastBoxData ?? {}; // 缓存该箱 MES 数据供转单组报文
+    });
     final items2 = List<Map>.from(_r["items"] ?? []);
     final nowT = items2.firstWhere((e) => e["partNo"] == _issuePart, orElse: () => const {});
     final tGot = nowT.isEmpty ? 0.0 : _issuedQtyOf(nowT);
@@ -330,6 +358,122 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   void _refocusScan() {
     _scanFocus.unfocus();
     WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _scanFocus.requestFocus(); });
+  }
+
+  /// 行级转MES：把该行已扫箱真实直调转单（申请600实扫500也照转500），成功后回写服务器+落出库台账
+  Future<void> _transferRow(Map item) async {
+    if (_busy) return;
+    final partNo = item["partNo"].toString();
+    final codes = _issuedCodesOf(item);
+    if (codes.isEmpty) { widget.toast("该行还没有扫入标签"); return; }
+    if (_to.isEmpty) { widget.toast("请先扫描转入货位"); return; }
+    final yes = await showDialog<bool>(context: context, builder: (dctx) => AlertDialog(
+      title: const Text("转 MES 出库"),
+      content: Text("零件号 $partNo\n将把已扫的 ${codes.length} 箱（${_fmtInvNum(_issuedQtyOf(item))} 件）真实转单到：\n${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}\n\n转单即 MES 移库，不可撤销（退回需反向再转）。确认提交？"),
+      actions: [TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text("取消")),
+        TextButton(onPressed: () => Navigator.pop(dctx, true), child: const Text("确认转单"))],
+    ));
+    if (yes != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      // 1. 组报文：逐箱补齐 MES 数据（缓存缺失的现场补查一次）
+      final boxes = <Map<String, dynamic>>[];
+      for (final c in codes) {
+        var d = _boxData[c];
+        if (d == null || (d["MITEM_ID"] ?? "").toString().isEmpty) {
+          final fresh = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
+            "barcode": c,
+            "warehouseCode": _to["WAREHOUSE_CODE"] ?? "",
+            "districtCode": _to["DISTRICT_CODE"] ?? "",
+            "locCode": _to["LOC_CODE"] ?? "",
+          });
+          if (fresh == null) throw Exception("标签 $c 查不到 MES 在库信息，无法转单");
+          d = Map<String, dynamic>.from(fresh);
+          _boxData[c] = d;
+        }
+        d["SCAN_BARCODE"] = d["SCAN_BARCODE"] ?? c; // 兜底：台账条码=扫入标签号
+        boxes.add(d);
+      }
+      // 2. 按零件号聚合成 SaveTRBarcodes 明细（与直调页同口径）
+      final rows = <Map<String, dynamic>>[];
+      for (final d in boxes) {
+        final idx = rows.indexWhere((r) => r["MITEM_CODE"] == d["MITEM_CODE"]);
+        final q = (d["QTY"] as num?)?.toDouble() ?? 0;
+        if (idx >= 0) {
+          rows[idx]["REQ_QTY"] = (rows[idx]["REQ_QTY"] as double) + q;
+          (rows[idx]["Barcodes"] as List).add(d);
+        } else {
+          rows.add({
+            "MITEM_ID": d["MITEM_ID"], "MITEM_CODE": d["MITEM_CODE"],
+            "MITEM_NAME": d["MITEM_DESC"] ?? d["MITEM_NAME"] ?? "",
+            "UOM": d["UOM"] ?? "", "REQ_QTY": q, "Barcodes": [d],
+          });
+        }
+      }
+      final details = rows.map((r) {
+        final m = Map<String, dynamic>.from(r);
+        m["TO_WAREHOUSE_CODE"] = _to["WAREHOUSE_CODE"];
+        m["TO_DISTRICT_CODE"] = _to["DISTRICT_CODE"];
+        m["TO_LOC_CODE"] = _to["LOC_CODE"];
+        m["isCheckSap"] = _checkSap;
+        return m;
+      }).toList();
+      await mesReq("POST", "/api/v1/rawtransfer/SaveTRBarcodes", body: {"details": details});
+      // 3. 回写服务器行级 transferred（幂等），并落出库台账关联领料单号
+      final res = await AuthApi.reqAction(_r["id"].toString(), "transfer", {"partNo": partNo});
+      if (res["ok"] != true) throw Exception("MES已转单，但服务器回写失败：${res["msg"]}（请重开该单重试，MES侧勿重复转）");
+      try {
+        final ob = await createOutboundOrder(
+          rows.map((r) => {...r, "PART_NO": partNo}).toList(), _to, linkReqNo: _r["no"].toString());
+        widget.toast("已转MES（${_fmtInvNum(_issuedQtyOf(item))}件），出库单 ${ob.orderNo}", err: false);
+      } catch (_) {
+        widget.toast("已转MES，出库台账落库失败（不影响转单）", err: false);
+      }
+      setState(() {
+        _r = Map.from(res["req"]);
+        _issuePart = null;
+      });
+    } catch (e) {
+      widget.toast("转单失败：${e.toString().replaceFirst("Exception: ", "")}");
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 行级跳过：仓库无货，0件转单
+  Future<void> _skipRow(Map item) async {
+    if (_busy) return;
+    final reason = await _askReason("跳过原因（如：无库存，待补货另开单）");
+    if (reason == null) return;
+    await _act("skip", {"partNo": item["partNo"].toString(), "reason": reason});
+  }
+
+  /// 扫转入货位（复用直调同款接口）
+  Future<void> _scanLoc() async {
+    final code = _locCtrl.text.trim();
+    _locCtrl.clear();
+    if (code.isEmpty || _busy) return;
+    setState(() => _busy = true);
+    try {
+      final d = await mesGetData("/api/v1/invwarehousetransfer/getwarehousemodelinfo", {"loccode": code});
+      if (d == null) { widget.toast("货位查询无信息：$code"); return; }
+      final to = {
+        "WAREHOUSE_CODE": d["WAREHOUSE_CODE"]?.toString() ?? "",
+        "WAREHOUSE_NAME": d["WAREHOUSE_NAME"]?.toString() ?? "",
+        "DISTRICT_CODE": d["DISTRICT_CODE"]?.toString() ?? "",
+        "DISTRICT_NAME": d["DISTRICT_NAME"]?.toString() ?? "",
+        "LOC_CODE": d["LOC_CODE"]?.toString() ?? "",
+        "LOC_NAME": d["LOC_NAME"]?.toString() ?? "",
+      };
+      final res = await AuthApi.reqSetLoc(_r["id"].toString(), to);
+      if (res["ok"] != true) { widget.toast("货位设置失败：${res["msg"]}"); return; }
+      setState(() { _to = to; _r = Map.from(res["req"]); });
+      widget.toast("转入货位已设置：${to["LOC_NAME"]}", err: false);
+    } catch (e) {
+      widget.toast("货位查询失败：${e.toString().replaceFirst("Exception: ", "")}");
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   @override
@@ -375,6 +519,27 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
           const SizedBox(height: 8),
           // 发料扫码框（备料中且是仓管）
           if (st == 'accepted' && isWh) ...[
+            if (_to.isEmpty)
+              Row(children: [
+                Expanded(child: TextField(
+                  controller: _locCtrl, focusNode: _locFocus,
+                  decoration: const InputDecoration(hintText: "先扫转入货位（产线/接驳位）", isDense: true, prefixIcon: Icon(Icons.place_outlined, size: 20), border: OutlineInputBorder()),
+                  onSubmitted: (_) => _scanLoc(),
+                )),
+                const SizedBox(width: 8),
+                SizedBox(width: 72, child: ElevatedButton(onPressed: _busy ? null : _scanLoc, child: const Text("设定"))),
+              ])
+            else
+              Row(children: [
+                Expanded(child: Text("转入：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}（${_to["LOC_CODE"]}）",
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF3F51B5))),),
+                TextButton(onPressed: _busy ? null : () => setState(() => _to = {}), child: const Text("改货位", style: TextStyle(fontSize: 12))),
+              ]),
+            SwitchListTile(
+              dense: true, contentPadding: EdgeInsets.zero,
+              title: const Text("开启SAP库存校验", style: TextStyle(fontSize: 13)),
+              value: _checkSap, onChanged: (v) => setState(() => _checkSap = v),
+            ),
             TextField(
               controller: _scanCtrl, focusNode: _scanFocus, autofocus: true,
               decoration: InputDecoration(
@@ -392,23 +557,47 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               final got = _issuedQtyOf(item);
               final qty = (item["qty"] as num?)?.toDouble() ?? 0;
               final done = got >= qty && qty > 0;
+              final transferred = item["transferred"] == true;
+              final skipped = item["skipped"] == true;
               final selected = _issuePart == item["partNo"].toString();
               final boxQs = Map<String, double>.fromEntries(
                 List.from(item["issued"] ?? []).whereType<Map>().map((x) => MapEntry(x["c"]?.toString() ?? "", (x["q"] as num?)?.toDouble() ?? 0)));
               return Card(
                 shape: selected ? RoundedRectangleBorder(side: const BorderSide(color: Colors.teal, width: 2), borderRadius: BorderRadius.circular(12)) : null,
                 child: InkWell(
-                  onTap: (st == 'accepted' && isWh && !done) ? () { setState(() => _issuePart = item["partNo"].toString()); _refocusScan(); } : null,
+                  onTap: (st == 'accepted' && isWh && !done && !transferred && !skipped) ? () { setState(() => _issuePart = item["partNo"].toString()); _refocusScan(); } : null,
                   child: Padding(padding: const EdgeInsets.all(10), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Row(children: [
                       Expanded(child: Text("${item["partNo"]}  ${item["itemName"] ?? ""}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600))),
-                      Text("已发 ${_fmtInvNum(got)}/${_fmtInvNum(qty)} 件", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: done ? Colors.green : Colors.orange)),
+                      if (transferred)
+                        Text("已转 ${_fmtInvNum((item["transferQty"] as num?)?.toDouble() ?? got)} 件", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.green))
+                      else if (skipped)
+                        const Text("已跳过", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.grey))
+                      else
+                        Text("已发 ${_fmtInvNum(got)}/${_fmtInvNum(qty)} 件", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: done ? Colors.green : Colors.orange)),
                       if (selected) const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.my_location, size: 16, color: Colors.teal)),
                     ]),
                     const SizedBox(height: 4),
                     Wrap(spacing: 6, runSpacing: 4, children: [
-                      ...codes.map((c) => Chip(label: Text(boxQs[c] != null && boxQs[c]! > 0 ? "$c·${_fmtInvNum(boxQs[c]!)}" : c, style: const TextStyle(fontSize: 10, color: Colors.white)), backgroundColor: Colors.green, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact)),
+                      ...codes.map((c) => Chip(label: Text(boxQs[c] != null && boxQs[c]! > 0 ? "$c·${_fmtInvNum(boxQs[c]!)}" : c, style: const TextStyle(fontSize: 10, color: Colors.white)), backgroundColor: transferred ? Colors.green.shade700 : Colors.green, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact)),
                     ]),
+                    if (st == 'accepted' && isWh && !transferred && !skipped) Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Row(children: [
+                        Expanded(child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white, disabledBackgroundColor: Colors.grey.shade300, minimumSize: const Size(0, 36), padding: const EdgeInsets.symmetric(horizontal: 8)),
+                          onPressed: (_busy || got <= 0 || _to.isEmpty) ? null : () => _transferRow(item),
+                          icon: const Icon(Icons.sync, size: 16),
+                          label: Text(got <= 0 ? "转MES出库" : (got < qty ? "转 ${_fmtInvNum(got)} 件(短装)" : "转MES出库"), style: const TextStyle(fontSize: 12)),
+                        )),
+                        const SizedBox(width: 8),
+                        Expanded(child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(foregroundColor: Colors.grey.shade700, minimumSize: const Size(0, 36), padding: const EdgeInsets.symmetric(horizontal: 8)),
+                          onPressed: _busy ? null : () => _skipRow(item),
+                          icon: const Icon(Icons.skip_next, size: 16), label: const Text("无货跳过", style: TextStyle(fontSize: 12)),
+                        )),
+                      ]),
+                    ),
                   ])),
                 ),
               );
@@ -435,22 +624,6 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               Expanded(flex: 2, child: ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
                 onPressed: _busy ? null : () => _act("accept"), icon: const Icon(Icons.how_to_reg), label: const Text("接单备料"))),
-            ],
-            if (st == 'accepted' && isWh) ...[
-              Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.deepOrange),
-                onPressed: _busy ? null : () async {
-                  // 短装完成：列出未发行与短装数，二次确认
-                  final shorts = items.where((e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0))
-                      .map((e) => "${e["partNo"]} 短${_fmtInvNum(((e["qty"] as num?)?.toDouble() ?? 0) - _issuedQtyOf(e))}件(实发${_fmtInvNum(_issuedQtyOf(e))})")
-                      .join("；");
-                  if (shorts.isEmpty) { widget.toast("各行均已发满，无需短装完成"); return; }
-                  final yes = await showDialog<bool>(context: context, builder: (dctx) => AlertDialog(
-                    title: const Text("短装完成"), content: Text("以下零件未发满：\n$shorts\n\n确认按实发数收尾并通知领料人？"),
-                    actions: [TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text("取消")),
-                      TextButton(onPressed: () => Navigator.pop(dctx, true), child: const Text("短装完成", style: TextStyle(color: Colors.deepOrange)))]));
-                  if (yes == true) await _act("short");
-                }, icon: const Icon(Icons.warning_amber_rounded, size: 16), label: const Text("短装完成"))),
-              const SizedBox(width: 8),
             ],
             if ((st == 'pending' || st == 'accepted') && (isOwner || Auth.isAdmin))
               Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),

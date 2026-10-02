@@ -87,13 +87,17 @@ function renderReqPrint(r) {
   const rows = r.items.map((i, idx) => {
     const got = issuedOf(i).reduce((s, e) => s + e.q, 0);
     const codes = issuedOf(i).map(e => e.c).join(' ');
-    return `<tr>
+    // PDA 转单进度回写纸面：已转→绿色✓；跳过→灰色✗
+    let stMark = '';
+    if (i.transferred) stMark = ` <span style="color:#0a7d32;font-weight:bold">✓已转${got >= (Number(i.qty) || 0) ? '' : '(短装)'}</span>`;
+    else if (i.skipped) stMark = ' <span style="color:#999">✗跳过</span>';
+    return `<tr${i.transferred ? ' style="background:#f2fbf5"' : (i.skipped ? ' style="background:#f7f7f7;color:#999"' : '')}>
       <td>${idx + 1}</td>
       <td class="pn selectable">${esc(i.partNo)}</td>
       <td>${esc(i.itemName || '')}</td>
       <td class="num">${esc(i.qty)}</td>
-      <td class="num">${got}${got >= (Number(i.qty) || 0) ? ' ✔' : ''}</td>
-      <td class="handwrite"></td>
+      <td class="num">${got}${got >= (Number(i.qty) || 0) && !i.skipped ? ' ✔' : ''}${stMark}</td>
+      <td class="handwrite">${i.transferred ? esc((r.toLoc && r.toLoc.LOC_NAME) || '') : ''}</td>
       <td class="handwrite small">${esc(codes)}</td>
     </tr>`;
   }).join('');
@@ -132,10 +136,60 @@ function renderReqPrint(r) {
 </body></html>`;
 }
 
-let db = loadDb();
-const save = () => saveDb(db);
+// 领料工作台（电脑端）：待办+备料中单据列表，一键逐张打印
+function renderReqBoard() {
+  const open = db.requisitions.filter(r => ['pending', 'accepted'].includes(r.status)).reverse();
+  const rowsHtml = open.length ? open.map(r => {
+    const items = r.items || [];
+    const doneN = items.filter(i => i.transferred || i.skipped).length;
+    const prog = `${doneN}/${items.length} 行`;
+    const stTag = r.status === 'pending' ? '<span style="color:#c77700">待接单</span>' : '<span style="color:#2456c9">备料中</span>';
+    const itemLines = items.map(i => {
+      const got = issuedOf(i).reduce((s, e) => s + e.q, 0);
+      let mark = '';
+      if (i.transferred) mark = ` <b style="color:#0a7d32">✓已转${got >= (Number(i.qty) || 0) ? '' : '(短装)'}</b>`;
+      else if (i.skipped) mark = ' <span style="color:#999">✗跳过</span>';
+      else if (got > 0) mark = ` <span style="color:#c77700">已扫${got}件</span>`;
+      return `<div class="it">${esc(i.partNo)} ${esc(i.itemName || '')}　申请${esc(i.qty)}${mark}</div>`;
+    }).join('');
+    return `<div class="card">
+      <div class="hd"><b>${esc(r.no)}</b> ｜ ${esc(r.byName)} ｜ ${(r.createdAt || '').slice(5, 16).replace('T', ' ')} ｜ ${stTag} ｜ ${prog}
+        <button class="btn" onclick="window.open('/print/requisition?id=${encodeURIComponent(r.id)}')">🖨 打印</button></div>
+      ${itemLines}
+      ${r.remark ? `<div class="rm">备注：${esc(r.remark)}</div>` : ''}
+    </div>`;
+  }).join('') : '<div class="empty">当前没有待处理领料单 ✅</div>';
+  return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>领料工作台</title>
+<style>
+  body{font-family:"Microsoft YaHei",Arial;margin:20px;background:#f5f6fa;color:#111}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{font-size:12px;color:#777;margin-bottom:14px}
+  .bar{margin-bottom:14px}
+  .bar button{font-size:14px;padding:8px 16px;cursor:pointer;margin-right:8px}
+  .card{background:#fff;border:1px solid #e2e4ee;border-radius:10px;padding:12px 14px;margin-bottom:10px}
+  .hd{display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:6px}
+  .hd .btn{margin-left:auto;font-size:13px;padding:5px 12px;cursor:pointer}
+  .it{font-size:13px;padding:3px 0;border-top:1px dashed #eee}
+  .rm{font-size:12px;color:#888;margin-top:4px}
+  .empty{text-align:center;color:#4caf50;font-size:15px;padding:40px;background:#fff;border-radius:10px}
+</style></head><body>
+<h1>领料工作台</h1>
+<div class="sub">仓管接单后自动出现在这里；打印出的单据随货流转，PDA 扫码转单进度会回写到打印页。每 10 秒自动刷新。</div>
+<div class="bar"><button onclick="location.reload()">⟳ 刷新</button><button onclick="printAll()">🖨 全部打印（逐张）</button></div>
+<div id="list">${rowsHtml}</div>
+<script>
+function printAll(){
+  const ids=${JSON.stringify(open.map(r => r.id))};
+  if(!ids.length){alert('没有可打印的单据');return;}
+  // 逐张打开打印页（浏览器允许一次多标签即可连续打印）
+  ids.forEach((id,i)=>setTimeout(()=>window.open('/print/requisition?id='+encodeURIComponent(id)),i*400));
+}
+setInterval(()=>location.reload(),10000);
+</script></body></html>`;
+}
 
-// ---------------- 会话 ----------------
+let db = loadDb();
+const save = () => saveDb(db);// ---------------- 会话 ----------------
 function touchSession(token) {
   const s = db.sessions[token];
   if (!s) return null;
@@ -196,6 +250,13 @@ const server = http.createServer(async (req, res) => {
       if (!r) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('领料单不存在'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(renderReqPrint(r));
+      return;
+    }
+
+    // ---- 领料工作台（电脑端公开：待办列表 + 逐张/批量打印）----
+    if (req.method === 'GET' && (p === '/board/requisitions' || p === '/board')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderReqBoard());
       return;
     }
 
@@ -293,14 +354,32 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, notifications: mine });
         }
 
-        // 状态动作：/:id/accept|reject|scan|short|confirm|cancel
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|short|confirm|cancel)$/);
+        // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel)$/);
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
           const act = mAct[2];
           const b = await readBody(req);
           const hpush = (text) => { r.history.push({ time: new Date().toISOString(), by: u.name, text }); };
+          // issued 统一为 [{c:标签, q:件数}]，兼容旧数据纯字符串（按0件计）
+          const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : { c: String(x.c || ''), q: Number(x.q) || 0 });
+          const issuedQty = (i) => normIssued(i).reduce((s, e) => s + e.q, 0);
+          // 全部行到达终态（已转/已跳过）→ 已备齐，通知含短装明细
+          const finalize = () => {
+            if (!(r.status === 'accepted' && r.items.every(i => i.transferred || i.skipped))) return;
+            r.status = 'ready';
+            const shorts = [];
+            for (const i of r.items) {
+              if (i.skipped) shorts.push(`${i.partNo} 跳过(0件)`);
+              else if ((Number(i.transferQty) || 0) < (Number(i.qty) || 0)) shorts.push(`${i.partNo} 短${(Number(i.qty) || 0) - (Number(i.transferQty) || 0)}件(实发${Number(i.transferQty) || 0})`);
+            }
+            if (shorts.length) r.shortInfo = shorts.join('；');
+            hpush(`全部行处理完成${r.shortInfo ? '，短装：' + r.shortInfo : ''}，待签收`);
+            notify(r.by, 'req_ready', `你的领料单 ${r.no} 已备齐${r.shortInfo ? '（短装：' + r.shortInfo + '）' : ''}，请确认收货`, r.id);
+            db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
+              notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）已备齐${r.shortInfo ? '，短装：' + r.shortInfo : ''}`, r.id));
+          };
 
           if (act === 'accept') {
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可接单' });
@@ -320,43 +399,57 @@ const server = http.createServer(async (req, res) => {
             if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可发料` });
             const code = String(b.barcode || '').trim();
             if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
-            // issued 统一为 [{c:标签, q:件数}]，兼容旧数据纯字符串（按1箱计）
-            const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : { c: String(x.c || ''), q: Number(x.q) || 0 });
             if (r.items.some(i => normIssued(i).some(e => e.c === code))) return send(res, 400, { ok: false, msg: `标签 ${code} 已扫过` });
             const target = r.items.find(i => i.partNo === b.partNo);
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
+            if (target.transferred) return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已转MES，不可再补扫` });
             const q = Number(b.qty) || 0;
             if (q <= 0) return send(res, 400, { ok: false, msg: '缺少该标签的件数(qty)' });
             target.issued = normIssued(target);
             target.issued.push({ c: code, q });
-            const got = target.issued.reduce((s, e) => s + e.q, 0);
+            const got = issuedQty(target);
             hpush(`发料 ${b.partNo} 标签 ${code}（${q}件，累计 ${got}/${target.qty}）`);
-            const allDone = r.items.every(i => normIssued(i).reduce((s, e) => s + e.q, 0) >= (Number(i.qty) || 0));
-            if (allDone) {
-              r.status = 'ready';
-              hpush('全部发料完成（按件数），待签收');
-              notify(r.by, 'req_ready', `你的领料单 ${r.no} 已备齐，请确认收货`, r.id);
-              db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
-                notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）已备齐`, r.id));
-            }
-          } else if (act === 'short') {
-            // 短装完成：备料中发不满（如申请800实发790），仓管确认收尾→已备齐，记录短装明细
-            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可短装完成' });
-            if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可短装完成` });
-            const norm = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : { c: String(x.c || ''), q: Number(x.q) || 0 });
-            const shorts = [];
-            for (const i of r.items) {
-              const got = norm(i).reduce((s, e) => s + e.q, 0);
-              const need = Number(i.qty) || 0;
-              i.issued = norm(i);
-              if (got < need) shorts.push(`${i.partNo} 短${need - got}件(实发${got})`);
-            }
-            if (shorts.length === 0) return send(res, 400, { ok: false, msg: '各行均已发满，请直接等待发料自动备齐' });
-            r.status = 'ready'; r.shortInfo = shorts.join('；');
-            hpush(`短装完成：${r.shortInfo}（${u.name}）`);
-            notify(r.by, 'req_ready', `你的领料单 ${r.no} 已备齐（短装：${r.shortInfo}），请确认收货`, r.id);
-            db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
-              notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）短装完成：${r.shortInfo}`, r.id));
+            // 不再自动置 ready：ready 由每行 transfer/skip 到终态后 finalize 决定
+          } else if (act === 'transfer') {
+            // 行级转MES回写：App 已把该行已扫箱真实转单成功，按实发件数记账（申请600只有500也可转500）
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可转单' });
+            if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可转单` });
+            const target = r.items.find(i => i.partNo === b.partNo);
+            if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
+            if (target.transferred) return send(res, 200, { ok: true, req: reqView(r) }); // 幂等：重复回写直接成功
+            target.issued = normIssued(target);
+            const got = issuedQty(target);
+            if (got <= 0) return send(res, 400, { ok: false, msg: '该行还没有扫入任何标签，不能转单' });
+            target.transferred = true;
+            target.transferQty = got;
+            target.mesNo = String(b.mesNo || '').trim(); // App 侧出库单号，便于对账
+            hpush(`转MES ${target.partNo} 实发${got}件${got < (Number(target.qty) || 0) ? '（短装' + ((Number(target.qty) || 0) - got) + '件）' : ''}（${u.name}）`);
+            finalize();
+          } else if (act === 'skip') {
+            // 行级跳过：仓库无货，0件转单，等下次补货可另开单
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可跳过' });
+            if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可跳过` });
+            const target = r.items.find(i => i.partNo === b.partNo);
+            if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
+            if (target.transferred) return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已转MES，不可跳过` });
+            if (target.skipped) return send(res, 200, { ok: true, req: reqView(r) }); // 幂等
+            target.issued = normIssued(target);
+            if (issuedQty(target) > 0) return send(res, 400, { ok: false, msg: '该行已有发料记录，请用转单而不是跳过' });
+            target.skipped = true; target.skipReason = String(b.reason || '').trim();
+            hpush(`跳过 ${target.partNo}${target.skipReason ? '：' + target.skipReason : '（无库存）'}（${u.name}）`);
+            finalize();
+          } else if (act === 'loc') {
+            // 持久化转入货位（App 已用 getwarehousemodelinfo 校验过），本单所有行转同一目标位
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可设置转入货位' });
+            if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可设置转入货位` });
+            const locCode = String(b.locCode || '').trim();
+            if (!locCode) return send(res, 400, { ok: false, msg: '缺少 locCode' });
+            r.toLoc = {
+              WAREHOUSE_CODE: String(b.warehouseCode || ''), WAREHOUSE_NAME: String(b.warehouseName || ''),
+              DISTRICT_CODE: String(b.districtCode || ''), DISTRICT_NAME: String(b.districtName || ''),
+              LOC_CODE: locCode, LOC_NAME: String(b.locName || ''),
+            };
+            hpush(`设置转入货位：${r.toLoc.WAREHOUSE_NAME}/${r.toLoc.DISTRICT_NAME}/${r.toLoc.LOC_NAME}（${locCode}）`);
           } else if (act === 'confirm') {
             if (!canRcv) return send(res, 403, { ok: false, msg: '当前角色未开通签收确认' });
             if (r.status !== 'ready') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可签收` });
@@ -367,6 +460,8 @@ const server = http.createServer(async (req, res) => {
           } else if (act === 'cancel') {
             if (r.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅下单人或管理员可取消' });
             if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可取消` });
+            // 已有行真实转过MES：纸面取消会造成库存与MES不一致，禁止整单取消（剩余行走转单或跳过收尾）
+            if (r.items.some(i => i.transferred)) return send(res, 400, { ok: false, msg: '已有行转MES出库，不能整单取消；请对剩余行转单或跳过收尾' });
             r.status = 'cancelled';
             hpush(`取消${b.reason ? '：' + b.reason : ''}`);
             if (r.acceptedBy) db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>

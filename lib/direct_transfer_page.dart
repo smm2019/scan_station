@@ -44,83 +44,14 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: err ? Colors.red : Colors.green));
   }
 
-  // ---------- 请求通道（带 Token 失效静默重登重试一次） ----------
-  Map<String, String> _baseHeaders(Map cfg) {
-    String moduleId = (cfg["moduleId"] ?? "").toString().trim();
-    if (moduleId.isEmpty) moduleId = _cachedLoginModuleId;
-    if (moduleId.isEmpty) moduleId = "CE7F61BD526C424996CF6CE00211B86A";
-    String orgId = (cfg["orgId"] ?? "").toString().trim();
-    if (orgId.isEmpty) orgId = _cachedLoginOrgId;
-    return {
-      "Token": (cfg["token"] ?? "").toString(),
-      "ModuleId": moduleId,
-      "OrgId": orgId,
-      "EnterpriseId": "*",
-      "Culture": "zh-CN",
-      "X-TZ-Offset": "-480",
-      "ModulePage": "/h5/m/pages/WMS/DirectTransfer.html",
-      "Accept": "*/*",
-      "Content-Type": "application/json; charset=utf-8",
-    };
-  }
+  // ---------- 请求通道：委托文件末尾的顶层共用函数（领料发料转单同用一条通道） ----------
+  Future<void> _refreshCfgCache() => mesRefreshCfgCache();
 
-  // 登录下发的 ModuleId/OrgId 缓存（避免每次请求异步读 SharedPreferences）
-  String _cachedLoginModuleId = "";
-  String _cachedLoginOrgId = "";
-  Future<void> _refreshCfgCache() async {
-    _cachedLoginModuleId = (await MesConfig.getModuleId()).trim();
-    _cachedLoginOrgId = (await MesConfig.getOrgId()).trim();
-  }
-
-  Future<dynamic> _req(String method, String path, {Map<String, String>? query, Map? body, bool retried = false}) async {
-    final cfg = await MesConfig.getConfig();
-    final base = "http://${cfg["host"]}:${cfg["port"]}";
-    var uri = Uri.parse("$base$path");
-    if (query != null) uri = uri.replace(queryParameters: query);
-    HttpClientResponse resp;
-    try {
-      if (method == "GET") {
-        final req = await HttpClient().getUrl(uri).timeout(const Duration(seconds: 15));
-        _baseHeaders(cfg).forEach((k, v) => req.headers.set(k, v));
-        resp = await req.close().timeout(const Duration(seconds: 15));
-      } else {
-        final req = await HttpClient().postUrl(uri).timeout(const Duration(seconds: 15));
-        _baseHeaders(cfg).forEach((k, v) => req.headers.set(k, v));
-        req.write(jsonEncode(body ?? {}));
-        resp = await req.close().timeout(const Duration(seconds: 20));
-      }
-    } catch (e) {
-      throw Exception("网络请求失败：$e");
-    }
-    final bodyStr = await resp.transform(utf8.decoder).join();
-    // Token 失效 → 静默重登后重试一次
-    if ((resp.statusCode == 401 || resp.statusCode == 403) && !retried) {
-      if (await mesSilentLogin()) {
-        await _refreshCfgCache();
-        return _req(method, path, query: query, body: body, retried: true);
-      }
-      throw Exception("MES登录已失效，自动续期失败，请到设置页重新登录");
-    }
-    dynamic j;
-    try { j = jsonDecode(bodyStr); } catch (_) { throw Exception("服务器返回异常(${resp.statusCode})"); }
-    if (j is Map && j["success"] == false) {
-      final m = j["message"];
-      String msg = m is Map ? (m["content"]?.toString() ?? "") : (m?.toString() ?? "");
-      throw Exception(msg.isEmpty ? "接口返回失败" : msg);
-    }
-    return j;
-  }
+  Future<dynamic> _req(String method, String path, {Map<String, String>? query, Map? body, bool retried = false}) =>
+      mesReq(method, path, query: query, body: body, retried: retried);
 
   // 解包 {success,data} 的 data
-  Future<Map?> _getData(String path, Map<String, String> query) async {
-    final j = await _req("GET", path, query: query);
-    if (j is Map) {
-      final d = j["data"];
-      if (d is Map) return Map<String, dynamic>.from(d);
-      if (d == null && j["success"] == true) return null;
-    }
-    return null;
-  }
+  Future<Map?> _getData(String path, Map<String, String> query) => mesGetData(path, query);
 
   // ---------- 业务动作 ----------
   Future<void> _loadBizPermission() async {
@@ -187,14 +118,29 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
       final labelNo = (d["SCAN_BARCODE"] ?? d["LABEL_NO"] ?? code).toString();
       final label = Map<String, dynamic>.from(d)..["SCAN_BARCODE"] = labelNo;
       final qty = (d["QTY"] as num?)?.toDouble() ?? 0;
+      // 直调查询接口只给物料编码(MITEM_CODE)，真实零件号需再查一次标签接口(GetLableList.PartCode)
+      String partNo = "";
+      for (final q in {code, labelNo}) { // 先按扫入原始码查（采集页验证可用），再按系统标签号兜底
+        if (q.isEmpty) continue;
+        try {
+          final mr = await mesQueryLabel(q);
+          if (mr["ok"] == true) { partNo = (mr["partNo"] ?? "").toString(); }
+        } catch (_) {}
+        if (partNo.isNotEmpty) break;
+      }
+      final aggKey = partNo.isNotEmpty ? partNo : (d["MITEM_CODE"]?.toString() ?? "");
+      if (partNo.isEmpty) _toast("标签 $labelNo 未查到零件号，暂按物料编码记账");
+      label["PART_NO"] = partNo;
       setState(() {
-        final idx = _rows.indexWhere((r) => r["MITEM_CODE"] == d["MITEM_CODE"]);
+        final idx = _rows.indexWhere((r) => r["AGG_KEY"] == aggKey);
         if (idx >= 0) {
           final row = _rows[idx];
           row["REQ_QTY"] = (row["REQ_QTY"] as double) + qty;
           (row["Barcodes"] as List).add(label);
         } else {
           _rows.add({
+            "AGG_KEY": aggKey, // 聚合与展示主键：零件号（查不到时回退物料编码）
+            "PART_NO": partNo, // 真实零件号，供出库台账使用
             "MITEM_ID": d["MITEM_ID"],
             "MITEM_CODE": d["MITEM_CODE"],
             "MITEM_NAME": d["MITEM_DESC"] ?? d["MITEM_NAME"] ?? "",
@@ -227,7 +173,7 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
     final del = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text("${row["MITEM_CODE"]} 明细"),
+        title: Text("${(row["PART_NO"]?.toString().isNotEmpty ?? false) ? row["PART_NO"] : row["MITEM_CODE"]} 明细"),
         content: SizedBox(width: 300, child: Column(mainAxisSize: MainAxisSize.min, children: [
           Text("共 ${codes.length} 张标签，数量合计 ${row["REQ_QTY"]}"),
           const SizedBox(height: 8),
@@ -280,6 +226,8 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
     try {
       final details = _rows.map((r) {
         final m = Map<String, dynamic>.from(r);
+        m.remove("AGG_KEY"); // 本地聚合键，不发给 MES
+        m.remove("PART_NO"); // 本地零件号（台账用），不发给 MES
         m["TO_WAREHOUSE_CODE"] = _to["WAREHOUSE_CODE"];
         m["TO_DISTRICT_CODE"] = _to["DISTRICT_CODE"];
         m["TO_LOC_CODE"] = _to["LOC_CODE"];
@@ -367,8 +315,8 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
               margin: const EdgeInsets.symmetric(vertical: 4),
               child: ListTile(
                 dense: true,
-                title: Text("${r["MITEM_CODE"]}  ${r["MITEM_NAME"]}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-                subtitle: Text("${(r["Barcodes"] as List).length} 张标签 · 数量 ${r["REQ_QTY"]} ${r["UOM"]}", style: const TextStyle(fontSize: 12)),
+                title: Text("${(r["PART_NO"]?.toString().isNotEmpty ?? false) ? r["PART_NO"] : r["MITEM_CODE"]}  ${r["MITEM_NAME"]}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                subtitle: Text("${(r["Barcodes"] as List).length} 张标签 · 数量 ${r["REQ_QTY"]} ${r["UOM"]} · 物料编码 ${r["MITEM_CODE"]}", style: const TextStyle(fontSize: 12)),
                 trailing: const Icon(Icons.chevron_right),
                 onTap: () => _showRowDetail(i),
               ),
@@ -398,4 +346,82 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
       ],
     );
   }
+}
+
+// ===================== MES 共用请求通道（直调页 / 领料发料转单共用） =====================
+// 登录下发的 ModuleId/OrgId 缓存（避免每次请求异步读 SharedPreferences）
+String _mesCachedModuleId = "";
+String _mesCachedOrgId = "";
+Future<void> mesRefreshCfgCache() async {
+  _mesCachedModuleId = (await MesConfig.getModuleId()).trim();
+  _mesCachedOrgId = (await MesConfig.getOrgId()).trim();
+}
+
+Map<String, String> _mesBaseHeaders(Map cfg) {
+  String moduleId = (cfg["moduleId"] ?? "").toString().trim();
+  if (moduleId.isEmpty) moduleId = _mesCachedModuleId;
+  if (moduleId.isEmpty) moduleId = "CE7F61BD526C424996CF6CE00211B86A";
+  String orgId = (cfg["orgId"] ?? "").toString().trim();
+  if (orgId.isEmpty) orgId = _mesCachedOrgId;
+  return {
+    "Token": (cfg["token"] ?? "").toString(),
+    "ModuleId": moduleId,
+    "OrgId": orgId,
+    "EnterpriseId": "*",
+    "Culture": "zh-CN",
+    "X-TZ-Offset": "-480",
+    "ModulePage": "/h5/m/pages/WMS/DirectTransfer.html",
+    "Accept": "*/*",
+    "Content-Type": "application/json; charset=utf-8",
+  };
+}
+
+/// 带 Token 失效静默重登重试一次的 MES 请求通道；success=false 抛异常（含 message）
+Future<dynamic> mesReq(String method, String path, {Map<String, String>? query, Map? body, bool retried = false}) async {
+  final cfg = await MesConfig.getConfig();
+  final base = "http://${cfg["host"]}:${cfg["port"]}";
+  var uri = Uri.parse("$base$path");
+  if (query != null) uri = uri.replace(queryParameters: query);
+  HttpClientResponse resp;
+  try {
+    if (method == "GET") {
+      final req = await HttpClient().getUrl(uri).timeout(const Duration(seconds: 15));
+      _mesBaseHeaders(cfg).forEach((k, v) => req.headers.set(k, v));
+      resp = await req.close().timeout(const Duration(seconds: 15));
+    } else {
+      final req = await HttpClient().postUrl(uri).timeout(const Duration(seconds: 15));
+      _mesBaseHeaders(cfg).forEach((k, v) => req.headers.set(k, v));
+      req.write(jsonEncode(body ?? {}));
+      resp = await req.close().timeout(const Duration(seconds: 20));
+    }
+  } catch (e) {
+    throw Exception("网络请求失败：$e");
+  }
+  final bodyStr = await resp.transform(utf8.decoder).join();
+  if ((resp.statusCode == 401 || resp.statusCode == 403) && !retried) {
+    if (await mesSilentLogin()) {
+      await mesRefreshCfgCache();
+      return mesReq(method, path, query: query, body: body, retried: true);
+    }
+    throw Exception("MES登录已失效，自动续期失败，请到设置页重新登录");
+  }
+  dynamic j;
+  try { j = jsonDecode(bodyStr); } catch (_) { throw Exception("服务器返回异常(${resp.statusCode})"); }
+  if (j is Map && j["success"] == false) {
+    final m = j["message"];
+    String msg = m is Map ? (m["content"]?.toString() ?? "") : (m?.toString() ?? "");
+    throw Exception(msg.isEmpty ? "接口返回失败" : msg);
+  }
+  return j;
+}
+
+/// 解包 {success,data} 的 data
+Future<Map?> mesGetData(String path, Map<String, String> query) async {
+  final j = await mesReq("GET", path, query: query);
+  if (j is Map) {
+    final d = j["data"];
+    if (d is Map) return Map<String, dynamic>.from(d);
+    if (d == null && j["success"] == true) return null;
+  }
+  return null;
 }
