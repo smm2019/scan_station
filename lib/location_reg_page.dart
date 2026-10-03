@@ -28,7 +28,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
   }
 
   Future<void> _loadRecent() async {
-    final rows = await _globalIsar.shelfPlacements.where().sortByAssignedAt(desc: false).findAll();
+    final rows = await _globalIsar.shelfPlacements.where().sortByAssignedAt().findAll();
     if (!mounted) return;
     setState(() => _recent = rows.reversed.take(30).toList());
   }
@@ -104,7 +104,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
     await _globalIsar.writeTxn(() async {
       for (final cd in codes) {
         final olds = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(cd).findAll();
-        await _globalIsar.shelfPlacements.deleteAll(olds.map((e) => e.id));
+        await _globalIsar.shelfPlacements.deleteAll(olds.map((e) => e.id).toList());
         if (newLoc.isNotEmpty) {
           await _globalIsar.shelfPlacements.put(ShelfPlacement()
             ..goodsCode = cd ..loc = newLoc

@@ -52,6 +52,9 @@ jobs:
       - name: Generate Isar Database Code
         run: flutter pub run build_runner build --delete-conflicting-outputs
 
+      - name: Static analysis gate
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
       - name: disable analytics
         run: flutter config --no-analytics
 
