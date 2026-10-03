@@ -1,30 +1,11 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
+// 占位单元测试。
+// 原模板测试引用 package:scan_station/main.dart（包名不存在，真实包名是 agv_collector）
+// 和不存在的 MyApp 类，属于从未生效过的脚手架残留，导致 CI 静态检查报 error。
+// 后续需要真实测试时再按实际组件补充。
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:scan_station/main.dart';
-
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
-
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
-
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+  test('sanity placeholder', () {
+    expect(1 + 1, 2);
   });
 }
