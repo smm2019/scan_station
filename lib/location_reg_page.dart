@@ -183,7 +183,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
     await _globalIsar.writeTxn(() async {
       await _globalIsar.shelfPlacements.where().deleteAll();
       await _globalIsar.shelfPlacements.putAll(parsed.map((e) => ShelfPlacement()
-        ..goodsCode = e[0] ..loc = e[1] ..container = "" ..operator = oper ..assignedAt = now).toList());
+        ..goodsCode = e[0] ..loc = e[1] ..container = e.length > 2 ? e[2] : "" ..operator = oper ..assignedAt = now).toList());
     });
     if (!mounted) return;
     _toast("账本导入完成：${parsed.length} 条", err: false);
@@ -242,7 +242,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
   }
 }
 
-/// 解析货架账本CSV：找「标签」列+「货位」列，返回 [[label, loc], ...]
+/// 解析货架账本CSV：找「标签」列+「货位」列（可选「料框类型」列），返回 [[label, loc, frame], ...]
 List<List<String>> _parseShelfLedger(String raw) {
   final text = raw.startsWith('\uFEFF') ? raw.substring(1) : raw;
   final lines = text.split(RegExp(r"\r?\n")).where((l) => l.trim().isNotEmpty).toList();
@@ -251,6 +251,7 @@ List<List<String>> _parseShelfLedger(String raw) {
   final colLabel = _findCol(head, ["标签号", "货物标签", "标签", "LABEL", "BARCODE"]);
   final colLoc = _findCol(head, ["完整货位编码", "货位编码", "货位", "库位", "LOC"]);
   if (colLabel < 0 || colLoc < 0) return [];
+  final colFrame = _findCol(head, ["料框类型", "容器类型", "料框"]); //可选第三列；不含"容器编码"防误匹配DISPIMG公式列
   final out = <List<String>>[];
   final seen = <String>{};
   for (var i = 1; i < lines.length; i++) {
@@ -260,7 +261,7 @@ List<List<String>> _parseShelfLedger(String raw) {
     final loc = cols[colLoc].trim().toUpperCase();
     if (label.isEmpty || loc.isEmpty) continue;
     if (!seen.add(label)) continue; //同标签重复行取首行
-    out.add([label, loc]);
+    out.add([label, loc, colFrame >= 0 && cols.length > colFrame ? cols[colFrame].trim() : ""]);
   }
   return out;
 }

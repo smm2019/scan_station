@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:isar/isar.dart';
+// ignore: unused_import  ← Android 链接 Isar 原生库必需，勿删
 import 'package:isar_flutter_libs/isar_flutter_libs.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:vibration/vibration.dart';
