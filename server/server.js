@@ -138,8 +138,18 @@ function renderReqPrint(r) {
     const sg = i.transferred || i.skipped ? null : pickSuggest(i.partNo, Number(i.qty) || 0, new Set(issuedOf(i).map(e => String(e.c).toUpperCase())));
     let locCell = '';
     if (sg && sg.boxes.length) {
-      locCell = sg.boxes.slice(0, 4).map(b => `<div style="font-size:11px;line-height:1.35">${esc(b.l)}<span style="color:#666;font-family:Consolas,monospace"> ${esc(b.c)}</span>${b.q ? ` <span style="color:#888">${b.q}件</span>` : ''}</div>`).join('')
-        + (sg.boxes.length > 4 ? `<div style="font-size:10px;color:#888">…共${sg.boxes.length}框</div>` : '');
+      // 修复：不再截断为前4框；按货位分组完整展示全部建议框，同货位多框合并一行
+      const byLoc = new Map();
+      for (const b of sg.boxes) {
+        if (!byLoc.has(b.l)) byLoc.set(b.l, []);
+        byLoc.get(b.l).push(b);
+      }
+      locCell = [...byLoc.entries()].map(([l, bs]) => {
+        const qs = [...new Set(bs.map(b => b.q).filter(Boolean))];
+        const qTxt = qs.length === 1 ? `各${qs[0]}件` : (qs.length ? `共${bs.reduce((s, b) => s + (b.q || 0), 0)}件` : '');
+        return `<div style="font-size:11px;line-height:1.35;margin-bottom:2px">${esc(l)}${qTxt ? ` <span style="color:#888">${qTxt}</span>` : ''}`
+          + `<div style="color:#666;font-family:Consolas,monospace;font-size:10px;padding-left:8px">${bs.map(b => esc(b.c)).join(' / ')}</div></div>`;
+      }).join('');
     } else if (sg && !sg.boxes.length) {
       locCell = `<span style="color:#c00;font-size:11px">${sg.inStock ? '缺物料信息' : '账本无此件'}</span>`;
     }
@@ -181,8 +191,8 @@ function renderReqPrint(r) {
   <div class="meta"><span>状态：${esc(REQ_STATUS_TEXT[r.status] || r.status)}</span><span>备注：${esc(r.remark || '')}</span></div>
   ${r.shortInfo ? `<div class="meta"><span style="color:#c00">短装：${esc(r.shortInfo)}</span></div>` : ''}
   <table><thead><tr>
-    <th style="width:6%">#</th><th style="width:22%">零件号</th><th style="width:24%">物料名称</th>
-    <th style="width:9%">申请数</th><th style="width:9%">已发数</th><th style="width:14%">货位(手写)</th><th style="width:16%">箱标签/实发(手写)</th>
+    <th style="width:6%">#</th><th style="width:21%">零件号</th><th style="width:21%">物料名称</th>
+    <th style="width:9%">申请数</th><th style="width:9%">已发数</th><th style="width:17%">货位(手写)</th><th style="width:17%">箱标签/实发(手写)</th>
   </tr></thead><tbody>${rows}${pad}</tbody></table>
   <div class="sign"><span>发料人：<u></u></span><span>领料人：<u></u></span><span>日期：<u></u></span></div>
   <div class="tip">说明：申请数/已发数按件计；「货位」由仓管备料时手写实际取货库位，便于对照寻找；本单随货流转，双方签字后仓管留存。</div>
