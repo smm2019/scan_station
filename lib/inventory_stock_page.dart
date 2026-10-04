@@ -73,6 +73,8 @@ Future<_StockAgg> computeStock() async {
   final openings = await isar.inventoryOpenings.where().findAll();
   final placements = await isar.shelfPlacements.where().findAll();
   final placedMap = {for (final p in placements) p.goodsCode: p};
+  final labelInfos = await isar.labelInfos.where().findAll();
+  final infoMap = {for (final e in labelInfos) e.goodsCode: e};
 
   // 已出库标签集合（出库台账摊平）
   final outCodes = <String>{};
@@ -136,6 +138,26 @@ Future<_StockAgg> computeStock() async {
     final row = agg.parts.putIfAbsent(o.partNo, () => _StockPartRow()..partNo = o.partNo);
     if (row.itemName.isEmpty) row.itemName = o.itemName;
     row.outQty += o.qty;
+  }
+
+  // 账本独有库存（存量货：只进过账本、本机无采集流水）→ 计入零件汇总与货架分布
+  final flowCodes = records.map((r) => r.goodsCode.toUpperCase()).toSet();
+  for (final p in placements) {
+    if (flowCodes.contains(p.goodsCode) || outCodes.contains(p.goodsCode)) continue;
+    final info = infoMap[p.goodsCode];
+    if (info == null || info.missing || info.partNo.isEmpty) continue;
+    final row = agg.parts.putIfAbsent(info.partNo, () => _StockPartRow()..partNo = info.partNo);
+    if (row.itemName.isEmpty) row.itemName = info.itemName;
+    row.inStockQty += info.qty;
+    row.inBoxes++;
+    final box = _StockBox()
+      ..barcode = p.goodsCode ..partNo = info.partNo ..itemName = info.itemName
+      ..qty = info.qty ..container = p.container ..operator = p.operator;
+    if (p.loc.isNotEmpty) {
+      agg.byLoc.putIfAbsent(p.loc, () => []).add(box);
+    } else {
+      agg.unplaced.add(box);
+    }
   }
 
   // 期初

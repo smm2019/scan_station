@@ -282,7 +282,10 @@ class _LocationRegPageState extends State<LocationRegPage> {
       if (r["ok"] != true) { _toast("拉取电脑账本失败：${r["msg"]}"); return; }
       final items = List<Map>.from(r["items"] ?? []);
       if (items.isEmpty) { _toast("电脑账本为空——请先用本机 CSV 导入一次并同步，之后即可双向互拉"); return; }
-      parsed = items.map((e) => [e["c"]?.toString().toUpperCase() ?? "", e["l"]?.toString().toUpperCase() ?? "", e["f"]?.toString() ?? ""]).where((l) => l[0].isNotEmpty && l[1].isNotEmpty).toList();
+      parsed = items.map((e) => [
+        e["c"]?.toString().toUpperCase() ?? "", e["l"]?.toString().toUpperCase() ?? "", e["f"]?.toString() ?? "",
+        e["p"]?.toString().toUpperCase() ?? "", e["n"]?.toString() ?? "", (e["q"] as num?)?.toString() ?? "", e["b"]?.toString() ?? "",
+      ]).where((l) => l[0].isNotEmpty && l[1].isNotEmpty).toList();
     } else {
       try {
         final raw = await File(picked).readAsString(encoding: utf8);
@@ -305,8 +308,22 @@ class _LocationRegPageState extends State<LocationRegPage> {
     final oper = Auth.user?.name ?? "WPS导入";
     await _globalIsar.writeTxn(() async {
       await _globalIsar.shelfPlacements.where().deleteAll();
+      await _globalIsar.labelInfos.where().deleteAll();
       await _globalIsar.shelfPlacements.putAll(parsed.map((e) => ShelfPlacement()
         ..goodsCode = e[0] ..loc = e[1] ..container = e.length > 2 ? e[2] : "" ..operator = oper ..assignedAt = now).toList());
+      //账本自带物料列写入缓存表：库存立刻可算，不必等MES补齐；无物料的标签留给"批量补齐"
+      final infos = <LabelInfo>[];
+      for (final e in parsed) {
+        final part = e.length > 3 ? e[3] : "";
+        if (part.isEmpty) continue;
+        infos.add(LabelInfo()
+          ..goodsCode = e[0] ..partNo = part
+          ..itemName = e.length > 4 ? e[4] : ""
+          ..qty = double.tryParse(e.length > 5 ? e[5] : "") ?? 0
+          ..lotNo = e.length > 6 ? e[6] : ""
+          ..createTime = "" ..missing = false ..syncedAt = now);
+      }
+      if (infos.isNotEmpty) await _globalIsar.labelInfos.putAll(infos);
     });
     if (!mounted) return;
     _toast("账本导入完成：${parsed.length} 条", err: false);
@@ -381,17 +398,27 @@ List<List<String>> _parseShelfLedger(String raw) {
   final colLabel = _findCol(head, ["标签号", "货物标签", "标签", "LABEL", "BARCODE"]);
   final colLoc = _findCol(head, ["完整货位编码", "货位编码", "货位", "库位", "LOC"]);
   if (colLabel < 0 || colLoc < 0) return [];
-  final colFrame = _findCol(head, ["料框类型", "容器类型", "料框"]); //可选第三列；不含"容器编码"防误匹配DISPIMG公式列
+  final colFrame = _findCol(head, ["料框类型", "容器类型", "料框"]); //不含"容器编码"防误匹配DISPIMG公式列
+  final colPart = _findCol(head, ["零件号", "零件编号", "料号", "物料编码"]);
+  final colName = _findCol(head, ["物料描述", "物料名称", "零件名称", "品名"]);
+  final colQty = _findCol(head, ["数量", "框内数量"]);
+  final colLot = _findCol(head, ["批次", "批号"]);
   final out = <List<String>>[];
   final seen = <String>{};
+  String cAt(List<String> cols, int i) => i >= 0 && i < cols.length ? cols[i].trim() : "";
   for (var i = 1; i < lines.length; i++) {
     final cols = _parseCsvLine(lines[i]);
     if (cols.length <= colLabel || cols.length <= colLoc) continue;
-    final label = cols[colLabel].trim().toUpperCase();
+    var label = cols[colLabel].trim().toUpperCase();
     final loc = cols[colLoc].trim().toUpperCase();
-    if (label.isEmpty || loc.isEmpty) continue;
+    final part = cAt(cols, colPart).toUpperCase();
+    if (loc.isEmpty) continue;
+    if (label.isEmpty) {
+      if (part.isEmpty) continue; //无标签无零件=真空位
+      label = 'NT-$loc'; //无标签有货：占位标签入账，系统不再当空位
+    }
     if (!seen.add(label)) continue; //同标签重复行取首行
-    out.add([label, loc, colFrame >= 0 && cols.length > colFrame ? cols[colFrame].trim() : ""]);
+    out.add([label, loc, cAt(cols, colFrame), part, cAt(cols, colName), cAt(cols, colQty), cAt(cols, colLot)]);
   }
   return out;
 }

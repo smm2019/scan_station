@@ -3050,6 +3050,10 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
             ),
             const SizedBox(height:12),
             _detailItem("作业位置", posTxt),
+            FutureBuilder<ShelfPlacement?>(
+              future: _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(r.goodsCode.toUpperCase()).findFirst(),
+              builder: (ctx, s) => _detailItem("当前货位(账本)", !s.hasData ? "…" : ((s.data?.loc ?? "").isEmpty ? "未登记" : s.data!.loc)),
+            ),
             _detailItem("容器类型", r.containerType ?? "未选择"),
             _detailItem("采集时间", timeTxt),
             _detailItem("备注", r.remark.isNotEmpty ? r.remark : "无"),
