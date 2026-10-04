@@ -261,6 +261,15 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final tl = _r["toLoc"];
     if (tl is Map) _to = tl.map((k, v) => MapEntry(k.toString(), v?.toString() ?? ""));
     if ((_to["LOC_CODE"] ?? "").isEmpty) _to = {};
+    if (_to.isEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _to.isEmpty) _locFocus.requestFocus();
+      });
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _to.isNotEmpty) _scanFocus.requestFocus();
+      });
+    }
   }
   @override
   void dispose() { _scanCtrl.dispose(); _scanFocus.dispose(); _locCtrl.dispose(); _locFocus.dispose(); super.dispose(); }
@@ -525,7 +534,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   Future<void> _scanLoc() async {
     final code = _locCtrl.text.trim();
     _locCtrl.clear();
-    if (code.isEmpty || _busy) return;
+    if (code.isEmpty) { _refocusLoc(); return; }
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final d = await mesGetData("/api/v1/invwarehousetransfer/getwarehousemodelinfo", {"loccode": code});
@@ -542,11 +552,18 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       if (res["ok"] != true) { widget.toast("货位设置失败：${res["msg"]}"); return; }
       setState(() { _to = to; _r = Map.from(res["req"]); });
       widget.toast("转入货位已设置：${to["LOC_NAME"]}", err: false);
+      _refocusScan(); // 修复：货位设好后光标交给发料框，扫码枪可直接连续发料
     } catch (e) {
       widget.toast("货位查询失败：${e.toString().replaceFirst("Exception: ", "")}");
+      _refocusLoc(); // 失败后光标回到货位框，可直接重扫
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _refocusLoc() {
+    _locFocus.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _locFocus.requestFocus(); });
   }
 
   @override
@@ -606,7 +623,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               Row(children: [
                 Expanded(child: Text("转入：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}（${_to["LOC_CODE"]}）",
                   style: const TextStyle(fontSize: 12, color: Color(0xFF3F51B5))),),
-                TextButton(onPressed: _busy ? null : () => setState(() => _to = {}), child: const Text("改货位", style: TextStyle(fontSize: 12))),
+                TextButton(onPressed: _busy ? null : () { setState(() => _to = {}); _refocusLoc(); }, child: const Text("改货位", style: TextStyle(fontSize: 12))),
               ]),
             SwitchListTile(
               dense: true, contentPadding: EdgeInsets.zero,
@@ -614,7 +631,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               value: _checkSap, onChanged: (v) => setState(() => _checkSap = v),
             ),
             TextField(
-              controller: _scanCtrl, focusNode: _scanFocus, autofocus: true,
+              controller: _scanCtrl, focusNode: _scanFocus,
+              // 修复：删除 autofocus，避免打开详情时抢走转入货位框的焦点导致扫货位无反应
               decoration: InputDecoration(
                 hintText: _issuePart == null ? "先点击下方零件行选择发料目标，再连续扫码" : "连续扫码发料中：$_issuePart",
                 isDense: true, prefixIcon: const Icon(Icons.qr_code_scanner, size: 20),
