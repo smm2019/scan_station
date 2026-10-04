@@ -1749,11 +1749,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
   }
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
-    final wifiPermStatus = await Permission.nearbyWifiDevices.request();
-    if(!wifiPermStatus.isGranted){
-      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("需要附近设备权限，才能读取WiFi地址")));
-      return;
-    }
+    // 读本机网卡 IP 无需附近设备权限（那是扫描其他设备用的），直接取 IP：
     final ip = await _getLocalIp();
     if (ip == null) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未获取到局域网IP，请确认已连接WiFi，并关闭移动数据")));
