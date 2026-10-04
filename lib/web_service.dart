@@ -567,7 +567,7 @@ Future<Response> _apiOutboundExport(Request req) async {
   final o = all.where((e) => e.orderNo == no).firstOrNull;
   if (o == null) return _textResponse('出库单不存在：$no', status: 404);
   final timeStr = DateTime.fromMillisecondsSinceEpoch(o.createdAt).toString().substring(0, 19);
-  final rows = <String>['单号,时间,转入货位,操作人,零件号,物料名字,数量,标签号,核对状态'];
+  final rows = <String>['单号,时间,转入货位,操作人,零件号,物料名字,数量,标签号,原货位,核对状态'];
   try {
     for (final e in (jsonDecode(o.itemsJson) as List)) {
       rows.add([
@@ -575,6 +575,7 @@ Future<Response> _apiOutboundExport(Request req) async {
         _invCsvField(e["code"]?.toString() ?? ''), _invCsvField(e["name"]?.toString() ?? ''),
         _fmtInvNum((e["qty"] as num?)?.toDouble() ?? 0),
         _invCsvField(e["barcode"]?.toString() ?? ''),
+        _invCsvField(e["fromLoc"]?.toString() ?? ''),
         e["checked"] == true ? '已核对' : '未核对',
       ].join(','));
     }
@@ -745,6 +746,7 @@ const String _kWebPortalHtml = r'''
     <button class="tab" data-t="out" onclick="showTab('out')">出库</button>
     <button class="tab" data-t="inv" onclick="showTab('inv')">盘点</button>
     <button class="tab" data-t="batch" onclick="showTab('batch')">批次</button>
+    <button class="tab" data-t="chk" onclick="showTab('chk')">核对</button>
   </nav>
 
   <div class="card" id="card-stock" style="display:none">
@@ -770,6 +772,12 @@ const String _kWebPortalHtml = r'''
     <h2>领料工作台</h2>
     <div class="tip" id="reqHint">领料单由鉴权服务器管理，下方为内嵌工作台（10 秒自动刷新）。<button class="btn sm ghost" onclick="if(boardUrl)window.open(boardUrl)">新窗口打开</button></div>
     <iframe id="reqFrame" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>
+  </div>
+
+  <div class="card" id="card-chk" style="display:none">
+    <h2>数据核对（电脑数据库）</h2>
+    <div class="tip" id="chkHint">采集流水 / 出库单 / 货位账本在 PDA 操作后自动全量同步到鉴权服务器，这里看到的就是电脑库里存的数据。<button class="btn sm ghost" onclick="if(chkUrl)window.open(chkUrl)">新窗口打开</button></div>
+    <iframe id="chkFrame" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe>
   </div>
 
   <div class="card" id="card-stats">
@@ -1184,9 +1192,9 @@ async function loadAll(){
   catch(e){showMsg('upMsg','加载批次失败：'+e.message,false);}
 }
 // ===== Tab 导航与库存/工作台 =====
-let boardUrl='';
+let boardUrl='';let chkUrl='';
 function showTab(t){
-  const map={over:['card-stats'],stock:['card-stock'],req:['card-req'],out:['card-out'],inv:['card-inv','card-base'],batch:['card-batch']};
+  const map={over:['card-stats'],stock:['card-stock'],req:['card-req'],out:['card-out'],inv:['card-inv','card-base'],batch:['card-batch'],chk:['card-chk']};
   document.querySelectorAll('.wrap > .card').forEach(c=>c.style.display='none');
   (map[t]||[]).forEach(id=>{const el=document.getElementById(id);if(el)el.style.display='';});
   document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
@@ -1207,7 +1215,7 @@ async function loadStock(){
 async function loadBoardUrl(){
   try{
     const d=await jget('/api/board-url');
-    if(d.ok){boardUrl=d.url;document.getElementById('reqFrame').src=d.url;}
+    if(d.ok){boardUrl=d.url;document.getElementById('reqFrame').src=d.url;chkUrl=d.url.replace('/board/requisitions','/board/data');document.getElementById('chkFrame').src=chkUrl;}
     else{document.getElementById('reqHint').textContent='手机 App 尚未配置鉴权服务器地址，领料工作台不可用（请在 App 登录页填写服务器地址后重新打开本页）';}
   }catch(e){document.getElementById('reqHint').textContent='工作台地址获取失败：'+e.message;}
 }

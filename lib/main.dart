@@ -29,7 +29,9 @@ part 'inventory_page.dart'; // 盘点模式：任务/基准绑定/扫码判定/�
 part 'app_auth.dart'; // 账号登录+角色+服务端鉴权：登录门禁/心跳/远程停用/用户管理
 part 'direct_transfer_page.dart'; // MES直调：扫转入货位+物料标签累计，提交SaveTRBarcodes转单
 part 'outbound_page.dart'; // 出库单：直调提交落库→逐箱扫码备料核销→导出对照
-part 'location_reg_page.dart'; // 位置登记：上架/移库/拣下统一入口 + WPS货架账本导入
+part 'location_reg_page.dart';
+part 'wmas_api.dart';
+part 'collection_ledger.dart'; // 位置登记：上架/移库/拣下统一入口 + WPS货架账本导入
 part 'inventory_stock_page.dart'; // 库存：期初+入库流水(采集派生)-出库流水(直调派生)，货架库位占用登记
 part 'requisition_page.dart'; // 领料单：物料员下单/签收，仓管接单/扫码发料，服务端状态机
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
@@ -896,7 +898,7 @@ void main() async {
   await Isar.initializeIsarCore(download: true);
   final dir = await getApplicationDocumentsDirectory();
   _globalIsar = await Isar.open(
-    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema, OutboundOrderSchema, InventoryOpeningSchema, ShelfPlacementSchema],
+    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema, OutboundOrderSchema, InventoryOpeningSchema, ShelfPlacementSchema, LabelInfoSchema],
     directory: dir.path,
   );
   runApp(const MyApp());
@@ -925,6 +927,8 @@ class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin
   String? _selectedStation; //【修改：存储编码 NB02-CK-05】
   String? _selectedGroundLoc;
 String? _containerType;
+  final TextEditingController _ledgerLocCtrl = TextEditingController(); //采集页顺手登记：货位账本编码（选填）
+  Timer? _ledgerSyncTimer; //账本同步防抖：连扫攒一批再全量推
 
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
@@ -1021,6 +1025,7 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     _goodsInputCtrl.dispose();
     _remarkInputCtrl.dispose();
 _mainScrollCtrl.dispose(); //新增
+    _ledgerSyncTimer?.cancel(); _ledgerLocCtrl.dispose(); //采集页顺手登记资源
     super.dispose();
   }
   ///【MOD‑新增2：刷新正常/作废统计，替换原有统计】
@@ -1097,6 +1102,7 @@ _mainScrollCtrl.dispose(); //新增
       _selectedStation = null;
       _selectedGroundLoc = null;
       _containerType = null;
+      _ledgerLocCtrl.clear(); //整托结托：顺手登记参数归零
     });
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("本托已结束，请选择新货位开下一托")));
   }
@@ -1126,6 +1132,7 @@ _mainScrollCtrl.dispose(); //新增
       _selectedStation = null;
       _selectedGroundLoc = null;
       _containerType = null;
+      _ledgerLocCtrl.clear(); //切整托开关：顺手登记参数归零
     });
   }
   Future<void> _loadLastBatch() async {
@@ -1184,6 +1191,7 @@ _mainScrollCtrl.dispose(); //新增
       _selectedStation = null;
       _selectedGroundLoc = null;
       _selectedTags.clear(); //新建批次清空多选标签
+      _ledgerLocCtrl.clear(); //顺手登记参数归零
       _remarkInputCtrl.clear();
 _containerType = null;
       // 新批次开始，结束未完成的托
@@ -1506,6 +1514,8 @@ try {
           _selectedStation = null;
         });
       }
+      await _ledgerRegisterOnSave(code); //顺手登记货位账本（选填，不影响采集主流程）
+      scheduleScanPush(); //采集流水定时同步电脑数据库
       await _refreshRecord();
       await _refreshBatchStat();
       await _refreshPalletSummary();
@@ -1526,6 +1536,78 @@ try {
       _isSaving = false;
     }
   }
+
+  ///采集页顺手登记：保存成功时若填了「货位账本编码」，把本标签（整托含兄弟码）写入账本，并预约全量同步电脑。
+  ///留空则不写账本，与改动前行为完全一致；编码格式不符或货位已被他人占用时只提示不写入。
+  Future<void> _ledgerRegisterOnSave(String code) async {
+    try {
+      if (_ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO') { //自动分配：先按零件号定货位并回填
+        await _handleAutoLedger(code);
+      }
+      var loc = _ledgerLocCtrl.text.trim().toUpperCase();
+      if (loc == 'AUTO') return; //AUTO 分配失败的情形，不写账本
+      if (loc.isEmpty && _workType == 1 && (_selectedGroundLoc ?? "").isNotEmpty) {
+        // 地面模式未填编码：在人选的区内自动分配第一个空格位
+        final auto = await this.nb03AutoSlot(_selectedGroundLoc!);
+        if (auto == null) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$_selectedGroundLoc 区 12 格位已满，请在货位账本登记框手动指定其他区"), backgroundColor: Colors.orange));
+          return;
+        }
+        loc = auto;
+        if (mounted) setState(() => _ledgerLocCtrl.text = auto);
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$_selectedGroundLoc 区内自动分配格位：$auto"), backgroundColor: const Color(0xFF00897B)));
+      }
+      if (loc.isEmpty) return;
+      if (!RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc)) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("货位编码「$loc」格式不符（例 NB02-A-08-2F / NB03-B-13-07），本筐未入账本"), backgroundColor: Colors.orange));
+        return; //保留输入内容，改正后可直接重扫标签再保存
+      }
+      final ctype = _containerType ?? "";
+      final oper = Auth.user?.name ?? Auth.user?.username ?? "采集页";
+      final codes = <String>{code.toUpperCase()};
+      if (_palletMode && _currentPalletId != null && _currentPalletId!.isNotEmpty) {
+        final mates = await _isar.recordExtras.filter().palletIdEqualTo(_currentPalletId!).findAll();
+        codes.addAll(mates.map((m) => m.goodsCode.toUpperCase())); //同托多码共用一个货位
+      }
+      //占用核对：该货位上不属于本托/本码的其他标签才算冲突
+      final prior = await _isar.shelfPlacements.filter().locEqualTo(loc).findAll();
+      final foreign = prior.where((p) => !codes.contains(p.goodsCode.toUpperCase())).toList();
+      if (foreign.isNotEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$loc 已登记给 ${foreign.first.goodsCode}，本筐未入账本，请核对货位"), backgroundColor: Colors.orange));
+        return;
+      }
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await _isar.writeTxn(() async {
+        for (final c in codes) {
+          final olds = await _isar.shelfPlacements.filter().goodsCodeEqualTo(c).findAll();
+          await _isar.shelfPlacements.deleteAll(olds.map((e) => e.id).toList());
+          await _isar.shelfPlacements.put(ShelfPlacement()
+            ..goodsCode = c ..loc = loc ..container = ctype ..operator = oper ..assignedAt = now);
+        }
+      });
+      if (_workType == 1) {
+        // 采集流水地面位置升级为完整格位编码（原来只有 B13 区）；整托兄弟码一并更新
+        for (final cG in codes) {
+          final recsG = await _isar.scanRecords.filter().goodsCodeEqualTo(cG).findAll();
+          for (final rg in recsG) {
+            if (!rg.isCancel && rg.groundLocation != loc) {
+              rg.groundLocation = loc;
+              await _isar.writeTxn(() => _isar.scanRecords.put(rg));
+              break;
+            }
+          }
+        }
+      }
+      if (!_palletMode) _ledgerLocCtrl.clear(); //登记成功后才清；整托多码保留复用同位
+      _scheduleLedgerSync();
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("账本已登记：$loc（${codes.length} 码）"), backgroundColor: const Color(0xFF2E7D32)));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("账本登记异常：$e（采集记录已保存）"), backgroundColor: Colors.orange));
+    }
+  }
+
+  ///账本同步防抖（已升级为全局助手，支持发料/出库远程触发）
+  void _scheduleLedgerSync() => scheduleLedgerPush(seconds: 30);
   //【优化一：数字转编码 5→NB02-CK-05】
   Future<void> onStationTap(int stationNum) async {
     final batch = await _getCurrentBatch();
@@ -2411,6 +2493,26 @@ const SizedBox(height:12),
       const SizedBox(height:6),
       if (_workType == 0) _buildStationPanel(),
       if (_workType == 1) _buildGroundLocPanel(),
+      _buildLedgerExtras(),
+      const SizedBox(height:8),
+      Row(
+        children: [
+          const Text("货位账本登记",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
+          const SizedBox(width:6),
+          Text("选填 · 填了才写账本",style:TextStyle(fontSize:12,color:Colors.grey)),
+        ],
+      ),
+      const SizedBox(height:4),
+      TextField(
+        controller:_ledgerLocCtrl,
+        textCapitalization: TextCapitalization.characters,
+        enabled: !_palletMode || _currentPalletId != null,
+        decoration: InputDecoration(
+          hintText: _palletMode && _currentPalletId == null ? "整托：先扫首件，再填此项（如 NB02-A-08-2F）" : "完整货位编码（如 NB02-A-08-2F / NB03-B-13-07）",
+          isDense:true,
+          border:const OutlineInputBorder(),
+        ),
+      ),
     ],
   ),
 ),
@@ -3010,6 +3112,12 @@ class SettingsMenuPage extends StatelessWidget {
             title: "MES服务器设置", subtitle: "服务地址 / 账号登录 / 退出登录",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const MesSettingPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.local_shipping_outlined, color: const Color(0xFF00897B),
+            title: "WMAS(AGV)设置", subtitle: "调度服务地址 / 一键建任务账号",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const WmasSettingPage())),
           ),
           _settingTile(
             context, icon: Icons.volume_up_outlined, color: Colors.teal,

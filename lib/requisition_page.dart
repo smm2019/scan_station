@@ -291,6 +291,68 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     return List.from(item["issued"] ?? []).map((x) => x is Map ? (x["c"]?.toString() ?? "") : x.toString()).toList();
   }
 
+  /// 建议框点击：NB02 货架位 → 弹叫AGV出库窗（人工选站台）；地面/其他 → 复制标签去扫码
+  void _onSuggestTap(String code, String loc, String ftype) {
+    if (loc.startsWith('NB02-') && !loc.contains('-CK-')) {
+      showDialog(context: context, builder: (_) => AgvCallDialog(fromLoc: loc, containerType: ftype, label: code, toast: widget.toast));
+      return;
+    }
+    Clipboard.setData(ClipboardData(text: code));
+    widget.toast("已复制 $code，拿去扫码发料", err: false);
+  }
+
+  /// 取货建议（服务器 reqView 每行附 suggest：按同步账本 FIFO 选框，含标签/货位/件数/批次）
+  Widget _buildSuggest(Map item, bool finished) {
+    if (finished) return const SizedBox.shrink();
+    final sg = item["suggest"];
+    if (sg is! Map) return const SizedBox.shrink();
+    final boxes = List<Map>.from(sg["boxes"] ?? []);
+    final total = (sg["total"] as num?)?.toDouble() ?? 0;
+    final inStock = (sg["inStock"] as num?)?.toInt() ?? 0;
+    final noInfo = (sg["noInfoQty"] as num?)?.toInt() ?? 0;
+    if (boxes.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text(inStock == 0
+            ? (noInfo > 0 ? "⚠ 账本有 $noInfo 框但缺物料信息，PDA「位置登记」批量补齐后可出建议" : "⚠ 同步账本中没有该零件的在架框（可能未同步或无货，可跳过）")
+            : "⚠ 账本有 ${inStock + noInfo} 框但都缺件数信息，建议先补齐",
+            style: const TextStyle(fontSize: 11, color: Colors.deepOrange)),
+      );
+    }
+    return Container(
+      margin: const EdgeInsets.only(top: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: const Color(0xFFF0F4FF), borderRadius: BorderRadius.circular(8)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件 · 点标签复制",
+            style: const TextStyle(fontSize: 11, color: Color(0xFF3949AB), fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Wrap(spacing: 6, runSpacing: 4, children: [
+          for (final b in boxes)
+            Builder(builder: (bc) {
+              final code = b["c"]?.toString() ?? "";
+              final loc = b["l"]?.toString() ?? "";
+              final lot = (b["b"]?.toString() ?? "").split(" ").first;
+              final qv = (b["q"] as num?)?.toDouble() ?? 0;
+              return InkWell(
+                onTap: () => _onSuggestTap(code, loc, (b["f"] ?? "").toString()),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                  decoration: BoxDecoration(color: Colors.white, border: Border.all(color: const Color(0xFFC7CDF0)), borderRadius: BorderRadius.circular(6)),
+                  child: Text("$code @ $loc${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}",
+                      style: const TextStyle(fontSize: 11, fontFamily: "monospace", color: Color(0xFF1A237E))),
+                ),
+              );
+            }),
+        ]),
+        if (noInfo > 0) Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text("另有 $noInfo 框缺件数/批次（未补齐），建议按货位就近补拣", style: const TextStyle(fontSize: 10.5, color: Colors.brown)),
+        ),
+      ]),
+    );
+  }
+
   /// 扫码框提交：查 MES 取该箱件数，按件数计入目标零件行；发满自动切下一行
   Future<void> _scanIssue() async {
     final code = _scanCtrl.text.trim();
@@ -335,7 +397,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       _refocusScan();
       return;
     }
-    final res = await AuthApi.reqAction(_r["id"].toString(), "scan", {"barcode": code, "partNo": target["partNo"], "qty": boxQty});
+    final ledOld = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(code.toUpperCase()).findAll();
+    final fromLoc = ledOld.isNotEmpty ? ledOld.first.loc : "";
+    final res = await AuthApi.reqAction(_r["id"].toString(), "scan", {"barcode": code, "partNo": target["partNo"], "qty": boxQty, "fromLoc": fromLoc});
     if (!mounted) return;
     setState(() => _busy = false);
     if (res["ok"] != true) { widget.toast((res["msg"] ?? "发料失败").toString()); _refocusScan(); return; }
@@ -347,7 +411,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final nowT = items2.firstWhere((e) => e["partNo"] == _issuePart, orElse: () => const {});
     final tGot = nowT.isEmpty ? 0.0 : _issuedQtyOf(nowT);
     final tNeed = (nowT["qty"] as num?)?.toDouble() ?? 0.0;
-    widget.toast("已发 $code（$boxQty 件）累计 ${_fmtInvNum(tGot)}/${_fmtInvNum(tNeed)}", err: false);
+    widget.toast("已发 $code（$boxQty 件）累计 ${_fmtInvNum(tGot)}/${_fmtInvNum(tNeed)}${fromLoc.isNotEmpty ? " · 原$fromLoc 已拣下" : ""}", err: false);
+    if (fromLoc.isNotEmpty) ledgerRemoveAndPush([code.toUpperCase()]); //发料扫码即拣下
     if (tGot >= tNeed) {
       final next = items2.firstWhere((e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0), orElse: () => const {});
       if (!next.isEmpty) setState(() => _issuePart = next["partNo"].toString());
@@ -423,8 +488,16 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       final res = await AuthApi.reqAction(_r["id"].toString(), "transfer", {"partNo": partNo});
       if (res["ok"] != true) throw Exception("MES已转单，但服务器回写失败：${res["msg"]}（请重开该单重试，MES侧勿重复转）");
       try {
+        final fromLocs = <String, String>{};
+        for (final x in List.from(item["issued"] ?? [])) {
+          if (x is Map) {
+            final c0 = x["c"]?.toString().toUpperCase() ?? "";
+            final l0 = x["l"]?.toString() ?? "";
+            if (c0.isNotEmpty && l0.isNotEmpty) fromLocs[c0] = l0;
+          }
+        }
         final ob = await createOutboundOrder(
-          rows.map((r) => {...r, "PART_NO": partNo}).toList(), _to, linkReqNo: _r["no"].toString());
+          rows.map((r) => {...r, "PART_NO": partNo}).toList(), _to, linkReqNo: _r["no"].toString(), fromLocs: fromLocs);
         widget.toast("已转MES（${_fmtInvNum(_issuedQtyOf(item))}件），出库单 ${ob.orderNo}", err: false);
       } catch (_) {
         widget.toast("已转MES，出库台账落库失败（不影响转单）", err: false);
@@ -581,6 +654,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                     Wrap(spacing: 6, runSpacing: 4, children: [
                       ...codes.map((c) => Chip(label: Text(boxQs[c] != null && boxQs[c]! > 0 ? "$c·${_fmtInvNum(boxQs[c]!)}" : c, style: const TextStyle(fontSize: 10, color: Colors.white)), backgroundColor: transferred ? Colors.green.shade700 : Colors.green, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact)),
                     ]),
+                    _buildSuggest(item, transferred || skipped),
                     if (st == 'accepted' && isWh && !transferred && !skipped) Padding(
                       padding: const EdgeInsets.only(top: 6),
                       child: Row(children: [

@@ -106,6 +106,16 @@ class AuthApi {
     "districtCode": to["DISTRICT_CODE"], "districtName": to["DISTRICT_NAME"],
   });
   static Future<Map> notifications() async => _req("GET", "/api/notifications", token: await AuthStore.token());
+
+  // ---- 货位账本同步（PDA → 电脑服务器，全量快照） ----
+  /// items: [{c:标签, l:货位, f:料框, t:毫秒}]
+  static Future<Map> ledgerSync(List<Map> items) async =>
+      _req("POST", "/api/ledger/sync", body: {"items": items}, token: await AuthStore.token());
+  // ---- 采集流水 / 出库单同步（全量推送，服务器按键去重） ----
+  static Future<Map> scanlogSync(List items) async =>
+      _req("POST", "/api/scanlog/sync", body: {"items": items}, token: await AuthStore.token());
+  static Future<Map> outboundSync(Map order) async =>
+      _req("POST", "/api/outbound/sync", body: order, token: await AuthStore.token());
 }
 
 /// 全局会话（AuthGate 启动时填充；MainPage 等直接读静态成员）

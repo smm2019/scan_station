@@ -4,6 +4,22 @@ part of 'main.dart';
 // 账本=ShelfPlacement（标签号→完整库位，如 MB02-A-01-2F / A3 / 已拣下）。
 // 上架=从无库位到有；移库=改库位；拣下=删除登记（回到未分配）。
 
+/// 标签物料信息缓存：批量拿账本标签查 MES 存下，存量筐不必现场扫码也能看到零件信息。
+/// 独立表，不写 ScanRecord（采集流水派生库存口径，混入会造成重复计数）。
+@collection
+class LabelInfo {
+  Id id = Isar.autoIncrement;
+  @Index(unique: true)
+  String goodsCode = "";   // 标签号（大写）
+  String partNo = "";      // 零件号
+  String itemName = "";    // 物料描述
+  double qty = 0;          // 数量
+  String lotNo = "";       // 批次
+  String createTime = "";  // MES 入库时间原文
+  bool missing = false;    // 查询成功但 MES 无此标签（避免反复重查）
+  late int syncedAt;       // 本地缓存时间
+}
+
 class LocationRegPage extends StatefulWidget {
   const LocationRegPage({super.key});
   @override
@@ -47,12 +63,18 @@ class _LocationRegPageState extends State<LocationRegPage> {
     if (rec != null && (rec.mesPartNo?.isNotEmpty ?? false)) {
       partNo = rec.mesPartNo!; itemName = extra?.mesItemName ?? ""; qty = rec.mesQty ?? 0; date = rec.mesCreateTime ?? "";
     } else {
-      final mes = await mesQueryLabel(code);
-      if (mes["ok"] == true) {
-        partNo = mes["partNo"]?.toString() ?? ""; itemName = mes["itemName"]?.toString() ?? "";
-        qty = (mes["qty"] as num?)?.toDouble() ?? 0; date = mes["createTime"]?.toString() ?? "";
+      final cached = await _globalIsar.labelInfos.filter().goodsCodeEqualTo(code).findFirst();
+      if (cached != null && !cached.missing && (cached.partNo.isNotEmpty || cached.itemName.isNotEmpty)) {
+        partNo = cached.partNo; itemName = cached.itemName; qty = cached.qty; date = cached.createTime;
       } else {
-        partNo = "(本地与MES均未查到)";
+        final mes = await mesQueryLabel(code);
+        if (mes["ok"] == true) {
+          partNo = mes["partNo"]?.toString() ?? ""; itemName = mes["itemName"]?.toString() ?? "";
+          qty = (mes["qty"] as num?)?.toDouble() ?? 0; date = mes["createTime"]?.toString() ?? "";
+          await _saveLabelInfo(code, partNo, itemName, qty, (mes["lotNo"] ?? "").toString(), date, false);
+        } else {
+          partNo = "(本地与MES均未查到)";
+        }
       }
     }
     final sp = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(code).findFirst();
@@ -69,6 +91,65 @@ class _LocationRegPageState extends State<LocationRegPage> {
       _locCtrl.text = "";
     });
     _labelFocus.unfocus();
+  }
+
+  /// 写/更新标签物料缓存（goodsCode 唯一，先删旧再写新）
+  Future<void> _saveLabelInfo(String code, String partNo, String itemName, double qty, String lotNo, String createTime, bool missing) async {
+    final up = code.toUpperCase();
+    await _globalIsar.writeTxn(() async {
+      await _globalIsar.labelInfos.filter().goodsCodeEqualTo(up).deleteAll();
+      await _globalIsar.labelInfos.put(LabelInfo()
+        ..goodsCode = up ..partNo = partNo ..itemName = itemName ..qty = qty
+        ..lotNo = lotNo ..createTime = createTime ..missing = missing
+        ..syncedAt = DateTime.now().millisecondsSinceEpoch);
+    });
+  }
+
+  bool _backfilling = false;
+
+  /// 批量补齐：账本里有库位、但本地无物料记录的标签，逐个查 MES 存入缓存
+  Future<void> _backfillMaterials() async {
+    if (_backfilling) return;
+    final all = await _globalIsar.shelfPlacements.where().findAll();
+    if (all.isEmpty) { _toast("账本为空，先导入或登记库位"); return; }
+    final cached = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode};
+    final todo = all.map((p) => p.goodsCode).where((c) => !cached.contains(c)).toList();
+    if (todo.isEmpty) { _toast("物料信息已全部补齐（${all.length} 条均有缓存）", err: false); return; }
+    final yes = await showDialog<bool>(context: context, builder: (dctx) => AlertDialog(
+      title: const Text("批量补齐物料信息"),
+      content: Text("账本 ${all.length} 个标签中，有 ${todo.length} 个本地没有物料记录。\n将逐个向 MES 查询（约每个 0.5~2 秒，期间请保持本页打开、别切走）。\n\n需 MES 已登录。开始？"),
+      actions: [TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text("取消")),
+        TextButton(onPressed: () => Navigator.pop(dctx, true), child: const Text("开始补齐"))],
+    ));
+    if (yes != true || !mounted) return;
+    setState(() => _backfilling = true);
+    int done = 0, ok = 0, miss = 0, fail = 0;
+    String abort = "";
+    for (final code in todo) {
+      if (!mounted) break;
+      final mes = await mesQueryLabel(code);
+      if (mes["ok"] == true) {
+        await _saveLabelInfo(code, mes["partNo"]?.toString() ?? "", mes["itemName"]?.toString() ?? "",
+            (mes["qty"] as num?)?.toDouble() ?? 0, (mes["lotNo"] ?? "").toString(),
+            mes["createTime"]?.toString() ?? "", false);
+        ok++;
+      } else {
+        final m = mes["msg"]?.toString() ?? "";
+        if (m.startsWith("MES登录已失效") || m.startsWith("MES Token为空")) { abort = m; break; }
+        if (m.contains("查询结果为空")) { await _saveLabelInfo(code, "", "", 0, "", "", true); miss++; }
+        else { fail++; } // 网络等异常：不写缓存，下次可重试
+      }
+      done++;
+      setState(() {}); // 刷新进度
+    }
+    if (!mounted) return;
+    setState(() => _backfilling = false);
+    if (abort.isNotEmpty) {
+      _toast("补齐中断（$done/${todo.length}）：$abort");
+    } else {
+      _toast("补齐完成：查到 $ok，MES无此码 $miss，失败 $fail（共 $done）", err: false);
+      if (ok > 0) _syncLedger(); // 带了新物料，同步电脑
+    }
   }
 
   /// 提交登记：newLoc 空串=拣下（删除）
@@ -119,6 +200,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
     setState(() => _cur = null);
     _loadRecent();
     _labelFocus.requestFocus();
+    _syncLedger(quietOnOk: true); // 静默同步电脑（成功不打扰，失败提示手动重试）
   }
 
   /// 选库位：扫库位码或手输+层快捷
@@ -147,6 +229,31 @@ class _LocationRegPageState extends State<LocationRegPage> {
     if (result.isEmpty) { _commit(""); return; } // 空=拣下
     setState(() { _locCtrl.text = result; _cur = {...?_cur}; });
     _commit(result);
+  }
+
+  /// 账本变化后全量同步到电脑服务器（其他设备可查）；失败不影响本地数据
+  Future<void> _syncLedger({bool quietOnOk = false}) async {
+    try {
+      final all = await _globalIsar.shelfPlacements.where().findAll();
+      if (all.isEmpty) { _toast("本地账本为空，无需同步"); return; }
+      final infos = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode: e};
+      final items = all.map((p) {
+        final i = infos[p.goodsCode];
+        return {
+          "c": p.goodsCode, "l": p.loc, "f": p.container, "t": p.assignedAt,
+          if (i != null && !i.missing) ...{"p": i.partNo, "n": i.itemName, "q": i.qty, "b": i.lotNo},
+        };
+      }).toList();
+      final r = await AuthApi.ledgerSync(items);
+      if (!mounted) return;
+      if (r["ok"] == true) {
+        if (!quietOnOk) _toast("已同步电脑：${items.length} 条（v${r["rev"]}），其他设备打开 /board/ledger 可查", err: false);
+      } else {
+        _toast("同步到电脑失败：${r["msg"]}（本地数据已保存，可点右上云图标重试）");
+      }
+    } catch (e) {
+      if (mounted) _toast("同步异常：$e");
+    }
   }
 
   /// WPS 账本导入：从 baseline 目录选货架表 CSV（标签号+完整货位编码列），整批替换
@@ -189,6 +296,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
     _toast("账本导入完成：${parsed.length} 条", err: false);
     setState(() { _cur = null; });
     _loadRecent();
+    _syncLedger(); // 导入后同步电脑（带回执）
   }
 
   @override
@@ -198,7 +306,13 @@ class _LocationRegPageState extends State<LocationRegPage> {
       backgroundColor: const Color(0xFFF7F7FA),
       appBar: AppBar(
         backgroundColor: const Color(0xFF515BD4), title: const Text("位置登记"),
-        actions: [IconButton(tooltip: "导入WPS账本", icon: const Icon(Icons.file_download_outlined), onPressed: _importWps)],
+        actions: [
+          if (_backfilling)
+            const Padding(padding: EdgeInsets.symmetric(horizontal: 12), child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white))))
+          else
+            IconButton(tooltip: "批量补齐物料信息（查MES）", icon: const Icon(Icons.build_circle_outlined), onPressed: _backfillMaterials),
+          IconButton(tooltip: "同步账本到电脑", icon: const Icon(Icons.cloud_upload_outlined), onPressed: () => _syncLedger()),
+          IconButton(tooltip: "导入WPS账本", icon: const Icon(Icons.file_download_outlined), onPressed: _importWps)],
       ),
       body: Column(children: [
         Padding(padding: const EdgeInsets.fromLTRB(12, 10, 12, 4), child: TextField(

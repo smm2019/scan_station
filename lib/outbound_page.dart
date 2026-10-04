@@ -16,7 +16,7 @@ class OutboundOrder {
 }
 
 /// 直调/领料转单成功后调用：按零件号×标签逐行落库一张出库单
-Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<String, String> to, {String linkReqNo = ""}) async {
+Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<String, String> to, {String linkReqNo = "", Map<String, String> fromLocs = const {}}) async {
   final isar = _globalIsar;
   final now = DateTime.now();
   final ts = "${now.year}${now.month.toString().padLeft(2, "0")}${now.day.toString().padLeft(2, "0")}${now.hour.toString().padLeft(2, "0")}${now.minute.toString().padLeft(2, "0")}${now.second.toString().padLeft(2, "0")}";
@@ -25,12 +25,15 @@ Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<S
     for (final b in (r["Barcodes"] as List)) {
       final bm = Map<String, dynamic>.from(b as Map);
       final pn = (r["PART_NO"] ?? bm["PART_NO"])?.toString() ?? "";
+      final bc = (bm["SCAN_BARCODE"] ?? bm["LABEL_NO"])?.toString() ?? "";
+      final fl = (fromLocs[bc.toUpperCase()] ?? "").isNotEmpty ? fromLocs[bc.toUpperCase()]! : await ledgerLocOfCode(bc);
       items.add({
         "code": pn.isNotEmpty ? pn : (r["MITEM_CODE"]?.toString() ?? ""), // 真实零件号，查不到时回退物料编码
         "mitemCode": r["MITEM_CODE"]?.toString() ?? "",
         "name": r["MITEM_NAME"]?.toString() ?? "",
         "qty": (bm["QTY"] as num?)?.toDouble() ?? 0.0,
-        "barcode": (bm["SCAN_BARCODE"] ?? bm["LABEL_NO"])?.toString() ?? "",
+        "barcode": bc,
+        "fromLoc": fl, // 从哪个货架位/地面格位发走
         "checked": false,
       });
     }
@@ -45,6 +48,11 @@ Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<S
     ..linkReqNo = linkReqNo
     ..itemsJson = jsonEncode(items);
   await isar.writeTxn(() => isar.outboundOrders.put(ob));
+  try {
+    final outCodes = items.map((e) => e["barcode"].toString().toUpperCase()).where((s) => s.isNotEmpty).toList();
+    if (outCodes.isNotEmpty) await ledgerRemoveAndPush(outCodes); //出库即拣下：账本消位并同步电脑
+    outboundPushNow(ob); //出库单同步电脑数据库
+  } catch (_) {}
   return ob;
 }
 
@@ -227,15 +235,16 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
     final allChecked = _items.every((e) => e["checked"] == true);
     ob..itemsJson = jsonEncode(_items)..status = allChecked ? 1 : 0;
     await _globalIsar.writeTxn(() => _globalIsar.outboundOrders.put(ob));
+    outboundPushNow(ob); //核对状态变化同步电脑
     if (allChecked) _toast("全部核对完成，出库单已闭环", err: false);
   }
 
   String _csv() {
     final b = StringBuffer();
-    b.writeln("单号,时间,转入货位,操作人,零件号,物料名字,数量,标签号,核对状态");
+    b.writeln("单号,时间,转入货位,操作人,零件号,物料名字,数量,标签号,原货位,核对状态");
     for (final e in _items) {
       b.writeln([_ob!.orderNo, _fmt(_ob!.createdAt), _ob!.toLoc, _ob!.operator,
-        '"${e["code"]}"', '"${e["name"]}"', '${e["qty"]}', '"${e["barcode"]}"',
+        '"${e["code"]}"', '"${e["name"]}"', '${e["qty"]}', '"${e["barcode"]}"', '"${e["fromLoc"] ?? ""}"',
         e["checked"] == true ? "已核对" : "未核对"].join(","));
     }
     return b.toString();
@@ -326,7 +335,7 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
                     dense: true, onTap: () => _toggleRow(i),
                     leading: Icon(ck ? Icons.check_circle : Icons.radio_button_unchecked, color: ck ? Colors.green : Colors.grey, size: 22),
                     title: Text(e["barcode"], style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
-                    subtitle: Text("数量 ${e["qty"]}", style: const TextStyle(fontSize: 11)),
+                    subtitle: Text("数量 ${e["qty"]}${(e["fromLoc"] ?? "").toString().isNotEmpty ? " · 原货位 ${e["fromLoc"]}" : ""}", style: const TextStyle(fontSize: 11)),
                   );
                 }).toList(),
               ),

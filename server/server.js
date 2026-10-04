@@ -38,6 +38,12 @@ function defaultDb() {
     features: JSON.parse(JSON.stringify(DEFAULT_FEATURES)),
     requisitions: [], // 领料单
     notifications: [], // 站内通知（拉取即已读）
+    ledger: [], // 货位账本（PDA 同步上来的全量快照：[{c:标签,l:货位,f:料框,t:时间戳}]）
+    ledgerRev: 0, ledgerAt: '', ledgerBy: '', // 账本版本号/最后同步时间/同步人
+    scanlog: {}, // 采集流水（PDA 全量推送，键=标签|批次|时间）
+    scanlogAt: '', scanlogCount: 0,
+    outbound: {}, // 出库单（按单号存最新快照）
+    outboundAt: '', outboundCount: 0,
   };
 }
 function loadDb() {
@@ -56,7 +62,11 @@ function loadDb() {
   let added = false;
   if (!Array.isArray(d.requisitions)) { d.requisitions = []; added = true; }
   if (!Array.isArray(d.notifications)) { d.notifications = []; added = true; }
-  if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知集合'); }
+  if (!Array.isArray(d.ledger)) { d.ledger = []; added = true; }
+  if (typeof d.ledgerRev !== 'number') { d.ledgerRev = 0; added = true; }
+  if (typeof d.scanlog !== 'object' || d.scanlog === null || Array.isArray(d.scanlog)) { d.scanlog = {}; added = true; }
+  if (typeof d.outbound !== 'object' || d.outbound === null || Array.isArray(d.outbound)) { d.outbound = {}; added = true; }
+  if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   return d;
 }
 function saveDb(db) { // 原子写：临时文件 + rename
@@ -73,13 +83,46 @@ function safeUser(u) { return { id: u.id, username: u.username, name: u.name, ro
 // ---------------- 领料单辅助 ----------------
 const REQ_STATUS_TEXT = { pending: '待接单', accepted: '备料中', ready: '已备齐', done: '已完成', rejected: '已拒绝', cancelled: '已取消' };
 function reqItemsText(r) { return r.items.map(i => `${i.partNo}×${i.qty}`).join('、'); }
+// 下单通知用：每行零件×数量→建议货位（同步账本 FIFO），无数据标"待补齐/无货"
+function reqItemsSuggestText(r) {
+  return r.items.map(i => {
+    const excl = new Set(((i.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
+    const sg = pickSuggest(i.partNo, Number(i.qty) || 0, excl);
+    if (sg.boxes.length) return `${i.partNo}×${i.qty}→${sg.boxes.slice(0, 3).map(b => b.l).join('/')}${sg.boxes.length > 3 ? '…' + sg.boxes.length + '框' : ''}`;
+    return `${i.partNo}×${i.qty}→${sg.inStock ? '待补齐' : '无货'}`;
+  }).join('、');
+}
 function notify(toUserId, type, text, reqId) {
   db.notifications.push({ id: newId('n'), to: toUserId, type, text, reqId: reqId || '', time: new Date().toISOString(), read: false });
   if (db.notifications.length > 500) db.notifications = db.notifications.slice(-500); // 只留最近500条防膨胀
 }
 function findReq(id) { return db.requisitions.find(r => r.id === id); }
-function reqView(r) { return { ...r, statusText: REQ_STATUS_TEXT[r.status] || r.status }; }
-function issuedOf(i) { return (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : { c: String(x.c || ''), q: Number(x.q) || 0 }); }
+// 取货建议：PDA 同步的货位账本（含补齐的零件号 p / 数量 q / 批次 b）→ 该零件在架标签，FIFO 选框
+function pickSuggest(partNo, needQty, excludeCodes) {
+  const ex = excludeCodes || new Set();
+  const boxes = db.ledger
+    .filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase() && !ex.has(String(x.c).toUpperCase()))
+    .map(x => ({ c: x.c, l: x.l, q: Number(x.q) || 0, b: String(x.b || ''), f: String(x.f || '') }))
+    .sort((a, b) => (a.b || '9999').localeCompare(b.b || '9999') || a.l.localeCompare(b.l)); // 批次早优先
+  let acc = 0; const pick = [];
+  for (const x of boxes) {
+    pick.push(x);
+    acc += x.q;
+    if (needQty > 0 && acc >= needQty) break;
+    if (pick.length >= 8) break; // 最多建议 8 框
+  }
+  const noInfo = db.ledger.filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase() && !x.q).length;
+  return { boxes: pick, total: acc, inStock: boxes.length, noInfoQty: noInfo };
+}
+function reqView(r) {
+  const items = (r.items || []).map(i => {
+    const excl = new Set(((i.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
+    return { ...i, suggest: pickSuggest(i.partNo, Number(i.qty) || 0, excl) };
+  });
+  return { ...r, items, statusText: REQ_STATUS_TEXT[r.status] || r.status };
+}
+function issuedOf(i) { return (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0, l: '' } : { c: String(x.c || ''), q: Number(x.q) || 0, l: String(x.l || '') }); }
+function uniqCodes(arr) { return [...new Set(arr.map(s => String(s).toUpperCase()))]; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 // 领料单打印页（A4，含零件号/物料名/申请数/已发数 + 手写货位/标签空栏；复制零件号可选文本）
 function renderReqPrint(r) {
@@ -91,13 +134,22 @@ function renderReqPrint(r) {
     let stMark = '';
     if (i.transferred) stMark = ` <span style="color:#0a7d32;font-weight:bold">✓已转${got >= (Number(i.qty) || 0) ? '' : '(短装)'}</span>`;
     else if (i.skipped) stMark = ' <span style="color:#999">✗跳过</span>';
+    // 货位列：系统按同步账本 FIFO 给建议；没数据则留手写格
+    const sg = i.transferred || i.skipped ? null : pickSuggest(i.partNo, Number(i.qty) || 0, new Set(issuedOf(i).map(e => String(e.c).toUpperCase())));
+    let locCell = '';
+    if (sg && sg.boxes.length) {
+      locCell = sg.boxes.slice(0, 4).map(b => `<div style="font-size:11px;line-height:1.35">${esc(b.l)}<span style="color:#666;font-family:Consolas,monospace"> ${esc(b.c)}</span>${b.q ? ` <span style="color:#888">${b.q}件</span>` : ''}</div>`).join('')
+        + (sg.boxes.length > 4 ? `<div style="font-size:10px;color:#888">…共${sg.boxes.length}框</div>` : '');
+    } else if (sg && !sg.boxes.length) {
+      locCell = `<span style="color:#c00;font-size:11px">${sg.inStock ? '缺物料信息' : '账本无此件'}</span>`;
+    }
     return `<tr${i.transferred ? ' style="background:#f2fbf5"' : (i.skipped ? ' style="background:#f7f7f7;color:#999"' : '')}>
       <td>${idx + 1}</td>
       <td class="pn selectable">${esc(i.partNo)}</td>
       <td>${esc(i.itemName || '')}</td>
       <td class="num">${esc(i.qty)}</td>
       <td class="num">${got}${got >= (Number(i.qty) || 0) && !i.skipped ? ' ✔' : ''}${stMark}</td>
-      <td class="handwrite">${i.transferred ? esc((r.toLoc && r.toLoc.LOC_NAME) || '') : ''}</td>
+      <td class="handwrite${i.transferred ? '' : ' sug'}">${i.transferred ? esc((r.toLoc && r.toLoc.LOC_NAME) || '') : locCell}</td>
       <td class="handwrite small">${esc(codes)}</td>
     </tr>`;
   }).join('');
@@ -114,6 +166,7 @@ function renderReqPrint(r) {
   th{background:#f0f0f0;text-align:center}
   .num{text-align:center}.pn{font-family:Consolas,monospace}
   .handwrite{background:#fffef8}
+  .handwrite.sug{background:#f0f4ff;padding:3px 5px}
   .handwrite.small{font-size:11px;color:#666;font-family:Consolas,monospace}
   .blank{height:30px}
   .sign{margin-top:26px;font-size:13px;display:flex;justify-content:space-between}
@@ -150,7 +203,15 @@ function renderReqBoard() {
       if (i.transferred) mark = ` <b style="color:#0a7d32">✓已转${got >= (Number(i.qty) || 0) ? '' : '(短装)'}</b>`;
       else if (i.skipped) mark = ' <span style="color:#999">✗跳过</span>';
       else if (got > 0) mark = ` <span style="color:#c77700">已扫${got}件</span>`;
-      return `<div class="it">${esc(i.partNo)} ${esc(i.itemName || '')}　申请${esc(i.qty)}${mark}</div>`;
+      let sugHtml = '';
+      if (!i.transferred && !i.skipped) {
+        const excl = new Set(((i.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
+        const sg = pickSuggest(i.partNo, Number(i.qty) || 0, excl);
+        sugHtml = sg.boxes.length
+          ? ` <span style="color:#3949AB">→ ${sg.boxes.slice(0, 3).map(b => esc(b.l)).join(' / ')}${sg.boxes.length > 3 ? ' …' + sg.boxes.length + '框' : ''}</span>`
+          : ` <span style="color:#c00">→ ${sg.inStock ? '待补齐' : '账本无此件'}</span>`;
+      }
+      return `<div class="it">${esc(i.partNo)} ${esc(i.itemName || '')}　申请${esc(i.qty)}${mark}${sugHtml}</div>`;
     }).join('');
     return `<div class="card">
       <div class="hd"><b>${esc(r.no)}</b> ｜ ${esc(r.byName)} ｜ ${(r.createdAt || '').slice(5, 16).replace('T', ' ')} ｜ ${stTag} ｜ ${prog}
@@ -185,6 +246,136 @@ function printAll(){
   ids.forEach((id,i)=>setTimeout(()=>window.open('/print/requisition?id='+encodeURIComponent(id)),i*400));
 }
 setInterval(()=>location.reload(),10000);
+</script></body></html>`;
+}
+
+// 货位账本查询页（电脑端公开）：按货位排序，同位多标签并排；顶部搜索框支持标签号/货位前缀
+function renderLedgerBoard() {
+  const meta = `共 ${db.ledger.length} 个标签 · ${new Set(db.ledger.map(x => x.l)).size} 个货位有货`;
+  const info = db.ledgerAt ? `最后同步 ${esc(String(db.ledgerAt).slice(0, 19).replace('T', ' '))}（${esc(db.ledgerBy || '-')}，v${db.ledgerRev}）` : '尚未从 PDA 同步过';
+  const rows = db.ledger.slice().sort((a, b) => String(a.l).localeCompare(String(b.l)) || String(a.c).localeCompare(String(b.c)));
+  const bodyRows = rows.map(x => {
+    const t = x.t ? new Date(x.t).toLocaleString('zh-CN', { hour12: false }) : '';
+    return `<tr data-c="${esc(x.c)}" data-l="${esc(x.l)}" data-p="${esc(x.p || '')}" data-n="${esc(x.n || '')}"><td class="loc">${esc(x.l)}</td><td class="code">${esc(x.c)}</td><td class="pn">${esc(x.p || '')}</td><td>${esc(x.n || '')}</td><td class="num">${x.q ? esc(x.q) : ''}</td><td>${esc(x.b || '')}</td><td>${esc(x.f || '')}</td><td class="tm">${esc(t)}</td></tr>`;
+  }).join('');
+  const empty = rows.length ? '' : `<div class="empty">账本为空：请在 PDA「位置登记」导入账本或登记库位，同步后这里自动出现数据。</div>`;
+  return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>货位账本</title>
+<style>
+  body{font-family:"Microsoft YaHei",Arial;margin:20px;background:#f5f6fa;color:#111}
+  h1{font-size:20px;margin:0 0 4px}
+  .sub{font-size:12px;color:#777;margin-bottom:12px}
+  .bar{margin-bottom:12px;display:flex;gap:8px;align-items:center}
+  .bar input{font-size:14px;padding:7px 10px;border:1px solid #ccc;border-radius:6px;width:280px}
+  .bar button{font-size:13px;padding:7px 14px;cursor:pointer;border:1px solid #515BD4;background:#fff;color:#515BD4;border-radius:6px}
+  .cnt{font-size:12px;color:#666}
+  table{width:100%;border-collapse:collapse;font-size:13px;background:#fff}
+  th,td{border:1px solid #e2e4ee;padding:5px 8px;text-align:left}
+  th{background:#eef0fa;position:sticky;top:0}
+  .loc{font-family:Consolas,monospace;font-weight:600;color:#2456c9}
+  .code{font-family:Consolas,monospace}
+  .tm{color:#888;font-size:12px}
+  tr.hl{background:#fff3cd}
+  .empty{text-align:center;color:#c77700;font-size:14px;padding:40px;background:#fff;border-radius:10px}
+</style></head><body>
+<h1>货位账本（PDA 同步）</h1>
+<div class="sub">${meta} ｜ ${info}</div>
+<div class="bar"><input id="q" placeholder="输入标签号或货位前缀（如 NB03-A-13）过滤" oninput="flt()"><button onclick="location.reload()">⟳ 刷新</button><span class="cnt" id="cnt"></span></div>
+${empty}<table id="tb"${rows.length ? '' : ' style="display:none"'}><thead><tr><th style="width:14%">货位</th><th style="width:16%">标签号</th><th style="width:14%">零件号</th><th style="width:20%">物料名称</th><th style="width:8%">数量</th><th style="width:9%">批次</th><th style="width:11%">料框</th><th>登记时间</th></tr></thead><tbody>${bodyRows}</tbody></table>
+<script>
+function flt(){
+  const q=document.getElementById('q').value.trim().toUpperCase();
+  const rs=document.querySelectorAll('#tb tbody tr');
+  let n=0;
+  rs.forEach(r=>{
+    const hit=!q || r.dataset.c.includes(q) || r.dataset.l.includes(q) || (r.dataset.p||'').toUpperCase().includes(q) || (r.dataset.n||'').toUpperCase().includes(q);
+    r.style.display=hit?'':'none';
+    r.classList.toggle('hl', !!q && r.dataset.c===q);
+    if(hit&&q)n++;
+  });
+  document.getElementById('cnt').textContent=q?('匹配 '+n+' 行'):'';
+}
+setInterval(()=>{if(!document.getElementById('q').value)location.reload();},60000);
+</script></body></html>`;
+}
+
+// 数据核对看板（电脑端公开）：展示 PDA 同步上来的采集流水 / 出库单 / 货位账本状态
+function renderDataBoard() {
+  return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>数据核对（电脑库）</title>
+<style>
+  body{font-family:"Microsoft YaHei",Arial;margin:18px;background:#f5f6fa;color:#111}
+  h1{font-size:19px;margin:0 0 4px}
+  .sub{font-size:12px;color:#777;margin-bottom:10px}
+  .badges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .b{background:#fff;border:1px solid #e2e4ee;border-radius:8px;padding:6px 12px;font-size:12px;color:#555}
+  .b b{font-size:16px;color:#2456c9;margin-right:4px}
+  .tabs{margin-bottom:10px;display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+  .tabs button.tb{font-size:13px;padding:6px 14px;cursor:pointer;border:1px solid #515BD4;background:#fff;color:#515BD4;border-radius:6px}
+  .tabs button.tb.on{background:#515BD4;color:#fff}
+  #q{font-size:13px;padding:6px 9px;border:1px solid #ccc;border-radius:6px;width:260px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;background:#fff}
+  th,td{border:1px solid #e2e4ee;padding:4px 6px;text-align:left}
+  th{background:#eef0fa}
+  .mono{font-family:Consolas,monospace}
+  .cx{color:#c00;font-weight:bold}
+  .ck{color:#0a7d32}
+  .empty{color:#c77700;font-size:14px;padding:24px;background:#fff;border-radius:8px;text-align:center}
+</style></head><body>
+<h1>数据核对 · 电脑数据库</h1>
+<div class="sub" id="meta">加载中…</div>
+<div class="badges" id="badges"></div>
+<div class="tabs">
+  <button class="tb on" id="btScan" onclick="sw('scan')">采集流水</button>
+  <button class="tb" id="btOb" onclick="sw('ob')">出库单</button>
+  <input id="q" placeholder="搜索标签/零件/操作人/货位" oninput="flt()">
+  <button class="tb" onclick="loadAll()">⟳ 刷新</button>
+  <a href="/board/ledger" style="font-size:12px;color:#515BD4;margin-left:8px">货位账本 →</a>
+</div>
+<div id="boxScan"><div class="empty">加载中…</div></div>
+<div id="boxOb" style="display:none"></div>
+<script>
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function t2s(ms){if(!ms)return '';try{return new Date(ms).toLocaleString('zh-CN',{hour12:false})}catch(e){return ''}}
+function iso2s(x){if(!x)return '—';try{return new Date(x).toLocaleString('zh-CN',{hour12:false})}catch(e){return x}}
+var scans=[],obs=[];
+function sw(k){document.getElementById('btScan').className='tb'+(k==='scan'?' on':'');document.getElementById('btOb').className='tb'+(k==='ob'?' on':'');document.getElementById('boxScan').style.display=k==='scan'?'':'none';document.getElementById('boxOb').style.display=k==='ob'?'':'none'}
+function jg(u){return fetch(u).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
+function loadAll(){
+  document.getElementById('meta').textContent='加载中…';
+  Promise.all([jg('/api/scanlog?limit=5000'),jg('/api/outbound'),jg('/api/ledger?l=')]).then(function(a){
+    var s=a[0],o=a[1],l=a[2];scans=s.items||[];obs=o.items||[];
+    document.getElementById('badges').innerHTML=
+      '<div class="b"><b>'+(s.total||0)+'</b>采集流水<br>最后同步 '+esc(iso2s(s.at))+'</div>'+
+      '<div class="b"><b>'+(o.total||0)+'</b>出库单<br>最后同步 '+esc(iso2s(o.at))+'</div>'+
+      '<div class="b"><b>'+(l.total||0)+'</b>账本标签 v'+(l.rev||0)+'<br>最后同步 '+esc(iso2s(l.at))+'（'+esc(l.by||'-')+'）</div>';
+    document.getElementById('meta').textContent='流水表显示最近 '+scans.length+' 条（库中共 '+(s.total||0)+'）；出库共 '+obs.length+' 张；30 秒自动刷新';
+    rs();ro();
+  }).catch(function(e){document.getElementById('meta').textContent='加载失败：'+e.message+'（请确认 PDA 已配置服务器并完成同步）'});
+}
+function flt(){rs();ro()}
+function rs(){
+  var q=document.getElementById('q').value.trim().toUpperCase();
+  var arr=scans;
+  if(q)arr=arr.filter(function(x){return ((x.code||'')+(x.pn||'')+(x.op||'')+(x.gl||'')+(x.st||'')+(x.batch||'')).toUpperCase().indexOf(q)>=0});
+  var box=document.getElementById('boxScan');
+  if(!arr.length){box.innerHTML='<div class="empty">'+(scans.length?'无匹配记录':'暂无流水：PDA 采集保存后 1 分钟内自动同步到这里')+'</div>';return}
+  box.innerHTML='<table><thead><tr><th>时间</th><th>标签</th><th>作业</th><th>位置</th><th>容器</th><th>操作人</th><th>零件号</th><th>数量</th><th>批次</th><th>状态</th></tr></thead><tbody>'+
+    arr.map(function(x){
+      var pos=x.wt===0?(x.st||''):(x.gl||'');
+      return '<tr><td class="mono">'+t2s(x.t)+'</td><td class="mono">'+esc(x.code)+'</td><td>'+(x.wt===0?'AGV站台':'地面')+'</td><td class="mono">'+esc(pos)+'</td><td>'+esc(x.ct||'')+'</td><td>'+esc(x.op||'')+'</td><td class="mono">'+esc(x.pn||'')+'</td><td>'+esc(x.q||'')+'</td><td class="mono">'+esc(x.lot||'')+'</td><td>'+(x.cx?'<span class="cx">已作废</span>':'<span class="ck">正常</span>')+'</td></tr>'}).join('')+'</tbody></table>';
+}
+function ro(){
+  var q=document.getElementById('q').value.trim().toUpperCase();
+  var arr=obs;
+  if(q)arr=arr.filter(function(x){return ((x.orderNo||'')+(x.operator||'')+(x.toLoc||'')+(x.linkReqNo||'')+JSON.stringify(x.items||[])).toUpperCase().indexOf(q)>=0});
+  var box=document.getElementById('boxOb');
+  if(!arr.length){box.innerHTML='<div class="empty">'+(obs.length?'无匹配出库单':'暂无出库单：直调/领料转MES 建单后自动同步')+'</div>';return}
+  box.innerHTML='<table><thead><tr><th>出库单号</th><th>时间</th><th>操作人</th><th>转入货位</th><th>关联领料单</th><th>标签</th><th>核对</th><th>明细（标签·零件·数量·原货位）</th></tr></thead><tbody>'+
+    arr.map(function(o){
+      var its=o.items||[];var cked=its.filter(function(e){return e.checked===true}).length;
+      return '<tr><td class="mono">'+esc(o.orderNo)+'</td><td class="mono">'+t2s(o.createdAt)+'</td><td>'+esc(o.operator||'')+'</td><td>'+esc(o.toLoc||'')+'</td><td class="mono">'+esc(o.linkReqNo||'')+'</td><td>'+its.length+'</td><td>'+(its.length&&cked===its.length?'<span class="ck">全部已核对</span>':cked+'/'+its.length)+'</td><td style="max-width:460px">'+its.map(function(e){return '<div class="mono" style="font-size:11px">'+esc(e.barcode)+' · '+esc(e.code)+' · '+esc(e.qty)+(e.fromLoc?' · <b>原 '+esc(e.fromLoc)+'</b>':'')+'</div>'}).join('')+'</td></tr>'
+    }).join('')+'</tbody></table>';
+}
+loadAll();setInterval(loadAll,30000);
 </script></body></html>`;
 }
 
@@ -229,7 +420,7 @@ function send(res, code, obj) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = ''; let size = 0;
-    req.on('data', c => { size += c.length; if (size > 1e6) { reject(new Error('body too large')); req.destroy(); return; } data += c; });
+    req.on('data', c => { size += c.length; if (size > 8e6) { reject(new Error('body too large')); req.destroy(); return; } data += c; });
     req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}); } catch (e) { reject(new Error('bad json')); } });
     req.on('error', reject);
   });
@@ -250,6 +441,43 @@ const server = http.createServer(async (req, res) => {
       if (!r) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('领料单不存在'); return; }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(renderReqPrint(r));
+      return;
+    }
+
+    // ---- 采集流水/出库单公开查询 + 数据核对看板（局域网公开；门户 iframe 不带 token）----
+    if (req.method === 'GET' && p === '/api/scanlog') {
+      const fc = (url.searchParams.get('c') || '').trim().toUpperCase();
+      const lim = Math.min(20000, Math.max(1, Number(url.searchParams.get('limit')) || 2000));
+      let arr = Object.values(db.scanlog).sort((a, x) => (x.t || 0) - (a.t || 0));
+      if (fc) arr = arr.filter(x => String(x.code).toUpperCase() === fc);
+      return send(res, 200, { ok: true, at: db.scanlogAt, total: db.scanlogCount, count: arr.length, items: arr.slice(0, lim) });
+    }
+    if (req.method === 'GET' && p === '/api/outbound') {
+      const fl = (url.searchParams.get('req') || '').trim().toUpperCase();
+      let arr = Object.values(db.outbound).sort((a, x) => (x.createdAt || 0) - (a.createdAt || 0));
+      if (fl) arr = arr.filter(x => String(x.linkReqNo || '').toUpperCase() === fl);
+      return send(res, 200, { ok: true, at: db.outboundAt, total: db.outboundCount, count: arr.length, items: arr.slice(0, 500) });
+    }
+    if (req.method === 'GET' && p === '/board/data') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderDataBoard());
+      return;
+    }
+
+    // ---- 货位账本：公开查询（局域网任意设备；?c=标签 / ?l=货位 前缀过滤，无参数=全量+概要）----
+    if (req.method === 'GET' && p === '/api/ledger') {
+      const fc = (url.searchParams.get('c') || '').trim().toUpperCase();
+      const fl = (url.searchParams.get('l') || '').trim().toUpperCase();
+      let list = db.ledger;
+      if (fc) list = list.filter(x => String(x.c).toUpperCase().startsWith(fc));
+      if (fl) list = list.filter(x => String(x.l).toUpperCase().startsWith(fl));
+      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, items: list });
+    }
+
+    // ---- 货位账本：电脑查询页（表格地图式：按货位排序，同位多标签并排显示）----
+    if (req.method === 'GET' && (p === '/board/ledger' || p === '/ledger')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(renderLedgerBoard());
       return;
     }
 
@@ -301,6 +529,63 @@ const server = http.createServer(async (req, res) => {
         save(); return send(res, 200, { ok: true, msg: '密码已修改' });
       }
 
+      // ================= 货位账本同步（PDA 全量推送；仓管/管理员可写，读取走公开接口） =================
+      if (req.method === 'POST' && p === '/api/ledger/sync') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步货位账本' });
+        const b = await readBody(req);
+        const raw = Array.isArray(b.items) ? b.items : [];
+        if (!raw.length) return send(res, 400, { ok: false, msg: 'items 为空，已拒绝（防止误清空白账本）' });
+        if (raw.length > 20000) return send(res, 400, { ok: false, msg: '条目超过2万，疑似异常' });
+        const seen = new Set(); const clean = [];
+        for (const it of raw) {
+          const c = String((it && it.c) || '').trim().toUpperCase();
+          const l = String((it && it.l) || '').trim().toUpperCase();
+          if (!c || !l) continue;
+          if (seen.has(c)) continue; // 标签重复取首行，与 PDA 账本唯一索引一致
+          seen.add(c);
+          clean.push({ c, l, f: String((it && it.f) || '').slice(0, 40), t: Number(it && it.t) || 0,
+            p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').slice(0, 80),
+            q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40) });
+        }
+        if (!clean.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
+        db.ledger = clean;
+        db.ledgerRev = (db.ledgerRev || 0) + 1;
+        db.ledgerAt = new Date().toISOString();
+        db.ledgerBy = u.name;
+        save();
+        console.log(`[ledger] ${u.name} 同步账本 ${clean.length} 条 → v${db.ledgerRev}`);
+        return send(res, 200, { ok: true, rev: db.ledgerRev, count: clean.length });
+      }
+
+      // ================= 采集流水 / 出库单同步（PDA 全量推送，仓管/管理员） =================
+      if (req.method === 'POST' && p === '/api/scanlog/sync') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步采集流水' });
+        const b = await readBody(req);
+        const raw = Array.isArray(b.items) ? b.items : [];
+        if (!raw.length) return send(res, 400, { ok: false, msg: 'items 为空，已拒绝' });
+        if (raw.length > 50000) return send(res, 400, { ok: false, msg: '条目超过5万，疑似异常' });
+        const snap = {};
+        for (const it of raw) {
+          const k = String((it && it.k) || '').slice(0, 120);
+          if (!k) continue;
+          snap[k] = { code: String(it.code || '').toUpperCase(), wt: Number(it.wt) || 0, st: String(it.st || ''), gl: String(it.gl || ''), ct: String(it.ct || ''), rm: String(it.rm || '').slice(0, 120), batch: String(it.batch || ''), cx: !!it.cx, t: Number(it.t) || 0, pn: String(it.pn || ''), q: Number(it.q) || 0, mk: String(it.mk || ''), op: String(it.op || '').slice(0, 40), nm: String(it.nm || '').slice(0, 80), lot: String(it.lot || '').slice(0, 40), pid: String(it.pid || '') };
+        }
+        db.scanlog = snap; db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(snap).length;
+        save();
+        console.log(`[scanlog] ${u.name} 同步流水 ${db.scanlogCount} 条`);
+        return send(res, 200, { ok: true, count: db.scanlogCount });
+      }
+      if (req.method === 'POST' && p === '/api/outbound/sync') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步出库单' });
+        const b = await readBody(req);
+        const no = String(b.orderNo || '').trim();
+        if (!no) return send(res, 400, { ok: false, msg: '缺少 orderNo' });
+        db.outbound[no] = { orderNo: no, createdAt: Number(b.createdAt) || 0, toLoc: String(b.toLoc || ''), operator: String(b.operator || ''), status: Number(b.status) || 0, linkReqNo: String(b.linkReqNo || ''), items: Array.isArray(b.items) ? b.items : [] };
+        db.outboundAt = new Date().toISOString(); db.outboundCount = Object.keys(db.outbound).length;
+        save();
+        console.log(`[outbound] ${u.name} 同步出库单 ${no}`);
+        return send(res, 200, { ok: true, count: db.outboundCount });
+      }
       // ================= 领料单（登录即可访问，内部按角色+状态校验） =================
       if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/notifications') {
         const canReq = (db.features[u.role] || {}).requisition === true;
@@ -330,7 +615,7 @@ const server = http.createServer(async (req, res) => {
           };
           db.requisitions.push(r);
           db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
-            notify(x.id, 'req_new', `${u.name} 提交了领料单 ${r.no}：${reqItemsText(r)}`, r.id));
+            notify(x.id, 'req_new', `${u.name} 提交了领料单 ${r.no}：${reqItemsSuggestText(r)}`, r.id));
           save();
           console.log(`[req] ${u.name} 下单 ${r.no}`);
           return send(res, 200, { ok: true, req: reqView(r) });
@@ -406,7 +691,7 @@ const server = http.createServer(async (req, res) => {
             const q = Number(b.qty) || 0;
             if (q <= 0) return send(res, 400, { ok: false, msg: '缺少该标签的件数(qty)' });
             target.issued = normIssued(target);
-            target.issued.push({ c: code, q });
+            target.issued.push({ c: code, q, l: String(b.fromLoc || '').trim().toUpperCase() });
             const got = issuedQty(target);
             hpush(`发料 ${b.partNo} 标签 ${code}（${q}件，累计 ${got}/${target.qty}）`);
             // 不再自动置 ready：ready 由每行 transfer/skip 到终态后 finalize 决定
