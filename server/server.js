@@ -326,32 +326,34 @@ function renderDataBoard() {
 <div class="tabs">
   <button class="tb on" id="btScan" onclick="sw('scan')">采集流水</button>
   <button class="tb" id="btOb" onclick="sw('ob')">出库单</button>
+  <button class="tb" id="btInv" onclick="sw('inv')">库存(账本)</button>
   <input id="q" placeholder="搜索标签/零件/操作人/货位" oninput="flt()">
   <button class="tb" onclick="loadAll()">⟳ 刷新</button>
   <a href="/board/ledger" style="font-size:12px;color:#515BD4;margin-left:8px">货位账本 →</a>
 </div>
 <div id="boxScan"><div class="empty">加载中…</div></div>
 <div id="boxOb" style="display:none"></div>
+<div id="boxInv" style="display:none"></div>
 <script>
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function t2s(ms){if(!ms)return '';try{return new Date(ms).toLocaleString('zh-CN',{hour12:false})}catch(e){return ''}}
 function iso2s(x){if(!x)return '—';try{return new Date(x).toLocaleString('zh-CN',{hour12:false})}catch(e){return x}}
-var scans=[],obs=[];
-function sw(k){document.getElementById('btScan').className='tb'+(k==='scan'?' on':'');document.getElementById('btOb').className='tb'+(k==='ob'?' on':'');document.getElementById('boxScan').style.display=k==='scan'?'':'none';document.getElementById('boxOb').style.display=k==='ob'?'':'none'}
+var scans=[],obs=[],led=[];
+function sw(k){['scan','ob','inv'].forEach(function(t){var K=t[0].toUpperCase()+t.slice(1);document.getElementById('bt'+K).className='tb'+(k===t?' on':'');document.getElementById('box'+K).style.display=k===t?'':'none'})}
 function jg(u){return fetch(u).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
 function loadAll(){
   document.getElementById('meta').textContent='加载中…';
   Promise.all([jg('/api/scanlog?limit=5000'),jg('/api/outbound'),jg('/api/ledger?l=')]).then(function(a){
-    var s=a[0],o=a[1],l=a[2];scans=s.items||[];obs=o.items||[];
+    var s=a[0],o=a[1],l=a[2];scans=s.items||[];obs=o.items||[];led=l.items||[];
     document.getElementById('badges').innerHTML=
       '<div class="b"><b>'+(s.total||0)+'</b>采集流水<br>最后同步 '+esc(iso2s(s.at))+'</div>'+
       '<div class="b"><b>'+(o.total||0)+'</b>出库单<br>最后同步 '+esc(iso2s(o.at))+'</div>'+
       '<div class="b"><b>'+(l.total||0)+'</b>账本标签 v'+(l.rev||0)+'<br>最后同步 '+esc(iso2s(l.at))+'（'+esc(l.by||'-')+'）</div>';
     document.getElementById('meta').textContent='流水表显示最近 '+scans.length+' 条（库中共 '+(s.total||0)+'）；出库共 '+obs.length+' 张；30 秒自动刷新';
-    rs();ro();
+    rs();ro();ri();
   }).catch(function(e){document.getElementById('meta').textContent='加载失败：'+e.message+'（请确认 PDA 已配置服务器并完成同步）'});
 }
-function flt(){rs();ro()}
+function flt(){rs();ro();if(document.getElementById('boxInv').style.display!=='none')ri()}
 function rs(){
   var q=document.getElementById('q').value.trim().toUpperCase();
   var arr=scans;
@@ -374,6 +376,25 @@ function ro(){
       var its=o.items||[];var cked=its.filter(function(e){return e.checked===true}).length;
       return '<tr><td class="mono">'+esc(o.orderNo)+'</td><td class="mono">'+t2s(o.createdAt)+'</td><td>'+esc(o.operator||'')+'</td><td>'+esc(o.toLoc||'')+'</td><td class="mono">'+esc(o.linkReqNo||'')+'</td><td>'+its.length+'</td><td>'+(its.length&&cked===its.length?'<span class="ck">全部已核对</span>':cked+'/'+its.length)+'</td><td style="max-width:460px">'+its.map(function(e){return '<div class="mono" style="font-size:11px">'+esc(e.barcode)+' · '+esc(e.code)+' · '+esc(e.qty)+(e.fromLoc?' · <b>原 '+esc(e.fromLoc)+'</b>':'')+'</div>'}).join('')+'</td></tr>'
     }).join('')+'</tbody></table>';
+}
+function ri(){
+  var box=document.getElementById('boxInv');
+  if(!led.length){box.innerHTML='<div class="empty">电脑账本为空：先在 PDA 位置登记页导入或拉取账本，同步后这里自动汇总</div>';return}
+  var q=document.getElementById('q').value.trim().toUpperCase();
+  var m={};
+  led.forEach(function(x){
+    var k=(x.p||'').toUpperCase()||'未知零件(待补齐)';
+    var r=m[k]||(m[k]={part:k,name:'',boxes:0,qty:0,rack:0,floor:0});
+    if(x.n&&!r.name)r.name=x.n;
+    r.boxes++;r.qty+=Number(x.q)||0;
+    if(String(x.l||'').indexOf('NB02-')===0)r.rack++;else r.floor++;
+  });
+  var arr=Object.values(m).sort(function(a,b){return b.qty-a.qty||b.boxes-a.boxes});
+  if(q)arr=arr.filter(function(r){return r.part.indexOf(q)>=0||(r.name||'').toUpperCase().indexOf(q)>=0});
+  var tot=led.length;
+  box.innerHTML='<table><thead><tr><th>零件号</th><th>物料名称</th><th>框数</th><th>数量合计</th><th>货架(AGV)</th><th>地面</th></tr></thead><tbody>'+
+    arr.map(function(r){return '<tr><td class="mono">'+esc(r.part)+'</td><td>'+esc(r.name)+'</td><td>'+r.boxes+'</td><td>'+r.qty+'</td><td>'+r.rack+'</td><td>'+r.floor+'</td></tr>'}).join('')+
+    '</tbody></table><div class="sub" style="margin-top:6px">账本共 '+tot+' 框；数量/零件号来自 PDA 同步，若大量显示「未知零件」请先在 PDA 位置登记页做「批量补齐物料」再点云图标同步</div>';
 }
 loadAll();setInterval(loadAll,30000);
 </script></body></html>`;

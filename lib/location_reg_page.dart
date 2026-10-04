@@ -260,21 +260,37 @@ class _LocationRegPageState extends State<LocationRegPage> {
   Future<void> _importWps() async {
     final files = await listBaselineFiles();
     if (!mounted) return;
-    if (files.isEmpty) { _toast("请先在电脑浏览器打开门户，上传货架表CSV（含 标签号+完整货位编码 两列）"); return; }
     final picked = await showModalBottomSheet<String>(context: context, builder: (ctx) => SafeArea(child: ListView(
       children: [
-        const Padding(padding: EdgeInsets.all(14), child: Text("选择货架账本文件（网页门户已上传）", style: TextStyle(fontWeight: FontWeight.bold))),
-        ...files.map((f) => ListTile(title: Text(f["name"] as String), subtitle: Text("${((f["size"] as int) / 1024).toStringAsFixed(0)} KB · ${(f["mtime"] as String).substring(0, 16)}"), onTap: () => Navigator.pop(ctx, f["path"] as String))),
+        const Padding(padding: EdgeInsets.all(14), child: Text("选择账本来源", style: TextStyle(fontWeight: FontWeight.bold))),
+        ListTile(leading: const Icon(Icons.cloud_download, color: Color(0xFF00897B)),
+          title: const Text("从电脑服务器拉取（推荐）"),
+          subtitle: const Text("取 PDA 之前同步到电脑的账本，本机没放文件也能用"),
+          onTap: () => Navigator.pop(ctx, "_SRV")),
+        if (files.isNotEmpty) ...[
+          const Divider(height: 1),
+          const Padding(padding: EdgeInsets.fromLTRB(14, 8, 14, 4), child: Text("或选择本机已上传的 CSV：", style: TextStyle(fontSize: 12, color: Colors.grey))),
+          ...files.map((f) => ListTile(leading: const Icon(Icons.description_outlined), title: Text(f["name"] as String), subtitle: Text("${((f["size"] as int) / 1024).toStringAsFixed(0)} KB · ${(f["mtime"] as String).substring(0, 16)}"), onTap: () => Navigator.pop(ctx, f["path"] as String))),
+        ],
       ],
     )));
     if (picked == null || !mounted) return;
     List<List<String>> parsed;
-    try {
-      final raw = await File(picked).readAsString(encoding: utf8);
-      parsed = _parseShelfLedger(raw);
-    } catch (e) {
-      _toast("导入失败：$e");
-      return;
+    if (picked == "_SRV") {
+      final r = await AuthApi.ledgerGet();
+      if (!mounted) return;
+      if (r["ok"] != true) { _toast("拉取电脑账本失败：${r["msg"]}"); return; }
+      final items = List<Map>.from(r["items"] ?? []);
+      if (items.isEmpty) { _toast("电脑账本为空——请先用本机 CSV 导入一次并同步，之后即可双向互拉"); return; }
+      parsed = items.map((e) => [e["c"]?.toString().toUpperCase() ?? "", e["l"]?.toString().toUpperCase() ?? "", e["f"]?.toString() ?? ""]).where((l) => l[0].isNotEmpty && l[1].isNotEmpty).toList();
+    } else {
+      try {
+        final raw = await File(picked).readAsString(encoding: utf8);
+        parsed = _parseShelfLedger(raw);
+      } catch (e) {
+        _toast("导入失败：$e");
+        return;
+      }
     }
     if (parsed.isEmpty) { _toast("未解析到有效行：需要「标签」列与「货位」列（如 完整货位编码）"); return; }
     final preview = parsed.take(5).map((e) => "${e[0]} → ${e[1]}").join("\n");

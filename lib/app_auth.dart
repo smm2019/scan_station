@@ -111,6 +111,8 @@ class AuthApi {
   /// items: [{c:标签, l:货位, f:料框, t:毫秒}]
   static Future<Map> ledgerSync(List<Map> items) async =>
       _req("POST", "/api/ledger/sync", body: {"items": items}, token: await AuthStore.token());
+  /// 拉取电脑服务器上的账本快照（公开只读接口）
+  static Future<Map> ledgerGet() async => _req("GET", "/api/ledger");
   // ---- 采集流水 / 出库单同步（全量推送，服务器按键去重） ----
   static Future<Map> scanlogSync(List items) async =>
       _req("POST", "/api/scanlog/sync", body: {"items": items}, token: await AuthStore.token());
