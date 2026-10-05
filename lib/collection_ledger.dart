@@ -389,11 +389,25 @@ Future<Map> ledgerPushNow() async {
     final all = await _globalIsar.shelfPlacements.where().findAll();
     final infos = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode: e};
     final pids = {for (final e in await _globalIsar.recordExtras.where().findAll()) e.goodsCode: e.palletId}; // 托号：整托多码同框
+    // 入库搬运方式：采集流水 workType 0=AGV站台(来站=stationNo) 1=人工地面(来源=groundLocation)；无流水=手工登记
+    final mvMap = <String, String>{}, srcMap = <String, String>{};
+    final recs = await _globalIsar.scanRecords.where().findAll();
+    recs.sort((a, b) => a.scanTime.compareTo(b.scanTime));
+    for (final r in recs) {
+      if (r.isCancel) continue;
+      final up = r.goodsCode.toUpperCase();
+      if (r.workType == 0) { mvMap[up] = "AGV"; srcMap[up] = r.stationNo ?? ""; }
+      else { mvMap[up] = "人工"; srcMap[up] = r.groundLocation ?? ""; }
+    }
     final items = all.map((p) {
       final i = infos[p.goodsCode];
       final pid = pids[p.goodsCode] ?? "";
+      final up = p.goodsCode.toUpperCase();
+      final mv = mvMap[up] ?? "登记";
+      final src = srcMap[up] ?? "";
       return {
         "c": p.goodsCode, "l": p.loc, "f": p.container, "t": p.assignedAt,
+        "mv": mv, if (src.isNotEmpty) "src": src,
         if (pid.isNotEmpty) "pid": pid,
         if (i != null && !i.missing) ...{"p": i.partNo, "n": i.itemName, "q": i.qty, "b": i.lotNo},
       };

@@ -16,7 +16,8 @@ class OutboundOrder {
 }
 
 /// 直调/领料转单成功后调用：按零件号×标签逐行落库一张出库单
-Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<String, String> to, {String linkReqNo = "", Map<String, String> fromLocs = const {}}) async {
+/// agvCodes：领料单上已叫AGV的标签集合（含同框兄弟码由调用方展开），命中则该箱标记"AGV"，否则"人工"
+Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<String, String> to, {String linkReqNo = "", Map<String, String> fromLocs = const {}, Set<String> agvCodes = const {}}) async {
   final isar = _globalIsar;
   final now = DateTime.now();
   final ts = "${now.year}${now.month.toString().padLeft(2, "0")}${now.day.toString().padLeft(2, "0")}${now.hour.toString().padLeft(2, "0")}${now.minute.toString().padLeft(2, "0")}${now.second.toString().padLeft(2, "0")}";
@@ -34,6 +35,7 @@ Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<S
         "qty": (bm["QTY"] as num?)?.toDouble() ?? 0.0,
         "barcode": bc,
         "fromLoc": fl, // 从哪个货架位/地面格位发走
+        "move": agvCodes.contains(bc.toUpperCase()) ? "AGV" : "人工", // 搬运方式：叫过车=AGV叉到站台，否则=人工
         "checked": false,
       });
     }
@@ -241,10 +243,11 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
 
   String _csv() {
     final b = StringBuffer();
-    b.writeln("单号,时间,转入货位,操作人,零件号,物料名字,数量,标签号,原货位,核对状态");
+    b.writeln("单号,时间,转入货位,操作人,零件号,物料名字,数量,标签号,原货位,搬运方式,核对状态");
     for (final e in _items) {
       b.writeln([_ob!.orderNo, _fmt(_ob!.createdAt), _ob!.toLoc, _ob!.operator,
         '"${e["code"]}"', '"${e["name"]}"', '${e["qty"]}', '"${e["barcode"]}"', '"${e["fromLoc"] ?? ""}"',
+        '"${e["move"] ?? ""}"',
         e["checked"] == true ? "已核对" : "未核对"].join(","));
     }
     return b.toString();
@@ -335,7 +338,7 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
                     dense: true, onTap: () => _toggleRow(i),
                     leading: Icon(ck ? Icons.check_circle : Icons.radio_button_unchecked, color: ck ? Colors.green : Colors.grey, size: 22),
                     title: Text(e["barcode"], style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
-                    subtitle: Text("数量 ${e["qty"]}${(e["fromLoc"] ?? "").toString().isNotEmpty ? " · 原货位 ${e["fromLoc"]}" : ""}", style: const TextStyle(fontSize: 11)),
+                    subtitle: Text("数量 ${e["qty"]}${(e["fromLoc"] ?? "").toString().isNotEmpty ? " · 原货位 ${e["fromLoc"]}" : ""}${(e["move"] ?? "").toString().isNotEmpty ? " · ${e["move"] == "AGV" ? "🚗AGV叉来" : "🚶人工"}" : ""}", style: const TextStyle(fontSize: 11)),
                   );
                 }).toList(),
               ),

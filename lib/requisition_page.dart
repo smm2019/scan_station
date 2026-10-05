@@ -317,6 +317,30 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   bool _checkSap = false; // 转MES时是否开启SAP库存校验
   final Map<String, Map<String, dynamic>> _boxData = {}; // 标签 -> 转单所需MES数据
   Map<String, dynamic>? _lastBoxData; // 本次扫码抓到的MES数据
+  Map<String, String> _agvStat = {}; // "起点|站台" → 排队/在途/已到站（哈工库讯RCS实时状态）
+  Timer? _agvTimer;
+
+  /// 拉RCS任务表，把已叫AGV的框标出实时配送状态（AGV账号未配置则静默跳过）
+  Future<void> _loadAgvStat() async {
+    final st = _r["status"].toString();
+    final hasCalled = List<Map>.from(_r["items"] ?? []).any((i) => (i["agvCalled"] as List?)?.isNotEmpty == true);
+    if (st != 'accepted' || !hasCalled) return;
+    if (await AgvApi.token() == null) return; // AGV账号未配置：不显示配送状态，静默跳过
+    final rs = await Future.wait([AgvApi.tasksRunning(), AgvApi.tasksDone()]);
+    final m = <String, String>{};
+    for (final t in rs[0] as List<Map>) {
+      final rt = AgvApi.taskRoute(t);
+      final key = "${(rt["startPoint"] ?? "").toString().toUpperCase()}|${(rt["endPoint"] ?? "").toString().toUpperCase()}";
+      m[key] = t["taskState"] == 1 ? "在途" : "排队";
+    }
+    for (final t in rs[1] as List<Map>) {
+      final rt = AgvApi.taskRoute(t);
+      final key = "${(rt["startPoint"] ?? "").toString().toUpperCase()}|${(rt["endPoint"] ?? "").toString().toUpperCase()}";
+      if (!m.containsKey(key)) m[key] = t["taskState"] == 2 ? "已到站" : "异常"; // 历史同路线只补空，不覆盖进行中
+    }
+    if (!mounted) return;
+    setState(() { _agvStat = m; });
+  }
 
   @override
   void initState() {
@@ -334,9 +358,11 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         if (mounted && _to.isNotEmpty) _scanFocus.requestFocus();
       });
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadAgvStat());
+    _agvTimer = Timer.periodic(const Duration(seconds: 20), (_) => _loadAgvStat());
   }
   @override
-  void dispose() { _scanCtrl.dispose(); _scanFocus.dispose(); _locCtrl.dispose(); _locFocus.dispose(); super.dispose(); }
+  void dispose() { _scanCtrl.dispose(); _scanFocus.dispose(); _locCtrl.dispose(); _locFocus.dispose(); _agvTimer?.cancel(); super.dispose(); }
 
   Future<void> _act(String action, [Map? body]) async {
     if (_busy) return;
@@ -422,20 +448,23 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               final qv = (b["q"] as num?)?.toDouble() ?? 0;
               final multi = (perBoxCodes[loc] ?? 1) > 1;
               final agv = (b["agv"] ?? "").toString();
+              final stat = agv.isEmpty ? "" : (_agvStat["${loc.toUpperCase()}|${agv.toUpperCase()}"] ?? "");
+              final arrived = stat == "已到站";
+              final boxColor = agv.isEmpty ? null : (arrived ? const Color(0xFF2E7D32) : const Color(0xFFE65100));
               return InkWell(
                 onTap: () {
-                  if (agv.isNotEmpty) { widget.toast("框 $code 已叫AGV → 站台 $agv，请勿重复叉取", err: false); return; }
+                  if (agv.isNotEmpty) { widget.toast("框 $code 已叫AGV → 站台 $agv${stat.isEmpty ? "" : "（$stat）"}，请勿重复叉取", err: false); return; }
                   _onSuggestTap(code, loc, (b["f"] ?? "").toString(), item["partNo"]?.toString() ?? "");
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(
-                    color: agv.isEmpty ? Colors.white : const Color(0xFFFFF3E0),
-                    border: Border.all(color: agv.isEmpty ? const Color(0xFFC7CDF0) : const Color(0xFFE65100)),
+                    color: agv.isEmpty ? Colors.white : (arrived ? const Color(0xFFE8F5E9) : const Color(0xFFFFF3E0)),
+                    border: Border.all(color: boxColor ?? const Color(0xFFC7CDF0)),
                     borderRadius: BorderRadius.circular(6),
                   ),
-                  child: Text("${agv.isEmpty ? "" : "🚗$agv · "}$code @ $loc${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}${multi ? " ·同托多码" : ""}",
-                      style: TextStyle(fontSize: 11, fontFamily: "monospace", color: agv.isEmpty ? const Color(0xFF1A237E) : const Color(0xFFE65100))),
+                  child: Text("${agv.isEmpty ? "" : "🚗$agv${stat.isEmpty ? "" : "·$stat"} · "}$code @ $loc${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}${multi ? " ·同托多码" : ""}",
+                      style: TextStyle(fontSize: 11, fontFamily: "monospace", color: agv.isEmpty ? const Color(0xFF1A237E) : boxColor)),
                 ),
               );
             }),
@@ -591,8 +620,23 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             if (c0.isNotEmpty && l0.isNotEmpty) fromLocs[c0] = l0;
           }
         }
+        // 叫过AGV的框→展开同托兄弟码：扫其中任一码该框都算"AGV叉来"
+        final agvCodes = <String>{};
+        for (final e in List<Map>.from(item["agvCalled"] ?? [])) {
+          final c1 = e["c"]?.toString().toUpperCase() ?? "";
+          if (c1.isEmpty) continue;
+          agvCodes.add(c1);
+          try {
+            final ex = await _globalIsar.recordExtras.filter().goodsCodeEqualTo(c1).findFirst();
+            final pid = ex?.palletId ?? "";
+            if (pid.isNotEmpty) {
+              final mates = await _globalIsar.recordExtras.filter().palletIdEqualTo(pid).findAll();
+              agvCodes.addAll(mates.map((m) => m.goodsCode.toUpperCase()));
+            }
+          } catch (_) {}
+        }
         final ob = await createOutboundOrder(
-          rows.map((r) => {...r, "PART_NO": partNo}).toList(), _to, linkReqNo: _r["no"].toString(), fromLocs: fromLocs);
+          rows.map((r) => {...r, "PART_NO": partNo}).toList(), _to, linkReqNo: _r["no"].toString(), fromLocs: fromLocs, agvCodes: agvCodes);
         widget.toast("已转MES（${_fmtInvNum(_issuedQtyOf(item))}件），出库单 ${ob.orderNo}", err: false);
       } catch (_) {
         widget.toast("已转MES，出库台账落库失败（不影响转单）", err: false);

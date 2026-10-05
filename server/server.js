@@ -315,7 +315,8 @@ function renderLedgerBoard() {
     const t = ts.length ? new Date(Math.min(...ts)).toLocaleString('zh-CN', { hour12: false }) : '';
     const codes = xs.map(x => x.c);
     const multi = codes.length > 1 ? ` <span class="multi">${codes.length}码1框</span>` : '';
-    return `<tr data-c="${esc(codes.join(' '))}" data-l="${esc(first.l)}" data-p="${esc(first.p || '')}" data-n="${esc(first.n || '')}"><td class="loc">${esc(first.l)}</td><td class="code">${esc(codes.join(' / '))}${multi}</td><td class="pn">${esc(first.p || '')}</td><td>${esc(first.n || '')}</td><td class="num">${q ? esc(q) : ''}</td><td>${esc(first.b || '')}</td><td>${esc(first.f || '')}</td><td class="tm">${esc(t)}</td></tr>`;
+    const mvTxt = first.mv ? ` <span style="color:${first.mv==='AGV'?'#1565C0':'#888'}">${esc(first.mv)}${first.src&&first.mv==='AGV'?'←'+esc(first.src):''}</span>` : '';
+    return `<tr data-c="${esc(codes.join(' '))}" data-l="${esc(first.l)}" data-p="${esc(first.p || '')}" data-n="${esc(first.n || '')}"><td class="loc">${esc(first.l)}</td><td class="code">${esc(codes.join(' / '))}${multi}${mvTxt}</td><td class="pn">${esc(first.p || '')}</td><td>${esc(first.n || '')}</td><td class="num">${q ? esc(q) : ''}</td><td>${esc(first.b || '')}</td><td>${esc(first.f || '')}</td><td class="tm">${esc(t)}</td></tr>`;
   }).join('');
   const empty = boxRows.length ? '' : `<div class="empty">账本为空：请在 PDA「位置登记」导入账本或登记库位，同步后这里自动出现数据。</div>`;
   return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>货位账本</title>
@@ -434,7 +435,7 @@ function ro(){
   box.innerHTML='<table><thead><tr><th>出库单号</th><th>时间</th><th>操作人</th><th>转入货位</th><th>关联领料单</th><th>标签</th><th>核对</th><th>明细（标签·零件·数量·原货位）</th></tr></thead><tbody>'+
     arr.map(function(o){
       var its=o.items||[];var cked=its.filter(function(e){return e.checked===true}).length;
-      return '<tr><td class="mono">'+esc(o.orderNo)+'</td><td class="mono">'+t2s(o.createdAt)+'</td><td>'+esc(o.operator||'')+'</td><td>'+esc(o.toLoc||'')+'</td><td class="mono">'+esc(o.linkReqNo||'')+'</td><td>'+its.length+'</td><td>'+(its.length&&cked===its.length?'<span class="ck">全部已核对</span>':cked+'/'+its.length)+'</td><td style="max-width:460px">'+its.map(function(e){return '<div class="mono" style="font-size:11px">'+esc(e.barcode)+' · '+esc(e.code)+' · '+esc(e.qty)+(e.fromLoc?' · <b>原 '+esc(e.fromLoc)+'</b>':'')+'</div>'}).join('')+'</td></tr>'
+      return '<tr><td class="mono">'+esc(o.orderNo)+'</td><td class="mono">'+t2s(o.createdAt)+'</td><td>'+esc(o.operator||'')+'</td><td>'+esc(o.toLoc||'')+'</td><td class="mono">'+esc(o.linkReqNo||'')+'</td><td>'+its.length+'</td><td>'+(its.length&&cked===its.length?'<span class="ck">全部已核对</span>':cked+'/'+its.length)+'</td><td style="max-width:460px">'+its.map(function(e){return '<div class="mono" style="font-size:11px">'+esc(e.barcode)+' · '+esc(e.code)+' · '+esc(e.qty)+(e.fromLoc?' · <b>原 '+esc(e.fromLoc)+'</b>':'')+(e.move?' · '+(e.move==='AGV'?'<span style="color:#1565C0">🚗AGV</span>':'<span style="color:#888">🚶人工</span>'):'')+'</div>'}).join('')+'</td></tr>'
     }).join('')+'</tbody></table>';
 }
 function ri(){
@@ -627,7 +628,8 @@ const server = http.createServer(async (req, res) => {
           seen.add(c);
           clean.push({ c, l, f: String((it && it.f) || '').slice(0, 40), t: Number(it && it.t) || 0,
             p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').slice(0, 80),
-            q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40), pid: String((it && it.pid) || '').slice(0, 40) });
+            q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40), pid: String((it && it.pid) || '').slice(0, 40),
+            mv: String((it && it.mv) || '').slice(0, 10), src: String((it && it.src) || '').slice(0, 40) });
         }
         // 增量合并：按标签号 upsert（登记时间新者胜）+ 墓碑删除，多PDA互不覆盖
         const cur = new Map(db.ledger.map(x => [String(x.c).toUpperCase(), x]));
