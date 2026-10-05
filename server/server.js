@@ -699,9 +699,12 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, reqs: list.map(reqView) });
         }
 
-        // 可选仓管员列表（新建单指定用）
+        // 可选仓管员列表（新建单指定用）；lastAssigneeId=本人最近一次指定过的仓管（默认带出）
         if (req.method === 'GET' && p === '/api/requisitions/warehouse-users') {
-          return send(res, 200, { ok: true, users: db.users.filter(x => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).map(x => ({ id: x.id, name: x.name })) });
+          const wh = db.users.filter(x => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).map(x => ({ id: x.id, name: x.name }));
+          const last = db.requisitions.slice().reverse().find(r => r.by === u.id && r.assigneeId);
+          const lastAssigneeId = last && wh.some(x => x.id === last.assigneeId) ? last.assigneeId : '';
+          return send(res, 200, { ok: true, users: wh, lastAssigneeId });
         }
 
         // 通知拉取（取回即标记已读）
@@ -713,8 +716,8 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, notifications: mine });
         }
 
-        // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel)$/);
+        // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign)$/);
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
@@ -766,6 +769,21 @@ const server = http.createServer(async (req, res) => {
             r.status = 'rejected'; r.rejectReason = reason;
             hpush(`拒单：${reason}`);
             notify(r.by, 'req_reject', `你的领料单 ${r.no} 被 ${u.name} 拒绝：${reason}`, r.id);
+          } else if (act === 'reassign') {
+            // 管理员转派：仅待接单状态；改指定人并重置30分钟窗口（未指定单也可事后锁定）
+            if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可转派' });
+            if (r.status !== 'pending') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可转派` });
+            const tId = String(b.assigneeId || '').trim();
+            const t = db.users.find(x => x.id === tId && x.enabled && (x.role === 'warehouse' || x.role === 'admin'));
+            if (!t) return send(res, 400, { ok: false, msg: '目标仓管员不存在或未启用' });
+            const oldId = r.assigneeId || ''; const oldName = r.assigneeName || '';
+            if (oldId === tId) return send(res, 200, { ok: true, req: reqView(r) }); // 幂等：目标就是当前指定人
+            r.assigneeId = t.id; r.assigneeName = t.name;
+            r.assignOpenAt = new Date(Date.now() + 30 * 60000).toISOString();
+            hpush(`${oldName ? `转派：${oldName} → ${t.name}` : `指定给 ${t.name}`}（${u.name}）`);
+            if (oldId && oldId !== t.id) notify(oldId, 'req_reassign', `领料单 ${r.no} 已从你转派给 ${t.name}`, r.id);
+            notify(t.id, 'req_new', `${u.name} 指定你备料：领料单 ${r.no}：${reqItemsSuggestText(r)}（30分钟内未接单将放开给全部仓管）`, r.id);
+            notify(r.by, 'req_reassign', `你的领料单 ${r.no} ${oldName ? '已由管理员从 ' + oldName : '已指定给'} 转派给 ${t.name}`.replace('已由管理员从 转派给', '已由管理员转派给'), r.id);
           } else if (act === 'scan') {
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可扫码发料' });
             if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可发料` });

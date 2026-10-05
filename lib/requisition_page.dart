@@ -183,7 +183,14 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
     super.initState();
     AuthApi.reqWarehouseUsers().then((r) {
       if (!mounted) return;
-      if (r["ok"] == true) setState(() => _warehouses = List<Map>.from(r["users"] ?? []));
+      if (r["ok"] == true) {
+        final list = List<Map>.from(r["users"] ?? []);
+        final last = r["lastAssigneeId"]?.toString() ?? ""; // 上次指定过的人，默认沿用
+        setState(() {
+          _warehouses = list;
+          if (last.isNotEmpty && list.any((w) => w["id"] == last)) _assigneeId = last;
+        });
+      }
     });
   }
 
@@ -623,6 +630,30 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _locFocus.requestFocus(); });
   }
 
+  /// 管理员转派/指定：选择目标仓管员（服务器会重置30分钟窗口）
+  Future<void> _reassign() async {
+    final curId = _r["assigneeId"]?.toString() ?? "";
+    final r = await AuthApi.reqWarehouseUsers();
+    if (!mounted) return;
+    if (r["ok"] != true) { widget.toast("获取仓管员列表失败：${r["msg"]}"); return; }
+    final users = List<Map>.from(r["users"] ?? []).where((w) => w["id"] != curId).toList();
+    if (users.isEmpty) { widget.toast(curId.isEmpty ? "没有可指定的仓管员" : "没有其他可转派的仓管员"); return; }
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      builder: (mctx) => SafeArea(child: ListView(
+        shrinkWrap: true, padding: const EdgeInsets.symmetric(vertical: 8), children: [
+          Padding(padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
+            child: Text(curId.isEmpty ? "指定仓管员备料" : "转派给其他仓管员", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold))),
+          ...users.map((w) => ListTile(
+            leading: CircleAvatar(radius: 15, child: Text((w["name"] ?? "?").toString().substring(0, 1), style: const TextStyle(fontSize: 13))),
+            title: Text(w["name"]?.toString() ?? ""),
+            onTap: () => Navigator.pop(mctx, w["id"].toString()),
+          )),
+        ])));
+    if (picked == null || !mounted) return;
+    await _act("reassign", {"assigneeId": picked});
+  }
+
   @override
   Widget build(BuildContext context) {
     final st = _r["status"].toString();
@@ -775,6 +806,12 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               style: TextStyle(fontSize: 12, color: Auth.user?.id == aId ? Colors.deepOrange : const Color(0xFF3949AB))),
           ),
           Row(children: [
+            if (st == 'pending' && Auth.isAdmin) ...[
+              Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF3949AB)),
+                onPressed: _busy ? null : _reassign,
+                icon: const Icon(Icons.swap_horiz, size: 16), label: Text(aName.isEmpty ? "指定" : "转派"))),
+              const SizedBox(width: 8),
+            ],
             if (st == 'pending' && isWh) ...[
               Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
                 onPressed: (_busy || assignBlocked) ? null : () async {
