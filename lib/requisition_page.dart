@@ -423,7 +423,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               final multi = (perBoxCodes[loc] ?? 1) > 1;
               final agv = (b["agv"] ?? "").toString();
               return InkWell(
-                onTap: () => _onSuggestTap(code, loc, (b["f"] ?? "").toString(), item["partNo"]?.toString() ?? ""),
+                onTap: () {
+                  if (agv.isNotEmpty) { widget.toast("框 $code 已叫AGV → 站台 $agv，请勿重复叉取", err: false); return; }
+                  _onSuggestTap(code, loc, (b["f"] ?? "").toString(), item["partNo"]?.toString() ?? "");
+                },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(

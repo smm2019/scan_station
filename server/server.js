@@ -693,6 +693,35 @@ const server = http.createServer(async (req, res) => {
         console.log(`[scanlog] ${u.name} 删批次 ${batch}：${n} 条 → 共 ${db.scanlogCount} 条`);
         return send(res, 200, { ok: true, deleted: n, count: db.scanlogCount });
       }
+      // ================= AGV 叫车占位（原子防重：叫车前占位成功才允许下发任务） =================
+      // 规则：同容器占位15分钟（防两人重复叉同一框）；同一站台60秒内不可再次叫车（不限同一人，确保单站台单任务）。
+      // PDA 侧还会实时复核 WMAS 在途任务数；MES 下发失败由调用方 release 回滚占位。
+      if (req.method === 'POST' && p === '/api/agv/claim') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可叫车' });
+        const b = await readBody(req);
+        const cn = String(b.container || '').trim().toUpperCase();
+        const stn = String(b.station || '').trim().toUpperCase();
+        const from = String(b.fromLoc || '').trim().toUpperCase();
+        if (!cn || !stn) return send(res, 400, { ok: false, msg: '缺少 container/station' });
+        if (!db.agvClaims) db.agvClaims = {};
+        const now = Date.now();
+        for (const k of Object.keys(db.agvClaims)) { if ((db.agvClaims[k].at || 0) + 15 * 60 * 1000 < now) delete db.agvClaims[k]; }
+        for (const c of Object.values(db.agvClaims)) {
+          const age = now - (c.at || 0);
+          if (c.cn === cn) return send(res, 200, { ok: false, code: 'agv_busy', msg: `容器 ${cn} 已在叫车流程中（${c.by} ${new Date(c.at).toLocaleTimeString('zh-CN', { hour12: false })} 叫往 ${c.stn}），请勿重复叉取` });
+          if (c.stn === stn && age < 60 * 1000) return send(res, 200, { ok: false, code: 'agv_busy', msg: `站台 ${stn} ${age < 5000 ? '刚刚' : Math.round(age / 1000) + '秒前'}刚被叫车（${c.by} ← ${c.from}），同一时间只允许一个任务，请等送达或换站台` });
+        }
+        db.agvClaims[`${cn}|${stn}`] = { cn, stn, from, by: u.name, at: now };
+        save();
+        return send(res, 200, { ok: true });
+      }
+      if (req.method === 'POST' && p === '/api/agv/release') {
+        const b = await readBody(req);
+        const cn = String(b.container || '').trim().toUpperCase();
+        const stn = String(b.station || '').trim().toUpperCase();
+        if (db.agvClaims) { delete db.agvClaims[`${cn}|${stn}`]; save(); }
+        return send(res, 200, { ok: true });
+      }
       if (req.method === 'POST' && p === '/api/outbound/sync') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步出库单' });
         const b = await readBody(req);
@@ -883,6 +912,17 @@ const server = http.createServer(async (req, res) => {
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
             const code = String(b.barcode || '').trim().toUpperCase();
             if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
+            // 防重复叫车：该标签或其同框兄弟码已叫过 → 拒绝登记（叫车前端已先占位，此处兜底）
+            const _lk = (s) => { s = String(s || '').trim().toUpperCase(); const i = s.lastIndexOf('-'); return i > 0 ? s.slice(0, i) : s; };
+            const called = (target.agvCalled || []).map(e => String(e.c).toUpperCase());
+            const self = (db.ledger || []).find(x => String(x.c).toUpperCase() === code);
+            const sp = self && self.p ? String(self.p).toUpperCase() : '';
+            for (const x of db.ledger || []) {
+              const xc = String(x.c).toUpperCase();
+              if (called.includes(xc) && (xc === code || (sp && String(x.p || '').toUpperCase() === sp) || (!sp && _lk(x.l) === _lk(self && self.l)))) {
+                return send(res, 200, { ok: false, msg: `同框标签 ${xc} 已叫过AGV，请勿重复叉取` });
+              }
+            }
             target.agvCalled = (target.agvCalled || []).filter(e => String(e.c).toUpperCase() !== code);
             target.agvCalled.push({ c: code, s: String(b.station || '').trim(), t: new Date().toISOString() });
             hpush(`叫AGV ${b.partNo} 标签 ${code} → ${b.station || '?'}`);

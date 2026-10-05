@@ -123,6 +123,12 @@ class AuthApi {
       _req("POST", "/api/scanlog/delete", body: {"batch": batch}, token: await AuthStore.token());
   static Future<Map> outboundSync(Map order) async =>
       _req("POST", "/api/outbound/sync", body: order, token: await AuthStore.token());
+  // AGV 叫车占位：同容器（15分钟）或同站台（60秒内）已有占位则拒绝，两台PDA并发点击只放行一个
+  static Future<Map> agvClaim({required String container, required String station, required String fromLoc}) async =>
+      _req("POST", "/api/agv/claim", body: {"container": container, "station": station, "fromLoc": fromLoc}, token: await AuthStore.token());
+  static Future<void> agvRelease({required String container, required String station}) async {
+    try { await _req("POST", "/api/agv/release", body: {"container": container, "station": station}, token: await AuthStore.token()); } catch (_) {}
+  }
 }
 
 /// 全局会话（AuthGate 启动时填充；MainPage 等直接读静态成员）

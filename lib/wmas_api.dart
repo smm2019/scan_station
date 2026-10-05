@@ -348,7 +348,25 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
     final stn = _station, cn = _picked;
     if (stn == null || (cn ?? '').isEmpty || _sending) return;
     setState(() => _sending = true);
+    // 先向服务器占位再下发任务：同框/同站台并发只放行一人，杜绝两台PDA重复叫车
+    final claim = await AuthApi.agvClaim(container: cn!, station: stn, fromLoc: widget.fromLoc);
+    if (claim["ok"] != true) {
+      if (!mounted) return;
+      setState(() => _sending = false);
+      widget.toast("无法叫车：${claim["msg"] ?? "占位失败"}", err: true);
+      return;
+    }
+    // 下发前实时复核 WMAS：该站台已有在途任务则 AGV 卸不下，拒绝并回滚占位
+    final busyNow = (await wmasStationsBusy())[stn] ?? 0;
+    if (busyNow > 0) {
+      await AuthApi.agvRelease(container: cn!, station: stn);
+      if (!mounted) return;
+      setState(() { _sending = false; _busy = {..._busy, stn: busyNow}; });
+      widget.toast("叫车取消：站台 $stn 已有 $busyNow 个在途任务，请等送达或换站台", err: true);
+      return;
+    }
     final r = await WmasTask.createCarry(startPoint: widget.fromLoc, endPoint: stn, containerNo: cn!);
+    if (r["ok"] != true) await AuthApi.agvRelease(container: cn!, station: stn); // 任务没发出去→释放占位允许重叫
     if (!mounted) return;
     setState(() => _sending = false);
     widget.toast("${r["ok"] == true ? "AGV出库任务：$stn ← ${widget.fromLoc}" : "叫车失败：${r["msg"]}"}", err: r["ok"] != true);
