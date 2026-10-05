@@ -34,6 +34,7 @@ part 'wmas_api.dart';
 part 'collection_ledger.dart'; // 位置登记：上架/移库/拣下统一入口 + WPS货架账本导入
 part 'inventory_stock_page.dart'; // 库存：期初+入库流水(采集派生)-出库流水(直调派生)，货架库位占用登记
 part 'requisition_page.dart'; // 领料单：物料员下单/签收，仓管接单/扫码发料，服务端状态机
+part 'agv_api.dart'; // AGV调度系统(哈工库讯RCS)：任务/车辆/交管监控 + 实时大屏WebView + 设置
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -983,7 +984,7 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     super.initState();
     _isar = _globalIsar;
     //初始化Tab控制器
-    _tabController = TabController(length: 6, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
     _startNotifPolling();
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
@@ -2329,6 +2330,7 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
             Tab(text: "直调"),
             Tab(text: "库存"),
             Tab(text: "领料"),
+            Tab(text: "AGV"),
           ],
         ),
       ),
@@ -2658,7 +2660,9 @@ SingleChildScrollView(
           //库存页面（期初+入出库流水实时算库存，货架库位占用）
           const InventoryStockPage(),
           //领料单页面
-          const RequisitionPage()
+          const RequisitionPage(),
+          //AGV调度监控模块（任务/车辆/交管/实时大屏）
+          const AgvMonitorPage()
         ],
       ),
     bottomNavigationBar: BottomNavigationBar(
@@ -3135,6 +3139,12 @@ class SettingsMenuPage extends StatelessWidget {
             title: "WMAS(AGV)设置", subtitle: "调度服务地址 / 一键建任务账号",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const WmasSettingPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.smart_toy_outlined, color: const Color(0xFF37474F),
+            title: "AGV调度系统(哈工库讯)", subtitle: "登录账号 / 实时大屏地址（AGV模块数据源）",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const AgvSettingPage())),
           ),
           _settingTile(
             context, icon: Icons.volume_up_outlined, color: Colors.teal,

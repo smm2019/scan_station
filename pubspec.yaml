@@ -21,6 +21,7 @@ dependencies:
   pointycastle: 3.7.4
   xml: ^6.5.0
   asn1lib: ^1.6.4
+  webview_flutter: 4.7.0 # AGV模块：哈工库讯实时调度大屏WebView
 
 dev_dependencies:
   flutter_test:
