@@ -259,7 +259,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
           ...list.map((p) => ListTile(
             dense: true,
             title: Text("${p.partNo}  ${p.itemName}", style: const TextStyle(fontSize: 13)),
-            subtitle: Text("在库 ${p.inBoxes} 框 · ${_fmtInvNum(p.inStockQty)}", style: const TextStyle(fontSize: 11)),
+            subtitle: Text("在库 ${p.inBoxes} 框 · ${_fmtInvNum(p.inStockQty)}${p.perBoxQty > 0 ? " · ≈${_fmtInvNum(p.perBoxQty.roundToDouble())}件/框（按框领，填框数×约数）" : ""}", style: const TextStyle(fontSize: 11)),
             trailing: SizedBox(width: 90, child: TextField(
               controller: _qtyCtrl.putIfAbsent(p.partNo, () => TextEditingController()),
               keyboardType: TextInputType.number,

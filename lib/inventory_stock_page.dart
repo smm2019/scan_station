@@ -43,6 +43,7 @@ class _StockPartRow {
   double opening = 0, inQty = 0, outQty = 0;
   double inStockQty = 0;   // 在库标签数量合计（未作废且未出库）
   int inBoxes = 0;         // 在库框数
+  double get perBoxQty => inBoxes > 0 ? inStockQty / inBoxes : 0; // 平均件/框（发料最小单位=1框）
   double get stock => opening + inStockQty; // 标签台账法：库存=在库框合计(+可选期初)
 }
 

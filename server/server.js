@@ -169,10 +169,13 @@ function renderReqPrint(r) {
   const rows = r.items.map((i, idx) => {
     const got = issuedOf(i).reduce((s, e) => s + e.q, 0);
     const codes = issuedOf(i).map(e => e.c).join(' ');
+    const needQ = Number(i.qty) || 0;
+    const overQ = got > needQ ? got - needQ : 0;
     // PDA 转单进度回写纸面：已转→绿色✓；跳过→灰色✗
     let stMark = '';
-    if (i.transferred) stMark = ` <span style="color:#0a7d32;font-weight:bold">✓已转${got >= (Number(i.qty) || 0) ? '' : '(短装)'}</span>`;
+    if (i.transferred) stMark = ` <span style="color:#0a7d32;font-weight:bold">✓已转${got >= needQ ? '' : '(短装)'}</span>`;
     else if (i.skipped) stMark = ' <span style="color:#999">✗跳过</span>';
+    if (overQ > 0) stMark += ` <span style="color:#e65100;font-weight:bold">（多发${overQ}件·整框发出）</span>`;
     // 货位列：系统按同步账本 FIFO 给建议；没数据则留手写格
     const sg = i.transferred || i.skipped ? null : pickSuggest(i.partNo, Number(i.qty) || 0, new Set(issuedOf(i).map(e => String(e.c).toUpperCase())), agvMapOf(i));
     let locCell = '';
