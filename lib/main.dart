@@ -1598,6 +1598,7 @@ try {
           }
         }
       }
+      await ledgerUnmarkDeleted(codes); //重新登记→撤销本地墓碑，别台PDA拉取后复活本位
       if (!_palletMode) _ledgerLocCtrl.clear(); //登记成功后才清；整托多码保留复用同位
       _scheduleLedgerSync();
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("账本已登记：$loc（${codes.length} 码）"), backgroundColor: const Color(0xFF2E7D32)));
@@ -2228,6 +2229,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
                                           }
                                           await _isar.batchInfos.delete(b.id);
                                         });
+                                        AuthApi.scanlogDeleteBatch(b.batchId); //同步删除电脑侧该批流水，防多PDA看板残留
                                         //如果删除的是当前批次，则自动切换可用批次
                                         if(_currentBatchId == b.batchId){
                                           await _loadLastBatch();
@@ -3101,12 +3103,27 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AccountPage())),
           ),
-          _settingTile(
-            context, icon: Icons.shelves, color: Colors.teal,
-            title: "位置登记", subtitle: "上架 / 移库 / 拣下 / 导入WPS货架账本",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const LocationRegPage())),
-          ),
+          if (Auth.can("location_reg"))
+            _settingTile(
+              context, icon: Icons.shelves, color: Colors.teal,
+              title: "位置登记", subtitle: "上架 / 移库 / 拣下 / 导入WPS货架账本",
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const LocationRegPage())),
+            )
+          else
+            _settingTile(
+              context, icon: Icons.cloud_download, color: Colors.teal,
+              title: "拉取货位账本", subtitle: "从电脑服务器合并最新账本（库存/领料选件用）",
+              onTap: () async {
+                final r = await ledgerPullMerge();
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text(r["ok"] == true
+                      ? "账本已合并：新增 ${r["added"]} · 更新 ${r["updated"]} · 删除 ${r["deleted"]}（共 ${r["total"]} 条）"
+                      : "拉取失败：${r["msg"]}"),
+                  backgroundColor: r["ok"] == true ? Colors.green : Colors.red));
+              },
+            ),
           _settingTile(
             context, icon: Icons.dns_outlined, color: const Color(0xFF3F51B5),
             title: "MES服务器设置", subtitle: "服务地址 / 账号登录 / 退出登录",

@@ -51,8 +51,16 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
     _load();
   }
 
+  static DateTime _lastPull = DateTime(2000); // 账本拉取节流：超5分钟才向服务器合并
+
   Future<void> _load() async {
     setState(() { _loading = true; _err = ""; });
+    // 物料员本机没有采集/登记数据：先与电脑账本增量合并，建单选件才有库存与货位
+    if (Auth.user?.role == 'material' &&
+        DateTime.now().difference(_lastPull) > const Duration(minutes: 5)) {
+      _lastPull = DateTime.now();
+      await ledgerPullMerge();
+    }
     final r = await AuthApi.reqList();
     if (!mounted) return;
     if (r["ok"] == true) {

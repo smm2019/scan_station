@@ -194,6 +194,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
         }
       }
     });
+    if (newLoc.isEmpty) { await ledgerMarkDeleted(codes); } else { await ledgerUnmarkDeleted(codes); } // 拣下记墓碑；登记撤销墓碑
     if (!mounted) return;
     _toast(newLoc.isEmpty ? "已拣下（${codes.length} 码）" : "已登记 $newLoc（${codes.length} 码）", err: false);
     if (await Vibration.hasVibrator() ?? false) await Vibration.vibrate(duration: 80);
@@ -235,22 +236,12 @@ class _LocationRegPageState extends State<LocationRegPage> {
   Future<void> _syncLedger({bool quietOnOk = false}) async {
     try {
       final all = await _globalIsar.shelfPlacements.where().findAll();
-      if (all.isEmpty) { _toast("本地账本为空，无需同步"); return; }
-      final infos = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode: e};
-      final pids = {for (final e in await _globalIsar.recordExtras.where().findAll()) e.goodsCode: e.palletId}; // 托号：整托多码同框
-      final items = all.map((p) {
-        final i = infos[p.goodsCode];
-        final pid = pids[p.goodsCode] ?? "";
-        return {
-          "c": p.goodsCode, "l": p.loc, "f": p.container, "t": p.assignedAt,
-          if (pid.isNotEmpty) "pid": pid,
-          if (i != null && !i.missing) ...{"p": i.partNo, "n": i.itemName, "q": i.qty, "b": i.lotNo},
-        };
-      }).toList();
-      final r = await AuthApi.ledgerSync(items);
+      final hasTomb = (await ledgerTombs()).isNotEmpty;
+      if (all.isEmpty && !hasTomb) { _toast("本地账本为空，无需同步"); return; }
+      final r = await ledgerPushNow(); // 统一走带墓碑的增量合并推送
       if (!mounted) return;
       if (r["ok"] == true) {
-        if (!quietOnOk) _toast("已同步电脑：${items.length} 条（v${r["rev"]}），其他设备打开 /board/ledger 可查", err: false);
+        if (!quietOnOk) _toast("已同步电脑：账本 ${all.length} 条（v${r["rev"]}），其他设备打开 /board/ledger 可查", err: false);
       } else {
         _toast("同步到电脑失败：${r["msg"]}（本地数据已保存，可点右上云图标重试）");
       }
@@ -309,6 +300,11 @@ class _LocationRegPageState extends State<LocationRegPage> {
     if (yes != true) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     final oper = Auth.user?.name ?? "WPS导入";
+    // 被本次导入替换掉的旧标签：记墓碑随推送删除（导入=以这份表为权威重建账本）
+    final newSet = parsed.map((e) => e[0].toUpperCase()).toSet();
+    final oldAll = await _globalIsar.shelfPlacements.where().findAll();
+    final dropped = oldAll.map((p) => p.goodsCode).where((c) => !newSet.contains(c.toUpperCase())).toList();
+    if (dropped.isNotEmpty) await ledgerMarkDeleted(dropped);
     await _globalIsar.writeTxn(() async {
       await _globalIsar.shelfPlacements.where().deleteAll();
       await _globalIsar.labelInfos.where().deleteAll();

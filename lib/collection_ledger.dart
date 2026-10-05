@@ -387,7 +387,6 @@ void scheduleLedgerPush({int seconds = 30}) {
 Future<Map> ledgerPushNow() async {
   try {
     final all = await _globalIsar.shelfPlacements.where().findAll();
-    if (all.isEmpty) return {"ok": false, "msg": "账本为空"};
     final infos = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode: e};
     final pids = {for (final e in await _globalIsar.recordExtras.where().findAll()) e.goodsCode: e.palletId}; // 托号：整托多码同框
     final items = all.map((p) {
@@ -399,10 +398,69 @@ Future<Map> ledgerPushNow() async {
         if (i != null && !i.missing) ...{"p": i.partNo, "n": i.itemName, "q": i.qty, "b": i.lotNo},
       };
     }).toList();
-    return await AuthApi.ledgerSync(items);
+    final del = await ledgerTombs();
+    if (items.isEmpty && del.isEmpty) return {"ok": false, "msg": "账本为空"};
+    final r = await AuthApi.ledgerSync(items, del: del);
+    if (r["ok"] == true) await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
+    return r;
   } catch (e) {
     return {"ok": false, "msg": "$e"};
   }
+}
+
+// ===== 账本删除墓碑：本地删除记入并随推送上报，避免"整表替换"误删别台PDA的数据 =====
+const _kLedgerTombs = "ledger_tombstones";
+
+Future<Map<String, int>> _loadTombs() async {
+  final sp = await SharedPreferences.getInstance();
+  final s = sp.getString(_kLedgerTombs) ?? "";
+  if (s.isEmpty) return {};
+  try {
+    final m = jsonDecode(s) as Map<String, dynamic>;
+    return m.map((k, v) => MapEntry(k, (v as num).toInt()));
+  } catch (_) { return {}; }
+}
+
+Future<void> _saveTombs(Map<String, int> m) async {
+  final sp = await SharedPreferences.getInstance();
+  if (m.length > 8000) { // 只留最新8000条，防无限膨胀
+    final e = m.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    m = Map.fromEntries(e.take(8000));
+  }
+  await sp.setString(_kLedgerTombs, jsonEncode(m));
+}
+
+/// 记删除墓碑（拣下/整框拣下/导入替换掉的旧标签）
+Future<void> ledgerMarkDeleted(Iterable<String> codes) async {
+  final m = await _loadTombs();
+  final now = DateTime.now().millisecondsSinceEpoch;
+  var changed = false;
+  for (final c in codes) { final up = c.toUpperCase(); if (up.isNotEmpty) { m[up] = now; changed = true; } }
+  if (changed) await _saveTombs(m);
+}
+
+/// 重新登记某标签 → 撤销其墓碑（服务器端同样"比墓碑新即复活"）
+Future<void> ledgerUnmarkDeleted(Iterable<String> codes) async {
+  final m = await _loadTombs();
+  var changed = false;
+  for (final c in codes) { if (m.remove(c.toUpperCase()) != null) changed = true; }
+  if (changed) await _saveTombs(m);
+}
+
+Future<List<Map>> ledgerTombs() async {
+  final m = await _loadTombs();
+  return m.entries.map((e) => {"c": e.key, "t": e.value}).toList();
+}
+
+Future<void> ledgerClearSentTombs(List<Map> sent) async {
+  if (sent.isEmpty) return;
+  final m = await _loadTombs();
+  for (final d in sent) {
+    final c = d["c"]?.toString() ?? "";
+    final t = (d["t"] as num?)?.toInt() ?? 0;
+    if ((m[c] ?? 0) <= t) m.remove(c); // 仅清已上报的；期间又删过则保留新墓碑
+  }
+  await _saveTombs(m);
 }
 
 /// 从账本查某标签当前货位（出库单补记原货位用），查不到返回空串
@@ -414,15 +472,87 @@ Future<String> ledgerLocOfCode(String code) async {
   } catch (_) { return ""; }
 }
 
+/// 从电脑服务器拉取账本并**增量合并**进本机（物料员/新PDA看库存的关键：本机没采集也能有数据）。
+/// 规则与服务器一致：标签级"登记时间新者胜"；服务器墓碑比本机新→本机消位并落墓碑。
+Future<Map> ledgerPullMerge() async {
+  try {
+    final r = await AuthApi.ledgerGet();
+    if (r["ok"] != true) return {"ok": false, "msg": (r["msg"] ?? "拉取失败").toString()};
+    final items = List<Map>.from(r["items"] ?? []);
+    final tomb = List<Map>.from(r["tomb"] ?? []);
+    final local = await _globalIsar.shelfPlacements.where().findAll();
+    final localMap = {for (final p in local) p.goodsCode.toUpperCase(): p};
+    final tombMap = await _loadTombs();
+    var added = 0, updated = 0, deleted = 0;
+    final upserts = <ShelfPlacement>[];
+    final infoUpserts = <LabelInfo>[];
+    final rmIds = <int>{};
+    final tombAdds = <String, int>{};
+    final now = DateTime.now().millisecondsSinceEpoch;
+    for (final x in items) {
+      final c = (x["c"] ?? "").toString().trim().toUpperCase();
+      final l = (x["l"] ?? "").toString().trim().toUpperCase();
+      if (c.isEmpty || l.isEmpty) continue;
+      final t = (x["t"] as num?)?.toInt() ?? 0;
+      if ((tombMap[c] ?? 0) >= t && t > 0) continue; // 本机已删除且更新 → 不复活
+      final me = localMap[c];
+      if (me != null && me.assignedAt >= t) continue; // 本机登记时间更新 → 保留本机
+      upserts.add(ShelfPlacement()
+        ..goodsCode = c ..loc = l
+        ..container = (x["f"] ?? "").toString()
+        ..operator = (x["by"] ?? "拉取合并").toString()
+        ..assignedAt = t > 0 ? t : now);
+      final pn = (x["p"] ?? "").toString().toUpperCase();
+      if (pn.isNotEmpty) {
+        infoUpserts.add(LabelInfo()
+          ..goodsCode = c ..partNo = pn
+          ..itemName = (x["n"] ?? "").toString()
+          ..qty = (x["q"] as num?)?.toDouble() ?? 0
+          ..lotNo = (x["b"] ?? "").toString()
+          ..missing = false ..syncedAt = now);
+      }
+      if (me == null) added++; else { rmIds.add(me.id); updated++; }
+    }
+    // 服务器墓碑比本机新 → 本机消位并落墓碑（别台拣下的框这里同步消失）
+    for (final d in tomb) {
+      final c = (d["c"] ?? "").toString().trim().toUpperCase();
+      final t = (d["t"] as num?)?.toInt() ?? 0;
+      if (c.isEmpty || t == 0) continue;
+      final me = localMap[c];
+      if (me != null && me.assignedAt > t) continue; // 本机后来重新登记 → 保留
+      if (me != null) { rmIds.add(me.id); deleted++; }
+      if ((tombMap[c] ?? 0) < t) tombAdds[c] = t;
+    }
+    await _globalIsar.writeTxn(() async {
+      if (rmIds.isNotEmpty) await _globalIsar.shelfPlacements.deleteAll(rmIds.toList());
+      if (upserts.isNotEmpty) await _globalIsar.shelfPlacements.putAll(upserts);
+      if (infoUpserts.isNotEmpty) {
+        for (final e in infoUpserts) { await _globalIsar.labelInfos.filter().goodsCodeEqualTo(e.goodsCode).deleteAll(); }
+        await _globalIsar.labelInfos.putAll(infoUpserts);
+      }
+    });
+    if (tombAdds.isNotEmpty) {
+      final m = await _loadTombs();
+      m.addAll(tombAdds);
+      await _saveTombs(m);
+    }
+    return {"ok": true, "added": added, "updated": updated, "deleted": deleted, "total": items.length};
+  } catch (e) {
+    return {"ok": false, "msg": "$e"};
+  }
+}
+
 /// 从账本拣下这些标签（出库/发料用），并尽快推送电脑。找不到/已不在账本不报错。
 Future<void> ledgerRemoveAndPush(Iterable<String> codes) async {
   try {
+    final gone = <String>[];
     await _globalIsar.writeTxn(() async {
       for (final c in codes) {
         final olds = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(c).findAll();
-        if (olds.isNotEmpty) await _globalIsar.shelfPlacements.deleteAll(olds.map((e) => e.id).toList());
+        if (olds.isNotEmpty) { gone.add(c); await _globalIsar.shelfPlacements.deleteAll(olds.map((e) => e.id).toList()); }
       }
     });
+    if (gone.isNotEmpty) await ledgerMarkDeleted(gone); // 记墓碑：服务器合并时同步删除，别台PDA可拉取感知
     scheduleLedgerPush(seconds: 8);
   } catch (e) {
     debugPrint("[ledger] 拣下失败：$e");

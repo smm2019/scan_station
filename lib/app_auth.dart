@@ -110,15 +110,17 @@ class AuthApi {
   });
   static Future<Map> notifications() async => _req("GET", "/api/notifications", token: await AuthStore.token());
 
-  // ---- 货位账本同步（PDA → 电脑服务器，全量快照） ----
-  /// items: [{c:标签, l:货位, f:料框, t:毫秒}]
-  static Future<Map> ledgerSync(List<Map> items) async =>
-      _req("POST", "/api/ledger/sync", body: {"items": items}, token: await AuthStore.token());
-  /// 拉取电脑服务器上的账本快照（公开只读接口）
+  // ---- 货位账本同步（PDA ↔ 电脑服务器，增量合并：新者胜+墓碑删除） ----
+  /// items: [{c:标签, l:货位, f:料框, t:毫秒, pid:托号}]；del: [{c:标签, t:删除时间}] 墓碑
+  static Future<Map> ledgerSync(List<Map> items, {List<Map> del = const []}) async =>
+      _req("POST", "/api/ledger/sync", body: {"items": items, "del": del}, token: await AuthStore.token());
+  /// 拉取电脑服务器上的账本全量（公开只读；含墓碑，PDA 合并用）
   static Future<Map> ledgerGet() async => _req("GET", "/api/ledger");
-  // ---- 采集流水 / 出库单同步（全量推送，服务器按键去重） ----
+  // ---- 采集流水 / 出库单同步（流水按键增量合并；删批次单独上报） ----
   static Future<Map> scanlogSync(List items) async =>
       _req("POST", "/api/scanlog/sync", body: {"items": items}, token: await AuthStore.token());
+  static Future<Map> scanlogDeleteBatch(String batch) async =>
+      _req("POST", "/api/scanlog/delete", body: {"batch": batch}, token: await AuthStore.token());
   static Future<Map> outboundSync(Map order) async =>
       _req("POST", "/api/outbound/sync", body: order, token: await AuthStore.token());
 }

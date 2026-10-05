@@ -20,11 +20,11 @@ const ROLES = ['material', 'warehouse', 'admin']; // 物料员 / 仓管员 / 管
 const ROLE_NAMES = { material: '物料员', warehouse: '仓管员', admin: '管理员' };
 // 按角色功能开关（管理员可在线改；App 登录与心跳时拉取）
 const DEFAULT_FEATURES = {
-  material: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: true, receive_confirm: true, admin_panel: false },
-  warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, admin_panel: false },
-  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, admin_panel: true },
+  material: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: true, receive_confirm: true, location_reg: false, admin_panel: false },
+  warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, location_reg: true, admin_panel: false },
+  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, location_reg: true, admin_panel: true },
 };
-const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', admin_panel: '管理后台' };
+const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', location_reg: '位置登记', admin_panel: '管理后台' };
 
 // ---------------- 存储 ----------------
 function defaultDb() {
@@ -549,7 +549,7 @@ const server = http.createServer(async (req, res) => {
       let list = db.ledger;
       if (fc) list = list.filter(x => String(x.c).toUpperCase().startsWith(fc));
       if (fl) list = list.filter(x => String(x.l).toUpperCase().startsWith(fl));
-      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, items: list });
+      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, items: list, tomb: db.ledgerTomb || [] });
     }
 
     // ---- 货位账本：电脑查询页（表格地图式：按货位排序，同位多标签并排显示）----
@@ -612,7 +612,8 @@ const server = http.createServer(async (req, res) => {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步货位账本' });
         const b = await readBody(req);
         const raw = Array.isArray(b.items) ? b.items : [];
-        if (!raw.length) return send(res, 400, { ok: false, msg: 'items 为空，已拒绝（防止误清空白账本）' });
+        if (!Array.isArray(b.del)) b.del = [];
+        if (!raw.length && !b.del.length) return send(res, 400, { ok: false, msg: 'items/del 均为空，已拒绝（防止误清空白账本）' });
         if (raw.length > 20000) return send(res, 400, { ok: false, msg: '条目超过2万，疑似异常' });
         const seen = new Set(); const clean = [];
         for (const it of raw) {
@@ -625,14 +626,38 @@ const server = http.createServer(async (req, res) => {
             p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').slice(0, 80),
             q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40), pid: String((it && it.pid) || '').slice(0, 40) });
         }
-        if (!clean.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
-        db.ledger = clean;
+        // 增量合并：按标签号 upsert（登记时间新者胜）+ 墓碑删除，多PDA互不覆盖
+        const cur = new Map(db.ledger.map(x => [String(x.c).toUpperCase(), x]));
+        const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), Number(x.t) || 0]));
+        const dels = Array.isArray(b.del) ? b.del : [];
+        let added = 0, updated = 0, skipped = 0, delApplied = 0, delSkipped = 0;
+        for (const it of clean) {
+          const key = it.c;
+          const old = cur.get(key);
+          const tombT = tomb.get(key) || 0;
+          const base = Math.max(tombT, old ? (Number(old.t) || 0) : 0);
+          if (it.t > 0 && it.t < base) { skipped++; continue; } // 严格更旧才忽略：同时间允许刷新（补齐物料信息）
+          if (old) updated++; else added++;
+          cur.set(key, { ...it, by: u.name });
+          if (tombT) tomb.delete(key); // 比墓碑新=重新登记，复活
+        }
+        for (const d of dels) {
+          const c = String((d && d.c) || '').trim().toUpperCase();
+          const t = Number(d && d.t) || 0;
+          if (!c || !t) continue;
+          const old = cur.get(c);
+          const base = Math.max(tomb.get(c) || 0, old ? (Number(old.t) || 0) : 0);
+          if (t > base) { cur.delete(c); tomb.set(c, t); delApplied++; } else delSkipped++; // 别台后续又登记→删除作废
+        }
+        if (!cur.size && !tomb.size && !dels.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
+        db.ledger = [...cur.values()];
+        db.ledgerTomb = [...tomb.entries()].map(([c, t]) => ({ c, t })).sort((a, b2) => b2.t - a.t).slice(0, 20000);
         db.ledgerRev = (db.ledgerRev || 0) + 1;
         db.ledgerAt = new Date().toISOString();
         db.ledgerBy = u.name;
         save();
-        console.log(`[ledger] ${u.name} 同步账本 ${clean.length} 条 → v${db.ledgerRev}`);
-        return send(res, 200, { ok: true, rev: db.ledgerRev, count: clean.length });
+        console.log(`[ledger] ${u.name} 合并：+${added} 改${updated} 删${delApplied} 忽略${skipped + delSkipped} → v${db.ledgerRev}（共 ${db.ledger.length} 条）`);
+        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, skipped, delApplied, delSkipped });
       }
 
       // ================= 采集流水 / 出库单同步（PDA 全量推送，仓管/管理员） =================
@@ -648,10 +673,25 @@ const server = http.createServer(async (req, res) => {
           if (!k) continue;
           snap[k] = { code: String(it.code || '').toUpperCase(), wt: Number(it.wt) || 0, st: String(it.st || ''), gl: String(it.gl || ''), ct: String(it.ct || ''), rm: String(it.rm || '').slice(0, 120), batch: String(it.batch || ''), cx: !!it.cx, t: Number(it.t) || 0, pn: String(it.pn || ''), q: Number(it.q) || 0, mk: String(it.mk || ''), op: String(it.op || '').slice(0, 40), nm: String(it.nm || '').slice(0, 80), lot: String(it.lot || '').slice(0, 40), pid: String(it.pid || '') };
         }
-        db.scanlog = snap; db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(snap).length;
+        if (!Object.keys(snap).length) return send(res, 400, { ok: false, msg: '无有效条目（需 k 主键）' });
+        db.scanlog = Object.assign(db.scanlog || {}, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
+        db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
         save();
-        console.log(`[scanlog] ${u.name} 同步流水 ${db.scanlogCount} 条`);
-        return send(res, 200, { ok: true, count: db.scanlogCount });
+        console.log(`[scanlog] ${u.name} 同步流水 +${Object.keys(snap).length} → 共 ${db.scanlogCount} 条`);
+        return send(res, 200, { ok: true, count: db.scanlogCount, pushed: Object.keys(snap).length });
+      }
+      // 删除某批次采集流水（PDA 删批同步电脑，防看板残留）
+      if (req.method === 'POST' && p === '/api/scanlog/delete') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可删除流水' });
+        const b = await readBody(req);
+        const batch = String(b.batch || '').trim();
+        if (!batch) return send(res, 400, { ok: false, msg: '缺少 batch' });
+        let n = 0;
+        for (const k of Object.keys(db.scanlog || {})) { if (String(db.scanlog[k].batch || '') === batch) { delete db.scanlog[k]; n++; } }
+        db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
+        save();
+        console.log(`[scanlog] ${u.name} 删批次 ${batch}：${n} 条 → 共 ${db.scanlogCount} 条`);
+        return send(res, 200, { ok: true, deleted: n, count: db.scanlogCount });
       }
       if (req.method === 'POST' && p === '/api/outbound/sync') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步出库单' });

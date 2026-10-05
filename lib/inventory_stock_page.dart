@@ -197,12 +197,21 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
   _StockAgg? _agg;
   bool _loading = true;
   String _search = "";
+  static DateTime _lastPull = DateTime(2000); // 拉取节流：进页超过5分钟才向服务器增量拉取
 
   @override
   void initState() {
     super.initState();
     _tc = TabController(length: 4, vsync: this);
-    _reload();
+    _autoPullThenReload();
+  }
+
+  Future<void> _autoPullThenReload() async {
+    if (DateTime.now().difference(_lastPull) > const Duration(minutes: 5)) {
+      _lastPull = DateTime.now();
+      await ledgerPullMerge(); // 静默合并电脑账本（本机无采集/别台已拣下的变化都会同步进来）
+    }
+    await _reload();
   }
 
   @override
