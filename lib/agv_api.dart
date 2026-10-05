@@ -233,6 +233,7 @@ class AgvMonitorPage extends StatefulWidget {
 class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAliveClientMixin {
   List<Map> _tasks = [], _done = [], _cars = [];
   Map _traffic = {};
+  Map<String, String> _cargo = {}; // 任务起点货位 → 账本反查的货物描述（零件号×数量）
   bool _loading = false, _showDone = false, _loaded = false;
   String _err = "";
   Timer? _timer;
@@ -264,6 +265,47 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
       _tasks = rs[0] as List<Map>; _cars = rs[1] as List<Map>; _traffic = rs[2] as Map; _done = rs[3] as List<Map>;
       _err = "";
     });
+    unawaited(_buildCargo());
+  }
+
+  /// 反查货物：AGV 只知"搬托盘"，货由任务起点货位回查本机货位账本得到（零件号/数量/标签）
+  Future<void> _buildCargo() async {
+    try {
+      final locs = <String>{
+        for (final t in [..._tasks, ..._done.take(10)])
+          if ((AgvApi.taskRoute(t)["startPoint"] ?? "").toString().isNotEmpty) AgvApi.taskRoute(t)["startPoint"].toString().toUpperCase()
+      };
+      if (locs.isEmpty) return;
+      final placements = await _globalIsar.shelfPlacements.where().findAll();
+      final infos = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode: e};
+      final byLoc = <String, List<String>>{};
+      for (final p in placements) {
+        final k = p.loc.toUpperCase();
+        if (locs.contains(k)) byLoc.putIfAbsent(k, () => []).add(p.goodsCode.toUpperCase());
+      }
+      final out = <String, String>{};
+      for (final l in locs) {
+        final codes = byLoc[l];
+        if (codes == null || codes.isEmpty) { out[l] = "账本无此位货物"; continue; }
+        final parts = <String>[];
+        double sum = 0;
+        String partTxt = "";
+        for (final c in codes) {
+          final i = infos[c];
+          if (i != null && !i.missing && i.partNo.isNotEmpty) {
+            if (partTxt.isEmpty) partTxt = i.partNo;
+            sum += i.qty;
+            if (i.partNo != partTxt) partTxt = "$partTxt等";
+          }
+        }
+        parts.add(partTxt.isNotEmpty ? "$partTxt·${_fmtInvNum(sum.roundToDouble())}件" : "未补齐物料");
+        out[l] = "${parts.join(" / ")}（标签 ${codes.join("/")}）";
+      }
+      if (!mounted) return;
+      setState(() => _cargo = out);
+    } catch (e) {
+      debugPrint("[agv] 货物反查失败：$e");
+    }
   }
 
   Map<int, String> get _carName => {for (final c in _cars) if (c["agvId"] is int) c["agvId"] as int: (c["carName"]?.toString() ?? "AGV${c["agvId"]}")};
@@ -315,6 +357,9 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
       final rt = AgvApi.taskRoute(t);
       final st = t["taskState"];
       final no = "${t["dispatchNo"] ?? ""}";
+      final sp = (rt["startPoint"] ?? "").toString().toUpperCase();
+      final cargo = _cargo[sp];
+      final isCharge = rt["taskType"]?.toString() == "CHARGE" || "${t["taskType"] ?? ""}" == "CHARGE";
       return Container(margin: const EdgeInsets.fromLTRB(10, 6, 10, 0), padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE3E8F0)),
           boxShadow: const [BoxShadow(color: Color(0x14000000), blurRadius: 4, offset: Offset(0, 1))]),
@@ -329,6 +374,15 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
           const SizedBox(height: 4),
           Text("车：${names[t["exeAgvId"]] ?? (t["exeAgvId"] == null ? "未分配" : "AGV${t["exeAgvId"]}")}　托盘：${rt["palletType"] ?? t["palletType"] ?? "-"}　类型：${rt["taskType"] ?? t["taskType"] ?? "-"}",
             style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
+          // 货物：AGV系统只知搬托盘，零件号/数量按起点货位反查本机货位账本（充电任务无货）
+          if (isCharge)
+            Text("货物：—（充电任务）", style: const TextStyle(fontSize: 11, color: Color(0xFF26A69A), fontWeight: FontWeight.w600))
+          else if (cargo != null)
+            Text("货物：$cargo", style: const TextStyle(fontSize: 11, color: Color(0xFF26A69A), fontWeight: FontWeight.w600))
+          else if (sp.isEmpty)
+            const Text("货物：—", style: TextStyle(fontSize: 11, color: Color(0xFF90A4AE)))
+          else
+            Text("货物：起点 $sp 未入账本/账本未同步，无法反查", style: const TextStyle(fontSize: 11, color: Color(0xFF90A4AE))),
           Text("创建 ${AgvApi.fmtT(t["buildTime"])}　执行 ${AgvApi.fmtT(t["exeTime"])}${done && t["finishTime"] != null ? "　完成 ${AgvApi.fmtT(t["finishTime"])}" : ""}",
             style: const TextStyle(fontSize: 11, color: Color(0xFF90A4AE))),
         ]));
