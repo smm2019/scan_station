@@ -113,15 +113,21 @@ function sweepAssignOpen() {
   }
   if (changed) save();
 }
-// 框键：有托号按托号合并（整托多码=1框），无托号按标签独立成框
-function boxKeyOf(x) { const pid = String(x.pid || '').toUpperCase(); return pid ? 'P|' + pid : 'C|' + String(x.c).toUpperCase(); }
+// 框键：有托号按托号合并（整托多码=1框）；无托号按"同货位+同零件号"合并（与PDA库存口径一致）；都缺才一码一框
+function boxKeyOf(x) {
+  const pid = String(x.pid || '').toUpperCase();
+  if (pid) return 'P|' + pid;
+  const l = String(x.l || '').toUpperCase(), p = String(x.p || '').toUpperCase();
+  return (l && p) ? 'L|' + l + '|' + p : 'C|' + String(x.c).toUpperCase();
+}
 function groupLedgerBoxes(list) {
   const g = new Map();
   for (const x of list) {
     const k = boxKeyOf(x);
     if (!g.has(k)) g.set(k, { codes: [], items: [], l: x.l, q: 0, b: String(x.b || ''), f: String(x.f || ''), pid: String(x.pid || '') });
     const box = g.get(k);
-    box.codes.push(x.c); box.items.push({ c: x.c, q: Number(x.q) || 0 }); box.q += Number(x.q) || 0;
+    box.codes.push(x.c); box.items.push({ c: x.c, q: Number(x.q) || 0 });
+    box.q = Math.max(box.q, Number(x.q) || 0); // MES每码数量都是整框数→取单码值不取和，同框多码不翻倍
     if (x.b && (!box.b || String(x.b) < box.b)) box.b = String(x.b); // 批次取最早
   }
   return [...g.values()].sort((a, b) => (a.b || '9999').localeCompare(b.b || '9999') || String(a.l).localeCompare(String(b.l))); // 批次早优先
@@ -132,7 +138,7 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   const agv = agvMap || {};
   const ex = excludeCodes || new Set();
   const match = db.ledger.filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase());
-  const boxes = groupLedgerBoxes(match.filter(x => !ex.has(String(x.c).toUpperCase())));
+  const boxes = groupLedgerBoxes(match).filter(bx => !bx.codes.some(c => ex.has(String(c).toUpperCase()))); // 框内任一标签已发→整框剔除（一框一发）
   let acc = 0; const pick = [];
   for (const x of boxes) {
     const called = x.codes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || '';
@@ -288,16 +294,27 @@ setInterval(()=>location.reload(),10000);
 </script></body></html>`;
 }
 
-// 货位账本查询页（电脑端公开）：按货位排序，同位多标签并排；顶部搜索框支持标签号/货位前缀
+// 货位账本查询页（电脑端公开）：按框一行（同托多码/同位同件合并），顶部搜索框支持标签号/货位前缀
 function renderLedgerBoard() {
-  const meta = `共 ${db.ledger.length} 个标签 · ${new Set(db.ledger.map(x => x.l)).size} 个货位有货`;
+  const g = new Map();
+  for (const x of db.ledger) {
+    const k = boxKeyOf(x);
+    if (!g.has(k)) g.set(k, []);
+    g.get(k).push(x);
+  }
+  const boxRows = [...g.values()].sort((a, b) => String(a[0].l).localeCompare(String(b[0].l)) || String(a[0].c).localeCompare(String(b[0].c)));
+  const meta = `共 ${db.ledger.length} 个标签 · ${boxRows.length} 框 · ${new Set(db.ledger.map(x => x.l)).size} 个货位有货`;
   const info = db.ledgerAt ? `最后同步 ${esc(String(db.ledgerAt).slice(0, 19).replace('T', ' '))}（${esc(db.ledgerBy || '-')}，v${db.ledgerRev}）` : '尚未从 PDA 同步过';
-  const rows = db.ledger.slice().sort((a, b) => String(a.l).localeCompare(String(b.l)) || String(a.c).localeCompare(String(b.c)));
-  const bodyRows = rows.map(x => {
-    const t = x.t ? new Date(x.t).toLocaleString('zh-CN', { hour12: false }) : '';
-    return `<tr data-c="${esc(x.c)}" data-l="${esc(x.l)}" data-p="${esc(x.p || '')}" data-n="${esc(x.n || '')}"><td class="loc">${esc(x.l)}</td><td class="code">${esc(x.c)}</td><td class="pn">${esc(x.p || '')}</td><td>${esc(x.n || '')}</td><td class="num">${x.q ? esc(x.q) : ''}</td><td>${esc(x.b || '')}</td><td>${esc(x.f || '')}</td><td class="tm">${esc(t)}</td></tr>`;
+  const bodyRows = boxRows.map(xs => {
+    const first = xs[0];
+    const q = Math.max(...xs.map(x => Number(x.q) || 0)); // 每码数量都是整框数→取单码值不求和
+    const ts = xs.map(x => x.t).filter(Boolean);
+    const t = ts.length ? new Date(Math.min(...ts)).toLocaleString('zh-CN', { hour12: false }) : '';
+    const codes = xs.map(x => x.c);
+    const multi = codes.length > 1 ? ` <span class="multi">${codes.length}码1框</span>` : '';
+    return `<tr data-c="${esc(codes.join(' '))}" data-l="${esc(first.l)}" data-p="${esc(first.p || '')}" data-n="${esc(first.n || '')}"><td class="loc">${esc(first.l)}</td><td class="code">${esc(codes.join(' / '))}${multi}</td><td class="pn">${esc(first.p || '')}</td><td>${esc(first.n || '')}</td><td class="num">${q ? esc(q) : ''}</td><td>${esc(first.b || '')}</td><td>${esc(first.f || '')}</td><td class="tm">${esc(t)}</td></tr>`;
   }).join('');
-  const empty = rows.length ? '' : `<div class="empty">账本为空：请在 PDA「位置登记」导入账本或登记库位，同步后这里自动出现数据。</div>`;
+  const empty = boxRows.length ? '' : `<div class="empty">账本为空：请在 PDA「位置登记」导入账本或登记库位，同步后这里自动出现数据。</div>`;
   return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>货位账本</title>
 <style>
   body{font-family:"Microsoft YaHei",Arial;margin:20px;background:#f5f6fa;color:#111}
@@ -313,13 +330,14 @@ function renderLedgerBoard() {
   .loc{font-family:Consolas,monospace;font-weight:600;color:#2456c9}
   .code{font-family:Consolas,monospace}
   .tm{color:#888;font-size:12px}
+  .multi{font-size:11px;color:#e65100;font-weight:600}
   tr.hl{background:#fff3cd}
   .empty{text-align:center;color:#c77700;font-size:14px;padding:40px;background:#fff;border-radius:10px}
 </style></head><body>
 <h1>货位账本（PDA 同步）</h1>
 <div class="sub">${meta} ｜ ${info}</div>
 <div class="bar"><input id="q" placeholder="输入标签号或货位前缀（如 NB03-A-13）过滤" oninput="flt()"><button onclick="location.reload()">⟳ 刷新</button><span class="cnt" id="cnt"></span></div>
-${empty}<table id="tb"${rows.length ? '' : ' style="display:none"'}><thead><tr><th style="width:14%">货位</th><th style="width:16%">标签号</th><th style="width:14%">零件号</th><th style="width:20%">物料名称</th><th style="width:8%">数量</th><th style="width:9%">批次</th><th style="width:11%">料框</th><th>登记时间</th></tr></thead><tbody>${bodyRows}</tbody></table>
+${empty}<table id="tb"${boxRows.length ? '' : ' style="display:none"'}><thead><tr><th style="width:14%">货位</th><th style="width:20%">标签号</th><th style="width:13%">零件号</th><th style="width:18%">物料名称</th><th style="width:8%">数量</th><th style="width:9%">批次</th><th style="width:10%">料框</th><th>登记时间</th></tr></thead><tbody>${bodyRows}</tbody></table>
 <script>
 function flt(){
   const q=document.getElementById('q').value.trim().toUpperCase();
@@ -328,7 +346,7 @@ function flt(){
   rs.forEach(r=>{
     const hit=!q || r.dataset.c.includes(q) || r.dataset.l.includes(q) || (r.dataset.p||'').toUpperCase().includes(q) || (r.dataset.n||'').toUpperCase().includes(q);
     r.style.display=hit?'':'none';
-    r.classList.toggle('hl', !!q && r.dataset.c===q);
+    r.classList.toggle('hl', !!q && (r.dataset.c === q || r.dataset.c.split(' ').includes(q)));
     if(hit&&q)n++;
   });
   document.getElementById('cnt').textContent=q?('匹配 '+n+' 行'):'';
@@ -795,6 +813,18 @@ const server = http.createServer(async (req, res) => {
             const code = String(b.barcode || '').trim();
             if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
             if (r.items.some(i => normIssued(i).some(e => e.c === code))) return send(res, 400, { ok: false, msg: `标签 ${code} 已扫过` });
+            // 一框一发：同框兄弟码（同托号/同货位同零件号）已发过则拦截，防整框数量双计
+            {
+              const self = db.ledger.find(x => String(x.c).toUpperCase() === code.toUpperCase());
+              if (self) {
+                const bk = boxKeyOf(self);
+                const sib = r.items.some(i => normIssued(i).some(e => {
+                  const l = db.ledger.find(x => String(x.c).toUpperCase() === String(e.c).toUpperCase());
+                  return l && boxKeyOf(l) === bk;
+                }));
+                if (sib) return send(res, 400, { ok: false, msg: `标签 ${code} 与已发标签同框（一框只发一次），请勿重复扫码` });
+              }
+            }
             const target = r.items.find(i => i.partNo === b.partNo);
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
             if (target.transferred) return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已转MES，不可再补扫` });

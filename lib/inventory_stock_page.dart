@@ -57,8 +57,9 @@ class _StockOutRow {
 }
 
 class _StockBox {
-  String barcode = "", partNo = "", itemName = "", container = "", operator = "";
+  String barcode = "", partNo = "", itemName = "", container = "", operator = "", loc = "";
   double qty = 0;
+  bool inStock = true; // 未出库（框内任一标签在库即整框在库）
 }
 
 /// 全量聚合（数据量万级以内，内存计算毫秒级）
@@ -100,11 +101,21 @@ Future<_StockAgg> computeStock() async {
   final reqIssued = await RequisitionCache.loadIssued();
   outCodes.addAll(reqIssued);
 
-  // 入库流水（采集派生；作废记录标记 cancelled 不参与库存）
-  // 框数合并：整托多码共用托号→算1框（boxKey=P|托号）；无托号按"同货位+同零件号"合并（L|货位|零件号）
-  final _boxSeen = <String>{};
+  // 统一按"框"聚合后再算库存：MES 标签数量是整框数（同托每码都回整框值），
+  // 框键=托号优先，其次"货位+零件号"（同位同件视为同框），都缺才一码一框。
+  final boxesByKey = <String, _StockBox>{};
   String boxKey(String pid, String loc, String partNo, String code) =>
-      pid.isNotEmpty ? "P|$pid" : (loc.isNotEmpty ? "L|$loc|$partNo" : "C|$code");
+      pid.isNotEmpty ? "P|$pid" : (loc.isNotEmpty && partNo.isNotEmpty ? "L|$loc|$partNo" : "C|$code");
+  void addBox(String key, _StockBox box) {
+    final old = boxesByKey[key];
+    if (old == null) {
+      boxesByKey[key] = box;
+    } else {
+      if (box.qty > old.qty) old.qty = box.qty; // 框数量取框内标签最大值（防个别码缺失误计）
+      old.inStock = old.inStock && box.inStock; // 框内任一标签已发→整框已出库（一框一发）
+      if (old.loc.isEmpty && box.loc.isNotEmpty) old.loc = box.loc; // 流水先建框、账本后带位时补货位
+    }
+  }
   for (final r in records) {
     final cancelled = r.isCancel;
     final partNo = r.mesPartNo ?? "";
@@ -116,26 +127,14 @@ Future<_StockAgg> computeStock() async {
       ..time = r.scanTime ..barcode = r.goodsCode ..partNo = partNo ..itemName = name
       ..qty = qty ..loc = loc ..container = r.containerType ?? "" ..operator = oper ..cancelled = cancelled);
     if (cancelled || partNo.isEmpty) continue;
-    final row = agg.parts.putIfAbsent(partNo, () => _StockPartRow()..partNo = partNo);
-    if (row.itemName.isEmpty) row.itemName = name;
-    row.inQty += qty;
-    // 在库框：未作废且未出库
-    if (!outCodes.contains(r.goodsCode)) {
-      row.inStockQty += qty;
-      final p = placedMap[r.goodsCode];
-      final pid = extraMap[r.goodsCode]?.palletId ?? "";
-      final bk = boxKey(pid, p?.loc ?? "", partNo, r.goodsCode);
-      final box = _StockBox()
-        ..barcode = r.goodsCode ..partNo = partNo ..itemName = name
-        ..qty = qty ..container = p?.container ?? r.containerType ?? ""
-        ..operator = p?.operator ?? "";
-      if (p != null && p.loc.isNotEmpty) {
-        if (_boxSeen.add("B|$bk|${p.loc}")) agg.byLoc.putIfAbsent(p.loc, () => []).add(box);
-      } else {
-        if (_boxSeen.add("U|$bk")) agg.unplaced.add(box);
-      }
-      if (_boxSeen.add("R|$partNo|$bk")) row.inBoxes++; // 零件行框数：按框键去重
-    }
+    final p = placedMap[r.goodsCode];
+    final pid = extraMap[r.goodsCode]?.palletId ?? "";
+    addBox(boxKey(pid, p?.loc ?? "", partNo, r.goodsCode), _StockBox()
+      ..barcode = r.goodsCode ..partNo = partNo ..itemName = name
+      ..qty = qty ..container = p?.container ?? r.containerType ?? ""
+      ..operator = p?.operator ?? ""
+      ..loc = p?.loc ?? ""
+      ..inStock = !outCodes.contains(r.goodsCode));
   }
 
   // 出库扣减（按出库流水零件号汇总；出库的框已从在库剔除）
@@ -146,25 +145,30 @@ Future<_StockAgg> computeStock() async {
     row.outQty += o.qty;
   }
 
-  // 账本独有库存（存量货：只进过账本、本机无采集流水）→ 计入零件汇总与货架分布
-  // 框数合并：与流水段共用 _boxSeen，避免"同框标签一半在流水一半在账本"重复计框
+  // 账本独有存量货（只进过账本、本机无采集流水）→ 并入同一框集合
   final flowCodes = records.map((r) => r.goodsCode.toUpperCase()).toSet();
   for (final p in placements) {
-    if (flowCodes.contains(p.goodsCode) || outCodes.contains(p.goodsCode)) continue;
+    if (flowCodes.contains(p.goodsCode)) continue;
     final info = infoMap[p.goodsCode];
     if (info == null || info.missing || info.partNo.isEmpty) continue;
-    final row = agg.parts.putIfAbsent(info.partNo, () => _StockPartRow()..partNo = info.partNo);
-    if (row.itemName.isEmpty) row.itemName = info.itemName;
-    row.inStockQty += info.qty;
-    final box = _StockBox()
+    addBox(boxKey("", p.loc, info.partNo, p.goodsCode), _StockBox()
       ..barcode = p.goodsCode ..partNo = info.partNo ..itemName = info.itemName
-      ..qty = info.qty ..container = p.container ..operator = p.operator;
-    final bk = boxKey("", p.loc, info.partNo, p.goodsCode); // 账本标签无采集流水→必无托号，按同货位同零件号合并
-    if (p.loc.isNotEmpty) {
-      if (_boxSeen.add("B|$bk|${p.loc}")) row.inBoxes++;
-      agg.byLoc.putIfAbsent(p.loc, () => []).add(box);
+      ..qty = info.qty ..container = p.container ..operator = p.operator
+      ..loc = p.loc
+      ..inStock = !outCodes.contains(p.goodsCode));
+  }
+
+  // 零件汇总与货架分布：全部从框集合派生，天然不双算
+  for (final box in boxesByKey.values) {
+    final row = agg.parts.putIfAbsent(box.partNo, () => _StockPartRow()..partNo = box.partNo);
+    if (row.itemName.isEmpty) row.itemName = box.itemName;
+    row.inQty += box.qty; // 入库合计按框计一次
+    if (!box.inStock) continue;
+    row.inBoxes++;
+    row.inStockQty += box.qty;
+    if (box.loc.isNotEmpty) {
+      agg.byLoc.putIfAbsent(box.loc, () => []).add(box);
     } else {
-      if (_boxSeen.add("U|$bk")) row.inBoxes++;
       agg.unplaced.add(box);
     }
   }

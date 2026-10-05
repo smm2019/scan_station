@@ -50,7 +50,7 @@ Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<S
   await isar.writeTxn(() => isar.outboundOrders.put(ob));
   try {
     final outCodes = items.map((e) => e["barcode"].toString().toUpperCase()).where((s) => s.isNotEmpty).toList();
-    if (outCodes.isNotEmpty) await ledgerRemoveAndPush(outCodes); //出库即拣下：账本消位并同步电脑
+    for (final c in outCodes) { await ledgerRemoveBoxAndPush(c); } //出库即整框拣下：同托兄弟码一并消位并同步电脑
     outboundPushNow(ob); //出库单同步电脑数据库
   } catch (_) {}
   return ob;

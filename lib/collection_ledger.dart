@@ -429,6 +429,35 @@ Future<void> ledgerRemoveAndPush(Iterable<String> codes) async {
   }
 }
 
+/// 整框拣下：发料/出库扫到任一标签，同框兄弟码（同托号，或无托号时同货位+同零件号）一并消位。
+/// 与库存框键口径一致，避免"一框两码只消一码"导致账面仍显示在库。
+Future<void> ledgerRemoveBoxAndPush(String code) async {
+  final up = code.toUpperCase();
+  final codes = <String>{up};
+  try {
+    final extra = await _globalIsar.recordExtras.filter().goodsCodeEqualTo(up).findFirst();
+    final pid = extra?.palletId ?? "";
+    if (pid.isNotEmpty) {
+      final mates = await _globalIsar.recordExtras.filter().palletIdEqualTo(pid).findAll();
+      codes.addAll(mates.map((m) => m.goodsCode.toUpperCase()));
+    } else {
+      final self = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(up).findAll();
+      final info = await _globalIsar.labelInfos.filter().goodsCodeEqualTo(up).findFirst();
+      if (self.isNotEmpty && info != null && info.partNo.isNotEmpty) {
+        final all = await _globalIsar.shelfPlacements.where().findAll();
+        for (final p in all) {
+          if (p.loc != self.first.loc) continue;
+          final i = await _globalIsar.labelInfos.filter().goodsCodeEqualTo(p.goodsCode).findFirst();
+          if (i != null && i.partNo == info.partNo) codes.add(p.goodsCode.toUpperCase());
+        }
+      }
+    }
+  } catch (e) {
+    debugPrint("[ledger] 整框扩展失败（仅拣本码）：$e");
+  }
+  await ledgerRemoveAndPush(codes);
+}
+
 Timer? _pushScanTimer;
 void scheduleScanPush({int seconds = 60}) {
   _pushScanTimer?.cancel();

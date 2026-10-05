@@ -496,7 +496,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final tGot = nowT.isEmpty ? 0.0 : _issuedQtyOf(nowT);
     final tNeed = (nowT["qty"] as num?)?.toDouble() ?? 0.0;
     widget.toast("已发 $code（$boxQty 件）累计 ${_fmtInvNum(tGot)}/${_fmtInvNum(tNeed)}${fromLoc.isNotEmpty ? " · 原$fromLoc 已拣下" : ""}", err: false);
-    if (fromLoc.isNotEmpty) ledgerRemoveAndPush([code.toUpperCase()]); //发料扫码即拣下
+    if (fromLoc.isNotEmpty) ledgerRemoveBoxAndPush(code.toUpperCase()); //发料扫码即整框拣下（同托兄弟码一并消位）
     if (tGot >= tNeed) {
       final next = items2.firstWhere((e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0), orElse: () => const {});
       if (!next.isEmpty) setState(() => _issuePart = next["partNo"].toString());
