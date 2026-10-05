@@ -84,9 +84,14 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
       context: context, isScrollControlled: true,
       builder: (ctx) => _ReqCreateSheet(parts: parts));
     if (res == null || !mounted) return;
-    final r = await AuthApi.reqCreate(res["items"] as List<Map>, res["remark"]?.toString() ?? "");
+    final r = await AuthApi.reqCreate(res["items"] as List<Map>, res["remark"]?.toString() ?? "",
+        assigneeId: res["assigneeId"]?.toString() ?? "");
     if (!mounted) return;
-    if (r["ok"] == true) { _toast("领料单已提交：${r["req"]["no"]}", err: false); _load(); }
+    if (r["ok"] == true) {
+      final aName = res["assigneeName"]?.toString() ?? "";
+      _toast(aName.isNotEmpty ? "领料单已提交：${r["req"]["no"]}，已指定 ${aName} 备料（30分钟未接自动放开）" : "领料单已提交：${r["req"]["no"]}", err: false);
+      _load();
+    }
     else _toast((r["msg"] ?? "提交失败").toString());
   }
 
@@ -130,13 +135,16 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
                         final items = List<Map>.from(r["items"] ?? []);
                         final st = r["status"].toString();
                         final itemsText = items.map((e) => "${e["partNo"]}×${e["qty"]}").join("、");
+                        final aName = r["assigneeName"]?.toString() ?? "";
+                        final aOpen = (r["assignOpenAt"] ?? "").toString().isNotEmpty;
+                        final assignTxt = aName.isEmpty ? "" : (st == 'pending' && aOpen ? "\n📌 已指定 $aName" : (st == 'pending' ? "\n（原指定 $aName 超时放开）" : ""));
                         return Card(
                           margin: const EdgeInsets.symmetric(vertical: 5),
                           child: ListTile(
                             leading: CircleAvatar(backgroundColor: _statusColor(st).withOpacity(0.14),
                               child: Icon(_stIcon(st), color: _statusColor(st), size: 22)),
                             title: Text("${r["no"]}  ${r["byName"]}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                            subtitle: Text("$itemsText\n${(r["createdAt"] ?? "").toString().substring(0, 16).replaceFirst("T", " ")}${(r["remark"]?.toString().isNotEmpty ?? false) ? " · ${r["remark"]}" : ""}", style: const TextStyle(fontSize: 12)),
+                            subtitle: Text("$itemsText\n${(r["createdAt"] ?? "").toString().substring(0, 16).replaceFirst("T", " ")}${(r["remark"]?.toString().isNotEmpty ?? false) ? " · ${r["remark"]}" : ""}$assignTxt", style: const TextStyle(fontSize: 12)),
                             isThreeLine: true,
                             trailing: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(color: _statusColor(st).withOpacity(0.12), borderRadius: BorderRadius.circular(6)),
@@ -167,6 +175,17 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   final Map<String, TextEditingController> _qtyCtrl = {}; // partNo -> qty 输入控制器
   final _remarkCtrl = TextEditingController();
   String _search = "";
+  List<Map> _warehouses = []; // 可选仓管员（指定备料）
+  String _assigneeId = "";
+
+  @override
+  void initState() {
+    super.initState();
+    AuthApi.reqWarehouseUsers().then((r) {
+      if (!mounted) return;
+      if (r["ok"] == true) setState(() => _warehouses = List<Map>.from(r["users"] ?? []));
+    });
+  }
 
   @override
   void dispose() {
@@ -192,6 +211,34 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
           onChanged: (v) => setState(() => _search = v),
           decoration: const InputDecoration(hintText: "搜索零件号/物料名", isDense: true, prefixIcon: Icon(Icons.search, size: 20), border: OutlineInputBorder()),
         ),
+        if (_warehouses.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          InkWell(
+            onTap: () => showModalBottomSheet(context: context, builder: (mctx) => SafeArea(child: ListView(
+              shrinkWrap: true, children: [
+                ListTile(title: const Text("不指定（全部仓管可见抢单）"), trailing: _assigneeId.isEmpty ? const Icon(Icons.check, color: Colors.teal) : null,
+                  onTap: () { setState(() => _assigneeId = ""); Navigator.pop(mctx); }),
+                ..._warehouses.map((w) => ListTile(
+                  leading: CircleAvatar(radius: 14, child: Text((w["name"] ?? "?").toString().substring(0, 1), style: const TextStyle(fontSize: 12))),
+                  title: Text(w["name"]?.toString() ?? ""),
+                  trailing: _assigneeId == w["id"] ? const Icon(Icons.check, color: Colors.teal) : null,
+                  onTap: () { setState(() => _assigneeId = w["id"].toString()); Navigator.pop(mctx); },
+                )),
+              ]))),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+              child: Row(children: [
+                const Icon(Icons.person_add_alt, size: 18, color: Color(0xFF3949AB)),
+                const SizedBox(width: 6),
+                Text("指定仓管员：", style: const TextStyle(fontSize: 13)),
+                Text(_assigneeId.isEmpty ? "不指定（谁接都可以）" : (_warehouses.firstWhere((w) => w["id"] == _assigneeId)["name"]?.toString() ?? ""),
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _assigneeId.isEmpty ? Colors.grey : const Color(0xFF3949AB))),
+                const Spacer(),
+                const Icon(Icons.expand_more, size: 18, color: Colors.grey),
+              ]),
+            ),
+          ),
+        ],
         const SizedBox(height: 8),
         Expanded(child: ListView(children: [
           ...list.map((p) => ListTile(
@@ -222,7 +269,9 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                 final p = widget.parts.firstWhere((x) => x.partNo == e.key);
                 return {"partNo": p.partNo, "itemName": p.itemName, "qty": int.parse(e.value.text.trim())};
               }).toList();
-              Navigator.pop(context, {"items": items, "remark": _remarkCtrl.text.trim()});
+              Navigator.pop(context, {"items": items, "remark": _remarkCtrl.text.trim(),
+                "assigneeId": _assigneeId,
+                "assigneeName": _assigneeId.isEmpty ? "" : (_warehouses.firstWhere((w) => w["id"] == _assigneeId)["name"]?.toString() ?? "")});
             },
             child: Text(chosen.isEmpty ? "请至少填一行数量" : "提交（${chosen.length} 行）"),
           )),
@@ -310,16 +359,17 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     widget.toast("已复制 $code，拿去扫码发料", err: false);
   }
 
-  /// 取货建议（服务器 reqView 每行附 suggest：按同步账本 FIFO 选框，含标签/货位/件数/批次）
+  /// 取货建议（服务器 reqView 每行附 suggest：boxes=框级[同托多码合并]，flatBoxes=标签级供逐码复制）
   Widget _buildSuggest(Map item, bool finished) {
     if (finished) return const SizedBox.shrink();
     final sg = item["suggest"];
     if (sg is! Map) return const SizedBox.shrink();
     final boxes = List<Map>.from(sg["boxes"] ?? []);
+    final flat = List<Map>.from(sg["flatBoxes"] ?? sg["boxes"] ?? []); // 兼容旧服务器：无 flatBoxes 时退回标签级
     final total = (sg["total"] as num?)?.toDouble() ?? 0;
     final inStock = (sg["inStock"] as num?)?.toInt() ?? 0;
     final noInfo = (sg["noInfoQty"] as num?)?.toInt() ?? 0;
-    if (boxes.isEmpty) {
+    if (flat.isEmpty) {
       return Padding(
         padding: const EdgeInsets.only(top: 6),
         child: Text(inStock == 0
@@ -327,6 +377,12 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             : "⚠ 账本有 ${inStock + noInfo} 框但都缺件数信息，建议先补齐",
             style: const TextStyle(fontSize: 11, color: Colors.deepOrange)),
       );
+    }
+    // 同货位标签总数（>1 即同托多码），用于 chip 上标注"同托多码"
+    final perBoxCodes = <String, int>{};
+    for (final b in boxes) {
+      final lk = b["l"]?.toString() ?? "";
+      perBoxCodes[lk] = (perBoxCodes[lk] ?? 0) + ((b["codes"] as List?)?.length ?? 1);
     }
     return Container(
       margin: const EdgeInsets.only(top: 6),
@@ -337,18 +393,19 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             style: const TextStyle(fontSize: 11, color: Color(0xFF3949AB), fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 4, children: [
-          for (final b in boxes)
+          for (final b in flat)
             Builder(builder: (bc) {
               final code = b["c"]?.toString() ?? "";
               final loc = b["l"]?.toString() ?? "";
               final lot = (b["b"]?.toString() ?? "").split(" ").first;
               final qv = (b["q"] as num?)?.toDouble() ?? 0;
+              final multi = (perBoxCodes[loc] ?? 1) > 1;
               return InkWell(
                 onTap: () => _onSuggestTap(code, loc, (b["f"] ?? "").toString()),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
                   decoration: BoxDecoration(color: Colors.white, border: Border.all(color: const Color(0xFFC7CDF0)), borderRadius: BorderRadius.circular(6)),
-                  child: Text("$code @ $loc${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}",
+                  child: Text("$code @ $loc${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}${multi ? " ·同托多码" : ""}",
                       style: const TextStyle(fontSize: 11, fontFamily: "monospace", color: Color(0xFF1A237E))),
                 ),
               );
@@ -571,6 +628,13 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final st = _r["status"].toString();
     final isWh = Auth.user?.role == 'warehouse' || Auth.user?.role == 'admin';
     final isOwner = _r["by"] == Auth.user?.id;
+    // 指定仓管员：pending 且锁定期内、非指定人非管理员 → 接单/拒单锁定
+    final aId = _r["assigneeId"]?.toString() ?? "";
+    final aName = _r["assigneeName"]?.toString() ?? "";
+    final aOpenStr = _r["assignOpenAt"]?.toString() ?? "";
+    final aLocked = aId.isNotEmpty && aOpenStr.isNotEmpty &&
+        DateTime.tryParse(aOpenStr)?.isAfter(DateTime.now()) == true;
+    final assignBlocked = st == 'pending' && isWh && aLocked && Auth.user?.id != aId && !Auth.isAdmin;
     final items = List<Map>.from(_r["items"] ?? []);
     final history = List<Map>.from(_r["history"] ?? []);
     return Padding(
@@ -705,17 +769,23 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
           ])),
           const SizedBox(height: 8),
           // 底部动作条
+          if (st == 'pending' && aLocked && aName.isNotEmpty) Padding(
+            padding: const EdgeInsets.only(bottom: 4),
+            child: Text("📌 本单已指定 $aName 备料${Auth.user?.id == aId ? "（就是你，请尽快接单）" : "，超时未接将放开给全部仓管"}",
+              style: TextStyle(fontSize: 12, color: Auth.user?.id == aId ? Colors.deepOrange : const Color(0xFF3949AB))),
+          ),
           Row(children: [
             if (st == 'pending' && isWh) ...[
               Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
-                onPressed: _busy ? null : () async {
+                onPressed: (_busy || assignBlocked) ? null : () async {
                   final reason = await _askReason("拒单原因");
                   if (reason != null) await _act("reject", {"reason": reason});
                 }, icon: const Icon(Icons.block, size: 16), label: const Text("拒单"))),
               const SizedBox(width: 8),
               Expanded(flex: 2, child: ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
-                onPressed: _busy ? null : () => _act("accept"), icon: const Icon(Icons.how_to_reg), label: const Text("接单备料"))),
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, disabledBackgroundColor: Colors.grey.shade300),
+                onPressed: (_busy || assignBlocked) ? null : () => _act("accept"),
+                icon: const Icon(Icons.how_to_reg), label: Text(assignBlocked ? "已指定 $aName" : "接单备料"))),
             ],
             if ((st == 'pending' || st == 'accepted') && (isOwner || Auth.isAdmin))
               Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),

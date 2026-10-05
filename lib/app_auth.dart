@@ -93,8 +93,11 @@ class AuthApi {
   static Future<Map> setFeatures(Map features) async => _req("PATCH", "/api/config", body: {"features": features}, token: await AuthStore.token());
 
   // ---- 领料单 ----
-  static Future<Map> reqCreate(List<Map> items, String remark) async =>
-      _req("POST", "/api/requisitions", body: {"items": items, "remark": remark}, token: await AuthStore.token());
+  static Future<Map> reqCreate(List<Map> items, String remark, {String assigneeId = ""}) async =>
+      _req("POST", "/api/requisitions", body: {"items": items, "remark": remark, "assigneeId": assigneeId}, token: await AuthStore.token());
+  /// 可选仓管员列表（新建单"指定仓管员"用）
+  static Future<Map> reqWarehouseUsers() async =>
+      _req("GET", "/api/requisitions/warehouse-users", token: await AuthStore.token());
   static Future<Map> reqList({String scope = ""}) async =>
       _req("GET", scope.isEmpty ? "/api/requisitions" : "/api/requisitions?scope=$scope", token: await AuthStore.token());
   static Future<Map> reqAction(String id, String action, [Map? body]) async =>

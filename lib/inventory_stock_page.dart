@@ -101,6 +101,10 @@ Future<_StockAgg> computeStock() async {
   outCodes.addAll(reqIssued);
 
   // 入库流水（采集派生；作废记录标记 cancelled 不参与库存）
+  // 框数合并：整托多码共用托号→算1框（boxKey=P|托号）；无托号按"同货位+同零件号"合并（L|货位|零件号）
+  final _boxSeen = <String>{};
+  String boxKey(String pid, String loc, String partNo, String code) =>
+      pid.isNotEmpty ? "P|$pid" : (loc.isNotEmpty ? "L|$loc|$partNo" : "C|$code");
   for (final r in records) {
     final cancelled = r.isCancel;
     final partNo = r.mesPartNo ?? "";
@@ -118,17 +122,19 @@ Future<_StockAgg> computeStock() async {
     // 在库框：未作废且未出库
     if (!outCodes.contains(r.goodsCode)) {
       row.inStockQty += qty;
-      row.inBoxes++;
       final p = placedMap[r.goodsCode];
+      final pid = extraMap[r.goodsCode]?.palletId ?? "";
+      final bk = boxKey(pid, p?.loc ?? "", partNo, r.goodsCode);
       final box = _StockBox()
         ..barcode = r.goodsCode ..partNo = partNo ..itemName = name
         ..qty = qty ..container = p?.container ?? r.containerType ?? ""
         ..operator = p?.operator ?? "";
       if (p != null && p.loc.isNotEmpty) {
-        agg.byLoc.putIfAbsent(p.loc, () => []).add(box);
+        if (_boxSeen.add("B|$bk|${p.loc}")) agg.byLoc.putIfAbsent(p.loc, () => []).add(box);
       } else {
-        agg.unplaced.add(box);
+        if (_boxSeen.add("U|$bk")) agg.unplaced.add(box);
       }
+      if (_boxSeen.add("R|$partNo|$bk")) row.inBoxes++; // 零件行框数：按框键去重
     }
   }
 
@@ -141,6 +147,7 @@ Future<_StockAgg> computeStock() async {
   }
 
   // 账本独有库存（存量货：只进过账本、本机无采集流水）→ 计入零件汇总与货架分布
+  // 框数合并：与流水段共用 _boxSeen，避免"同框标签一半在流水一半在账本"重复计框
   final flowCodes = records.map((r) => r.goodsCode.toUpperCase()).toSet();
   for (final p in placements) {
     if (flowCodes.contains(p.goodsCode) || outCodes.contains(p.goodsCode)) continue;
@@ -149,13 +156,15 @@ Future<_StockAgg> computeStock() async {
     final row = agg.parts.putIfAbsent(info.partNo, () => _StockPartRow()..partNo = info.partNo);
     if (row.itemName.isEmpty) row.itemName = info.itemName;
     row.inStockQty += info.qty;
-    row.inBoxes++;
     final box = _StockBox()
       ..barcode = p.goodsCode ..partNo = info.partNo ..itemName = info.itemName
       ..qty = info.qty ..container = p.container ..operator = p.operator;
+    final bk = boxKey("", p.loc, info.partNo, p.goodsCode); // 账本标签无采集流水→必无托号，按同货位同零件号合并
     if (p.loc.isNotEmpty) {
+      if (_boxSeen.add("B|$bk|${p.loc}")) row.inBoxes++;
       agg.byLoc.putIfAbsent(p.loc, () => []).add(box);
     } else {
+      if (_boxSeen.add("U|$bk")) row.inBoxes++;
       agg.unplaced.add(box);
     }
   }

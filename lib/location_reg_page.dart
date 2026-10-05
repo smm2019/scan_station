@@ -237,10 +237,13 @@ class _LocationRegPageState extends State<LocationRegPage> {
       final all = await _globalIsar.shelfPlacements.where().findAll();
       if (all.isEmpty) { _toast("本地账本为空，无需同步"); return; }
       final infos = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode: e};
+      final pids = {for (final e in await _globalIsar.recordExtras.where().findAll()) e.goodsCode: e.palletId}; // 托号：整托多码同框
       final items = all.map((p) {
         final i = infos[p.goodsCode];
+        final pid = pids[p.goodsCode] ?? "";
         return {
           "c": p.goodsCode, "l": p.loc, "f": p.container, "t": p.assignedAt,
+          if (pid.isNotEmpty) "pid": pid,
           if (i != null && !i.missing) ...{"p": i.partNo, "n": i.itemName, "q": i.qty, "b": i.lotNo},
         };
       }).toList();

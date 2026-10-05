@@ -97,13 +97,40 @@ function notify(toUserId, type, text, reqId) {
   if (db.notifications.length > 500) db.notifications = db.notifications.slice(-500); // 只留最近500条防膨胀
 }
 function findReq(id) { return db.requisitions.find(r => r.id === id); }
-// 取货建议：PDA 同步的货位账本（含补齐的零件号 p / 数量 q / 批次 b）→ 该零件在架标签，FIFO 选框
+// 指定超时清扫：pending 且超过 assignOpenAt → 解除指定锁定，广播给全部仓管可接单
+function sweepAssignOpen() {
+  const now = Date.now();
+  let changed = false;
+  for (const r of db.requisitions) {
+    if (r.status !== 'pending' || !r.assigneeId || !r.assignOpenAt) continue;
+    if (now < Date.parse(r.assignOpenAt)) continue;
+    r.assignOpenAt = '';
+    r.history.push({ time: new Date().toISOString(), by: '系统', text: `指定 ${r.assigneeName || ''} 超时未接单，已放开给全部仓管` });
+    notify(r.assigneeId, 'req_timeout', `领料单 ${r.no} 超时未接单，已放开给全部仓管`, r.id);
+    db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== r.assigneeId).forEach(x =>
+      notify(x.id, 'req_new', `领料单 ${r.no}（${r.byName}）已放开，可接单：${reqItemsSuggestText(r)}`, r.id));
+    changed = true;
+  }
+  if (changed) save();
+}
+// 框键：有托号按托号合并（整托多码=1框），无托号按标签独立成框
+function boxKeyOf(x) { const pid = String(x.pid || '').toUpperCase(); return pid ? 'P|' + pid : 'C|' + String(x.c).toUpperCase(); }
+function groupLedgerBoxes(list) {
+  const g = new Map();
+  for (const x of list) {
+    const k = boxKeyOf(x);
+    if (!g.has(k)) g.set(k, { codes: [], items: [], l: x.l, q: 0, b: String(x.b || ''), f: String(x.f || ''), pid: String(x.pid || '') });
+    const box = g.get(k);
+    box.codes.push(x.c); box.items.push({ c: x.c, q: Number(x.q) || 0 }); box.q += Number(x.q) || 0;
+    if (x.b && (!box.b || String(x.b) < box.b)) box.b = String(x.b); // 批次取最早
+  }
+  return [...g.values()].sort((a, b) => (a.b || '9999').localeCompare(b.b || '9999') || String(a.l).localeCompare(String(b.l))); // 批次早优先
+}
+// 取货建议：PDA 同步的货位账本（含托号 pid）→ 按框（同托多码=1框）FIFO 选框
 function pickSuggest(partNo, needQty, excludeCodes) {
   const ex = excludeCodes || new Set();
-  const boxes = db.ledger
-    .filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase() && !ex.has(String(x.c).toUpperCase()))
-    .map(x => ({ c: x.c, l: x.l, q: Number(x.q) || 0, b: String(x.b || ''), f: String(x.f || '') }))
-    .sort((a, b) => (a.b || '9999').localeCompare(b.b || '9999') || a.l.localeCompare(b.l)); // 批次早优先
+  const match = db.ledger.filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase());
+  const boxes = groupLedgerBoxes(match.filter(x => !ex.has(String(x.c).toUpperCase())));
   let acc = 0; const pick = [];
   for (const x of boxes) {
     pick.push(x);
@@ -111,8 +138,10 @@ function pickSuggest(partNo, needQty, excludeCodes) {
     if (needQty > 0 && acc >= needQty) break;
     if (pick.length >= 8) break; // 最多建议 8 框
   }
-  const noInfo = db.ledger.filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase() && !x.q).length;
-  return { boxes: pick, total: acc, inStock: boxes.length, noInfoQty: noInfo };
+  const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f }))); // 标签级：供逐码复制/扫码
+  const noInfoKeys = new Set();
+  for (const x of match) if (!x.q) noInfoKeys.add(boxKeyOf(x));
+  return { boxes: pick, flatBoxes, total: acc, inStock: boxes.length, noInfoQty: noInfoKeys.size };
 }
 function reqView(r) {
   const items = (r.items || []).map(i => {
@@ -138,17 +167,12 @@ function renderReqPrint(r) {
     const sg = i.transferred || i.skipped ? null : pickSuggest(i.partNo, Number(i.qty) || 0, new Set(issuedOf(i).map(e => String(e.c).toUpperCase())));
     let locCell = '';
     if (sg && sg.boxes.length) {
-      // 修复：不再截断为前4框；按货位分组完整展示全部建议框，同货位多框合并一行
-      const byLoc = new Map();
-      for (const b of sg.boxes) {
-        if (!byLoc.has(b.l)) byLoc.set(b.l, []);
-        byLoc.get(b.l).push(b);
-      }
-      locCell = [...byLoc.entries()].map(([l, bs]) => {
-        const qs = [...new Set(bs.map(b => b.q).filter(Boolean))];
-        const qTxt = qs.length === 1 ? `各${qs[0]}件` : (qs.length ? `共${bs.reduce((s, b) => s + (b.q || 0), 0)}件` : '');
-        return `<div style="font-size:11px;line-height:1.35;margin-bottom:2px">${esc(l)}${qTxt ? ` <span style="color:#888">${qTxt}</span>` : ''}`
-          + `<div style="color:#666;font-family:Consolas,monospace;font-size:10px;padding-left:8px">${bs.map(b => esc(b.c)).join(' / ')}</div></div>`;
+      // 框级渲染：1框=1行（同托多码并列、件数为框合计），完整展示全部建议框
+      locCell = sg.boxes.map(bx => {
+        const qs = [...new Set(bx.items.map(it => it.q).filter(Boolean))];
+        const qTxt = qs.length === 1 ? `各${qs[0]}件` : (qs.length ? `共${bx.q}件` : '');
+        return `<div style="font-size:11px;line-height:1.35;margin-bottom:2px">${esc(bx.l)}${qTxt ? ` <span style="color:#888">${qTxt}</span>` : ''}`
+          + `<div style="color:#666;font-family:Consolas,monospace;font-size:10px;padding-left:8px">${bx.codes.map(esc).join(' / ')}</div></div>`;
       }).join('');
     } else if (sg && !sg.boxes.length) {
       locCell = `<span style="color:#c00;font-size:11px">${sg.inStock ? '缺物料信息' : '账本无此件'}</span>`;
@@ -576,7 +600,7 @@ const server = http.createServer(async (req, res) => {
           seen.add(c);
           clean.push({ c, l, f: String((it && it.f) || '').slice(0, 40), t: Number(it && it.t) || 0,
             p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').slice(0, 80),
-            q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40) });
+            q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40), pid: String((it && it.pid) || '').slice(0, 40) });
         }
         if (!clean.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
         db.ledger = clean;
@@ -623,7 +647,7 @@ const server = http.createServer(async (req, res) => {
         const canRcv = (db.features[u.role] || {}).receive_confirm === true;
         const isWh = u.role === 'warehouse' || u.role === 'admin';
 
-        // 下单
+        // 下单（可选 assigneeId 指定仓管员：通知只推指定人，30分钟未接自动放开给全员）
         if (req.method === 'POST' && p === '/api/requisitions') {
           if (!canReq) return send(res, 403, { ok: false, msg: '当前角色未开通领料下单' });
           const b = await readBody(req);
@@ -637,23 +661,36 @@ const server = http.createServer(async (req, res) => {
           }
           if (!clean.length) return send(res, 400, { ok: false, msg: '至少一行有效的零件号+数量' });
           if (clean.length > 20) return send(res, 400, { ok: false, msg: '一张单最多20行' });
+          let assignee = null;
+          const assigneeId = String(b.assigneeId || '').trim();
+          if (assigneeId) {
+            assignee = db.users.find(x => x.id === assigneeId && x.enabled && (x.role === 'warehouse' || x.role === 'admin'));
+            if (!assignee) return send(res, 400, { ok: false, msg: '指定的仓管员不存在或未启用' });
+          }
           const now = new Date();
           const ts = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
           const r = {
             id: newId('rq'), no: `LL${ts}${String(db.requisitions.length % 100).padStart(2, '0')}`,
             by: u.id, byName: u.name, items: clean, status: 'pending',
             remark: String(b.remark || ''), createdAt: now.toISOString(), history: [],
+            assigneeId: assignee ? assignee.id : '', assigneeName: assignee ? assignee.name : '',
+            assignOpenAt: assignee ? new Date(now.getTime() + 30 * 60000).toISOString() : '',
           };
           db.requisitions.push(r);
-          db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
-            notify(x.id, 'req_new', `${u.name} 提交了领料单 ${r.no}：${reqItemsSuggestText(r)}`, r.id));
+          if (assignee) {
+            notify(assignee.id, 'req_new', `${u.name} 指定你备料：领料单 ${r.no}：${reqItemsSuggestText(r)}（30分钟内未接单将放开给全部仓管）`, r.id);
+          } else {
+            db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
+              notify(x.id, 'req_new', `${u.name} 提交了领料单 ${r.no}：${reqItemsSuggestText(r)}`, r.id));
+          }
           save();
-          console.log(`[req] ${u.name} 下单 ${r.no}`);
+          console.log(`[req] ${u.name} 下单 ${r.no}${assignee ? ' → 指定 ' + assignee.name : ''}`);
           return send(res, 200, { ok: true, req: reqView(r) });
         }
 
         // 列表：物料员看自己的，仓管/管理员看全部；scope=todo 只看待办
         if (req.method === 'GET' && p === '/api/requisitions') {
+          sweepAssignOpen();
           const q = (url.searchParams.get('scope') || '').trim();
           let list = db.requisitions.slice().reverse();
           if (u.role === 'material') list = list.filter(r => r.by === u.id);
@@ -662,8 +699,14 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, reqs: list.map(reqView) });
         }
 
+        // 可选仓管员列表（新建单指定用）
+        if (req.method === 'GET' && p === '/api/requisitions/warehouse-users') {
+          return send(res, 200, { ok: true, users: db.users.filter(x => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).map(x => ({ id: x.id, name: x.name })) });
+        }
+
         // 通知拉取（取回即标记已读）
         if (req.method === 'GET' && p === '/api/notifications') {
+          sweepAssignOpen();
           const mine = db.notifications.filter(n => n.to === u.id && !n.read);
           mine.forEach(n => n.read = true);
           if (mine.length) save();
@@ -700,12 +743,25 @@ const server = http.createServer(async (req, res) => {
           if (act === 'accept') {
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可接单' });
             if (r.status !== 'pending') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可接单` });
+            // 指定仓管员优先：时限内只有指定人/管理员可接，超时自动放开给全员
+            if (r.assigneeId && u.id !== r.assigneeId && u.role !== 'admin') {
+              const openAt = r.assignOpenAt ? Date.parse(r.assignOpenAt) : 0;
+              if (openAt && Date.now() < openAt) {
+                return send(res, 403, { ok: false, msg: `该单已指定给 ${r.assigneeName || '其他仓管'} 备料（未超时），暂不能接单` });
+              }
+            }
             r.status = 'accepted'; r.acceptedBy = u.name;
-            hpush(`接单（${u.name}）`);
+            hpush(`接单（${u.name}）${r.assigneeName && r.assigneeId !== u.id ? '，原指定 ' + r.assigneeName + ' 超时未接' : ''}`);
             notify(r.by, 'req_accept', `你的领料单 ${r.no} 已由 ${u.name} 接单备料`, r.id);
           } else if (act === 'reject') {
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可拒单' });
             if (r.status !== 'pending') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可拒单` });
+            if (r.assigneeId && u.id !== r.assigneeId && u.role !== 'admin') {
+              const openAt = r.assignOpenAt ? Date.parse(r.assignOpenAt) : 0;
+              if (openAt && Date.now() < openAt) {
+                return send(res, 403, { ok: false, msg: `该单已指定给 ${r.assigneeName || '其他仓管'}，未超时不能替拒` });
+              }
+            }
             const reason = String(b.reason || '').trim() || '未说明';
             r.status = 'rejected'; r.rejectReason = reason;
             hpush(`拒单：${reason}`);
