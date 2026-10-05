@@ -126,19 +126,23 @@ function groupLedgerBoxes(list) {
   }
   return [...g.values()].sort((a, b) => (a.b || '9999').localeCompare(b.b || '9999') || String(a.l).localeCompare(String(b.l))); // 批次早优先
 }
-// 取货建议：PDA 同步的货位账本（含托号 pid）→ 按框（同托多码=1框）FIFO 选框
-function pickSuggest(partNo, needQty, excludeCodes) {
+function agvMapOf(i) { const m = {}; for (const e of ((i && i.agvCalled) || [])) m[String(e.c).toUpperCase()] = String(e.s || '') || '已叫'; return m; }
+// 取货建议：PDA 同步的货位账本（含托号 pid）→ 按框（同托多码=1框）FIFO 选框；agvMap 标记已叫AGV的框
+function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
+  const agv = agvMap || {};
   const ex = excludeCodes || new Set();
   const match = db.ledger.filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase());
   const boxes = groupLedgerBoxes(match.filter(x => !ex.has(String(x.c).toUpperCase())));
   let acc = 0; const pick = [];
   for (const x of boxes) {
+    const called = x.codes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || '';
+    x.agv = called; // 框内任一标签叫过AGV → 整框标记（一框一车，同托标签一起走）
     pick.push(x);
     acc += x.q;
     if (needQty > 0 && acc >= needQty) break;
-    if (pick.length >= 8) break; // 最多建议 8 框
+    if (pick.length >= 24) break; // 最多建议 24 框（大单一筐20件×25框也能覆盖大半）
   }
-  const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f }))); // 标签级：供逐码复制/扫码
+  const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   const noInfoKeys = new Set();
   for (const x of match) if (!x.q) noInfoKeys.add(boxKeyOf(x));
   return { boxes: pick, flatBoxes, total: acc, inStock: boxes.length, noInfoQty: noInfoKeys.size };
@@ -146,7 +150,7 @@ function pickSuggest(partNo, needQty, excludeCodes) {
 function reqView(r) {
   const items = (r.items || []).map(i => {
     const excl = new Set(((i.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
-    return { ...i, suggest: pickSuggest(i.partNo, Number(i.qty) || 0, excl) };
+    return { ...i, suggest: pickSuggest(i.partNo, Number(i.qty) || 0, excl, agvMapOf(i)) };
   });
   return { ...r, items, statusText: REQ_STATUS_TEXT[r.status] || r.status };
 }
@@ -164,14 +168,15 @@ function renderReqPrint(r) {
     if (i.transferred) stMark = ` <span style="color:#0a7d32;font-weight:bold">✓已转${got >= (Number(i.qty) || 0) ? '' : '(短装)'}</span>`;
     else if (i.skipped) stMark = ' <span style="color:#999">✗跳过</span>';
     // 货位列：系统按同步账本 FIFO 给建议；没数据则留手写格
-    const sg = i.transferred || i.skipped ? null : pickSuggest(i.partNo, Number(i.qty) || 0, new Set(issuedOf(i).map(e => String(e.c).toUpperCase())));
+    const sg = i.transferred || i.skipped ? null : pickSuggest(i.partNo, Number(i.qty) || 0, new Set(issuedOf(i).map(e => String(e.c).toUpperCase())), agvMapOf(i));
     let locCell = '';
     if (sg && sg.boxes.length) {
-      // 框级渲染：1框=1行（同托多码并列、件数为框合计），完整展示全部建议框
+      // 框级渲染：1框=1行（同托多码并列、件数为框合计），已叫AGV的框标橙色
       locCell = sg.boxes.map(bx => {
         const qs = [...new Set(bx.items.map(it => it.q).filter(Boolean))];
         const qTxt = qs.length === 1 ? `各${qs[0]}件` : (qs.length ? `共${bx.q}件` : '');
-        return `<div style="font-size:11px;line-height:1.35;margin-bottom:2px">${esc(bx.l)}${qTxt ? ` <span style="color:#888">${qTxt}</span>` : ''}`
+        const agvTag = bx.agv ? ` <span style="color:#e65100;font-weight:bold">🚗${esc(bx.agv)}</span>` : '';
+        return `<div style="font-size:11px;line-height:1.35;margin-bottom:2px">${esc(bx.l)}${qTxt ? ` <span style="color:#888">${qTxt}</span>` : ''}${agvTag}`
           + `<div style="color:#666;font-family:Consolas,monospace;font-size:10px;padding-left:8px">${bx.codes.map(esc).join(' / ')}</div></div>`;
       }).join('');
     } else if (sg && !sg.boxes.length) {
@@ -716,8 +721,8 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, notifications: mine });
         }
 
-        // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign)$/);
+        // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv)$/);
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
@@ -800,6 +805,17 @@ const server = http.createServer(async (req, res) => {
             const got = issuedQty(target);
             hpush(`发料 ${b.partNo} 标签 ${code}（${q}件，累计 ${got}/${target.qty}）`);
             // 不再自动置 ready：ready 由每行 transfer/skip 到终态后 finalize 决定
+          } else if (act === 'agv') {
+            // 叫AGV登记：仓管从货架叫车叉框后记账，建议区该框标"已叫AGV"防重复叫车/漏叫
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可登记' });
+            if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可登记` });
+            const target = r.items.find(i => i.partNo === b.partNo);
+            if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
+            const code = String(b.barcode || '').trim().toUpperCase();
+            if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
+            target.agvCalled = (target.agvCalled || []).filter(e => String(e.c).toUpperCase() !== code);
+            target.agvCalled.push({ c: code, s: String(b.station || '').trim(), t: new Date().toISOString() });
+            hpush(`叫AGV ${b.partNo} 标签 ${code} → ${b.station || '?'}`);
           } else if (act === 'transfer') {
             // 行级转MES回写：App 已把该行已扫箱真实转单成功，按实发件数记账（申请600只有500也可转500）
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可转单' });

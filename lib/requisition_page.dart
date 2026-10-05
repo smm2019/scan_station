@@ -356,10 +356,16 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     return List.from(item["issued"] ?? []).map((x) => x is Map ? (x["c"]?.toString() ?? "") : x.toString()).toList();
   }
 
-  /// 建议框点击：NB02 货架位 → 弹叫AGV出库窗（人工选站台）；地面/其他 → 复制标签去扫码
-  void _onSuggestTap(String code, String loc, String ftype) {
+  /// 建议框点击：NB02 货架位 → 弹叫AGV出库窗（人工选站台），成功后登记"已叫AGV"；地面/其他 → 复制标签去扫码
+  void _onSuggestTap(String code, String loc, String ftype, String partNo) async {
     if (loc.startsWith('NB02-') && !loc.contains('-CK-')) {
-      showDialog(context: context, builder: (_) => AgvCallDialog(fromLoc: loc, containerType: ftype, label: code, toast: widget.toast));
+      final stn = await showDialog<String>(context: context,
+        builder: (_) => AgvCallDialog(fromLoc: loc, containerType: ftype, label: code, toast: widget.toast));
+      if (stn == null || !mounted) return;
+      final res = await AuthApi.reqAction(_r["id"].toString(), "agv", {"partNo": partNo, "barcode": code, "station": stn});
+      if (!mounted) return;
+      if (res["ok"] == true) setState(() => _r = Map.from(res["req"]));
+      else widget.toast("已叫车，但登记失败：${res["msg"]}"); // 不影响AGV任务本身
       return;
     }
     Clipboard.setData(ClipboardData(text: code));
@@ -396,7 +402,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(color: const Color(0xFFF0F4FF), borderRadius: BorderRadius.circular(8)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text("💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件 · 点标签复制",
+        Text("💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件 · 点货架框叫AGV / 点地面标签复制",
             style: const TextStyle(fontSize: 11, color: Color(0xFF3949AB), fontWeight: FontWeight.w600)),
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 4, children: [
@@ -407,13 +413,18 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               final lot = (b["b"]?.toString() ?? "").split(" ").first;
               final qv = (b["q"] as num?)?.toDouble() ?? 0;
               final multi = (perBoxCodes[loc] ?? 1) > 1;
+              final agv = (b["agv"] ?? "").toString();
               return InkWell(
-                onTap: () => _onSuggestTap(code, loc, (b["f"] ?? "").toString()),
+                onTap: () => _onSuggestTap(code, loc, (b["f"] ?? "").toString(), item["partNo"]?.toString() ?? ""),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                  decoration: BoxDecoration(color: Colors.white, border: Border.all(color: const Color(0xFFC7CDF0)), borderRadius: BorderRadius.circular(6)),
-                  child: Text("$code @ $loc${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}${multi ? " ·同托多码" : ""}",
-                      style: const TextStyle(fontSize: 11, fontFamily: "monospace", color: Color(0xFF1A237E))),
+                  decoration: BoxDecoration(
+                    color: agv.isEmpty ? Colors.white : const Color(0xFFFFF3E0),
+                    border: Border.all(color: agv.isEmpty ? const Color(0xFFC7CDF0) : const Color(0xFFE65100)),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text("${agv.isEmpty ? "" : "🚗$agv · "}$code @ $loc${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}${multi ? " ·同托多码" : ""}",
+                      style: TextStyle(fontSize: 11, fontFamily: "monospace", color: agv.isEmpty ? const Color(0xFF1A237E) : const Color(0xFFE65100))),
                 ),
               );
             }),
