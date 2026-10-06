@@ -740,7 +740,51 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && p === '/api/rcs/stations') {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station));
-        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list });
+        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry' });
+      }
+      // ===== AGV 出库排队队列（一键叫车） =====
+      if (req.method === 'POST' && p === '/api/agv/queue') { // 批量入队：items=[{code,fromLoc,palletType,stationManual?}]
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可叫车' });
+        const b = await readBody(req);
+        const items = Array.isArray(b.items) ? b.items : [];
+        const reqId = String(b.reqId || ''), reqNo = String(b.reqNo || '');
+        if (!items.length || items.length > 30) return send(res, 400, { ok: false, msg: 'items 需1~30条' });
+        db.agvQueue = db.agvQueue || [];
+        let added = 0, dup = 0;
+        for (const it of items) {
+          const code = String(it.code || '').trim().toUpperCase(), fromLoc = String(it.fromLoc || '').trim().toUpperCase();
+          if (!code || !fromLoc) continue;
+          if (db.agvQueue.some((q) => q.code === code && !['完成', '取消', '失败'].includes(q.state))) { dup++; continue; } // 同框已在队列
+          db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', station: '', at: Date.now(), updAt: Date.now() });
+          added++;
+        }
+        save(); rcsPoll(); // 立即调度一轮
+        return send(res, 200, { ok: true, added, dup, msg: `已排队 ${added} 框${dup ? `（${dup} 框已在队列跳过）` : ''}` });
+      }
+      if (req.method === 'POST' && p === '/api/agv/queue/cancel') { // 取消排队项（仅未下发；已下发去RCS界面取消任务）
+        const b = await readBody(req);
+        const codes = new Set((Array.isArray(b.codes) ? b.codes : []).map((c) => String(c).toUpperCase()));
+        let n = 0;
+        for (const q of db.agvQueue || []) { if (codes.has(q.code) && q.state === '排队') { q.state = '取消'; q.updAt = Date.now(); n++; } }
+        save();
+        return send(res, 200, { ok: true, cancelled: n });
+      }
+      if (req.method === 'POST' && p === '/api/agv/mode') { // 调度模式：dry演算 / live真下发
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可切换' });
+        const b = await readBody(req);
+        const m = String(b.mode || '') === 'live' ? 'live' : 'dry';
+        db.agvDispatchMode = m; save();
+        console.log(`[agv-q] ${u.name} 切换调度模式 → ${m}`);
+        return send(res, 200, { ok: true, mode: m });
+      }
+      if (req.method === 'POST' && p === '/api/agv/wmas-config') { // WMAS账号同步（调度器下发通道）
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可配置' });
+        const b = await readBody(req);
+        const host = String(b.host || '').trim(), account = String(b.account || '').trim(), pwd = String(b.pwd || '');
+        if (!host || !account || !pwd) return send(res, 400, { ok: false, msg: 'host/account/pwd 不能为空' });
+        db.wmasConfig = { host, account, pwd }; _wmasTk = ''; _wmasLoc = null;
+        save();
+        return send(res, 200, { ok: true, msg: 'WMAS配置已保存' });
       }
       if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工干预站台：state=有货(占用)/空闲(清台)
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可操作' });
@@ -1224,8 +1268,109 @@ async function rcsPoll() {
     }
   }
   if (db.rcsRemind) for (const [k, t0] of Object.entries(db.rcsRemind)) { if (nowMs - t0 > 4 * 3600 * 1000) delete db.rcsRemind[k]; }
+  agvDispatch(nowMs, runT).catch((e) => console.log('[agv-q] 调度异常', e.message)); // 排队调度：空闲站台→按队列下发
   save();
 }
-setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, 60 * 1000).unref();
+setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, 20 * 1000).unref();
+
+// ================= AGV 出库排队调度（一键叫车→8站台自动分配→空闲即下发；入库优先） =================
+// 站台空闲=无有货/占用、无在途任务指向(含入库)、未被人工占用30分钟、未被队列占用；出库任务随时可排队，站台空了才下发。
+// 下发走 WMAS（与人工叫车同通道同参数）；容器编码自动取该托盘类型下未被在途任务占用的第一个。
+// 模式 db.agvDispatchMode：'dry'(默认，只演算记 plan 不真发) / 'live'(真下发)。PDA 设置页切换。
+const AGV_STNS = Array.from({ length: 8 }, (_, i) => 'NB02-CK-' + String(i + 5).padStart(2, '0'));
+function agvStationFree(stn, nowMs, runT, assigned) {
+  const s = (db.rcsStations || {})[stn];
+  if (s && (s.state === '有货' || s.state === '占用中')) return false;
+  if ((db.rcsManual || {})[stn] && nowMs - db.rcsManual[stn] < 30 * 60000) return false;
+  for (const t of runT) { const { sp, ep } = parsePts(t); if (sp === stn || ep === stn) return false; } // 有任务(含入库)指向该台 → 出库排队等
+  if ((assigned || []).includes(stn)) return false;
+  for (const q of db.agvQueue || []) if (q.station === stn && (q.state === '下发中' || q.state === '已下发')) return false;
+  return true;
+}
+function wmasHttp(method, path, token, body) {
+  return new Promise((resolve) => {
+    try {
+      const cfg = db.wmasConfig || {};
+      const [host, port] = String(cfg.host || '').split(':');
+      if (!host) return resolve(null);
+      const data = body ? JSON.stringify(body) : null;
+      const r = http.request({ host, port: parseInt(port || '80'), path, method, timeout: 8000,
+        headers: Object.assign({ 'Content-Type': 'application/json' }, token ? { Authorization: 'Bearer ' + token } : {}, data ? { 'Content-Length': Buffer.byteLength(data) } : {}) },
+        (res) => { let s = ''; res.on('data', (c) => (s += c)); res.on('end', () => { try { resolve(JSON.parse(s)); } catch (_) { resolve(null); } }); });
+      r.on('error', () => resolve(null)); r.on('timeout', () => { r.destroy(); resolve(null); });
+      if (data) r.write(data); r.end();
+    } catch (_) { resolve(null); }
+  });
+}
+let _wmasTk = '', _wmasTkAt = 0, _wmasLoc = null, _wmasLocAt = 0;
+async function wmasToken() {
+  if (_wmasTk && Date.now() - _wmasTkAt < 10 * 3600 * 1000) return _wmasTk;
+  const cfg = db.wmasConfig || {}; if (!cfg.account || !cfg.pwd) return '';
+  const r = await wmasHttp('POST', '/api/auth/login', null, { username: cfg.account, password: cfg.pwd });
+  if (r && r.success === true && r.data && r.data.token) { _wmasTk = r.data.token; _wmasTkAt = Date.now(); return _wmasTk; }
+  return '';
+}
+async function wmasLocOf(code) {
+  if (!_wmasLoc || Date.now() - _wmasLocAt > 3600 * 1000) {
+    const tk = await wmasToken(); if (!tk) return null;
+    const r = await wmasHttp('GET', '/api/basicdata/wmsLocation/listAll', tk);
+    if (r && r.success === true && Array.isArray(r.data)) {
+      _wmasLoc = {}; for (const e of r.data) { const c = String(e.locationCode || '').toUpperCase(); if (c) _wmasLoc[c] = { wh: e.warehouseCode || '', zone: e.zoneCode || '' }; }
+      _wmasLocAt = Date.now();
+    }
+  }
+  return (_wmasLoc || {})[String(code).toUpperCase()] || null;
+}
+async function wmasDispatchOne(q, tk) {
+  // 容器自动选号：该托盘类型候选 − 在途任务已占用
+  const cr = await wmasHttp('GET', '/api/logistics/container/list?pageNum=1&pageSize=1000', tk);
+  if (!cr || cr.success !== true) return { ok: false, msg: '查容器主档失败' };
+  const t = String(q.palletType || '').toUpperCase();
+  const cands = ((cr.data && cr.data.records) || []).map((x) => String(x.containerCode || '')).filter((c) => t && c.toUpperCase().includes(t)).sort();
+  const used = new Set();
+  for (const st of ['PUSHED', 'DISPATCHED', 'IN_TRANSIT']) {
+    const lr = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=100&status=${st}`, tk);
+    if (lr && lr.success === true) for (const x of ((lr.data && lr.data.records) || [])) if (x.containerNo) used.add(String(x.containerNo));
+  }
+  const cn = cands.find((c) => !used.has(c)) || '';
+  if (!cn) return { ok: false, msg: `托盘类型 ${q.palletType} 无空闲容器编码可选（在途占用完），请人工叫车` };
+  const s = await wmasLocOf(q.fromLoc), e = await wmasLocOf(q.station);
+  if (!s || !e) return { ok: false, msg: '库位不在WMAS主档：' + q.fromLoc + '/' + q.station };
+  const mk = await wmasHttp('POST', '/api/logistics/agv-task', tk, { taskType: 'CARRY', warehouse: s.wh, startArea: s.zone, startPoint: q.fromLoc, endArea: e.zone, endPoint: q.station, containerNo: cn, refNo: q.reqNo || '' });
+  if (!mk || mk.success !== true) return { ok: false, msg: '建任务失败：' + (mk && mk.message || '无响应') };
+  let id = mk.data && mk.data.id;
+  if (!id) { const q2 = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=3&containerNo=${encodeURIComponent(cn)}`, tk); const recs = (q2 && q2.data && q2.data.records) || []; id = recs.length ? recs[0].id : null; }
+  if (id) await wmasHttp('POST', '/api/logistics/agv-task/dispatch', tk, { ids: [id] });
+  return { ok: true, container: cn, msg: '已建任务并下发' };
+}
+async function agvDispatch(nowMs, runT) {
+  const queue = db.agvQueue || [];
+  // 回收：队列项对应任务已到站/已完成 → 状态跟随（到站后由"有货/催扫/清台"机制接管）
+  for (const q of queue) {
+    if (q.state !== '已下发') continue;
+    const s = (db.rcsStations || {})[q.station];
+    if (s && s.state === '有货' && s.via === (q.taskNo || '').slice(-6)) q.state = '到站';
+    if (q.state === '到站' && !s) q.state = '完成'; // 已清台
+  }
+  db.agvQueue = queue.filter((q) => !['完成', '取消'].includes(q.state) || nowMs - (q.updAt || q.at) < 2 * 3600 * 1000);
+  const waiting = db.agvQueue.filter((q) => q.state === '排队');
+  if (!waiting.length) return;
+  const live = (db.agvDispatchMode || 'dry') === 'live';
+  const assigned = [];
+  for (const q of waiting) {
+    if (live && assigned.length >= 4) break; // 一轮最多下发4单，保守节奏
+    const manual = q.stationManual && agvStationFree(q.stationManual, nowMs, runT, assigned) ? q.stationManual : '';
+    const stn = manual || AGV_STNS.find((s) => agvStationFree(s, nowMs, runT, assigned));
+    if (!stn) continue; // 暂无空闲台：继续排队，下轮再看
+    assigned.push(stn); q.station = stn; q.updAt = nowMs;
+    if (!live) { q.plan = stn; console.log(`[agv-q·演算] 框 ${q.code} ${q.fromLoc} → ${stn}（切live后自动下发）`); continue; }
+    q.state = '下发中';
+    const tk = await wmasToken();
+    if (!tk) { q.state = '失败'; q.err = 'WMAS未配置/登录失败（PDA设置→AGV调度系统同步WMAS账号）'; continue; }
+    const r = await wmasDispatchOne(q, tk);
+    q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.err = r.ok ? '' : r.msg;
+    console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);
+  }
+}
 
 server.listen(PORT, HOST, () => console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`));

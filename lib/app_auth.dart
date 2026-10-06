@@ -129,6 +129,15 @@ class AuthApi {
       _req("POST", "/api/rcs/config", body: {"host": host, "account": account, "pwd": pwd}, token: await AuthStore.token());
   static Future<Map> rcsStations() async => _req("GET", "/api/rcs/stations", token: await AuthStore.token());
   static Future<Map> rcsClear(String station, {String state = "空闲"}) async => _req("POST", "/api/rcs/clear", body: {"station": station, "state": state}, token: await AuthStore.token());
+  // ===== AGV 出库排队（一键叫车→服务器调度器自动分配站台） =====
+  static Future<Map> agvQueueEnqueue({required String reqId, required String reqNo, required List<Map> items}) async =>
+      _req("POST", "/api/agv/queue", body: {"reqId": reqId, "reqNo": reqNo, "items": items}, token: await AuthStore.token());
+  static Future<Map> agvQueueCancel(List<String> codes) async =>
+      _req("POST", "/api/agv/queue/cancel", body: {"codes": codes}, token: await AuthStore.token());
+  static Future<Map> agvSetMode(String mode) async =>
+      _req("POST", "/api/agv/mode", body: {"mode": mode}, token: await AuthStore.token());
+  static Future<Map> agvWmasConfig({required String host, required String account, required String pwd}) async =>
+      _req("POST", "/api/agv/wmas-config", body: {"host": host, "account": account, "pwd": pwd}, token: await AuthStore.token());
   static Future<Map> outboundSync(Map order) async =>
       _req("POST", "/api/outbound/sync", body: order, token: await AuthStore.token());
   // AGV 叫车占位：同容器（15分钟）或同站台（60秒内）已有占位则拒绝，两台PDA并发点击只放行一个

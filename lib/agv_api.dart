@@ -769,6 +769,8 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
   final _pwdCtrl = TextEditingController();
   String _msg = "";
   bool _ok = false, _busy = false;
+  String _mode = "dry"; // 一键叫车调度模式：dry演算 / live真实下发
+  bool _syncing = false;
 
   @override
   void initState() {
@@ -782,6 +784,8 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
         _accCtrl.text = cfg["account"] ?? "";
         _pwdCtrl.text = cfg["pwd"] ?? "";
       });
+      final st = await AuthApi.rcsStations();
+      if (mounted && st["ok"] == true) setState(() => _mode = st["mode"]?.toString() ?? "dry");
     });
   }
 
@@ -799,12 +803,26 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
     await AgvConfig.save(host: _hostCtrl.text, portal: _portalCtrl.text, account: _accCtrl.text, pwd: _pwdCtrl.text);
     final t = await AgvApi.login();
     if (t != null) {
-      // 同步凭据到鉴权服务器：服务器60秒代轮询RCS → 到站催扫通知 + 站台占用面板
+      // 同步凭据到鉴权服务器：服务器20秒代轮询RCS → 到站催扫通知 + 站台占用面板
       final s = await AuthApi.rcsConfigSync(host: _hostCtrl.text.trim(), account: _accCtrl.text.trim(), pwd: _pwdCtrl.text);
       if (s["ok"] != true) debugPrint("[rcs] 配置同步失败：${s["msg"]}");
+      // 同步WMAS账号给调度器（一键叫车真实下发通道）；失败不阻断RCS同步结果
+      final wCfg = await WmasConfig.get();
+      if ((wCfg["account"] ?? "").isNotEmpty && (wCfg["pwd"] ?? "").isNotEmpty) {
+        final ws = await AuthApi.agvWmasConfig(host: wCfg["host"] ?? "", account: wCfg["account"] ?? "", pwd: wCfg["pwd"] ?? "");
+        if (ws["ok"] != true) debugPrint("[wmas] 调度器账号同步失败：${ws["msg"]}");
+      }
     }
     if (!mounted) return;
-    setState(() { _busy = false; _ok = t != null; _msg = t == null ? "登录失败：检查地址/账号/密码（或AGV系统离线）" : "登录成功 ✅ token已缓存（12小时）${t != null ? "；服务器轮询已开启（催扫+站台面板）" : ""}"; });
+    setState(() { _busy = false; _ok = t != null; _msg = t == null ? "登录失败：检查地址/账号/密码（或AGV系统离线）" : "登录成功 ✅ token已缓存（12小时）；服务器轮询+调度器凭据已同步"; });
+  }
+
+  Future<void> _setMode(String m) async {
+    setState(() { _syncing = true; });
+    final r = await AuthApi.agvSetMode(m);
+    if (!mounted) return;
+    setState(() { _syncing = false; if (r["ok"] == true) _mode = m; });
+    if (r["ok"] != true) setState(() { _ok = false; _msg = "模式切换失败：${r["msg"]}"; });
   }
 
   @override
@@ -827,8 +845,32 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
         Expanded(child: ElevatedButton(onPressed: _busy ? null : _test, child: Text(_busy ? "登录中…" : "测试登录"))),
       ]),
       if (_msg.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 12), child: Text(_msg, style: TextStyle(color: _ok ? Colors.green : Colors.red, fontSize: 13))),
+      const SizedBox(height: 16),
+      const Divider(),
+      const SizedBox(height: 8),
+      const Text("一键叫车 · 站台自动排队", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+      const SizedBox(height: 4),
+      Row(children: [
+        Expanded(child: OutlinedButton.icon(
+          onPressed: _syncing ? null : () => _setMode("dry"),
+          icon: Icon(Icons.science_outlined, size: 16, color: _mode == "dry" ? Colors.teal : Colors.grey),
+          label: Text("演算模式${_mode == "dry" ? " ✓" : ""}", style: TextStyle(fontSize: 12, color: _mode == "dry" ? Colors.teal : null)))),
+        const SizedBox(width: 8),
+        Expanded(child: OutlinedButton.icon(
+          onPressed: _syncing ? null : () async {
+            final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+              title: const Text("⚠️ 切换为真实下发"),
+              content: const Text("切换后，领料单「一键叫车」将真实向 WMAS 下发 AGV 搬运任务并自动分配站台。\n\n请确认现场 AGV 可安全执行、WMAS 账号已在设置页配置。\n\n确定切换？"),
+              actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+                FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(ctx, true), child: const Text("确认切换"))],
+            ));
+            if (yes == true) await _setMode("live");
+          },
+          icon: Icon(Icons.bolt, size: 16, color: _mode == "live" ? Colors.red : Colors.grey),
+          label: Text("真实下发${_mode == "live" ? " ✓" : ""}", style: TextStyle(fontSize: 12, color: _mode == "live" ? Colors.red : null)))),
+      ]),
       const SizedBox(height: 10),
-      const Text("说明：token 12小时有效，过期自动重登；验证码为系统万能码已内置。AGV模块展示任务/车辆/交管数据并提供实时大屏。", style: TextStyle(fontSize: 11, color: Colors.blueGrey)),
+      const Text("说明：token 12小时有效，过期自动重登；验证码为系统万能码已内置。RCS 负责状态查询与站台面板，一键叫车的任务下发走 WMAS（需先在 WMAS(AGV)设置 配好账号）。演算模式只排计划不下发，验证分配逻辑无误后再切真实下发。", style: TextStyle(fontSize: 11, color: Colors.blueGrey)),
     ]));
   }
 }

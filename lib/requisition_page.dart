@@ -329,6 +329,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   final Map<String, Map<String, dynamic>> _boxData = {}; // 标签 -> 转单所需MES数据
   Map<String, dynamic>? _lastBoxData; // 本次扫码抓到的MES数据
   Map<String, String> _agvStat = {}; // "起点|站台" → 排队/在途/已到站（哈工库讯RCS实时状态）
+  String _queueStat = ""; // 本单AGV队列状态摘要（一键叫车后显示）
   Timer? _agvTimer;
 
   /// 拉RCS任务表，把已叫AGV的框标出实时配送状态（AGV账号未配置则静默跳过）
@@ -354,6 +355,46 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     }
     if (!mounted) return;
     setState(() { _agvStat = m; });
+    await _loadQueue();
+  }
+
+  /// 拉本单AGV排队队列状态摘要
+  Future<void> _loadQueue() async {
+    final r = await AuthApi.rcsStations();
+    if (!mounted || r["ok"] != true) return;
+    final mine = List<Map>.from(r["queue"] ?? []).where((q) => q["reqId"] == _r["id"]).toList();
+    final cnt = <String, int>{};
+    for (final q in mine) { final s = q["state"]?.toString() ?? "?"; cnt[s] = (cnt[s] ?? 0) + 1; }
+    setState(() => _queueStat = cnt.isEmpty ? "" : cnt.entries.map((e) => "${e.key}${e.value}").join(" · "));
+  }
+
+  /// 一键叫车：本行全部货架框入服务器队列，自动分配空闲站台排队下发
+  Future<void> _queueAll(Map item, List<Map> boxes) async {
+    final agvMap = <String>{for (final e in List<Map>.from(item["agvCalled"] ?? [])) e["c"]?.toString().toUpperCase() ?? ""};
+    final issuedSet = _issuedCodesOf(item).map((e) => e.toUpperCase()).toSet();
+    final its = <Map>[];
+    for (final b in boxes) {
+      final l = b["l"]?.toString() ?? "";
+      if (!l.startsWith('NB02-') || l.contains('-CK-')) continue;
+      final cs = List<String>.from((b["codes"] as List? ?? const []).map((e) => e.toString()));
+      if (cs.isEmpty || cs.any((c) => issuedSet.contains(c.toUpperCase()))) continue;
+      if (cs.any((c) => agvMap.contains(c.toUpperCase()))) continue;
+      its.add({"code": cs.first, "fromLoc": l, "palletType": b["f"]?.toString() ?? ""});
+    }
+    if (its.isEmpty) { widget.toast("没有可叫车的货架框（已叫过的请点标签看状态）"); return; }
+    final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text("一键叫车"),
+      content: Text("将 ${its.length} 框加入AGV队列？\n系统自动分配空闲站台，台满自动排队，空了就下发。\n（当前为演算模式时只排计划不下发）"),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("加入队列"))],
+    ));
+    if (yes != true || !mounted) return;
+    setState(() => _busy = true);
+    final r = await AuthApi.agvQueueEnqueue(reqId: _r["id"].toString(), reqNo: _r["no"].toString(), items: its);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    widget.toast(r["ok"] == true ? r["msg"].toString() : "排队失败：${r["msg"]}", err: r["ok"] != true);
+    await _loadQueue();
   }
 
   @override
@@ -450,8 +491,17 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(color: const Color(0xFFF0F4FF), borderRadius: BorderRadius.circular(8)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text("💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件 · 点货架框叫AGV / 点地面标签复制",
-            style: const TextStyle(fontSize: 11, color: Color(0xFF3949AB), fontWeight: FontWeight.w600)),
+        Row(children: [
+          Expanded(child: Text("💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件 · 点标签单独叫车",
+              style: const TextStyle(fontSize: 11, color: Color(0xFF3949AB), fontWeight: FontWeight.w600))),
+          if (boxes.any((b) => (b["l"]?.toString().startsWith('NB02-') ?? false) && (b["l"]?.toString().contains('-CK-') ?? true) == false))
+            TextButton(
+              style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact),
+              onPressed: _busy ? null : () => _queueAll(item, boxes),
+              child: const Text("一键叫车", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
+        ]),
+        if (_queueStat.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 3),
+          child: Text("📦 队列：${_queueStat}", style: const TextStyle(fontSize: 10.5, color: Color(0xFF00695C)))),
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 4, children: [
           for (final b in flat)
