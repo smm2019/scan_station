@@ -202,6 +202,13 @@ class AgvApi {
     return r["ok"] == true ? r : {};
   }
 
+  /// 容错取数值：RCS部分字段返回字符串（如"nan"、"99.5"），强转num会崩，统一走解析
+  static double? asNum(dynamic v) {
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v);
+    return null;
+  }
+
   // ---------- 状态文案 ----------
   static const taskStateText = {-2: "已放弃", -1: "已挂起", 0: "待执行", 1: "执行中", 2: "已完成", 5: "已超时", 6: "已清除"};
   static String taskStateOf(dynamic s) { final v = s is int ? s : int.tryParse("$s") ?? 99; return taskStateText[v] ?? "状态$v"; }
@@ -486,10 +493,10 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
     return ListView(padding: const EdgeInsets.only(bottom: 16), children: _cars.map((c) {
       final id = c["agvId"];
       final online = c["communicationBreak"] != true && c["enable"] == 1;
-      final power = (c["power"] as num?)?.toDouble() ?? 0;
-      final speed = (c["speed"] as num?)?.toDouble() ?? 0;
+      final power = AgvApi.asNum(c["power"]) ?? 0;
+      final speed = AgvApi.asNum(c["speed"]) ?? 0;
       final taskNo = (c["execTaskNo"] ?? c["executeTaskNo"])?.toString() ?? "";
-      final x = (c["x"] as num?)?.toDouble(), y = (c["y"] as num?)?.toDouble();
+      final x = AgvApi.asNum(c["x"]), y = AgvApi.asNum(c["y"]);
       final lockLands = (c["routeLockLands"] as List?)?.join(", ") ?? "";
       final err = (c["errorMessage"] ?? "").toString();
       // 执行状态：急停/人工停止 > 充电 > 执行任务 > 空闲
@@ -521,7 +528,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
           Row(children: [
             kv("驾驶", c["autoMode"] == true ? "自动" : "手动"),
             kv("车型", "${c["carModel"] ?? "-"}"),
-            kv("货叉高", "${((c["forkHeight"] as num?)?.toDouble() ?? 0).toStringAsFixed(2)}m"),
+            kv("货叉高", "${(AgvApi.asNum(c["forkHeight"]) ?? 0).toStringAsFixed(2)}m"),
           ]),
           Row(children: [
             kv("执行", exe, exeColor),
