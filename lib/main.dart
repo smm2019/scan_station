@@ -934,6 +934,8 @@ Future<BaselineParseResult> importBaselineFile(String path, String fileKey, Stri
 // ===================== 程序入口 =====================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 错误显形：release下build抛异常不再灰屏，而是红字显示原因，便于现场定位
+  ErrorWidget.builder = (FlutterErrorDetails d) => Container(color: const Color(0xFFFFEBEE), padding: const EdgeInsets.all(12), alignment: Alignment.topLeft, child: SingleChildScrollView(child: Text('界面渲染异常：\\n${d.exception}', style: const TextStyle(color: Color(0xFFB71C1C), fontSize: 12))));
   await Isar.initializeIsarCore(download: true);
   final dir = await getApplicationDocumentsDirectory();
   _globalIsar = await Isar.open(

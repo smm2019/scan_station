@@ -62,7 +62,14 @@ class AgvApi {
       final resp = await req.close().timeout(_timeout);
       final text = await resp.transform(utf8.decoder).join().timeout(_timeout);
       dynamic j;
-      try { j = jsonDecode(text); } catch (_) { j = null; }
+      // RCS后端会把 Double.NaN 序列化成裸 NaN/Infinity（非法JSON），解析前先替换成null
+      var cleaned = text;
+      if (cleaned.contains("NaN") || cleaned.contains("Infinity")) {
+        cleaned = cleaned
+            .replaceAll(RegExp(r':\s*-?(?:NaN|Infinity)(?=[,}\]])'), ':null')
+            .replaceAll(RegExp(r'\[\s*-?(?:NaN|Infinity)(?=[,\]])'), '[null');
+      }
+      try { j = jsonDecode(cleaned); } catch (_) { j = null; }
       return {"status": resp.statusCode, "json": j is Map<String, dynamic> ? j : null, "text": text};
     } catch (e) {
       return {"status": 0, "json": null, "text": "$e"};
@@ -280,15 +287,20 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
       if (mounted) setState(() { _loading = false; _err = "未登录：请到 设置 → AGV调度系统 填写账号密码"; });
       return;
     }
-    final rs = await Future.wait([AgvApi.tasksRunning(), AgvApi.cars(), AgvApi.traffic(), AgvApi.tasksDone(), AuthApi.rcsStations()]);
-    if (!mounted) return;
-    setState(() {
-      _loading = false; _loaded = true;
-      _tasks = rs[0] as List<Map>; _cars = rs[1] as List<Map>; _traffic = rs[2] as Map; _done = rs[3] as List<Map>;
-      final st = rs[4]; _stations = st is Map && st["stations"] is List ? List<Map>.from(st["stations"] as List) : [];
-      _err = "";
-    });
-    unawaited(_buildCargo());
+    try {
+      final rs = await Future.wait([AgvApi.tasksRunning(), AgvApi.cars(), AgvApi.traffic(), AgvApi.tasksDone(), AuthApi.rcsStations()]);
+      if (!mounted) return;
+      setState(() {
+        _loading = false; _loaded = true;
+        _tasks = rs[0] as List<Map>; _cars = rs[1] as List<Map>; _traffic = rs[2] as Map; _done = rs[3] as List<Map>;
+        final st = rs[4]; _stations = st is Map && st["stations"] is List ? List<Map>.from(st["stations"] as List) : [];
+        _err = "";
+      });
+      unawaited(_buildCargo());
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _loading = false; _err = "AGV数据加载异常：$e"; });
+    }
   }
 
   /// 反查货物：AGV 只知"搬托盘"，货由任务起点货位回查本机货位账本得到（零件号/数量/标签）
