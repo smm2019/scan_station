@@ -359,13 +359,45 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   }
 
   /// 拉本单AGV排队队列状态摘要
+  List<Map> _queueItems = [];
   Future<void> _loadQueue() async {
     final r = await AuthApi.rcsStations();
     if (!mounted || r["ok"] != true) return;
     final mine = List<Map>.from(r["queue"] ?? []).where((q) => q["reqId"] == _r["id"]).toList();
     final cnt = <String, int>{};
     for (final q in mine) { final s = q["state"]?.toString() ?? "?"; cnt[s] = (cnt[s] ?? 0) + 1; }
-    setState(() => _queueStat = cnt.isEmpty ? "" : cnt.entries.map((e) => "${e.key}${e.value}").join(" · "));
+    setState(() { _queueItems = mine; _queueStat = cnt.isEmpty ? "" : cnt.entries.map((e) => "${e.key}${e.value}").join(" · "); });
+  }
+
+  /// 队列管理面板：查看每框分配与状态，"排队"中的可取消
+  void _showQueueSheet() {
+    showModalBottomSheet(context: context, isScrollControlled: true, builder: (mctx) => SafeArea(child: Column(
+      mainAxisSize: MainAxisSize.min, children: [
+        const Padding(padding: EdgeInsets.all(12), child: Text("AGV 排队队列", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+        Flexible(child: ListView(children: [
+          for (final q in _queueItems) ListTile(
+            dense: true,
+            leading: CircleAvatar(radius: 15, backgroundColor: switch (q["state"]?.toString()) {
+              "排队" => const Color(0xFFE3F2FD), "下发中" => const Color(0xFFFFF3E0), "已下发" => const Color(0xFFFFF3E0), "到站" => const Color(0xFFE8F5E9), _ => const Color(0xFFFAFAFA) },
+              child: Text(switch (q["state"]?.toString()) { "排队" => "排", "下发中" => "运", "已下发" => "运", "到站" => "达", _ => "其" }, style: const TextStyle(fontSize: 12))),
+            title: Text("${q["code"]}  ${q["fromLoc"]}${(q["station"] ?? "").toString().isNotEmpty ? " → ${q["station"]}" : ((q["plan"] ?? "").toString().isNotEmpty ? " → ${q["plan"]}（计划）" : "")}", style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
+            subtitle: Text("${q["state"]}${(q["err"] ?? "").toString().isNotEmpty ? " · ${q["err"]}" : ""}${(q["palletType"] ?? "").toString().isNotEmpty ? " · ${q["palletType"]}" : ""}", style: const TextStyle(fontSize: 11)),
+            trailing: q["state"] == "排队" ? TextButton(
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              onPressed: () => _cancelQueued(q["code"].toString()),
+              child: const Text("取消", style: TextStyle(fontSize: 12))) : null,
+          ),
+          if (_queueItems.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Center(child: Text("本单暂无队列（点行内「一键叫车」入队）", style: TextStyle(color: Colors.grey)))),
+        ])),
+        TextButton(onPressed: () => Navigator.pop(mctx), child: const Text("关闭")),
+      ])));
+  }
+
+  Future<void> _cancelQueued(String code) async {
+    final r = await AuthApi.agvQueueCancel([code]);
+    if (!mounted) return;
+    widget.toast(r["ok"] == true ? "已取消排队 $code" : "取消失败：${r["msg"]}", err: r["ok"] != true);
+    await _loadQueue();
   }
 
   /// 一键叫车：本行全部货架框入服务器队列，自动分配空闲站台排队下发
@@ -500,8 +532,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               onPressed: _busy ? null : () => _queueAll(item, boxes),
               child: const Text("一键叫车", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
         ]),
-        if (_queueStat.isNotEmpty) Padding(padding: const EdgeInsets.only(bottom: 3),
-          child: Text("📦 队列：${_queueStat}", style: const TextStyle(fontSize: 10.5, color: Color(0xFF00695C)))),
+        if (_queueStat.isNotEmpty) InkWell(
+          onTap: _showQueueSheet,
+          child: Padding(padding: const EdgeInsets.only(bottom: 3),
+            child: Text("📦 队列：$_queueStat · 点击查看/取消", style: const TextStyle(fontSize: 10.5, color: Color(0xFF00695C), decoration: TextDecoration.underline)))),
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 4, children: [
           for (final b in flat)
