@@ -742,13 +742,22 @@ const server = http.createServer(async (req, res) => {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station));
         return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list });
       }
-      if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工清台：现场已取走但系统未识别时，仓管点一下即刻转空闲
-        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可清台' });
+      if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工干预站台：state=有货(占用)/空闲(清台)
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可操作' });
         const b = await readBody(req);
         const stn = String(b.station || '').trim().toUpperCase();
-        if (!stn.includes('-CK-')) return send(res, 400, { ok: false, msg: '站台编码无效' });
-        db.rcsStations = db.rcsStations || {}; db.rcsCleared = db.rcsCleared || {};
+        const state = String(b.state || '空闲').trim();
+        if (!stn.includes('-CK-') && !stn.includes('-RK-')) return send(res, 400, { ok: false, msg: '站台编码无效' });
+        db.rcsStations = db.rcsStations || {}; db.rcsCleared = db.rcsCleared || {}; db.rcsManual = db.rcsManual || {};
+        if (state === '有货') {
+          db.rcsStations[stn] = { station: stn, state: '有货', label: '人工占用', manual: true, ts: Date.now(), since: '' };
+          delete db.rcsCleared[stn];
+          db.rcsManual[stn] = Date.now();
+          save();
+          return send(res, 200, { ok: true, msg: stn + ' 已标记有货（30分钟内不被系统覆盖）' });
+        }
         delete db.rcsStations[stn];
+        delete db.rcsManual[stn];
         db.rcsCleared[stn] = Date.now();
         for (const [k, t0] of Object.entries(db.rcsCleared)) { if (Date.now() - t0 > 8 * 3600 * 1000) delete db.rcsCleared[k]; }
         save();
@@ -1135,6 +1144,8 @@ async function rcsLogin() {
 }
 function parsePts(t) { try { const s = JSON.parse(t.suspensionMsg || '{}'); return { sp: String(s.startPoint || '').toUpperCase(), ep: String(s.endPoint || '').toUpperCase() }; } catch (_) { return { sp: '', ep: '' }; } }
 function rcsTs(s) { s = String(s || ''); if (s.length < 14) return 0; return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`).getTime(); }
+// 任务节点时间：取货点(operType=0)完成=离开起始库位，放货点(operType=1)完成=到达目标库位
+function nodeTimes(t) { let pickAt = 0, putAt = 0; for (const d of (t.taskDetailList || [])) { if (Number(d.state) === 2) { if (Number(d.operType) === 0) pickAt = rcsTs(d.finishTime) || pickAt; else if (Number(d.operType) === 1) putAt = rcsTs(d.finishTime) || putAt; } } return { pickAt, putAt }; }
 async function rcsPoll() {
   if (!db.rcsConfig || !db.rcsConfig.host) return;
   let tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
@@ -1151,8 +1162,9 @@ async function rcsPoll() {
   const mark = (stn, v) => { if (isCK(stn)) stations[stn] = Object.assign(stations[stn] || { station: stn, state: '空闲' }, v); };
   for (const t of runT) {
     const { sp, ep } = parsePts(t);
-    if (isCK(ep)) mark(ep, { state: '占用中', via: '任务 ' + (t.dispatchNo || '').slice(-6) }); // 出库在途：车正送来
-    if (isCK(sp)) mark(sp, { state: '占用中', via: '任务 ' + (t.dispatchNo || '').slice(-6) }); // 入库取走中
+    const nt = nodeTimes(t);
+    if (isCK(ep)) mark(ep, { state: '占用中', via: '任务 ' + (t.dispatchNo || '').slice(-6), pickAt: nt.pickAt }); // 出库在途：pickAt>0=已叉出货架即将到达
+    if (isCK(sp)) mark(sp, { state: '占用中', via: '任务 ' + (t.dispatchNo || '').slice(-6), putAt: nt.putAt }); // 入库取走中
   }
   // 出库完成→有货：按"到站那一刻快照的标签清单"判定清台；清台后的任务记入rcsDone，防止货架位补了新框又被误判有货
   const nowMs = Date.now();
@@ -1164,6 +1176,7 @@ async function rcsPoll() {
   const ledgerCodes = new Set((db.ledger || []).map(x => String(x.c || '').toUpperCase()));
   db.rcsStations = db.rcsStations || {};
   db.rcsCleared = db.rcsCleared || {}; // 人工清台：站台 → 时间戳，早于该时刻到站的任务不再算有货
+  db.rcsManual = db.rcsManual || {}; // 人工占用：站台 → 时间戳，30分钟内不被任务事件覆盖
   db.rcsDone = db.rcsDone || {}; // 已清台任务：站台|任务号 → 时间戳
   const recent = doneT.filter(t => rcsTs(t.finishTime) && nowMs - rcsTs(t.finishTime) < 2 * 3600 * 1000);
   for (const t of recent) {
@@ -1171,11 +1184,11 @@ async function rcsPoll() {
     if (t.taskState !== 2) continue;
     const dn = (t.dispatchNo || '').slice(-6), finTs = rcsTs(t.finishTime);
     if (!isCK(sp) && isCK(ep)) {
-      if ((db.rcsCleared[ep] || 0) >= finTs || db.rcsDone[ep + '|' + dn]) continue; // 人工清台过/已判定清台的任务：跳过
+      if ((db.rcsCleared[ep] || 0) >= finTs || db.rcsDone[ep + '|' + dn] || (db.rcsManual[ep] && nowMs - db.rcsManual[ep] < 30 * 60 * 1000)) continue; // 人工清台/人工占用/已完结任务：跳过
       const old = db.rcsStations[ep];
       const codes = (old && old.via === dn && (old.codes || []).length) ? old.codes // 同一任务沿用首次快照，不被货架位新框干扰
         : (db.ledger || []).filter(x => String(x.l).toUpperCase() === sp).map(x => String(x.c || '').toUpperCase()).filter(Boolean);
-      db.rcsStations[ep] = { station: ep, state: '有货', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn };
+      db.rcsStations[ep] = { station: ep, state: '有货', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn, pickAt: nodeTimes(t).pickAt };
     } else if (isCK(sp) && !isCK(ep)) { delete db.rcsStations[sp]; } // 入库叉回货架 → 站台清
   }
   for (const [stn, s] of Object.entries(db.rcsStations)) {
@@ -1186,8 +1199,9 @@ async function rcsPoll() {
     else if (nowMs - (s.ts || 0) > 6 * 3600 * 1000) delete db.rcsStations[stn]; // 超6小时兜底过期
   }
   for (const [k, t0] of Object.entries(db.rcsDone)) { if (nowMs - t0 > 6 * 3600 * 1000) delete db.rcsDone[k]; }
+  for (const [k, t0] of Object.entries(db.rcsManual)) { if (nowMs - t0 > 30 * 60 * 1000) delete db.rcsManual[k]; }
   for (const v of Object.values(stations)) { if (!db.rcsStations[v.station]) db.rcsStations[v.station] = v; }
-  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, ...parsePts(t) }));
+  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, ...parsePts(t), ...nodeTimes(t) }));
   db.rcsAt = new Date().toISOString();
   // ===== 到站催扫：站台仍"有货"且到站超10分钟 → 通知叫车人（用快照标签，不受货架位补新框干扰） =====
   for (const [stn, s] of Object.entries(db.rcsStations)) {

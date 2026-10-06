@@ -316,6 +316,7 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
   String? _picked;
   String? _station;
   Map<String, int> _busy = {};
+  Map<String, String> _rcsSt = {}; // 站台→RCS状态（有货/占用中；空闲不入表），以RCS为准
   bool _loading = true;
   bool _sending = false;
 
@@ -342,6 +343,18 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
     } catch (e) {
       if (mounted) setState(() => _loading = false);
     }
+    _loadRcs(); // RCS站台状态单独拉，失败不影响叫车（退化为原"肉眼确认"模式）
+  }
+
+  Future<void> _loadRcs() async {
+    final r = await AuthApi.rcsStations();
+    if (!mounted || r["ok"] != true) return;
+    final m = <String, String>{};
+    for (final s in List<Map>.from(r["stations"] ?? [])) {
+      final st = s["state"]?.toString() ?? "";
+      if (st == "有货" || st == "占用中") m[s["station"]?.toString() ?? ""] = st;
+    }
+    setState(() => _rcsSt = m);
   }
 
   Future<void> _submit() async {
@@ -381,17 +394,19 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
       content: SizedBox(width: 340, child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text("标签 ${widget.label}${widget.containerType.isEmpty ? "" : " · ${widget.containerType}"}", style: const TextStyle(fontSize: 12, color: Colors.grey)),
         const SizedBox(height: 8),
-        const Text("站台（物理有无货物系统不知道，请肉眼确认后选择）：", style: TextStyle(fontSize: 12.5)),
+        const Text("站台（红色=RCS显示占用/有货，不可选；绿色=空闲）：", style: TextStyle(fontSize: 12.5)),
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 6, children: stations.map((n) {
           final code = "NB02-CK-$n";
           final b = _busy[code] ?? 0;
+          final rc = _rcsSt[code]; // RCS：有货/占用中 → 禁选
           final sel = _station == code;
           return ChoiceChip(
             selected: sel,
+            enabled: rc == null,
             onSelected: (_) => setState(() => _station = code),
-            label: Text(b > 0 ? "CK-$n\n在途$b" : "CK-$n", style: const TextStyle(fontSize: 12)),
-            backgroundColor: sel ? const Color(0xFF00897B) : (b > 0 ? Colors.orange.shade100 : Colors.white),
+            label: Text(rc != null ? "CK-$n\n$rc" : (b > 0 ? "CK-$n\n在途$b" : "CK-$n"), style: const TextStyle(fontSize: 12)),
+            backgroundColor: sel ? const Color(0xFF00897B) : (rc != null ? Colors.red.shade100 : (b > 0 ? Colors.orange.shade100 : Colors.white)),
           );
         }).toList()),
         const SizedBox(height: 10),

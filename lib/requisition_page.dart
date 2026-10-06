@@ -342,12 +342,15 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     for (final t in rs[0] as List<Map>) {
       final rt = AgvApi.taskRoute(t);
       final key = "${(rt["startPoint"] ?? "").toString().toUpperCase()}|${(rt["endPoint"] ?? "").toString().toUpperCase()}";
-      m[key] = t["taskState"] == 1 ? "在途" : "排队";
+      final nt = AgvApi.nodeTimesOf(t); // [叉出, 到达]：执行中若已叉出，状态带上叉出时刻
+      m[key] = t["taskState"] == 1 ? (nt[0] > 0 ? "在途·${AgvApi.fmtClock(nt[0])}叉出" : "在途") : "排队";
     }
     for (final t in rs[1] as List<Map>) {
       final rt = AgvApi.taskRoute(t);
       final key = "${(rt["startPoint"] ?? "").toString().toUpperCase()}|${(rt["endPoint"] ?? "").toString().toUpperCase()}";
-      if (!m.containsKey(key)) m[key] = t["taskState"] == 2 ? "已到站" : "异常"; // 历史同路线只补空，不覆盖进行中
+      if (m.containsKey(key)) continue; // 历史同路线只补空，不覆盖进行中
+      final nt = AgvApi.nodeTimesOf(t);
+      m[key] = t["taskState"] == 2 ? (nt[1] > 0 ? "已到站·${AgvApi.fmtClock(nt[1])}" : "已到站") : "异常";
     }
     if (!mounted) return;
     setState(() { _agvStat = m; });
@@ -460,7 +463,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               final multi = (perBoxCodes[loc] ?? 1) > 1;
               final agv = (b["agv"] ?? "").toString();
               final stat = agv.isEmpty ? "" : (_agvStat["${loc.toUpperCase()}|${agv.toUpperCase()}"] ?? "");
-              final arrived = stat == "已到站";
+              final arrived = stat.startsWith("已到站");
               final boxColor = agv.isEmpty ? null : (arrived ? const Color(0xFF2E7D32) : const Color(0xFFE65100));
               return InkWell(
                 onTap: () {

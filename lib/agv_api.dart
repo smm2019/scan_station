@@ -257,6 +257,32 @@ class AgvApi {
     if (v.length >= 12) return "${v.substring(4, 6)}-${v.substring(6, 8)} ${v.substring(8, 10)}:${v.substring(10, 12)}";
     return v.isEmpty ? "-" : v;
   }
+  /// epoch毫秒 → HH:mm
+  static String fmtClock(double ms) {
+    final d = DateTime.fromMillisecondsSinceEpoch(ms.toInt());
+    return "${d.hour.toString().padLeft(2, "0")}:${d.minute.toString().padLeft(2, "0")}";
+  }
+
+  /// RCS时间戳 "20261006162951" → epoch毫秒（无效返回0）
+  static double rcsTs(String s) {
+    if (s.length < 14) return 0;
+    return DateTime(int.parse(s.substring(0, 4)), int.parse(s.substring(4, 6)), int.parse(s.substring(6, 8)),
+      int.parse(s.substring(8, 10)), int.parse(s.substring(10, 12)), int.parse(s.substring(12, 14))).millisecondsSinceEpoch.toDouble();
+  }
+
+  /// 任务节点时间 [叉出起点时刻, 到达终点时刻]（epoch毫秒，0=该节点未完成/无数据）
+  static List<double> nodeTimesOf(Map t) {
+    double pick = 0, put = 0;
+    for (final d in (t["taskDetailList"] as List? ?? const [])) {
+      if (d is! Map) continue;
+      if (num.tryParse(d["state"].toString())?.toInt() != 2) continue; // 只认已完成节点
+      final ms = rcsTs(d["finishTime"]?.toString() ?? "");
+      if (ms == 0) continue;
+      final op = num.tryParse(d["operType"].toString())?.toInt() ?? -1;
+      if (op == 0) pick = ms; else if (op == 1) put = ms;
+    }
+    return [pick, put];
+  }
 }
 
 // ===================== AGV模块主页面：任务 / 车辆 / 交管 / 实时界面 =====================
@@ -394,6 +420,20 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
     if (ok != true || !mounted) return;
     final r = await AuthApi.rcsClear(code);
     _toast(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ 清台失败：${r["msg"]}");
+    if (r["ok"] == true) _load(silent: true);
+  }
+
+  /// 人工标记占用：现场有货/有托盘停在台上但系统显示空闲时，防止别人再叫车撞台
+  Future<void> _markBusy(String code) async {
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text("标记占用"),
+      content: Text("确认站台 $code 现场已有货/被占用？\n标记后 30 分钟内叫车选台会显示为不可用（超时后系统状态自动接管）。"),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认占用"))],
+    ));
+    if (ok != true || !mounted) return;
+    final r = await AuthApi.rcsClear(code, state: "有货");
+    _toast(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ 标记失败：${r["msg"]}");
     if (r["ok"] == true) _load(silent: true);
   }
 
@@ -548,7 +588,20 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
           Text("当前地标 ${c["currentSite"] ?? "-"}${x != null && y != null ? "（${x.toStringAsFixed(1)}, ${y.toStringAsFixed(1)}）" : ""}",
             style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
           if (lockLands.isNotEmpty) Text("锁定资源集：$lockLands", style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
-          if (err.isNotEmpty) Text("告警信息：$err", style: const TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.w600)),
+          Builder(builder: (_) {
+            final warns = <String>[
+              if (c["communicationBreak"] == true) "通讯断开",
+              if (c["emergencyButton"] == true) "急停按下",
+              if (c["manualStop"] == true) "人工停止",
+              if (c["lowPower"] == true) "低电量",
+              if (c["lock"] == true) "已锁定",
+              if (err.isNotEmpty) err,
+            ];
+            if (warns.isEmpty) return const SizedBox.shrink();
+            return Container(margin: const EdgeInsets.only(top: 4), padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+              decoration: BoxDecoration(color: Colors.red.shade50, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.red.shade200)),
+              child: Text("⚠ ${warns.join(" · ")}", style: const TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.w600)));
+          }),
           if (_canCtl) Padding(padding: const EdgeInsets.only(top: 6),
             child: Wrap(spacing: 6, runSpacing: 4, children: [
               for (final act in const ["charge", "standby", "reset", "stop", "start"])
@@ -582,11 +635,15 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
             const Spacer(),
             Text(st == "有货" ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}" : (st == "占用中" ? "任务 ${s?["via"] ?? ""}" : "可正常叫车/入库"),
               maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, color: st == "空闲" ? Colors.blueGrey : c)),
+            // 节点时间戳：占用中→已叉出货架（预计到达）；有货→叉出与到站全程
+            if (st == "占用中" && AgvApi.asNum(s?["pickAt"]) != null) Text("已叉出货架 ${AgvApi.fmtClock(AgvApi.asNum(s!["pickAt"])!)}", style: const TextStyle(fontSize: 10, color: Color(0xFF1565C0))),
             if (st == "有货" && (s?["since"] ?? "").toString().isNotEmpty) Row(children: [
-              Expanded(child: Text("到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE)))),
+              Expanded(child: Text((AgvApi.asNum(s?["pickAt"]) != null ? "叉出 ${AgvApi.fmtClock(AgvApi.asNum(s!["pickAt"])!)} · " : "") + "到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE)))),
               if (_canCtl) GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _clearStation(code),
                 child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("清台", style: TextStyle(fontSize: 11, color: Color(0xFF1565C0), fontWeight: FontWeight.bold)))),
             ]),
+            if (st == "空闲" && _canCtl) Align(alignment: Alignment.centerRight, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _markBusy(code),
+              child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("标记占用", style: TextStyle(fontSize: 10.5, color: Color(0xFFE65100), fontWeight: FontWeight.bold))))),
           ]));
       }).toList());
   }
