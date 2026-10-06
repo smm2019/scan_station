@@ -21,6 +21,7 @@ import 'dart:typed_data';
 import 'package:pointycastle/export.dart' hide Padding, State;
 import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
+import 'package:webview_flutter/webview_flutter.dart'; // AGV实时调度大屏WebView
 
 
 part 'main.g.dart';

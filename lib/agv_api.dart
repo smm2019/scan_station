@@ -523,7 +523,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
               Expanded(child: Text("CK-$n", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
               Text(st, style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 13))]),
             const Spacer(),
-            Text(st == "有货" ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s["goods"]}" : ""}" : (st == "占用中" ? "任务 ${s?["via"] ?? ""}" : "可正常叫车/入库"),
+            Text(st == "有货" ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}" : (st == "占用中" ? "任务 ${s?["via"] ?? ""}" : "可正常叫车/入库"),
               maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, color: st == "空闲" ? Colors.blueGrey : c)),
             if (st == "有货" && (s?["since"] ?? "").toString().isNotEmpty) Text("到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE))),
           ]));

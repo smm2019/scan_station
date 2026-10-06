@@ -126,7 +126,9 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
         actions: [
           IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
           ValueListenableBuilder<int>(valueListenable: kUnreadMsgs, builder: (_, n, __) => IconButton(
-            icon: Badge(count: n > 0 ? n : null, backgroundColor: Colors.red, smallSize: 8, child: const Icon(Icons.notifications_none)),
+            icon: n > 0
+              ? Badge.count(count: n, backgroundColor: Colors.red, child: const Icon(Icons.notifications_none))
+              : const Icon(Icons.notifications_none),
             tooltip: "消息中心",
             onPressed: () async {
               await Navigator.push(context, MaterialPageRoute(builder: (_) => const MsgCenterPage()));
