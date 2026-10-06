@@ -360,13 +360,14 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
 
   /// 拉本单AGV排队队列状态摘要
   List<Map> _queueItems = [];
+  String _queueMode = "dry"; // 服务器真实调度模式：dry演算 / live真实下发
   Future<void> _loadQueue() async {
     final r = await AuthApi.rcsStations();
     if (!mounted || r["ok"] != true) return;
     final mine = List<Map>.from(r["queue"] ?? []).where((q) => q["reqId"] == _r["id"]).toList();
     final cnt = <String, int>{};
     for (final q in mine) { final s = q["state"]?.toString() ?? "?"; cnt[s] = (cnt[s] ?? 0) + 1; }
-    setState(() { _queueItems = mine; _queueStat = cnt.isEmpty ? "" : cnt.entries.map((e) => "${e.key}${e.value}").join(" · "); });
+    setState(() { _queueItems = mine; _queueStat = cnt.isEmpty ? "" : cnt.entries.map((e) => "${e.key}${e.value}").join(" · "); _queueMode = r["mode"]?.toString() ?? "dry"; });
   }
 
   /// 队列管理面板：查看每框分配与状态，"排队"中的可取消
@@ -416,7 +417,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     if (its.isEmpty) { widget.toast("没有可叫车的货架框（已叫过的请点标签看状态）"); return; }
     final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
       title: const Text("一键叫车"),
-      content: Text("将 ${its.length} 框加入AGV队列？\n系统自动分配空闲站台，台满自动排队，空了就下发。\n（当前为演算模式时只排计划不下发）"),
+      content: Text("将 ${its.length} 框加入AGV队列？\n系统自动分配空闲站台，台满自动排队，空了就下发。\n当前模式：${_queueMode == "live" ? "⚠️ 真实下发（入队后会真的叫AGV）" : "演算（只排计划不下发）"}"),
       actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
         FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("加入队列"))],
     ));
@@ -760,7 +761,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
 
   /// 扫转入货位（复用直调同款接口）
   Future<void> _scanLoc() async {
-    final code = _locCtrl.text.trim();
+    final code = _locCtrl.text.trim().toUpperCase(); // 扫码枪/手输可能小写，MES货位码为大写→归一
     _locCtrl.clear();
     if (code.isEmpty) { _refocusLoc(); return; }
     if (_busy) return;
@@ -908,7 +909,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             if (_to.isEmpty)
               Row(children: [
                 Expanded(child: TextField(
-                  controller: _locCtrl, focusNode: _locFocus,
+                  controller: _locCtrl, focusNode: _locFocus, textCapitalization: TextCapitalization.characters,
                   decoration: const InputDecoration(hintText: "先扫转入货位（产线/接驳位）", isDense: true, prefixIcon: Icon(Icons.place_outlined, size: 20), border: OutlineInputBorder()),
                   onSubmitted: (_) => _scanLoc(),
                 )),
