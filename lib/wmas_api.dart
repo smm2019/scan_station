@@ -403,8 +403,7 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
           final sel = _station == code;
           return ChoiceChip(
             selected: sel,
-            enabled: rc == null,
-            onSelected: (_) => setState(() => _station = code),
+            onSelected: rc == null ? (_) => setState(() => _station = code) : null, // RCS占用台禁选
             label: Text(rc != null ? "CK-$n\n$rc" : (b > 0 ? "CK-$n\n在途$b" : "CK-$n"), style: const TextStyle(fontSize: 12)),
             backgroundColor: sel ? const Color(0xFF00897B) : (rc != null ? Colors.red.shade100 : (b > 0 ? Colors.orange.shade100 : Colors.white)),
           );
