@@ -1004,7 +1004,7 @@ final GlobalKey _keyScanInputArea = GlobalKey();
   int _cancelCount = 0;
   bool _recordPanelExpanded = false;
   late TabController _tabController;
-  bool _showCollect = true, _showInv = true, _showDirect = true, _showReq = true; // 角色化Tab可见性
+  bool _showCollect = true, _showInv = true, _showDirect = true, _showReq = true, _showAgv = true; // 角色化Tab可见性
   List<String> _tabKeys = const [];
   List<String> _selectedBatchIds = [];
   // ===== 整托合并模式状态 =====
@@ -1030,7 +1030,8 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     _showInv = Auth.can("inventory");
     _showDirect = Auth.can("direct_transfer");
     _showReq = wh || Auth.can("requisition") || Auth.can("receive_confirm");
-    _tabKeys = [ if (_showCollect) 'collect', if (_showCollect) 'history', if (_showInv) 'inv', if (_showDirect) 'direct', 'stock', if (_showReq) 'req', 'agv' ];
+    _showAgv = wh || Auth.can("agv_monitor");
+    _tabKeys = [ if (_showCollect) 'collect', if (_showCollect) 'history', if (_showInv) 'inv', if (_showDirect) 'direct', 'stock', if (_showReq) 'req', if (_showAgv) 'agv' ];
     _tabController = TabController(length: _tabKeys.length, vsync: this);
     _startNotifPolling();
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
@@ -2378,7 +2379,7 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
             if (_showDirect) const Tab(text: "直调"),
             const Tab(text: "库存"),
             if (_showReq) const Tab(text: "领料"),
-            const Tab(text: "AGV"),
+            if (_showAgv) const Tab(text: "AGV"),
           ],
         ),
       ),
@@ -2677,7 +2678,7 @@ SingleChildScrollView(
           //领料单页面
           if (_showReq) const RequisitionPage(),
           //AGV调度监控模块（任务/车辆/交管/实时大屏）
-          const AgvMonitorPage()
+          if (_showAgv) const AgvMonitorPage()
         ],
       ),
     bottomNavigationBar: BottomNavigationBar(

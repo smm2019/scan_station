@@ -345,7 +345,7 @@ class _AccountPageState extends State<AccountPage> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                 child: Wrap(spacing: 8, runSpacing: 8, children: [
-                  for (final e in {"collect": "采集录入", "inventory": "盘点模式", "export": "导出下载", "mes_query": "MES查询", "direct_transfer": "直调转单", "requisition": "领料下单", "receive_confirm": "签收确认", "admin_panel": "管理后台"}.entries)
+                  for (final e in {"collect": "采集录入", "inventory": "盘点模式", "export": "导出下载", "mes_query": "MES查询", "direct_transfer": "直调转单", "requisition": "领料下单", "receive_confirm": "签收确认", "location_reg": "位置登记", "agv_monitor": "AGV监控", "agv_control": "AGV车辆控制", "admin_panel": "管理后台"}.entries)
                     Chip(
                       label: Text(e.value, style: TextStyle(fontSize: 12, color: Auth.can(e.key) ? const Color(0xFF3F51B5) : Colors.grey)),
                       backgroundColor: Auth.can(e.key) ? const Color(0xFF3F51B5).withOpacity(0.08) : Colors.grey.withOpacity(0.08),

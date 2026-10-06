@@ -333,7 +333,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
 
   Map<int, String> get _carName => {for (final c in _cars) if (c["agvId"] is int) c["agvId"] as int: (c["carName"]?.toString() ?? "AGV${c["agvId"]}")};
 
-  bool get _canCtl { final r = Auth.user?.role ?? ""; return r == "warehouse" || r == "admin"; } // 仅仓管/管理员可下发车辆控制
+  bool get _canCtl => Auth.can("agv_control"); // 车辆控制/清台：按角色功能开关（设置里可在线调整）
   void _toast(String s) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s), duration: const Duration(seconds: 3))); }
 
   /// 车辆控制：确认弹窗（危险操作红色警示）→ 下发 → 提示结果并刷新

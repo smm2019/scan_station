@@ -20,11 +20,11 @@ const ROLES = ['material', 'warehouse', 'admin']; // 物料员 / 仓管员 / 管
 const ROLE_NAMES = { material: '物料员', warehouse: '仓管员', admin: '管理员' };
 // 按角色功能开关（管理员可在线改；App 登录与心跳时拉取）
 const DEFAULT_FEATURES = {
-  material: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: true, receive_confirm: true, location_reg: false, admin_panel: false },
-  warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, location_reg: true, admin_panel: false },
-  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, location_reg: true, admin_panel: true },
+  material: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: true, receive_confirm: true, location_reg: false, agv_monitor: false, agv_control: false, admin_panel: false },
+  warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: false },
+  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: true },
 };
-const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', location_reg: '位置登记', admin_panel: '管理后台' };
+const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', location_reg: '位置登记', agv_monitor: 'AGV监控', agv_control: 'AGV车辆控制', admin_panel: '管理后台' };
 
 // ---------------- 存储 ----------------
 function defaultDb() {
