@@ -468,7 +468,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
     ]);
   }
 
-  // ---- 车辆页签 ----
+  // ---- 车辆页签（字段对齐调度大屏：连接/车辆/驾驶/执行状态+坐标+锁定资源+告警） ----
   Widget _carList(Set<int> blocked) {
     if (_cars.isEmpty) return const Center(child: Text("无车辆数据（检查登录/网络）", style: TextStyle(color: Colors.blueGrey)));
     return ListView(padding: const EdgeInsets.only(bottom: 16), children: _cars.map((c) {
@@ -477,6 +477,21 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
       final power = (c["power"] as num?)?.toDouble() ?? 0;
       final speed = (c["speed"] as num?)?.toDouble() ?? 0;
       final taskNo = (c["execTaskNo"] ?? c["executeTaskNo"])?.toString() ?? "";
+      final x = (c["x"] as num?)?.toDouble(), y = (c["y"] as num?)?.toDouble();
+      final lockLands = (c["routeLockLands"] as List?)?.join(", ") ?? "";
+      final err = (c["errorMessage"] ?? "").toString();
+      // 执行状态：急停/人工停止 > 充电 > 执行任务 > 空闲
+      String exe;
+      if (c["emergencyButton"] == true) exe = "急停中";
+      else if (c["manualStop"] == true) exe = "人工停止";
+      else if (c["charging"] == true) exe = c["fullCharged"] == true ? "充电完成" : "充电中";
+      else if (taskNo.isNotEmpty) exe = "执行 $taskNo";
+      else exe = "无任务";
+      Color exeColor = exe == "急停中" || exe == "人工停止" ? Colors.red : (exe.contains("充电") ? Colors.teal : (exe.contains("执行") ? Colors.lightBlue : Colors.blueGrey));
+      Widget kv(String k, String v, [Color? vc]) => Expanded(child: Padding(padding: const EdgeInsets.symmetric(vertical: 1),
+        child: RichText(text: TextSpan(style: const TextStyle(fontSize: 11), children: [
+          TextSpan(text: "$k  ", style: const TextStyle(color: Color(0xFF90A4AE))),
+          TextSpan(text: v, style: TextStyle(color: vc ?? const Color(0xFF263238), fontWeight: FontWeight.w600))]))));
       return Container(margin: const EdgeInsets.fromLTRB(10, 6, 10, 0), padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE3E8F0))),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -490,22 +505,31 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
             _tag(online ? "在线" : "离线", online ? Colors.green : Colors.grey),
             _tag(AgvApi.carStateOf(c), online ? (c["carState"] == "running" ? Colors.lightBlue : Colors.teal) : Colors.grey),
           ]),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           Row(children: [
-            SizedBox(width: 110, child: Row(children: [
-              const Text("电量", style: TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
-              const SizedBox(width: 4),
-              Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(3), child: LinearProgressIndicator(value: power / 100, minHeight: 8,
-                color: power <= 20 ? Colors.red : (power <= 40 ? Colors.orange : Colors.green), backgroundColor: const Color(0xFFECEFF1)))),
-              const SizedBox(width: 4),
-              Text("${power.round()}%", style: const TextStyle(fontSize: 11)),
-            ])),
-            const SizedBox(width: 12),
-            Text("速度 ${speed.toStringAsFixed(2)} m/s", style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
+            kv("驾驶", c["autoMode"] == true ? "自动" : "手动"),
+            kv("车型", "${c["carModel"] ?? "-"}"),
+            kv("货叉高", "${((c["forkHeight"] as num?)?.toDouble() ?? 0).toStringAsFixed(2)}m"),
+          ]),
+          Row(children: [
+            kv("执行", exe, exeColor),
+            kv("速度", "${speed.toStringAsFixed(2)} m/s"),
+            kv("区域", "R${c["ownRegionId"] ?? "-"}"),
+          ]),
+          const SizedBox(height: 4),
+          Row(children: [
+            const Text("电量", style: TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
+            const SizedBox(width: 4),
+            Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(3), child: LinearProgressIndicator(value: power / 100, minHeight: 8,
+              color: power <= 20 ? Colors.red : (power <= 40 ? Colors.orange : Colors.green), backgroundColor: const Color(0xFFECEFF1)))),
+            const SizedBox(width: 4),
+            Text("${power.round()}%", style: const TextStyle(fontSize: 11)),
           ]),
           const SizedBox(height: 2),
-          Text("当前点位 ${c["currentSite"] ?? "-"}${taskNo.isNotEmpty ? "　任务 $taskNo" : ""}",
+          Text("当前地标 ${c["currentSite"] ?? "-"}${x != null && y != null ? "（${x.toStringAsFixed(1)}, ${y.toStringAsFixed(1)}）" : ""}",
             style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
+          if (lockLands.isNotEmpty) Text("锁定资源集：$lockLands", style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
+          if (err.isNotEmpty) Text("告警信息：$err", style: const TextStyle(fontSize: 11, color: Colors.red, fontWeight: FontWeight.w600)),
           if (_canCtl) Padding(padding: const EdgeInsets.only(top: 6),
             child: Wrap(spacing: 6, runSpacing: 4, children: [
               for (final act in const ["charge", "standby", "reset", "stop", "start"])
