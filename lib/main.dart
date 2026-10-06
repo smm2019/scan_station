@@ -2366,6 +2366,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
 toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
                bottom: TabBar(
           controller: _tabController,
+          isScrollable: true, tabAlignment: TabAlignment.start, // 7个页签可横滑，标签不再被压成一个字
           labelColor: Colors.white, //选中文字白色
           labelStyle: TextStyle(fontWeight: FontWeight.bold), //选中加粗
           unselectedLabelColor: Color(0xFFD0D4F8), //未选中浅白色

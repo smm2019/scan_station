@@ -742,6 +742,18 @@ const server = http.createServer(async (req, res) => {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station));
         return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list });
       }
+      if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工清台：现场已取走但系统未识别时，仓管点一下即刻转空闲
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可清台' });
+        const b = await readBody(req);
+        const stn = String(b.station || '').trim().toUpperCase();
+        if (!stn.includes('-CK-')) return send(res, 400, { ok: false, msg: '站台编码无效' });
+        db.rcsStations = db.rcsStations || {}; db.rcsCleared = db.rcsCleared || {};
+        delete db.rcsStations[stn];
+        db.rcsCleared[stn] = Date.now();
+        for (const [k, t0] of Object.entries(db.rcsCleared)) { if (Date.now() - t0 > 8 * 3600 * 1000) delete db.rcsCleared[k]; }
+        save();
+        return send(res, 200, { ok: true, msg: stn + ' 已清台' });
+      }
       if (req.method === 'POST' && p === '/api/outbound/sync') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步出库单' });
         const b = await readBody(req);
@@ -1122,6 +1134,7 @@ async function rcsLogin() {
   });
 }
 function parsePts(t) { try { const s = JSON.parse(t.suspensionMsg || '{}'); return { sp: String(s.startPoint || '').toUpperCase(), ep: String(s.endPoint || '').toUpperCase() }; } catch (_) { return { sp: '', ep: '' }; } }
+function rcsTs(s) { s = String(s || ''); if (s.length < 14) return 0; return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`).getTime(); }
 async function rcsPoll() {
   if (!db.rcsConfig || !db.rcsConfig.host) return;
   let tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
@@ -1141,40 +1154,46 @@ async function rcsPoll() {
     if (isCK(ep)) mark(ep, { state: '占用中', via: '任务 ' + (t.dispatchNo || '').slice(-6) }); // 出库在途：车正送来
     if (isCK(sp)) mark(sp, { state: '占用中', via: '任务 ' + (t.dispatchNo || '').slice(-6) }); // 入库取走中
   }
-  // 出库完成→有货（保持到清台：清台信号=该框已扫码出库/账本消位，或人工清台接口）
-  db.rcsStations = db.rcsStations || {};
-  const recent = doneT.filter(t => (Number((t.finishTime || '').slice(0, 8)) || 0) && Date.now() - new Date(`${(t.finishTime || '').slice(0, 4)}-${(t.finishTime || '').slice(4, 6)}-${(t.finishTime || '').slice(6, 8)}T${(t.finishTime || '').slice(8, 10)}:${(t.finishTime || '').slice(10, 12)}:${(t.finishTime || '').slice(12, 14)}`).getTime() < 2 * 3600 * 1000);
-  for (const t of recent) {
-    const { sp, ep } = parsePts(t);
-    if (t.taskState !== 2) continue;
-    if (!isCK(sp) && isCK(ep)) { // 出库到站 → 站台有货，记货物标签供催扫与清台判定
-      db.rcsStations[ep] = { station: ep, state: '有货', label: String(sp), goods: (t.palletType || ''), since: t.finishTime || '', via: (t.dispatchNo || '').slice(-6) };
-    } else if (isCK(sp) && !isCK(ep)) { delete db.rcsStations[sp]; } // 入库完成放架 → 站台清
-  }
-  // 清台判定：站台"有货"但对应货架位的框已出库（issued/账本消位）→ 转空闲
-  for (const [stn, s] of Object.entries(db.rcsStations)) {
-    if (s.state !== '有货' || !s.label) continue;
-    const inLedger = (db.ledger || []).some(x => String(x.l).toUpperCase() === s.label);
-    if (!inLedger) { delete db.rcsStations[stn]; } // 货位已空（发走/移走）→ 站台视为已清
-  }
-  for (const v of Object.values(stations)) { if (!db.rcsStations[v.station]) db.rcsStations[v.station] = v; }
-  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, ...parsePts(t) }));
-  db.rcsAt = new Date().toISOString();
-  // ===== 到站催扫：出库任务完成超10分钟，该框仍未在任一活跃领料单扫码发料 → 通知叫车人 =====
+  // 出库完成→有货：按"到站那一刻快照的标签清单"判定清台；清台后的任务记入rcsDone，防止货架位补了新框又被误判有货
+  const nowMs = Date.now();
   const issuedAll = new Set();
   for (const r of db.requisitions || []) {
     if (!['accepted', 'ready'].includes(r.status)) continue;
     for (const it of r.items || []) for (const x of (it.issued || [])) issuedAll.add(String(typeof x === 'string' ? x : (x.c || '')).toUpperCase());
   }
-  const nowMs = Date.now();
+  const ledgerCodes = new Set((db.ledger || []).map(x => String(x.c || '').toUpperCase()));
+  db.rcsStations = db.rcsStations || {};
+  db.rcsCleared = db.rcsCleared || {}; // 人工清台：站台 → 时间戳，早于该时刻到站的任务不再算有货
+  db.rcsDone = db.rcsDone || {}; // 已清台任务：站台|任务号 → 时间戳
+  const recent = doneT.filter(t => rcsTs(t.finishTime) && nowMs - rcsTs(t.finishTime) < 2 * 3600 * 1000);
   for (const t of recent) {
     const { sp, ep } = parsePts(t);
-    if (t.taskState !== 2 || isCK(sp) || !isCK(ep)) continue;
-    const fin = new Date(`${(t.finishTime || '').slice(0, 4)}-${(t.finishTime || '').slice(4, 6)}-${(t.finishTime || '').slice(6, 8)}T${(t.finishTime || '').slice(8, 10)}:${(t.finishTime || '').slice(10, 12)}:${(t.finishTime || '').slice(12, 14)}`).getTime();
-    if (nowMs - fin < 10 * 60 * 1000 || nowMs - fin > 2 * 3600 * 1000) continue;
-    const box = (db.ledger || []).find(x => String(x.l).toUpperCase() === sp);
-    const codes = box ? (db.ledger || []).filter(x => String(x.l).toUpperCase() === sp).map(x => String(x.c).toUpperCase()) : [];
-    if (!codes.length || codes.some(c => issuedAll.has(c))) continue; // 已发料/已移走：不催
+    if (t.taskState !== 2) continue;
+    const dn = (t.dispatchNo || '').slice(-6), finTs = rcsTs(t.finishTime);
+    if (!isCK(sp) && isCK(ep)) {
+      if ((db.rcsCleared[ep] || 0) >= finTs || db.rcsDone[ep + '|' + dn]) continue; // 人工清台过/已判定清台的任务：跳过
+      const old = db.rcsStations[ep];
+      const codes = (old && old.via === dn && (old.codes || []).length) ? old.codes // 同一任务沿用首次快照，不被货架位新框干扰
+        : (db.ledger || []).filter(x => String(x.l).toUpperCase() === sp).map(x => String(x.c || '').toUpperCase()).filter(Boolean);
+      db.rcsStations[ep] = { station: ep, state: '有货', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn };
+    } else if (isCK(sp) && !isCK(ep)) { delete db.rcsStations[sp]; } // 入库叉回货架 → 站台清
+  }
+  for (const [stn, s] of Object.entries(db.rcsStations)) {
+    if (s.state !== '有货') continue;
+    const codes = (s.codes || []).filter(Boolean);
+    const cleared = codes.length ? (codes.some(c => issuedAll.has(c)) || !codes.some(c => ledgerCodes.has(c))) : (nowMs - (s.ts || 0) > 2 * 3600 * 1000);
+    if (cleared) { delete db.rcsStations[stn]; db.rcsDone[stn + '|' + (s.via || '')] = nowMs; } // 快照标签已发料/已消位 → 清台并记住该任务已完结
+    else if (nowMs - (s.ts || 0) > 6 * 3600 * 1000) delete db.rcsStations[stn]; // 超6小时兜底过期
+  }
+  for (const [k, t0] of Object.entries(db.rcsDone)) { if (nowMs - t0 > 6 * 3600 * 1000) delete db.rcsDone[k]; }
+  for (const v of Object.values(stations)) { if (!db.rcsStations[v.station]) db.rcsStations[v.station] = v; }
+  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, ...parsePts(t) }));
+  db.rcsAt = new Date().toISOString();
+  // ===== 到站催扫：站台仍"有货"且到站超10分钟 → 通知叫车人（用快照标签，不受货架位补新框干扰） =====
+  for (const [stn, s] of Object.entries(db.rcsStations)) {
+    if (s.state !== '有货' || !(s.codes || []).length) continue;
+    if (nowMs - (s.ts || 0) < 10 * 60 * 1000 || nowMs - (s.ts || 0) > 2 * 3600 * 1000) continue;
+    const codes = s.codes.map(c => String(c).toUpperCase());
     const called = [];
     for (const r of db.requisitions || []) {
       if (r.status !== 'accepted') continue;
@@ -1184,9 +1203,9 @@ async function rcsPoll() {
       }
     }
     for (const cl of called) {
-      const key = cl.c + '|' + ep;
+      const key = cl.c + '|' + stn;
       if (db.rcsRemind && db.rcsRemind[key]) continue;
-      notify(cl.by || cl.req.by, 'req_arrive', `⏰ 到站催扫：框 ${cl.c} 已到站台 ${ep} 超10分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台`, cl.req.id);
+      notify(cl.by || cl.req.by, 'req_arrive', `⏰ 到站催扫：框 ${cl.c} 已到站台 ${stn} 超10分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台`, cl.req.id);
       db.rcsRemind = db.rcsRemind || {}; db.rcsRemind[key] = nowMs;
     }
   }

@@ -364,6 +364,20 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
       onPressed: () => _ctrlCar(c, act));
   }
 
+  /// 人工清台：现场已取走但系统未识别（如人工直接搬走）时，仓管确认后即刻转空闲
+  Future<void> _clearStation(String code) async {
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text("人工清台"),
+      content: Text("确认站台 $code 上的货已被取走？\n确认后站台立即转为空闲（不影响AGV与领料单数据）。"),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认清台"))],
+    ));
+    if (ok != true || !mounted) return;
+    final r = await AuthApi.rcsClear(code);
+    _toast(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ 清台失败：${r["msg"]}");
+    if (r["ok"] == true) _load(silent: true);
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -525,7 +539,11 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
             const Spacer(),
             Text(st == "有货" ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}" : (st == "占用中" ? "任务 ${s?["via"] ?? ""}" : "可正常叫车/入库"),
               maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, color: st == "空闲" ? Colors.blueGrey : c)),
-            if (st == "有货" && (s?["since"] ?? "").toString().isNotEmpty) Text("到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE))),
+            if (st == "有货" && (s?["since"] ?? "").toString().isNotEmpty) Row(children: [
+              Expanded(child: Text("到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE)))),
+              if (_canCtl) GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _clearStation(code),
+                child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("清台", style: TextStyle(fontSize: 11, color: Color(0xFF1565C0), fontWeight: FontWeight.bold)))),
+            ]),
           ]));
       }).toList());
   }
@@ -607,9 +625,10 @@ class _AgvWebViewPageState extends State<AgvWebViewPage> {
             final tk = await AgvApi.token();
             final cfg = await AgvConfig.get();
             if (tk != null && tk.isNotEmpty && mounted) {
-              // 哈工库讯前端从 sessionStorage["v1@CacheToken"] 读token；注入后重载即免登录直达大屏
+              // 哈工库讯前端从 sessionStorage["v1@CacheToken"] 读token；注入后重载根路径即免登录直达大屏
+              // （实测 nginx 未配 history 回退，/home-index 等子路径直访404，只能从根路径进）
               await _ctrl.runJavaScript("try{sessionStorage.setItem('v1@CacheToken',JSON.stringify({token:'$tk'}));}catch(e){}");
-              await _ctrl.loadRequest(Uri.parse("http://${cfg["portal"]}/home-index"));
+              await _ctrl.loadRequest(Uri.parse("http://${cfg["portal"]}/"));
               return;
             }
           }
