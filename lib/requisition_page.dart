@@ -123,7 +123,16 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
       backgroundColor: const Color(0xFFF7F7FA),
       appBar: AppBar(
         title: const Text("领料单"), toolbarHeight: 44,
-        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _load)],
+        actions: [
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
+          ValueListenableBuilder<int>(valueListenable: kUnreadMsgs, builder: (_, n, __) => IconButton(
+            icon: Badge(count: n > 0 ? n : null, backgroundColor: Colors.red, smallSize: 8, child: const Icon(Icons.notifications_none)),
+            tooltip: "消息中心",
+            onPressed: () async {
+              await Navigator.push(context, MaterialPageRoute(builder: (_) => const MsgCenterPage()));
+              kUnreadMsgs.value = 0; // 打开消息中心即视为已阅
+            })),
+        ],
       ),
       floatingActionButton: canOrder ? FloatingActionButton.extended(
         onPressed: _create, backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white,
@@ -696,6 +705,42 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _locFocus.requestFocus(); });
   }
 
+  /// 备料向导步骤条（纯展示，状态全部从单据现有字段推导，不发任何请求）
+  Widget _buildWizard(List<Map> items, String st) {
+    if (st == 'pending' || st == 'rejected' || st == 'cancelled') return const SizedBox.shrink();
+    final n = items.length;
+    final trans = items.where((i) => i["transferred"] == true || i["skipped"] == true).length;
+    final scanned = items.where((i) => (i["issued"] as List?)?.isNotEmpty == true).length;
+    final called = items.fold<int>(0, (s, i) => s + ((i["agvCalled"] as List?)?.length ?? 0));
+    final hasShelf = items.any((i) => ((i["suggest"] as Map?)?["boxes"] as List?)?.any((b) => (b["l"]?.toString().startsWith('NB02-') ?? false) == true) == true);
+    final steps = <List<Object>>[
+      ["接单", true],
+      ["转入货位", _to.isNotEmpty],
+      ["叫AGV", !hasShelf || called > 0],
+      ["扫码发料", scanned > 0],
+      ["转MES", trans >= n && n > 0],
+    ];
+    int cur = steps.indexWhere((s) => s[1] != true);
+    if (cur < 0) cur = steps.length;
+    return Container(margin: const EdgeInsets.only(top: 6, bottom: 2), padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+      decoration: BoxDecoration(color: const Color(0xFFF2F3FA), borderRadius: BorderRadius.circular(10)),
+      child: Row(children: [
+        for (var i = 0; i < steps.length; i++) ...[
+          Expanded(child: Column(children: [
+            Container(width: 22, height: 22, decoration: BoxDecoration(shape: BoxShape.circle,
+              color: i < cur ? const Color(0xFF2E7D32) : (i == cur ? const Color(0xFF515BD4) : Colors.white),
+              border: Border.all(color: i <= cur ? Colors.transparent : const Color(0xFFB0B7D9), width: 1.5)),
+              child: Center(child: i < cur
+                ? const Icon(Icons.check, size: 14, color: Colors.white)
+                : Text("${i + 1}", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: i == cur ? Colors.white : const Color(0xFF8890B8))))),
+            const SizedBox(height: 3),
+            Text(steps[i][0].toString(), style: TextStyle(fontSize: 10.5, fontWeight: i == cur ? FontWeight.bold : FontWeight.normal, color: i <= cur ? const Color(0xFF303F9F) : Colors.grey)),
+          ])),
+          if (i < steps.length - 1) SizedBox(width: 10, child: Container(height: 2, color: i < cur ? const Color(0xFF2E7D32) : const Color(0xFFD3D8EE))),
+        ],
+      ]));
+  }
+
   /// 管理员转派/指定：选择目标仓管员（服务器会重置30分钟窗口）
   Future<void> _reassign() async {
     final curId = _r["assigneeId"]?.toString() ?? "";
@@ -745,6 +790,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               decoration: BoxDecoration(color: widget.statusColor(st).withOpacity(0.12), borderRadius: BorderRadius.circular(6)),
               child: Text(_r["statusText"]?.toString() ?? st, style: TextStyle(fontSize: 12, color: widget.statusColor(st)))),
           ]),
+          _buildWizard(items, st),
           if ((_r["remark"]?.toString().isNotEmpty ?? false)) Text("备注：${_r["remark"]}", style: const TextStyle(fontSize: 12, color: Colors.grey)),
           if ((_r["shortInfo"]?.toString().isNotEmpty ?? false)) Container(
             margin: const EdgeInsets.only(top: 4), padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -920,5 +966,65 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     ));
     ctrl.dispose();
     return v;
+  }
+}
+
+// ---------- 消息中心：本人最近历史通知（只读，不影响未读横幅） ----------
+class MsgCenterPage extends StatefulWidget {
+  const MsgCenterPage({super.key});
+  @override State<MsgCenterPage> createState() => _MsgCenterPageState();
+}
+
+class _MsgCenterPageState extends State<MsgCenterPage> {
+  List<Map> _msgs = [];
+  bool _loading = true;
+  String _err = "";
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    setState(() { _loading = true; _err = ""; });
+    final r = await AuthApi.notificationsHistory(limit: 50);
+    if (!mounted) return;
+    if (r["ok"] == true) setState(() { _msgs = List<Map>.from(r["notifications"] ?? []); _loading = false; });
+    else setState(() { _loading = false; _err = (r["msg"] ?? "加载失败").toString(); });
+  }
+
+  static const _typeIcon = {
+    "req_new": Icons.assignment_add, "req_accept": Icons.how_to_reg, "req_reject": Icons.block,
+    "req_ready": Icons.inventory_2, "req_ready_wh": Icons.inventory, "req_done": Icons.check_circle,
+    "req_cancel": Icons.cancel, "req_timeout": Icons.hourglass_empty, "req_reassign": Icons.swap_horiz,
+    "req_arrive": Icons.local_shipping,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7FA),
+      appBar: AppBar(title: const Text("消息中心", style: TextStyle(fontSize: 16)),
+        actions: [IconButton(icon: const Icon(Icons.refresh), onPressed: _load)]),
+      body: _loading
+        ? const Center(child: CircularProgressIndicator())
+        : _err.isNotEmpty
+          ? Center(child: Text(_err, style: const TextStyle(color: Colors.red)))
+          : _msgs.isEmpty
+            ? const Center(child: Text("暂无消息", style: TextStyle(color: Colors.grey)))
+            : ListView.builder(
+                padding: const EdgeInsets.all(10), itemCount: _msgs.length,
+                itemBuilder: (_, i) {
+                  final m = _msgs[i];
+                  final tp = m["type"]?.toString() ?? "";
+                  final t = (m["time"] ?? "").toString();
+                  return Card(margin: const EdgeInsets.symmetric(vertical: 4),
+                    child: ListTile(
+                      leading: CircleAvatar(backgroundColor: tp == 'req_arrive' ? Colors.orange.shade100 : const Color(0xFFE8EAF6),
+                        child: Icon(_typeIcon[tp] ?? Icons.notifications_none, size: 20, color: tp == 'req_arrive' ? Colors.deepOrange : const Color(0xFF3949AB))),
+                      title: Text(m["text"]?.toString() ?? "", style: const TextStyle(fontSize: 13)),
+                      subtitle: Text(t.length >= 16 ? t.substring(5, 16).replaceFirst("T", " ") : t, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                      isThreeLine: false, dense: true,
+                    ));
+                }),
+    );
   }
 }

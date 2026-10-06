@@ -174,6 +174,27 @@ class AgvApi {
     return r["ok"] == true && r["data"] is Map ? Map.of(r["data"] as Map) : {};
   }
 
+  // ---------- 车辆控制（写操作：参数=车辆IP，与调度系统大屏同款按钮） ----------
+  /// action: charge充电 / standby待命 / reset清除任务 / stop急停 / start启动
+  static const carActions = {
+    "charge": {"path": "/agv/carToCharge", "label": "去充电", "tip": "给该车创建充电任务", "danger": false},
+    "standby": {"path": "/agv/carToStandby", "label": "回待命", "tip": "给该车创建待命任务", "danger": false},
+    "reset": {"path": "/agv/resetCar", "label": "清除任务", "tip": "清空该车当前任务（车会原地停下等待）", "danger": true},
+    "stop": {"path": "/agv/stopAgv", "label": "急停", "tip": "立即停车，需人工或启动恢复", "danger": true},
+    "start": {"path": "/agv/startAgv", "label": "启动", "tip": "恢复该车运行", "danger": false},
+  };
+  static Future<Map<String, dynamic>> carAction(String action, String ip) async {
+    final a = carActions[action];
+    if (a == null || ip.isEmpty) return {"ok": false, "msg": "参数错误"};
+    return req("PUT", "${a["path"]}?ip=${Uri.encodeComponent(ip)}");
+  }
+
+  /// 站台状态（走自己的鉴权服务器：服务器60秒轮询RCS汇总，含"有货/占用中/空闲"）
+  static Future<Map> stations() async {
+    final r = await AuthApi.rcsStations();
+    return r["ok"] == true ? r : {};
+  }
+
   // ---------- 状态文案 ----------
   static const taskStateText = {-2: "已放弃", -1: "已挂起", 0: "待执行", 1: "执行中", 2: "已完成", 5: "已超时", 6: "已清除"};
   static String taskStateOf(dynamic s) { final v = s is int ? s : int.tryParse("$s") ?? 99; return taskStateText[v] ?? "状态$v"; }
@@ -234,6 +255,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
   List<Map> _tasks = [], _done = [], _cars = [];
   Map _traffic = {};
   Map<String, String> _cargo = {}; // 任务起点货位 → 账本反查的货物描述（零件号×数量）
+  List<Map> _stations = []; // 站台状态（服务器轮询RCS：有货/占用中/空闲）
   bool _loading = false, _showDone = false, _loaded = false;
   String _err = "";
   Timer? _timer;
@@ -258,11 +280,12 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
       if (mounted) setState(() { _loading = false; _err = "未登录：请到 设置 → AGV调度系统 填写账号密码"; });
       return;
     }
-    final rs = await Future.wait([AgvApi.tasksRunning(), AgvApi.cars(), AgvApi.traffic(), AgvApi.tasksDone()]);
+    final rs = await Future.wait([AgvApi.tasksRunning(), AgvApi.cars(), AgvApi.traffic(), AgvApi.tasksDone(), AuthApi.rcsStations()]);
     if (!mounted) return;
     setState(() {
       _loading = false; _loaded = true;
       _tasks = rs[0] as List<Map>; _cars = rs[1] as List<Map>; _traffic = rs[2] as Map; _done = rs[3] as List<Map>;
+      final st = rs[4]; _stations = st is Map && st["stations"] is List ? List<Map>.from(st["stations"] as List) : [];
       _err = "";
     });
     unawaited(_buildCargo());
@@ -310,6 +333,37 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
 
   Map<int, String> get _carName => {for (final c in _cars) if (c["agvId"] is int) c["agvId"] as int: (c["carName"]?.toString() ?? "AGV${c["agvId"]}")};
 
+  bool get _canCtl { final r = Auth.user?.role ?? ""; return r == "warehouse" || r == "admin"; } // 仅仓管/管理员可下发车辆控制
+  void _toast(String s) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s), duration: const Duration(seconds: 3))); }
+
+  /// 车辆控制：确认弹窗（危险操作红色警示）→ 下发 → 提示结果并刷新
+  Future<void> _ctrlCar(Map c, String action) async {
+    final a = AgvApi.carActions[action];
+    if (a == null) return;
+    final ip = (c["carIp"] ?? "").toString();
+    if (ip.isEmpty) { _toast("该车没有IP信息，无法控制"); return; }
+    final danger = a["danger"] == true;
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: Text(danger ? "⚠️ ${a["label"]}" : "${a["label"]}", style: TextStyle(color: danger ? Colors.red : null)),
+      content: Text("对 ${c["carName"] ?? ip}（$ip）下发「${a["label"]}」？\n${a["tip"]}\n\n注意：这是对真实车辆的指令，请确认现场安全。"),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+        FilledButton(style: danger ? FilledButton.styleFrom(backgroundColor: Colors.red) : null, onPressed: () => Navigator.pop(ctx, true), child: const Text("确认下发"))],
+    ));
+    if (ok != true || !mounted) return;
+    final r = await AgvApi.carAction(action, ip);
+    _toast(r["ok"] == true ? "✅ ${a["label"]}：指令已下发" : "❌ ${a["label"]}失败：${r["msg"]}");
+    if (r["ok"] == true) _load(silent: true);
+  }
+
+  Widget _ctrlBtn(Map c, String act) {
+    final a = AgvApi.carActions[act]!, danger = a["danger"] == true;
+    final color = danger ? Colors.red : (act == "charge" ? Colors.teal : const Color(0xFF1565C0));
+    return ActionChip(avatar: Icon(danger ? Icons.dangerous_outlined : (act == "charge" ? Icons.bolt : (act == "start" ? Icons.play_arrow : (act == "stop" ? Icons.stop_circle_outlined : Icons.home_outlined))), size: 15, color: color),
+      label: Text(a["label"].toString(), style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600)),
+      visualDensity: VisualDensity.compact, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      onPressed: () => _ctrlCar(c, act));
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
@@ -333,11 +387,13 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
         child: Text(_err, style: const TextStyle(fontSize: 12, color: Color(0xFFE65100)))),
       Expanded(child: !_loaded && _err.isEmpty
         ? const Center(child: CircularProgressIndicator())
-        : DefaultTabController(length: 4, child: Column(children: [
+        : DefaultTabController(length: 5, child: Column(children: [
             const TabBar(labelColor: Colors.white, unselectedLabelColor: Color(0xFF90A4AE), indicatorColor: Colors.cyan, tabs: [
-              Tab(text: "任务"), Tab(text: "车辆"), Tab(text: "交管"), Tab(text: "实时界面")]),
-            Expanded(child: TabBarView(children: [
-              _taskList(), _carList(blocked), _trafficView(blocked), _portalView(),
+              Tab(text: "任务"), Tab(text: "车辆"), Tab(text: "站台"), Tab(text: "交管"), Tab(text: "实时界面")]),
+            Expanded(child: TabBarView(
+              physics: const NeverScrollableScrollPhysics(), // 内层只点不滑，横滑留给外层换模块
+              children: [
+              _taskList(), _carList(blocked), _stationList(), _trafficView(blocked), _portalView(),
             ])),
           ]))),
     ]);
@@ -436,8 +492,42 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
           const SizedBox(height: 2),
           Text("当前点位 ${c["currentSite"] ?? "-"}${taskNo.isNotEmpty ? "　任务 $taskNo" : ""}",
             style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
+          if (_canCtl) Padding(padding: const EdgeInsets.only(top: 6),
+            child: Wrap(spacing: 6, runSpacing: 4, children: [
+              for (final act in const ["charge", "standby", "reset", "stop", "start"])
+                _ctrlBtn(c, act),
+            ])),
         ]));
     }).toList());
+  }
+
+  // ---- 站台页签：出库到站=有货(需尽快扫码清台)，AGV正送/正取=占用中，其余空闲 ----
+  Widget _stationList() {
+    const all = ['05', '06', '07', '08', '09', '10', '11', '12'];
+    final m = {for (final s in _stations) s["station"]?.toString(): s};
+    if (_stations.isEmpty) {
+      return const Padding(padding: EdgeInsets.all(24), child: Center(child: Text("站台状态未就绪：确认服务器已收到 RCS 配置（PDA设置→AGV调度系统→测试登录会自动同步），且与AGV系统同网段", style: TextStyle(color: Colors.blueGrey), textAlign: TextAlign.center)));
+    }
+    Color cOf(String st) => st == "有货" ? const Color(0xFFE65100) : (st == "占用中" ? const Color(0xFF1565C0) : Colors.green);
+    IconData iOf(String st) => st == "有货" ? Icons.inventory_2 : (st == "占用中" ? Icons.local_shipping : Icons.check_circle_outline);
+    return GridView.count(crossAxisCount: 2, childAspectRatio: 1.9, padding: const EdgeInsets.all(10), mainAxisSpacing: 8, crossAxisSpacing: 8,
+      children: all.map((n) {
+        final code = "NB02-CK-$n";
+        final s = m[code];
+        final st = s?["state"]?.toString() ?? "空闲";
+        final c = cOf(st);
+        return Container(padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: c.withOpacity(0.6), width: 1.2)),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [Icon(iOf(st), size: 16, color: c), const SizedBox(width: 4),
+              Expanded(child: Text("CK-$n", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
+              Text(st, style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 13))]),
+            const Spacer(),
+            Text(st == "有货" ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s["goods"]}" : ""}" : (st == "占用中" ? "任务 ${s?["via"] ?? ""}" : "可正常叫车/入库"),
+              maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, color: st == "空闲" ? Colors.blueGrey : c)),
+            if (st == "有货" && (s?["since"] ?? "").toString().isNotEmpty) Text("到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE))),
+          ]));
+      }).toList());
   }
 
   // ---- 交管页签 ----
@@ -589,8 +679,13 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
     setState(() { _busy = true; _msg = ""; });
     await AgvConfig.save(host: _hostCtrl.text, portal: _portalCtrl.text, account: _accCtrl.text, pwd: _pwdCtrl.text);
     final t = await AgvApi.login();
+    if (t != null) {
+      // 同步凭据到鉴权服务器：服务器60秒代轮询RCS → 到站催扫通知 + 站台占用面板
+      final s = await AuthApi.rcsConfigSync(host: _hostCtrl.text.trim(), account: _accCtrl.text.trim(), pwd: _pwdCtrl.text);
+      if (s["ok"] != true) debugPrint("[rcs] 配置同步失败：${s["msg"]}");
+    }
     if (!mounted) return;
-    setState(() { _busy = false; _ok = t != null; _msg = t == null ? "登录失败：检查地址/账号/密码（或AGV系统离线）" : "登录成功 ✅ token已缓存（12小时）"; });
+    setState(() { _busy = false; _ok = t != null; _msg = t == null ? "登录失败：检查地址/账号/密码（或AGV系统离线）" : "登录成功 ✅ token已缓存（12小时）${t != null ? "；服务器轮询已开启（催扫+站台面板）" : ""}"; });
   }
 
   @override
@@ -608,7 +703,7 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
       TextField(controller: _pwdCtrl, obscureText: true, decoration: const InputDecoration(hintText: "登录密码", border: OutlineInputBorder())),
       const SizedBox(height: 14),
       Row(children: [
-        Expanded(child: OutlinedButton(onPressed: _busy ? null : _save, child: const Text("保存")))),
+        Expanded(child: OutlinedButton(onPressed: _busy ? null : _save, child: const Text("保存"))),
         const SizedBox(width: 10),
         Expanded(child: ElevatedButton(onPressed: _busy ? null : _test, child: Text(_busy ? "登录中…" : "测试登录"))),
       ]),

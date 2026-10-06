@@ -347,11 +347,6 @@ class _LocationRegPageState extends State<LocationRegPage> {
           IconButton(tooltip: "导入WPS账本", icon: const Icon(Icons.file_download_outlined), onPressed: _importWps)],
       ),
       body: Column(children: [
-        Padding(padding: const EdgeInsets.fromLTRB(12, 10, 12, 4), child: TextField(
-          controller: _labelCtrl, focusNode: _labelFocus, autofocus: true,
-          decoration: const InputDecoration(hintText: "扫描货物标签（第一步）", isDense: true, prefixIcon: Icon(Icons.qr_code_scanner), filled: true, fillColor: Colors.white, border: OutlineInputBorder()),
-          onSubmitted: _lookup,
-        )),
         if (c != null) Container(
           width: double.infinity, margin: const EdgeInsets.fromLTRB(12, 6, 12, 0), padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFC7CDF0))),
@@ -383,6 +378,8 @@ class _LocationRegPageState extends State<LocationRegPage> {
                   subtitle: Text("${p.goodsCode} · ${p.operator} · ${DateTime.fromMillisecondsSinceEpoch(p.assignedAt).toString().substring(5, 16)}", style: const TextStyle(fontSize: 11)),
                 ))),
               ])),
+        ScanBar(ctrl: _labelCtrl, focus: _labelFocus, hint: "扫描货物标签（第一步）",
+          onSubmit: (s) => _lookup(s)),
       ]),
     );
   }

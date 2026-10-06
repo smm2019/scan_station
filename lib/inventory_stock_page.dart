@@ -245,6 +245,7 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
           ? const Center(child: CircularProgressIndicator())
           : TabBarView(
               controller: _tc,
+              physics: const NeverScrollableScrollPhysics(), // 内层只点不滑，横滑留给外层换模块
               children: [
                 _StockSummaryTab(agg: _agg!, search: _search, onSearch: (v) => setState(() => _search = v), onReload: _reload),
                 _ShelfTab(agg: _agg!),

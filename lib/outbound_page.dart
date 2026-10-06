@@ -311,14 +311,7 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10),
-          child: TextField(
-            controller: _scanCtrl, focusNode: _scanFocus, textInputAction: TextInputAction.done,
-            onSubmitted: (_) => _onScan(),
-            decoration: InputDecoration(
-              hintText: "扫描货物二维码进行核对", isDense: true, filled: true, fillColor: Colors.white,
-              prefixIcon: const Icon(Icons.qr_code_scanner), border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-          ),
+          child: Text("已核对 ${_items.where((e) => e["checked"] == true).length}/${_items.length} 张，逐箱对照实物扫码打勾", style: const TextStyle(fontSize: 11, color: Colors.grey)),
         ),
         const SizedBox(height: 6),
         Expanded(child: ListView(padding: const EdgeInsets.symmetric(horizontal: 10), children: [
@@ -346,6 +339,8 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
           }),
           const SizedBox(height: 30),
         ])),
+        ScanBar(ctrl: _scanCtrl, focus: _scanFocus, hint: "扫描货物二维码进行核对",
+          onSubmit: (s) => _onScan()),
       ]),
     );
   }

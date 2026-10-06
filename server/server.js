@@ -727,6 +727,21 @@ const server = http.createServer(async (req, res) => {
         if (db.agvClaims) { delete db.agvClaims[`${cn}|${stn}`]; save(); }
         return send(res, 200, { ok: true });
       }
+      // ================= RCS(哈工库讯AGV) 配置同步 + 站台状态（服务器60秒轮询RCS） =================
+      if (req.method === 'POST' && p === '/api/rcs/config') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可配置' });
+        const b = await readBody(req);
+        const host = String(b.host || '').trim(), account = String(b.account || '').trim(), pwd = String(b.pwd || '');
+        if (!host || !account || !pwd) return send(res, 400, { ok: false, msg: 'host/account/pwd 不能为空' });
+        db.rcsConfig = { host, account, pwd }; db.rcsToken = ''; db.rcsTokenExp = 0;
+        save();
+        rcsPoll(); // 立即拉一次，让站台面板/催扫马上生效
+        return send(res, 200, { ok: true, msg: 'RCS配置已保存，服务器开始轮询' });
+      }
+      if (req.method === 'GET' && p === '/api/rcs/stations') {
+        const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station));
+        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list });
+      }
       if (req.method === 'POST' && p === '/api/outbound/sync') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步出库单' });
         const b = await readBody(req);
@@ -739,7 +754,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, count: db.outboundCount });
       }
       // ================= 领料单（登录即可访问，内部按角色+状态校验） =================
-      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/notifications') {
+      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/notifications' || p.startsWith('/api/notifications/')) {
         const canReq = (db.features[u.role] || {}).requisition === true;
         const canRcv = (db.features[u.role] || {}).receive_confirm === true;
         const isWh = u.role === 'warehouse' || u.role === 'admin';
@@ -810,6 +825,13 @@ const server = http.createServer(async (req, res) => {
           const mine = db.notifications.filter(n => n.to === u.id && !n.read);
           mine.forEach(n => n.read = true);
           if (mine.length) save();
+          return send(res, 200, { ok: true, notifications: mine });
+        }
+
+        // 消息中心历史（只读，不改read标志；返回本人最近 limit 条，默认30）
+        if (req.method === 'GET' && p === '/api/notifications/history') {
+          const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '30') || 30));
+          const mine = db.notifications.filter(n => n.to === u.id).slice(-limit).reverse();
           return send(res, 200, { ok: true, notifications: mine });
         }
 
@@ -929,7 +951,7 @@ const server = http.createServer(async (req, res) => {
               }
             }
             target.agvCalled = (target.agvCalled || []).filter(e => String(e.c).toUpperCase() !== code);
-            target.agvCalled.push({ c: code, s: String(b.station || '').trim(), t: new Date().toISOString() });
+            target.agvCalled.push({ c: code, s: String(b.station || '').trim(), by: u.id, t: new Date().toISOString() });
             hpush(`叫AGV ${b.partNo} 标签 ${code} → ${b.station || '?'}`);
           } else if (act === 'transfer') {
             // 行级转MES回写：App 已把该行已扫箱真实转单成功，按实发件数记账（申请600只有500也可转500）
@@ -1068,5 +1090,109 @@ setInterval(() => {
   Object.keys(db.sessions).forEach(t => { if (now - db.sessions[t].lastSeen > SESSION_TTL_MS) { delete db.sessions[t]; n++; } });
   if (n) save();
 }, 10 * 60 * 1000).unref();
+
+// ================= RCS(哈工库讯AGV) 轮询：站台状态 + 到站催扫 =================
+// 配置在PDA「AGV调度系统设置」保存后由App同步过来；60秒拉一次任务表。
+// 站台规则（用户确认的业务口径）：出库任务(起点=货架位非CK、终点=CK站台)完成→站台"有货"，直到该框扫码出库/人工清台；入库任务(起点=CK、终点=货架)完成→站台"空闲"。
+function rcsReq(path, method = 'GET', token = '') {
+  return new Promise((resolve) => {
+    try {
+      const cfg = db.rcsConfig || {};
+      const [host, port] = String(cfg.host || '').split(':');
+      if (!host) return resolve(null);
+      const req = http.request({ host, port: parseInt(port || '80'), path, method, timeout: 8000, headers: token ? { token } : {} },
+        (res) => { let s = ''; res.on('data', (c) => s += c); res.on('end', () => { try { resolve(JSON.parse(s)); } catch (_) { resolve(null); } }); });
+      req.on('error', () => resolve(null)); req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.end();
+    } catch (_) { resolve(null); }
+  });
+}
+async function rcsLogin() {
+  const cfg = db.rcsConfig || {};
+  return new Promise((resolve) => {
+    try {
+      const [host, port] = String(cfg.host || '').split(':');
+      if (!host) return resolve(null);
+      const body = JSON.stringify({ username: cfg.account, password: cfg.pwd, captcha: '12345', uuid: Date.now().toString(36) });
+      const req = http.request({ host, port: parseInt(port || '80'), path: '/login', method: 'POST', timeout: 8000, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
+        (res) => { let s = ''; res.on('data', (c) => s += c); res.on('end', () => { try { const jj = JSON.parse(s); if (jj.code === 0 && jj.data && jj.data.token) { db.rcsToken = jj.data.token; db.rcsTokenExp = Date.now() + 11 * 3600 * 1000; save(); resolve(jj.data.token); } else resolve(null); } catch (_) { resolve(null); } }); });
+      req.on('error', () => resolve(null)); req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.write(body); req.end();
+    } catch (_) { resolve(null); }
+  });
+}
+function parsePts(t) { try { const s = JSON.parse(t.suspensionMsg || '{}'); return { sp: String(s.startPoint || '').toUpperCase(), ep: String(s.endPoint || '').toUpperCase() }; } catch (_) { return { sp: '', ep: '' }; } }
+async function rcsPoll() {
+  if (!db.rcsConfig || !db.rcsConfig.host) return;
+  let tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
+  if (!tk) { console.log('[rcs] 登录失败，下轮重试'); return; }
+  let run = await rcsReq('/task/getTaskInfo', 'GET', tk);
+  if (!run || run.code !== 0) { tk = await rcsLogin(); if (!tk) return; run = await rcsReq('/task/getTaskInfo', 'GET', tk); }
+  const done = await rcsReq('/task/getDoneTaskList', 'GET', tk);
+  if (!run || run.code !== 0) return;
+  const parse = (d) => { try { return JSON.parse(typeof d === 'string' ? d : JSON.stringify(d || [])); } catch (_) { return []; } };
+  const runT = parse(run.data), doneT = parse(done && done.code === 0 ? done.data : '[]');
+  const isCK = (s) => s.includes('-CK-');
+  // 站台状态：出库到站(未清台)=有货；进行中的入库任务=占用中；其余空闲
+  const stations = {};
+  const mark = (stn, v) => { if (isCK(stn)) stations[stn] = Object.assign(stations[stn] || { station: stn, state: '空闲' }, v); };
+  for (const t of runT) {
+    const { sp, ep } = parsePts(t);
+    if (isCK(ep)) mark(ep, { state: '占用中', via: '任务 ' + (t.dispatchNo || '').slice(-6) }); // 出库在途：车正送来
+    if (isCK(sp)) mark(sp, { state: '占用中', via: '任务 ' + (t.dispatchNo || '').slice(-6) }); // 入库取走中
+  }
+  // 出库完成→有货（保持到清台：清台信号=该框已扫码出库/账本消位，或人工清台接口）
+  db.rcsStations = db.rcsStations || {};
+  const recent = doneT.filter(t => (Number((t.finishTime || '').slice(0, 8)) || 0) && Date.now() - new Date(`${(t.finishTime || '').slice(0, 4)}-${(t.finishTime || '').slice(4, 6)}-${(t.finishTime || '').slice(6, 8)}T${(t.finishTime || '').slice(8, 10)}:${(t.finishTime || '').slice(10, 12)}:${(t.finishTime || '').slice(12, 14)}`).getTime() < 2 * 3600 * 1000);
+  for (const t of recent) {
+    const { sp, ep } = parsePts(t);
+    if (t.taskState !== 2) continue;
+    if (!isCK(sp) && isCK(ep)) { // 出库到站 → 站台有货，记货物标签供催扫与清台判定
+      db.rcsStations[ep] = { station: ep, state: '有货', label: String(sp), goods: (t.palletType || ''), since: t.finishTime || '', via: (t.dispatchNo || '').slice(-6) };
+    } else if (isCK(sp) && !isCK(ep)) { delete db.rcsStations[sp]; } // 入库完成放架 → 站台清
+  }
+  // 清台判定：站台"有货"但对应货架位的框已出库（issued/账本消位）→ 转空闲
+  for (const [stn, s] of Object.entries(db.rcsStations)) {
+    if (s.state !== '有货' || !s.label) continue;
+    const inLedger = (db.ledger || []).some(x => String(x.l).toUpperCase() === s.label);
+    if (!inLedger) { delete db.rcsStations[stn]; } // 货位已空（发走/移走）→ 站台视为已清
+  }
+  for (const v of Object.values(stations)) { if (!db.rcsStations[v.station]) db.rcsStations[v.station] = v; }
+  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, ...parsePts(t) }));
+  db.rcsAt = new Date().toISOString();
+  // ===== 到站催扫：出库任务完成超10分钟，该框仍未在任一活跃领料单扫码发料 → 通知叫车人 =====
+  const issuedAll = new Set();
+  for (const r of db.requisitions || []) {
+    if (!['accepted', 'ready'].includes(r.status)) continue;
+    for (const it of r.items || []) for (const x of (it.issued || [])) issuedAll.add(String(typeof x === 'string' ? x : (x.c || '')).toUpperCase());
+  }
+  const nowMs = Date.now();
+  for (const t of recent) {
+    const { sp, ep } = parsePts(t);
+    if (t.taskState !== 2 || isCK(sp) || !isCK(ep)) continue;
+    const fin = new Date(`${(t.finishTime || '').slice(0, 4)}-${(t.finishTime || '').slice(4, 6)}-${(t.finishTime || '').slice(6, 8)}T${(t.finishTime || '').slice(8, 10)}:${(t.finishTime || '').slice(10, 12)}:${(t.finishTime || '').slice(12, 14)}`).getTime();
+    if (nowMs - fin < 10 * 60 * 1000 || nowMs - fin > 2 * 3600 * 1000) continue;
+    const box = (db.ledger || []).find(x => String(x.l).toUpperCase() === sp);
+    const codes = box ? (db.ledger || []).filter(x => String(x.l).toUpperCase() === sp).map(x => String(x.c).toUpperCase()) : [];
+    if (!codes.length || codes.some(c => issuedAll.has(c))) continue; // 已发料/已移走：不催
+    const called = [];
+    for (const r of db.requisitions || []) {
+      if (r.status !== 'accepted') continue;
+      for (const it of r.items || []) for (const e of (it.agvCalled || [])) {
+        const c = String(e.c || '').toUpperCase();
+        if (codes.includes(c)) called.push({ req: r, by: e.by, c });
+      }
+    }
+    for (const cl of called) {
+      const key = cl.c + '|' + ep;
+      if (db.rcsRemind && db.rcsRemind[key]) continue;
+      notify(cl.by || cl.req.by, 'req_arrive', `⏰ 到站催扫：框 ${cl.c} 已到站台 ${ep} 超10分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台`, cl.req.id);
+      db.rcsRemind = db.rcsRemind || {}; db.rcsRemind[key] = nowMs;
+    }
+  }
+  if (db.rcsRemind) for (const [k, t0] of Object.entries(db.rcsRemind)) { if (nowMs - t0 > 4 * 3600 * 1000) delete db.rcsRemind[k]; }
+  save();
+}
+setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, 60 * 1000).unref();
 
 server.listen(PORT, HOST, () => console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`));

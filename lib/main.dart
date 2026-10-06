@@ -35,6 +35,43 @@ part 'collection_ledger.dart'; // 位置登记：上架/移库/拣下统一入�
 part 'inventory_stock_page.dart'; // 库存：期初+入库流水(采集派生)-出库流水(直调派生)，货架库位占用登记
 part 'requisition_page.dart'; // 领料单：物料员下单/签收，仓管接单/扫码发料，服务端状态机
 part 'agv_api.dart'; // AGV调度系统(哈工库讯RCS)：任务/车辆/交管监控 + 实时大屏WebView + 设置
+/// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
+final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
+
+/// 全局底部扫码条：固定在页面底部，扫码枪输入永远有落点；提交后由各页处理器清空回焦
+class ScanBar extends StatelessWidget {
+  final TextEditingController ctrl;
+  final FocusNode focus;
+  final String hint;
+  final void Function(String) onSubmit;
+  final VoidCallback? camera;
+  const ScanBar({super.key, required this.ctrl, required this.focus, required this.hint, required this.onSubmit, this.camera});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: EdgeInsets.fromLTRB(10, 8, 10, 8 + MediaQuery.of(context).padding.bottom),
+      decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Color(0xFFE0E0E0)))),
+      child: Row(children: [
+        Expanded(child: TextField(
+          controller: ctrl, focusNode: focus, autofocus: true, textInputAction: TextInputAction.done,
+          decoration: InputDecoration(
+            hintText: hint, isDense: true, filled: true, fillColor: const Color(0xFFF2F3FA),
+            prefixIcon: const Icon(Icons.qr_code_scanner, size: 20, color: Color(0xFF515BD4)),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+            contentPadding: const EdgeInsets.symmetric(vertical: 11)),
+          onSubmitted: (v) { final s = v.trim(); if (s.isNotEmpty) onSubmit(s); },
+        )),
+        if (camera != null) ...[
+          const SizedBox(width: 8),
+          SizedBox(height: 42, child: ElevatedButton(onPressed: camera,
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 12)),
+            child: const Text("相机", style: TextStyle(fontSize: 12)))),
+        ],
+      ]),
+    );
+  }
+}
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
 
 
@@ -966,6 +1003,8 @@ final GlobalKey _keyScanInputArea = GlobalKey();
   int _cancelCount = 0;
   bool _recordPanelExpanded = false;
   late TabController _tabController;
+  bool _showCollect = true, _showInv = true, _showDirect = true, _showReq = true; // 角色化Tab可见性
+  List<String> _tabKeys = const [];
   List<String> _selectedBatchIds = [];
   // ===== 整托合并模式状态 =====
   bool _palletMode = false;                     //整托开关
@@ -983,8 +1022,15 @@ final GlobalKey _keyScanInputArea = GlobalKey();
   void initState() {
     super.initState();
     _isar = _globalIsar;
-    //初始化Tab控制器
-    _tabController = TabController(length: 7, vsync: this);
+    //初始化Tab控制器：按角色动态生成（物料员只见库存/领料/AGV，仓管全量）
+    final role = Auth.user?.role ?? "";
+    final wh = role == 'warehouse' || role == 'admin';
+    _showCollect = Auth.can("collect");
+    _showInv = Auth.can("inventory");
+    _showDirect = Auth.can("direct_transfer");
+    _showReq = wh || Auth.can("requisition") || Auth.can("receive_confirm");
+    _tabKeys = [ if (_showCollect) 'collect', if (_showCollect) 'history', if (_showInv) 'inv', if (_showDirect) 'direct', 'stock', if (_showReq) 'req', 'agv' ];
+    _tabController = TabController(length: _tabKeys.length, vsync: this);
     _startNotifPolling();
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
@@ -1015,7 +1061,7 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(list.length > 1 ? "$text（共 ${list.length} 条新消息）" : text, maxLines: 2, overflow: TextOverflow.ellipsis),
       backgroundColor: const Color(0xFF37474F), duration: const Duration(seconds: 6),
-      action: SnackBarAction(label: "查看", textColor: Colors.amber, onPressed: () => _tabController.animateTo(5)),
+      action: SnackBarAction(label: "查看", textColor: Colors.amber, onPressed: () { kUnreadMsgs.value += list.length; final i = _tabKeys.indexOf('req'); _tabController.animateTo(i >= 0 ? i : 0); }),
     ));
   }
   @override
@@ -2323,22 +2369,24 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
           labelStyle: TextStyle(fontWeight: FontWeight.bold), //选中加粗
           unselectedLabelColor: Color(0xFFD0D4F8), //未选中浅白色
           indicatorColor: Colors.white,
-          tabs: const [
-            Tab(text: "采集录入"),
-            Tab(text: "历史批次"),
-            Tab(text: "盘点"),
-            Tab(text: "直调"),
-            Tab(text: "库存"),
-            Tab(text: "领料"),
-            Tab(text: "AGV"),
+          tabs: [
+            if (_showCollect) const Tab(text: "采集录入"),
+            if (_showCollect) const Tab(text: "历史批次"),
+            if (_showInv) const Tab(text: "盘点"),
+            if (_showDirect) const Tab(text: "直调"),
+            const Tab(text: "库存"),
+            if (_showReq) const Tab(text: "领料"),
+            const Tab(text: "AGV"),
           ],
         ),
       ),
       body: TabBarView(
         controller: _tabController,
         children: [
-          //采集录入页面
-        SingleChildScrollView(
+          if (_showCollect)
+          //采集录入页面（内容可滚，扫码条固定底部）
+          Column(children: [
+            Expanded(child: SingleChildScrollView(
   controller: _mainScrollCtrl,
   padding: const EdgeInsets.all(12),
   child: Column(
@@ -2520,45 +2568,7 @@ const SizedBox(height: 12),
 
                 const Text("扫码录入",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
                 const SizedBox(height:4),
-                Container(
-                 padding: EdgeInsets.symmetric(horizontal:12, vertical:8),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.grey.shade300)
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: _goodsInputCtrl,
-                              focusNode: _goodsFocusNode,
-                              decoration: const InputDecoration(
-                                hintText: "扫描或输入货物条码",
-                                border: InputBorder.none
-                              ),
-                              onSubmitted: (txt) {
-                                WidgetsBinding.instance.addPostFrameCallback((_) async {
-                                  String code = txt.trim();
-                                  if (code.isNotEmpty) await _saveRecord(code);
-                                });
-                              },
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton(
-                            style:ElevatedButton.styleFrom(backgroundColor:Color(0xFF515BD4)),
-                            onPressed: _openCameraScan,
-                            child: const Text("相机扫码"),
-                          ),
-                        ],
-                      ),
-                      //【优化二：移除底部提示小字】
-                    ],
-                  ),
-                ),
+                const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Text("👇 扫码框已固定在屏幕底部，随时可扫", style: TextStyle(fontSize: 12, color: Colors.grey))),
          const SizedBox(height:16),
 Row(
   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -2647,20 +2657,23 @@ SingleChildScrollView(
              if(_recordPanelExpanded)
   _buildRecordList(),
 
-                const SizedBox(height:80),
+                const SizedBox(height:16),
               ],
             ),
-          ),
+            )),
+            ScanBar(ctrl: _goodsInputCtrl, focus: _goodsFocusNode, hint: "扫描或输入货物条码", camera: _openCameraScan,
+              onSubmit: (s) => WidgetsBinding.instance.addPostFrameCallback((_) => _saveRecord(s))),
+          ]),
                   //历史批次页面
-          _buildHistoryBatchPage(),
+          if (_showCollect) _buildHistoryBatchPage(),
           //盘点模式页面
-          const InventoryHomePage(),
+          if (_showInv) const InventoryHomePage(),
           //MES直调页面
-          const DirectTransferPage(),
+          if (_showDirect) const DirectTransferPage(),
           //库存页面（期初+入出库流水实时算库存，货架库位占用）
           const InventoryStockPage(),
           //领料单页面
-          const RequisitionPage(),
+          if (_showReq) const RequisitionPage(),
           //AGV调度监控模块（任务/车辆/交管/实时大屏）
           const AgvMonitorPage()
         ],

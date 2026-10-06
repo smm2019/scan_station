@@ -109,6 +109,9 @@ class AuthApi {
     "districtCode": to["DISTRICT_CODE"], "districtName": to["DISTRICT_NAME"],
   });
   static Future<Map> notifications() async => _req("GET", "/api/notifications", token: await AuthStore.token());
+  /// 消息中心：本人最近历史通知（只读，不消耗未读）
+  static Future<Map> notificationsHistory({int limit = 30}) async =>
+      _req("GET", "/api/notifications/history?limit=$limit", token: await AuthStore.token());
 
   // ---- 货位账本同步（PDA ↔ 电脑服务器，增量合并：新者胜+墓碑删除） ----
   /// items: [{c:标签, l:货位, f:料框, t:毫秒, pid:托号}]；del: [{c:标签, t:删除时间}] 墓碑
@@ -121,6 +124,10 @@ class AuthApi {
       _req("POST", "/api/scanlog/sync", body: {"items": items}, token: await AuthStore.token());
   static Future<Map> scanlogDeleteBatch(String batch) async =>
       _req("POST", "/api/scanlog/delete", body: {"batch": batch}, token: await AuthStore.token());
+  // ---- RCS(哈工库讯AGV)：配置同步（服务器代轮询做催扫/站台面板）+ 站台状态查询 ----
+  static Future<Map> rcsConfigSync({required String host, required String account, required String pwd}) async =>
+      _req("POST", "/api/rcs/config", body: {"host": host, "account": account, "pwd": pwd}, token: await AuthStore.token());
+  static Future<Map> rcsStations() async => _req("GET", "/api/rcs/stations", token: await AuthStore.token());
   static Future<Map> outboundSync(Map order) async =>
       _req("POST", "/api/outbound/sync", body: order, token: await AuthStore.token());
   // AGV 叫车占位：同容器（15分钟）或同站台（60秒内）已有占位则拒绝，两台PDA并发点击只放行一个
