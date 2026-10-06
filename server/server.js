@@ -743,29 +743,43 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry' });
       }
       // ===== AGV 出库排队队列（一键叫车） =====
-      if (req.method === 'POST' && p === '/api/agv/queue') { // 批量入队：items=[{code,fromLoc,palletType,stationManual?}]
+      if (req.method === 'POST' && p === '/api/agv/queue') { // 批量入队：items=[{code,fromLoc,palletType,partNo,stationManual?}]；入队即登记叫车标记防重复
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可叫车' });
         const b = await readBody(req);
         const items = Array.isArray(b.items) ? b.items : [];
         const reqId = String(b.reqId || ''), reqNo = String(b.reqNo || '');
         if (!items.length || items.length > 30) return send(res, 400, { ok: false, msg: 'items 需1~30条' });
         db.agvQueue = db.agvQueue || [];
+        const rq = db.requisitions.find((x) => x.id === reqId);
         let added = 0, dup = 0;
         for (const it of items) {
           const code = String(it.code || '').trim().toUpperCase(), fromLoc = String(it.fromLoc || '').trim().toUpperCase();
           if (!code || !fromLoc) continue;
           if (db.agvQueue.some((q) => q.code === code && !['完成', '取消', '失败'].includes(q.state))) { dup++; continue; } // 同框已在队列
           db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', station: '', at: Date.now(), updAt: Date.now() });
+          const ti = rq && (rq.items || []).find((i) => i.partNo === it.partNo); // 登记叫车标记：建议区变🚗排队，单框叫车自动跳过
+          if (ti) { ti.agvCalled = (ti.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code); ti.agvCalled.push({ c: code, s: '', q: 1, by: u.id, t: new Date().toISOString() }); }
           added++;
         }
         save(); rcsPoll(); // 立即调度一轮
         return send(res, 200, { ok: true, added, dup, msg: `已排队 ${added} 框${dup ? `（${dup} 框已在队列跳过）` : ''}` });
       }
-      if (req.method === 'POST' && p === '/api/agv/queue/cancel') { // 取消排队项（仅未下发；已下发去RCS界面取消任务）
+      if (req.method === 'POST' && p === '/api/agv/queue/cancel') { // 取消排队项；传 reqId 则清空该单全部未下发项
         const b = await readBody(req);
+        const reqId = String(b.reqId || '').trim();
         const codes = new Set((Array.isArray(b.codes) ? b.codes : []).map((c) => String(c).toUpperCase()));
+        if (reqId) {
+          let n = 0, dispatched = 0;
+          for (const q of db.agvQueue || []) {
+            if (String(q.reqId) !== reqId) continue;
+            if (q.state === '排队' || q.state === '失败') { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(reqId, q.code); n++; }
+            else if (['下发中', '已下发', '到站'].includes(q.state)) dispatched++; // 已进AGV系统，需去RCS取消
+          }
+          save();
+          return send(res, 200, { ok: true, cancelled: n, msg: n ? `已取消 ${n} 框排队${dispatched ? `；另有 ${dispatched} 框已下发AGV，请到RCS调度界面取消任务` : ''}` : (dispatched ? `${dispatched} 框已下发AGV，需在RCS界面取消任务` : '本单没有排队项') });
+        }
         let n = 0;
-        for (const q of db.agvQueue || []) { if (codes.has(q.code) && q.state === '排队') { q.state = '取消'; q.updAt = Date.now(); n++; } }
+        for (const q of db.agvQueue || []) { if (codes.has(q.code) && q.state === '排队') { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); n++; } }
         save();
         return send(res, 200, { ok: true, cancelled: n });
       }
@@ -1004,15 +1018,16 @@ const server = http.createServer(async (req, res) => {
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
             const code = String(b.barcode || '').trim().toUpperCase();
             if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
-            // 防重复叫车：该标签或其同框兄弟码已叫过 → 拒绝登记（叫车前端已先占位，此处兜底）
+            // 防重复叫车：同框兄弟码已叫过且仍有活跃队列任务 → 拒绝；失败/取消出队的旧标记允许重叫
             const _lk = (s) => { s = String(s || '').trim().toUpperCase(); const i = s.lastIndexOf('-'); return i > 0 ? s.slice(0, i) : s; };
+            const activeQ = new Set((db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发', '到站'].includes(q.state)).map((q) => String(q.code).toUpperCase()));
             const called = (target.agvCalled || []).map(e => String(e.c).toUpperCase());
             const self = (db.ledger || []).find(x => String(x.c).toUpperCase() === code);
             const sp = self && self.p ? String(self.p).toUpperCase() : '';
             for (const x of db.ledger || []) {
               const xc = String(x.c).toUpperCase();
-              if (called.includes(xc) && (xc === code || (sp && String(x.p || '').toUpperCase() === sp) || (!sp && _lk(x.l) === _lk(self && self.l)))) {
-                return send(res, 200, { ok: false, msg: `同框标签 ${xc} 已叫过AGV，请勿重复叉取` });
+              if (called.includes(xc) && activeQ.has(xc) && (xc === code || (sp && String(x.p || '').toUpperCase() === sp) || (!sp && _lk(x.l) === _lk(self && self.l)))) {
+                return send(res, 200, { ok: false, msg: `同框标签 ${xc} 正在AGV任务中，请勿重复叉取` });
               }
             }
             target.agvCalled = (target.agvCalled || []).filter(e => String(e.c).toUpperCase() !== code);
@@ -1072,6 +1087,15 @@ const server = http.createServer(async (req, res) => {
             if (r.items.some(i => i.transferred)) return send(res, 400, { ok: false, msg: '已有行转MES出库，不能整单取消；请对剩余行转单或跳过收尾' });
             r.status = 'cancelled';
             hpush(`取消${b.reason ? '：' + b.reason : ''}`);
+            // 联动：该单未下发的AGV排队项一并取消；已下发的只能去RCS取消任务
+            let qn = 0, qd = 0;
+            for (const q of db.agvQueue || []) {
+              if (String(q.reqId) !== r.id) continue;
+              if (q.state === '排队' || q.state === '失败') { q.state = '取消'; q.updAt = Date.now(); qn++; }
+              else if (['下发中', '已下发', '到站'].includes(q.state)) qd++;
+            }
+            if (qn || qd) hpush(`AGV队列：取消 ${qn} 框排队${qd ? `，${qd} 框已下发需到RCS取消` : ''}`);
+            if (qd) notify(u.id, 'req_cancel', `领料单 ${r.no} 有 ${qd} 框AGV任务已下发，取消订单不会自动停车，请到RCS调度界面取消任务`, r.id);
             if (r.acceptedBy) db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
               notify(x.id, 'req_cancel', `${u.name} 取消了领料单 ${r.no}`, r.id));
           }
@@ -1346,6 +1370,14 @@ async function wmasDispatchOne(q, tk) {
   if (id) await wmasHttp('POST', '/api/logistics/agv-task/dispatch', tk, { ids: [id] });
   return { ok: true, container: cn, msg: '已建任务并下发' };
 }
+function clearQueueCall(reqId, code) { // 队列项取消/失败出队 → 解除该框排队叫车标记，允许重新叫车
+  const rq = db.requisitions.find((x) => x.id === reqId); if (!rq) return;
+  for (const it of rq.items || []) {
+    if (it.agvCalled && it.agvCalled.some((e) => e.q && String(e.c).toUpperCase() === code)) {
+      it.agvCalled = it.agvCalled.filter((e) => !(e.q && String(e.c).toUpperCase() === code));
+    }
+  }
+}
 async function agvDispatch(nowMs, runT) {
   const queue = db.agvQueue || [];
   // 回收：队列项对应任务已到站/已完成 → 状态跟随（到站后由"有货/催扫/清台"机制接管）
@@ -1361,7 +1393,7 @@ async function agvDispatch(nowMs, runT) {
   // 失败项保留30分钟供查看原因后自动出队（重新一键叫车即可再入队）；完成/取消保留2小时
   db.agvQueue = queue.filter((q) => {
     const age = nowMs - (q.updAt || q.at);
-    if (q.state === '失败') return age < 30 * 60 * 1000;
+    if (q.state === '失败') { if (age >= 30 * 60 * 1000) clearQueueCall(q.reqId, q.code); return age < 30 * 60 * 1000; }
     if (['完成', '取消'].includes(q.state)) return age < 2 * 3600 * 1000;
     return true;
   });

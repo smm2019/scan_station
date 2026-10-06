@@ -132,8 +132,8 @@ class AuthApi {
   // ===== AGV 出库排队（一键叫车→服务器调度器自动分配站台） =====
   static Future<Map> agvQueueEnqueue({required String reqId, required String reqNo, required List<Map> items}) async =>
       _req("POST", "/api/agv/queue", body: {"reqId": reqId, "reqNo": reqNo, "items": items}, token: await AuthStore.token());
-  static Future<Map> agvQueueCancel(List<String> codes) async =>
-      _req("POST", "/api/agv/queue/cancel", body: {"codes": codes}, token: await AuthStore.token());
+  static Future<Map> agvQueueCancel(List<String> codes, {String reqId = ""}) async =>
+      _req("POST", "/api/agv/queue/cancel", body: reqId.isEmpty ? {"codes": codes} : {"reqId": reqId}, token: await AuthStore.token());
   static Future<Map> agvSetMode(String mode) async =>
       _req("POST", "/api/agv/mode", body: {"mode": mode}, token: await AuthStore.token());
   static Future<Map> agvWmasConfig({required String host, required String account, required String pwd}) async =>

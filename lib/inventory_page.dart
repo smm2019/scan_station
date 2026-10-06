@@ -322,6 +322,8 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
   String _bookInfo = "", _locInfo = "";
   final Set<String> _scope = {}; //循环盘点：勾选的货架前缀，空=全盘
   int _step = 0;
+  bool _useLive = false; // 基准来源：true=系统实时在库账本快照（免上传CSV），false=上传两份台账CSV
+  String _liveInfo = ""; // 实时快照结果描述（零件数/货位行数）
 
   @override
   void dispose() {
@@ -454,12 +456,33 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
               ),
             ],
             if (_step == 1) ...[
-              const Padding(padding: EdgeInsets.only(bottom: 8), child: Text("第一步先上传：电脑浏览器打开 App 显示的门户地址 → 上传两份台账导出 CSV", style: TextStyle(fontSize: 12, color: Colors.grey))),
-              _slotTile("① 账面基准（基础数据表导出）", _bookName, _bookInfo, true, const Color(0xFF515BD4)),
+              Card(
+                color: _useLive ? const Color(0xFFE8F5E9) : null,
+                child: SwitchListTile(
+                  value: _useLive,
+                  activeColor: Colors.teal,
+                  title: const Text("用系统实时在库账本当基准", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                  subtitle: Text(_useLive
+                      ? "免上传CSV：创建时自动快照当前在库账本（地面+货架全覆盖）作为账面与货位基准\n口径与库存页完全一致；请先确认各台PDA已同步"
+                      : "开启后无需上传台账CSV，直接用系统账本对账；关闭则走下方上传两份CSV的老流程",
+                      style: const TextStyle(fontSize: 12)),
+                  onChanged: (v) => setState(() { _useLive = v; _liveInfo = ""; }),
+                ),
+              ),
               const SizedBox(height: 10),
-              _slotTile("② 货位基准（二楼货架列表导出，可选）", _locName, _locInfo, false, Colors.teal),
-              const SizedBox(height: 8),
-              const Text("说明：货位基准可不选——缺失时只能对总量盘盈盘亏，无法定位串位。同零件号重复行自动累加。", style: TextStyle(fontSize: 12, color: Colors.grey)),
+              if (_useLive) ...[
+                if (_liveInfo.isEmpty)
+                  const Card(child: Padding(padding: EdgeInsets.all(14), child: Text("创建任务时会自动生成实时快照：\n· 账面基准 = 各零件在库数量合计\n· 货位基准 = 各货位×零件在库数量（含 NB03 地面格位）\n\n注意：快照以本台PDA合并后的账本为准，创建前请确保各台都同步过。", style: TextStyle(fontSize: 13, height: 1.5))))
+                else
+                  Card(child: Padding(padding: const EdgeInsets.all(14), child: Text("✅ 已生成实时快照：$_liveInfo", style: const TextStyle(fontSize: 13, color: Colors.teal, fontWeight: FontWeight.w600)))),
+              ] else ...[
+                const Padding(padding: EdgeInsets.only(bottom: 8), child: Text("第一步先上传：电脑浏览器打开 App 显示的门户地址 → 上传两份台账导出 CSV", style: TextStyle(fontSize: 12, color: Colors.grey))),
+                _slotTile("① 账面基准（基础数据表导出）", _bookName, _bookInfo, true, const Color(0xFF515BD4)),
+                const SizedBox(height: 10),
+                _slotTile("② 货位基准（二楼货架列表导出，可选）", _locName, _locInfo, false, Colors.teal),
+                const SizedBox(height: 8),
+                const Text("说明：货位基准可不选——缺失时只能对总量盘盈盘亏，无法定位串位。同零件号重复行自动累加。", style: TextStyle(fontSize: 12, color: Colors.grey)),
+              ],
             ],
             if (_step == 2) ...[
               if (_locKey.isEmpty)
@@ -521,15 +544,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                 Expanded(
                   child: ElevatedButton(
                     style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, disabledBackgroundColor: Colors.grey.shade300),
-                    onPressed: _step == 3
-                        ? (_bookKey.isEmpty && _locKey.isEmpty ? null : _create)
-                        : () {
-                            if (_step == 1 && _bookKey.isEmpty && _locKey.isEmpty) {
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("至少选择一个基准文件")));
-                              return;
-                            }
-                            setState(() => _step++);
-                          },
+                    onPressed: _step == 3 ? _create : _next,
                     child: Text(_step == 3 ? "创建并开始盘点" : "下一步"),
                   ),
                 ),
@@ -539,6 +554,33 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
         ),
       ),
     );
+  }
+
+  /// 下一步：实时模式在离开基准步时生成快照（口径=库存页在库合计；空账本拦截防误盘）
+  Future<void> _next() async {
+    if (_step == 1 && _useLive && _liveInfo.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("正在生成实时账本快照（含与电脑账本合并）…"), backgroundColor: Colors.blueGrey));
+      try {
+        final r = await buildLiveBaseline();
+        final books = r["books"] as int, locs = r["locs"] as int;
+        if (books == 0) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("快照为空：系统账本里没有任何在库零件，请先同步/导入账本再盘"), backgroundColor: Colors.orange, duration: Duration(seconds: 5)));
+          return;
+        }
+        if (!mounted) return;
+        setState(() {
+          _bookKey = _locKey = r["key"].toString();
+          _bookName = _locName = "系统实时账本";
+          _bookInfo = "零件 $books 个"; _locInfo = "货位行 $locs 条";
+          _liveInfo = "零件 $books 个 · 货位行 $locs 条";
+        });
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("快照生成失败：$e"), backgroundColor: Colors.red));
+        return;
+      }
+    }
+    if (!mounted) return;
+    setState(() => _step++);
   }
 }
 
@@ -669,14 +711,19 @@ class _InvScanPageState extends State<_InvScanPage> {
           if (outScope) {
             // 范围外：保持 flag6，不进盘盈亏
             judge = InvJudge(6, "cyan", "范围外：「${rec.partNo}」登记在未盘点货架，已记录待核对");
-          } else if (bookHit.isEmpty && !locHit.isEmpty) {
+          } else if (bookHit.isEmpty && !locHit.isEmpty && widget.task.invBookKey.isNotEmpty) {
             //货位台账有、总账没有 → 双基准矛盾，按账外料口径记，并备注
             rec.flag = 3;
             rec.remark = "双基准矛盾：总账无此零件但货位台账登记";
             judge = InvJudge(3, "red", "⚠️双基准矛盾：总账基准查无「${rec.partNo}」，但货位台账有登记——先核两份账谁旧了");
           } else if (bookHit.isEmpty) {
-            rec.flag = 3;
-            judge = InvJudge(3, "red", "账外物料：零件「${rec.partNo}」不在账面基准，仍已记录");
+            if (widget.task.invBookKey.isEmpty) {
+              rec.flag = 0;
+              judge = InvJudge(0, "green", "已记录：${rec.partNo} ${_fmtInvNum(rec.qty)} 件 @ $_curLoc（未绑账面基准，不判账外/超量）");
+            } else {
+              rec.flag = 3;
+              judge = InvJudge(3, "red", "账外物料：零件「${rec.partNo}」不在账面基准，仍已记录");
+            }
           } else {
             rec.partNo = bookHit.first.partNo; //统一以基准写法为准（大小写差异归一）
             judge = judgeInventory(

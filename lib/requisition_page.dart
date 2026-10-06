@@ -230,7 +230,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
     final chosen = _qtyCtrl.entries.where((e) => (int.tryParse(e.value.text.trim()) ?? 0) > 0).toList();
     return Padding(
       padding: EdgeInsets.fromLTRB(14, 10, 14, MediaQuery.of(context).viewInsets.bottom + 14),
-      child: SizedBox(height: MediaQuery.of(context).size.height * 0.72, child: Column(children: [
+      child: SizedBox(height: MediaQuery.of(context).size.height * 0.9, child: Column(children: [
         const Text("新建领料单（从库存选择）", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         TextField(
@@ -336,8 +336,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   Future<void> _loadAgvStat() async {
     final st = _r["status"].toString();
     final hasCalled = List<Map>.from(_r["items"] ?? []).any((i) => (i["agvCalled"] as List?)?.isNotEmpty == true);
-    if (st != 'accepted' || !hasCalled) return;
-    if (await AgvApi.token() == null) return; // AGV账号未配置：不显示配送状态，静默跳过
+    if (st != 'accepted') return;
+    if (!hasCalled) { await _loadQueue(); return; } // 没叫过车也要拉队列：别台设备叫的/失败项需可见可清理
+    if (await AgvApi.token() == null) { await _loadQueue(); return; } // AGV账号未配置：不显示配送状态，静默跳过
     final rs = await Future.wait([AgvApi.tasksRunning(), AgvApi.tasksDone()]);
     final m = <String, String>{};
     for (final t in rs[0] as List<Map>) {
@@ -367,14 +368,43 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final mine = List<Map>.from(r["queue"] ?? []).where((q) => q["reqId"] == _r["id"]).toList();
     final cnt = <String, int>{};
     for (final q in mine) { final s = q["state"]?.toString() ?? "?"; cnt[s] = (cnt[s] ?? 0) + 1; }
-    setState(() { _queueItems = mine; _queueStat = cnt.isEmpty ? "" : cnt.entries.map((e) => "${e.key}${e.value}").join(" · "); _queueMode = r["mode"]?.toString() ?? "dry"; });
+    // 活跃队列项注入配送状态：chip key为"起点|站台"，未分配站台时登记在"起点|已叫"下
+    final m2 = Map<String, String>.from(_agvStat);
+    for (final q in mine) {
+      final s0 = q["state"]?.toString() ?? "";
+      if (!["排队", "下发中", "已下发", "到站"].contains(s0)) continue;
+      final from = (q["fromLoc"] ?? "").toString().toUpperCase(), stn = (q["station"] ?? "").toString().toUpperCase();
+      if (from.isEmpty) continue;
+      final txt = s0 == "排队" ? "排队" : (s0 == "到站" ? "已到站" : "在途");
+      if (stn.isNotEmpty) m2["$from|$stn"] = txt;
+      if (!m2.containsKey("$from|已叫")) m2["$from|已叫"] = txt;
+    }
+    setState(() { _queueItems = mine; _agvStat = m2; _queueStat = cnt.isEmpty ? "" : cnt.entries.map((e) => "${e.key}${e.value}").join(" · "); _queueMode = r["mode"]?.toString() ?? "dry"; });
   }
 
-  /// 队列管理面板：查看每框分配与状态，"排队"中的可取消
+  /// 队列管理面板：查看每框分配与状态，"排队/失败"可取消，支持整单清空
   void _showQueueSheet() {
     showModalBottomSheet(context: context, isScrollControlled: true, builder: (mctx) => SafeArea(child: Column(
       mainAxisSize: MainAxisSize.min, children: [
-        const Padding(padding: EdgeInsets.all(12), child: Text("AGV 排队队列", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+        Padding(padding: const EdgeInsets.fromLTRB(12, 12, 4, 0), child: Row(children: [
+          const Expanded(child: Text("AGV 排队队列", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+          TextButton.icon(
+            style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
+            onPressed: _queueItems.isEmpty ? null : () async {
+              final yes = await showDialog<bool>(context: mctx, builder: (c2) => AlertDialog(
+                title: const Text("清空本单队列"),
+                content: const Text("取消本单全部未下发的排队项（已下发给AGV的任务不受影响，需到RCS界面取消）。确认？"),
+                actions: [TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消")),
+                  FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(c2, true), child: const Text("清空"))],
+              ));
+              if (yes != true || !mctx.mounted) return;
+              final r = await AuthApi.agvQueueCancel(const [], reqId: _r["id"].toString());
+              widget.toast(r["ok"] == true ? r["msg"].toString() : "清空失败：${r["msg"]}", err: r["ok"] != true);
+              if (mctx.mounted) Navigator.pop(mctx);
+              await _loadQueue();
+            },
+            icon: const Icon(Icons.delete_sweep_outlined, size: 16), label: const Text("清空本单", style: TextStyle(fontSize: 12))),
+        ])),
         Flexible(child: ListView(children: [
           for (final q in _queueItems) ListTile(
             dense: true,
@@ -383,7 +413,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               child: Text(switch (q["state"]?.toString()) { "排队" => "排", "下发中" => "运", "已下发" => "运", "到站" => "达", _ => "其" }, style: const TextStyle(fontSize: 12))),
             title: Text("${q["code"]}  ${q["fromLoc"]}${(q["station"] ?? "").toString().isNotEmpty ? " → ${q["station"]}" : ((q["plan"] ?? "").toString().isNotEmpty ? " → ${q["plan"]}（计划）" : "")}", style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
             subtitle: Text("${q["state"]}${(q["err"] ?? "").toString().isNotEmpty ? " · ${q["err"]}" : ""}${(q["palletType"] ?? "").toString().isNotEmpty ? " · ${q["palletType"]}" : ""}", style: const TextStyle(fontSize: 11)),
-            trailing: q["state"] == "排队" ? TextButton(
+            trailing: (q["state"] == "排队" || q["state"] == "失败") ? TextButton(
               style: TextButton.styleFrom(foregroundColor: Colors.red),
               onPressed: () => _cancelQueued(q["code"].toString()),
               child: const Text("取消", style: TextStyle(fontSize: 12))) : null,
@@ -412,7 +442,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       final cs = List<String>.from((b["codes"] as List? ?? const []).map((e) => e.toString()));
       if (cs.isEmpty || cs.any((c) => issuedSet.contains(c.toUpperCase()))) continue;
       if (cs.any((c) => agvMap.contains(c.toUpperCase()))) continue;
-      its.add({"code": cs.first, "fromLoc": l, "palletType": b["f"]?.toString() ?? ""});
+      its.add({"code": cs.first, "fromLoc": l, "palletType": b["f"]?.toString() ?? "", "partNo": item["partNo"]?.toString() ?? ""});
     }
     if (its.isEmpty) { widget.toast("没有可叫车的货架框（已叫过的请点标签看状态）"); return; }
     final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
@@ -533,10 +563,11 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               onPressed: _busy ? null : () => _queueAll(item, boxes),
               child: const Text("一键叫车", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
         ]),
-        if (_queueStat.isNotEmpty) InkWell(
+        InkWell(
           onTap: _showQueueSheet,
           child: Padding(padding: const EdgeInsets.only(bottom: 3),
-            child: Text("📦 队列：$_queueStat · 点击查看/取消", style: const TextStyle(fontSize: 10.5, color: Color(0xFF00695C), decoration: TextDecoration.underline)))),
+            child: Text(_queueStat.isEmpty ? "📦 AGV队列：暂无排队 · 点击查看" : "📦 队列：$_queueStat · 点击查看/取消",
+              style: TextStyle(fontSize: 10.5, color: _queueStat.isEmpty ? Colors.blueGrey : const Color(0xFF00695C), decoration: TextDecoration.underline)))),
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 4, children: [
           for (final b in flat)
@@ -552,7 +583,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               final boxColor = agv.isEmpty ? null : (arrived ? const Color(0xFF2E7D32) : const Color(0xFFE65100));
               return InkWell(
                 onTap: () {
-                  if (agv.isNotEmpty) { widget.toast("框 $code 已叫AGV → 站台 $agv${stat.isEmpty ? "" : "（$stat）"}，请勿重复叉取", err: false); return; }
+                  // 有活跃AGV任务才拦截重复叫车；无任务在跑的旧标记（失败/取消残留）点击直接重叫
+                  if (agv.isNotEmpty && stat.isNotEmpty) { widget.toast("框 $code 已叫AGV → 站台 $agv（$stat），请勿重复叉取", err: false); return; }
                   _onSuggestTap(code, loc, (b["f"] ?? "").toString(), item["partNo"]?.toString() ?? "");
                 },
                 child: Container(
@@ -872,7 +904,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     return Padding(
       padding: EdgeInsets.fromLTRB(14, 10, 14, MediaQuery.of(context).viewInsets.bottom + 14),
       child: SizedBox(
-        height: MediaQuery.of(context).size.height * 0.75,
+        height: MediaQuery.of(context).size.height * 0.92,
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Expanded(child: Text("${_r["no"]}  ${_r["byName"]}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),

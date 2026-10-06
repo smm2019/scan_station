@@ -203,7 +203,7 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
   @override
   void initState() {
     super.initState();
-    _tc = TabController(length: 4, vsync: this);
+    _tc = TabController(length: 3, vsync: this);
     _autoPullThenReload();
   }
 
@@ -236,7 +236,7 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
             controller: _tc, isScrollable: true, tabAlignment: TabAlignment.start,
             labelColor: const Color(0xFF515BD4), unselectedLabelColor: Colors.grey,
             indicatorColor: const Color(0xFF515BD4),
-            tabs: const [Tab(text: "库存汇总"), Tab(text: "货架库位"), Tab(text: "出入库流水"), Tab(text: "期初导入")],
+            tabs: const [Tab(text: "库存汇总"), Tab(text: "货架库位"), Tab(text: "出入库流水")],
           )),
           IconButton(icon: const Icon(Icons.refresh, color: Color(0xFF515BD4)), onPressed: _reload),
         ]),
@@ -250,7 +250,6 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
                 _StockSummaryTab(agg: _agg!, search: _search, onSearch: (v) => setState(() => _search = v), onReload: _reload),
                 _ShelfTab(agg: _agg!),
                 _FlowTab(agg: _agg!),
-                _OpeningTab(agg: _agg!, onReload: _reload),
               ],
             )),
     ]);
@@ -404,7 +403,40 @@ class _FlowTabState extends State<_FlowTab> {
   }
 }
 
-// ---------- Tab4 期初导入 ----------
+// ---------- Tab4 期初导入（页签已下线，类保留备用） ----------
+
+/// 盘点·系统实时在库账本快照 → 基准两表（免上传CSV；NB02货架+NB03地面全覆盖）。
+/// 口径与库存页完全一致：账面=在库框数量合计（零库存零件不入基准，扫到即账外料）；货位=各货位在库框按零件号合计。
+/// 只覆盖 baselineBooks/baselineLocs 两张盘点基准表（与CSV导入同样的整表替换），不触碰采集/发料/账本数据。
+Future<Map<String, dynamic>> buildLiveBaseline() async {
+  await ledgerPullMerge(); // 先与电脑账本合并：多台PDA的在库状态对齐
+  final agg = await computeStock();
+  final key = "LIVE@${DateTime.now().millisecondsSinceEpoch}";
+  final books = <BaselineBook>[];
+  for (final r in agg.parts.values) {
+    if (r.partNo.isEmpty || r.inStockQty <= 0) continue;
+    books.add(BaselineBook(fileKey: key, partNo: r.partNo, itemName: r.itemName, bookQty: r.inStockQty));
+  }
+  final locMap = <String, BaselineLoc>{};
+  for (final e in agg.byLoc.entries) {
+    for (final b in e.value) {
+      if (!b.inStock || b.partNo.isEmpty) continue;
+      final k = "${e.key}|${b.partNo}";
+      final old = locMap[k];
+      if (old != null) { old.qty += b.qty; } else {
+        locMap[k] = BaselineLoc(fileKey: key, locCode: e.key, partNo: b.partNo, qty: b.qty, goodsCode: b.barcode);
+      }
+    }
+  }
+  await _globalIsar.writeTxn(() async {
+    await _globalIsar.baselineBooks.where().deleteAll();
+    await _globalIsar.baselineBooks.putAll(books);
+    await _globalIsar.baselineLocs.where().deleteAll();
+    await _globalIsar.baselineLocs.putAll(locMap.values);
+  });
+  return {"key": key, "books": books.length, "locs": locMap.length};
+}
+
 class _OpeningTab extends StatelessWidget {
   final _StockAgg agg; final VoidCallback onReload;
   const _OpeningTab({required this.agg, required this.onReload});

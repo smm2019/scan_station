@@ -3,6 +3,7 @@ part of 'main.dart';
 // ===================== 采集页顺手登记扩展：货位主档 / AGV自动分配 / 货位picker / WMAS任务参数 =====================
 // 主档不建表：NB02 由编码规则生成（8区×16架×4层=512），空位 = 主档 − 账本占用；
 // NB03 按"每排12格位"规划渲染，A-11/C-11 两排带手动加的第13格位。
+final Set<String> _colCalled = {}; // 本会话已叫车的货位（防重复叫车）
 extension CollectionLedgerExt on _MainPageState {
   static const List<String> _lz = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
   static const Set<String> _nb03R13 = {'NB03-A-11', 'NB03-C-11'}; //有13号加位的排
@@ -263,12 +264,28 @@ extension CollectionLedgerExt on _MainPageState {
     if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先在上方选择地面货位（区+排），再点选格位"), backgroundColor: Colors.orange));
   }
 
-  ///WMAS 任务卡：容器类型自动反查主档得容器编码；可一键提交建任务+下发，也可退化为复制三要素手填
-  void _showWmasCard() {
+  /// 最近一次入账的货位（扫码保存后输入框会清空，叫车时回退取它）
+  Future<String> _latestRegLoc() async {
+    final rows = await _isar.shelfPlacements.where().findAll();
+    if (rows.isEmpty) return "";
+    rows.sort((a, b) => b.assignedAt.compareTo(a.assignedAt));
+    return rows.first.loc.toUpperCase();
+  }
+
+  ///WMAS 任务卡：叫车前先强制校验"该货位已扫码入账"，从流程上杜绝"叫了车忘扫码"；本会话已叫过的货位禁止重复叫车
+  Future<void> _showWmasCard() async {
     final st = _selectedStation ?? "";
-    final loc = _ledgerLocCtrl.text.trim().toUpperCase();
+    var loc = _ledgerLocCtrl.text.trim().toUpperCase();
+    if (loc.isEmpty || loc == 'AUTO') loc = await _latestRegLoc(); // 扫码后输入框清空→回退最近入账货位
     final ctype = _containerType ?? "";
-    showDialog(context: context, builder: (dctx) => _WmasCardDialog(startPoint: st, endPoint: loc, containerType: ctype));
+    void warn(String m) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), backgroundColor: Colors.orange)); }
+    if (st.isEmpty) return warn("请先选择起始站台");
+    if (loc.isEmpty) return warn("还没有扫码入账的货位——请先扫描货物标签，再叫车");
+    if (_colCalled.contains(loc)) return warn("货位 $loc 本会话已叫过车，请勿重复；如需重叫请先到AGV系统核对该托盘任务");
+    final codes = (await _ledgerByLoc())[loc] ?? const <String>[];
+    if (codes.isEmpty) return warn("货位 $loc 还没有扫码入账——请先扫描货物标签，再叫车（防止叫车忘扫码）");
+    if (!mounted) return;
+    showDialog(context: context, builder: (dctx) => _WmasCardDialog(startPoint: st, endPoint: loc, containerType: ctype, cargoCodes: codes));
   }
 }
 
@@ -276,7 +293,8 @@ extension CollectionLedgerExt on _MainPageState {
 /// WMAS 任务确认对话框：容器编码反查主档（多候选可选），提交=建任务+下发
 class _WmasCardDialog extends StatefulWidget {
   final String startPoint, endPoint, containerType;
-  const _WmasCardDialog({required this.startPoint, required this.endPoint, required this.containerType});
+  final List<String> cargoCodes;
+  const _WmasCardDialog({required this.startPoint, required this.endPoint, required this.containerType, this.cargoCodes = const []});
   @override
   State<_WmasCardDialog> createState() => _WmasCardDialogState();
 }
@@ -319,7 +337,7 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(r["ok"] == true ? "AGV任务：${r["msg"]}" : "AGV任务失败：${r["msg"]}"),
       backgroundColor: r["ok"] == true ? const Color(0xFF2E7D32) : Colors.red, duration: const Duration(seconds: 4)));
-    if (r["ok"] == true) Navigator.pop(context);
+    if (r["ok"] == true) { _colCalled.add(widget.endPoint); Navigator.pop(context); }
   }
 
   @override
@@ -334,6 +352,8 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
         Text("目标库位：${!ready ? (widget.endPoint.isEmpty ? "（未定）" : widget.endPoint) : widget.endPoint}", style: const TextStyle(fontSize: 14)),
         const SizedBox(height: 4),
         Text("容器类型：${widget.containerType.isEmpty ? "（未选）" : widget.containerType}", style: const TextStyle(fontSize: 13, color: Colors.grey)),
+        if (widget.cargoCodes.isNotEmpty)
+          Text("货物标签：${widget.cargoCodes.join("、")}", style: const TextStyle(fontSize: 13, color: Color(0xFF1A237E))),
         const SizedBox(height: 6),
         if (_loading)
           const Row(children: [SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)), SizedBox(width: 8), Text("查询容器主档…", style: TextStyle(fontSize: 12))])
