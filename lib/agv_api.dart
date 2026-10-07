@@ -296,6 +296,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
   Map _traffic = {};
   Map<String, String> _cargo = {}; // 任务起点货位 → 账本反查的货物描述（零件号×数量）
   List<Map> _stations = []; // 站台状态（服务器轮询RCS：有货/占用中/空闲）
+  bool _stationsOn = false; // 服务器RCS轮询已开启（on标志）：列表为空但on=true=全空闲，不是未就绪
   bool _loading = false, _showDone = false, _loaded = false;
   String _err = "";
   Timer? _timer;
@@ -327,6 +328,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
         _loading = false; _loaded = true;
         _tasks = rs[0] as List<Map>; _cars = rs[1] as List<Map>; _traffic = rs[2] as Map; _done = rs[3] as List<Map>;
         final st = rs[4]; _stations = st is Map && st["stations"] is List ? List<Map>.from(st["stations"] as List) : [];
+        _stationsOn = st is Map && st["on"] == true;
         _err = "";
       });
       unawaited(_buildCargo());
@@ -615,7 +617,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
   Widget _stationList() {
     const all = ['05', '06', '07', '08', '09', '10', '11', '12'];
     final m = {for (final s in _stations) s["station"]?.toString(): s};
-    if (_stations.isEmpty) {
+    if (_stations.isEmpty && !_stationsOn) {
       return const Padding(padding: EdgeInsets.all(24), child: Center(child: Text("站台状态未就绪：确认服务器已收到 RCS 配置（PDA设置→AGV调度系统→测试登录会自动同步），且与AGV系统同网段", style: TextStyle(color: Colors.blueGrey), textAlign: TextAlign.center)));
     }
     Color cOf(String st) => st == "有货" ? const Color(0xFFE65100) : (st == "占用中" ? const Color(0xFF1565C0) : Colors.green);
