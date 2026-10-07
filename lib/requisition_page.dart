@@ -37,10 +37,21 @@ class RequisitionPage extends StatefulWidget {
   State<RequisitionPage> createState() => _RequisitionPageState();
 }
 
+/// 服务器时间（UTC ISO串）→ 本地 MM-DD HH:mm 显示（修复直接截取导致差8小时）
+String reqTimeLocal(dynamic s) {
+  final str = s?.toString() ?? "";
+  if (str.isEmpty) return "";
+  final dt = DateTime.tryParse(str);
+  if (dt == null) return str.length >= 16 ? str.substring(5, 16).replaceFirst("T", " ") : str;
+  final lo = dt.toLocal();
+  return "${lo.month.toString().padLeft(2, "0")}-${lo.day.toString().padLeft(2, "0")} ${lo.hour.toString().padLeft(2, "0")}:${lo.minute.toString().padLeft(2, "0")}";
+}
+
 class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAliveClientMixin {
   List<Map> _reqs = [];
   bool _loading = true;
   String _err = "";
+  Timer? _listTimer;
 
   @override
   bool get wantKeepAlive => true;
@@ -49,6 +60,19 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
   void initState() {
     super.initState();
     _load();
+    _listTimer = Timer.periodic(const Duration(seconds: 30), (_) => _loadSilent()); // ⑪自动刷新
+  }
+  @override
+  void dispose() { _listTimer?.cancel(); super.dispose(); }
+
+  /// 静默刷新：不转圈、失败不报错，只更新列表数据
+  Future<void> _loadSilent() async {
+    if (!mounted) return;
+    final r = await AuthApi.reqList();
+    if (!mounted || r["ok"] != true) return;
+    final list = List<Map>.from(r["reqs"] ?? []);
+    RequisitionCache.saveIssued(list);
+    setState(() => _reqs = list);
   }
 
   static DateTime _lastPull = DateTime(2000); // 账本拉取节流：超5分钟才向服务器合并
@@ -163,7 +187,7 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
                             leading: CircleAvatar(backgroundColor: _statusColor(st).withOpacity(0.14),
                               child: Icon(_stIcon(st), color: _statusColor(st), size: 22)),
                             title: Text("${r["no"]}  ${r["byName"]}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                            subtitle: Text("$itemsText\n${(r["createdAt"] ?? "").toString().substring(0, 16).replaceFirst("T", " ")}${(r["remark"]?.toString().isNotEmpty ?? false) ? " · ${r["remark"]}" : ""}$assignTxt", style: const TextStyle(fontSize: 12)),
+                            subtitle: Text("$itemsText\n${reqTimeLocal(r["createdAt"])}${(r["remark"]?.toString().isNotEmpty ?? false) ? " · ${r["remark"]}" : ""}$assignTxt", style: const TextStyle(fontSize: 12)),
                             isThreeLine: true,
                             trailing: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                               decoration: BoxDecoration(color: _statusColor(st).withOpacity(0.12), borderRadius: BorderRadius.circular(6)),
@@ -1028,7 +1052,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               const Text("流转记录", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
               ...history.map((h) => Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Text("${(h["time"] ?? "").toString().substring(5, 16).replaceFirst("T", " ")}  ${h["by"]}：${h["text"]}", style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                child: Text("${reqTimeLocal(h["time"])}  ${h["by"]}：${h["text"]}", style: const TextStyle(fontSize: 11, color: Colors.grey)),
               )),
             ],
           ])),
@@ -1143,7 +1167,7 @@ class _MsgCenterPageState extends State<MsgCenterPage> {
                       leading: CircleAvatar(backgroundColor: tp == 'req_arrive' ? Colors.orange.shade100 : const Color(0xFFE8EAF6),
                         child: Icon(_typeIcon[tp] ?? Icons.notifications_none, size: 20, color: tp == 'req_arrive' ? Colors.deepOrange : const Color(0xFF3949AB))),
                       title: Text(m["text"]?.toString() ?? "", style: const TextStyle(fontSize: 13)),
-                      subtitle: Text(t.length >= 16 ? t.substring(5, 16).replaceFirst("T", " ") : t, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                      subtitle: Text(reqTimeLocal(t), style: const TextStyle(fontSize: 11, color: Colors.grey)),
                       isThreeLine: false, dense: true,
                     ));
                 }),

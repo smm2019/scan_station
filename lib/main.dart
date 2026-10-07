@@ -36,6 +36,9 @@ part 'collection_ledger.dart'; // 位置登记：上架/移库/拣下统一入�
 part 'inventory_stock_page.dart'; // 库存：期初+入库流水(采集派生)-出库流水(直调派生)，货架库位占用登记
 part 'requisition_page.dart'; // 领料单：物料员下单/签收，仓管接单/扫码发料，服务端状态机
 part 'agv_api.dart'; // AGV调度系统(哈工库讯RCS)：任务/车辆/交管监控 + 实时大屏WebView + 设置
+part 'local_log.dart'; // ⑤本地审计日志 + ⑦全局异常兜底落盘 + 审计查看页
+part 'diag_page.dart'; // ⑥设备诊断页
+part 'loc_map_page.dart'; // ③货位占用可视化
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
 
@@ -942,6 +945,12 @@ void main() async {
     [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema, OutboundOrderSchema, InventoryOpeningSchema, ShelfPlacementSchema, LabelInfoSchema],
     directory: dir.path,
   );
+  await LocalLog.init(dir.path);
+  LocalLog.pruneOld();
+  LocalLog.op('启动', 'AGV货位采集器');
+  // ⑦全局异常兜底：未捕获异常写审计日志，App 不闪退
+  FlutterError.onError = (d) { FlutterError.presentError(d); LocalLog.err('Flutter', d.exception, d.stack); };
+  WidgetsBinding.instance.platformDispatcher.onError = (e, s) { LocalLog.err('未捕获', e, s); return true; };
   runApp(const MyApp());
 }
 class MyApp extends StatelessWidget {
@@ -1036,6 +1045,7 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     _tabKeys = [ if (_showCollect) 'collect', if (_showCollect) 'history', if (_showInv) 'inv', if (_showDirect) 'direct', 'stock', if (_showReq) 'req', if (_showAgv) 'agv' ];
     _tabController = TabController(length: _tabKeys.length, vsync: this);
     _startNotifPolling();
+    _restoreWorkMode(); // ②按登录账号恢复上次工作模式（AGV站台/人工地面）
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
     _initLoadData();
@@ -1237,6 +1247,7 @@ _mainScrollCtrl.dispose(); //新增
     await _isar.writeTxn(() async {
       await _isar.batchInfos.put(newBatch);
     });
+    LocalLog.op('新建批次', newBatch.batchId);
     setState(() {
       _currentBatchId = newBatch.batchId;
       _selectedStation = null;
@@ -1347,6 +1358,7 @@ _containerType = null;
           }
         }
       });
+      LocalLog.op('作废旧记录', exist.goodsCode);
       if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("旧记录已标记作废，可录入新记录")));
       return false;
     }
@@ -1548,6 +1560,7 @@ try {
           }
         }
       });
+      LocalLog.op('扫码保存', code);
       await _scanSuccessAction();
       _goodsInputCtrl.clear();
       setState((){
@@ -2352,9 +2365,11 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
     );
   }
   Future<void> _exportCsvFile() async {
+    LocalLog.op('导出CSV');
     await _saveCsvToFile();
   }
   Future<void> _toggleWifiServer() async {
+    LocalLog.op('WiFi服务', _webServiceRunning ? '关闭' : '开启');
     if (_webServiceRunning) {
       await stopWebService();
     } else {
@@ -2757,6 +2772,16 @@ SingleChildScrollView(
     );
   }
 
+  /// ②按登录账号记住/恢复工作模式（0=AGV站台 1=人工地面）
+  Future<void> _restoreWorkMode() async {
+    final sp = await SharedPreferences.getInstance();
+    final v = sp.getInt('worktype_' + (Auth.user?.id ?? ''));
+    if (v == 1 && mounted) setState(() => _workType = 1);
+  }
+  void _saveWorkMode(int type) {
+    SharedPreferences.getInstance().then((sp) => sp.setInt('worktype_' + (Auth.user?.id ?? ''), type));
+  }
+
   //作业模式卡片组件
   Widget _workModeCard(int type,String title,String sub){
     bool selected = _workType == type;
@@ -2764,6 +2789,7 @@ SingleChildScrollView(
       onTap:(){
         setState(() {
           _workType = type;
+          _saveWorkMode(type); // ②记住本账号工作模式
           if(type ==0){
             _selectedGroundLoc = null;
           }else{
@@ -3165,10 +3191,28 @@ class SettingsMenuPage extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const AgvSettingPage())),
           ),
           _settingTile(
+            context, icon: Icons.grid_view_outlined, color: const Color(0xFF00897B),
+            title: "货位占用图", subtitle: "AGV货架/地面库位 实时在库热力视图",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const LocMapPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.monitor_heart_outlined, color: const Color(0xFF455A64),
+            title: "设备诊断", subtitle: "数据库/网络/权限自查 · 异常日志导出",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const DiagPage())),
+          ),
+          _settingTile(
             context, icon: Icons.volume_up_outlined, color: Colors.teal,
             title: "声音和震动设置", subtitle: "扫码成功提示音与震动开关",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const SoundVibrationPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.fact_check_outlined, color: const Color(0xFF6D4C41),
+            title: "操作审计日志", subtitle: "关键操作流水 / 一键导出排查",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const AuditLogPage())),
           ),
           _settingTile(
             context, icon: Icons.phone_android_outlined, color: Colors.deepOrange,

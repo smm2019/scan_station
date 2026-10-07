@@ -31,6 +31,17 @@ extension CollectionLedgerExt on _MainPageState {
     return map;
   }
 
+  /// 前三层优先：候选列表（区→架→层顺序）里先取末位层号为1/2/3的，全部前三层占满才退到第四层
+  String? _preferLow3(List<String> cands) {
+    for (final l in cands) {
+      if (l.length >= 2) {
+        final f = l[l.length - 2]; // 编码末位是F，倒数第二位是层号
+        if (f == '1' || f == '2' || f == '3') return l;
+      }
+    }
+    return cands.isEmpty ? null : cands.first;
+  }
+
   ///AGV 目标货位自动分配：①同零件已占的架内空位（同件同架，AGV整架取放最优）
   ///②同零件所在区的空架空位 ③全局顺序兜底（A-01-1F 起集满靠前）。无可分配返回 null。
   Future<String?> nb02AutoAssign(String partNo) async {
@@ -50,15 +61,15 @@ extension CollectionLedgerExt on _MainPageState {
         final sorted = shelves.toList()..sort();
         for (final sh in sorted) {
           final cand = free.where((l) => l.startsWith(sh)).toList();
-          if (cand.isNotEmpty) return cand.first;
+          if (cand.isNotEmpty) return _preferLow3(cand);
         }
         //同件所在区优先（集中堆放）
         final zones = shelves.map((s) => s[5]).toSet();
         final sameZone = free.where((l) => l.length > 5 && zones.contains(l[5])).toList();
-        if (sameZone.isNotEmpty) return sameZone.first;
+        if (sameZone.isNotEmpty) return _preferLow3(sameZone);
       }
     }
-    return free.first;
+    return _preferLow3(free);
   }
 
   ///货位账本登记区 UI（采集页"选择货位"下方）：编码框 +  picker + 自动 + 容器编码 + WMAS任务卡

@@ -205,6 +205,7 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
     super.initState();
     _tc = TabController(length: 3, vsync: this);
     _autoPullThenReload();
+    _stockTimer = Timer.periodic(const Duration(seconds: 45), (_) => _reloadSilent()); // ⑪自动刷新
   }
 
   Future<void> _autoPullThenReload() async {
@@ -216,13 +217,22 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
   }
 
   @override
-  void dispose() { _tc.dispose(); super.dispose(); }
+  void dispose() { _tc.dispose(); _stockTimer?.cancel(); super.dispose(); }
+
+  Timer? _stockTimer; // ⑪自动刷新
 
   Future<void> _reload() async {
     setState(() => _loading = true);
     final agg = await computeStock();
     if (!mounted) return;
     setState(() { _agg = agg; _loading = false; });
+  }
+
+  /// 静默重算：不转圈（keep-alive 后台也跑，切回即最新）
+  Future<void> _reloadSilent() async {
+    final agg = await computeStock();
+    if (!mounted) return;
+    setState(() => _agg = agg);
   }
 
   @override

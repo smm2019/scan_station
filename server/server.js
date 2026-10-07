@@ -24,6 +24,8 @@ const DEFAULT_FEATURES = {
   warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: false },
   admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: true },
 };
+// 功能开关判定：管理员在线关掉某角色开关后，服务器端同步拒绝（全局生效，不只UI隐藏）
+function canFeature(u, key) { return !!(db.features && db.features[u.role] && db.features[u.role][key] === true); }
 const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', location_reg: '位置登记', agv_monitor: 'AGV监控', agv_control: 'AGV车辆控制', admin_panel: '管理后台' };
 
 // ---------------- 存储 ----------------
@@ -75,6 +77,21 @@ function saveDb(db) { // 原子写：临时文件 + rename
   fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf8');
   fs.renameSync(tmp, DB_FILE);
 }
+// ---- 数据自动备份：启动一次 + 每30分钟快照，保留最近72份（约36小时）；误删/损坏可从 data/backups 恢复 ----
+function backupDb() {
+  try {
+    if (!fs.existsSync(DB_FILE)) return;
+    const dir = path.join(DATA_DIR, 'backups');
+    fs.mkdirSync(dir, { recursive: true });
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const p = path.join(dir, `db-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`);
+    fs.copyFileSync(DB_FILE, p);
+    const all = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).sort();
+    while (all.length > 72) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
+  } catch (e) { console.log('[backup] 失败：', e.message); }
+}
+setInterval(backupDb, 30 * 60 * 1000).unref();
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
 function newId(p) { return p + '_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex'); }
 function newToken() { return crypto.randomBytes(24).toString('hex'); }
@@ -702,7 +719,7 @@ const server = http.createServer(async (req, res) => {
       // 规则：同容器占位15分钟（防两人重复叉同一框）；同一站台60秒内不可再次叫车（不限同一人，确保单站台单任务）。
       // PDA 侧还会实时复核 WMAS 在途任务数；MES 下发失败由调用方 release 回滚占位。
       if (req.method === 'POST' && p === '/api/agv/claim') {
-        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可叫车' });
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const cn = String(b.container || '').trim().toUpperCase();
         const stn = String(b.station || '').trim().toUpperCase();
@@ -729,7 +746,7 @@ const server = http.createServer(async (req, res) => {
       }
       // ================= RCS(哈工库讯AGV) 配置同步 + 站台状态（服务器60秒轮询RCS） =================
       if (req.method === 'POST' && p === '/api/rcs/config') {
-        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可配置' });
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const host = String(b.host || '').trim(), account = String(b.account || '').trim(), pwd = String(b.pwd || '');
         if (!host || !account || !pwd) return send(res, 400, { ok: false, msg: 'host/account/pwd 不能为空' });
@@ -744,7 +761,7 @@ const server = http.createServer(async (req, res) => {
       }
       // ===== AGV 出库排队队列（一键叫车） =====
       if (req.method === 'POST' && p === '/api/agv/queue') { // 批量入队：items=[{code,fromLoc,palletType,partNo,stationManual?}]；入队即登记叫车标记防重复
-        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可叫车' });
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const items = Array.isArray(b.items) ? b.items : [];
         const reqId = String(b.reqId || ''), reqNo = String(b.reqNo || '');
@@ -784,7 +801,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, cancelled: n });
       }
       if (req.method === 'POST' && p === '/api/agv/mode') { // 调度模式：dry演算 / live真下发
-        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可切换' });
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const m = String(b.mode || '') === 'live' ? 'live' : 'dry';
         db.agvDispatchMode = m; save();
@@ -792,7 +809,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, mode: m });
       }
       if (req.method === 'POST' && p === '/api/agv/wmas-config') { // WMAS账号同步（调度器下发通道）
-        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可配置' });
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const host = String(b.host || '').trim(), account = String(b.account || '').trim(), pwd = String(b.pwd || '');
         if (!host || !account || !pwd) return send(res, 400, { ok: false, msg: 'host/account/pwd 不能为空' });
@@ -801,7 +818,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, msg: 'WMAS配置已保存' });
       }
       if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工干预站台：state=有货(占用)/空闲(清台)
-        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可操作' });
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const stn = String(b.station || '').trim().toUpperCase();
         const state = String(b.state || '空闲').trim();
@@ -1428,4 +1445,4 @@ async function agvDispatch(nowMs, runT) {
   }
 }
 
-server.listen(PORT, HOST, () => console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`));
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); backupDb(); });

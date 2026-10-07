@@ -763,9 +763,40 @@ class _InvScanPageState extends State<_InvScanPage> {
         _recent.add(rec);
         _codeCtrl.clear();
       });
+      if (judge.level == "red" || judge.level == "purple") _offerEvidence(code, rec, judge.msg); // ④异常拍照留证
       _codeFocus.requestFocus();
     } finally {
       _busy = false;
+    }
+  }
+
+  /// ④异常留证：把异常元数据（货位/标签/原因/操作人/时间）写入审计日志，并引导现场用PDA相机拍照，
+  /// 照片时间戳与审计记录交叉对应即成证据链。零新增依赖（不引入相机插件，规避构建风险）。
+  Future<void> _offerEvidence(String code, InventoryScan rec, String why) async {
+    if (!mounted) return;
+    LocalLog.op('盘点异常', '${rec.locCode} 标签$code · $why'); // 无论是否拍照，异常先落审计
+    final note = await showDialog<String>(context: context, builder: (ctx) {
+      final c = TextEditingController();
+      return AlertDialog(
+        title: const Text("⚠ 异常留证"),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text("货位 ${rec.locCode}\n标签 $code\n$why", style: const TextStyle(fontSize: 13, height: 1.5)),
+          const SizedBox(height: 8),
+          const Text("可用 PDA 自带相机拍现场照片，照片与下方备注会写入审计日志便于追溯。", style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+          const SizedBox(height: 6),
+          TextField(controller: c, maxLines: 2, decoration: const InputDecoration(hintText: "备注（可选，如“实物少2件”）", border: OutlineInputBorder(), isDense: true)),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭")),
+          FilledButton(onPressed: () => Navigator.pop(ctx, c.text.trim()), child: const Text("记录备注")),
+        ],
+      );
+    });
+    if (note != null && note.isNotEmpty) {
+      rec.remark = (rec.remark.isEmpty ? "" : "${rec.remark} ") + "留证:$note";
+      await _globalIsar.writeTxn(() => _globalIsar.inventoryScans.put(rec));
+      LocalLog.op('异常留证备注', '${rec.locCode} $code · $note');
+      if (mounted) { setState(() { _recent.removeWhere((x) => x.id == rec.id); _recent.add(rec); }); }
     }
   }
 
