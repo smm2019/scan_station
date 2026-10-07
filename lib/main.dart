@@ -17,6 +17,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
+import 'dart:math' as math; // 地图页三角函数（part文件共享主库导入）
 
 import 'package:pointycastle/export.dart' hide Padding, State;
 import 'package:pointycastle/asn1.dart';
@@ -40,6 +41,7 @@ part 'local_log.dart'; // ⑤本地审计日志 + ⑦全局异常兜底落盘 + 
 part 'diag_page.dart'; // ⑥设备诊断页
 part 'loc_map_page.dart'; // ③货位占用可视化
 part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
+part 'agv_map_page.dart'; // ①2D实时地图
 part 'agv_report_page.dart'; // ⑦AGV效率报表
 part 'update_page.dart'; // ⑬APK自动更新
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）

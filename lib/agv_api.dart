@@ -720,9 +720,18 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
   // ---- 实时界面页签 ----
   Widget _portalView() {
     return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      const Icon(Icons.monitor, size: 56, color: Color(0xFF37474F)),
+      const Icon(Icons.map_outlined, size: 56, color: Color(0xFF00897B)),
       const SizedBox(height: 10),
-      const Text("哈工库讯 AGV 实时调度大屏", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+      const Text("AGV 实时地图（车间2D视图）", style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 4),
+      const Text("车辆位置/货架占用/站台状态/交管堵点，10秒自动刷新", style: TextStyle(fontSize: 11, color: Color(0xFF90A4AE))),
+      const SizedBox(height: 16),
+      ElevatedButton.icon(icon: const Icon(Icons.map), label: const Text("打开实时地图"), style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00897B), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12)),
+        onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AgvMapPage()))),
+      const SizedBox(height: 14),
+      const Icon(Icons.monitor, size: 40, color: Color(0xFF37474F)),
+      const SizedBox(height: 6),
+      const Text("哈工库讯 AGV 实时调度大屏（原厂网页版）", style: TextStyle(fontSize: 13, color: Color(0xFF607D8B))),
       const SizedBox(height: 4),
       FutureBuilder<Map<String, String>>(future: AgvConfig.get(), builder: (_, s) => Text("门户 ${s.data?["portal"] ?? AgvConfig.defaultPortal} · 自动登录", style: const TextStyle(fontSize: 11, color: Color(0xFF90A4AE)))),
       const SizedBox(height: 16),

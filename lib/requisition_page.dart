@@ -117,7 +117,7 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
       builder: (ctx) => _ReqCreateSheet(parts: parts));
     if (res == null || !mounted) return;
     final r = await AuthApi.reqCreate(res["items"] as List<Map>, res["remark"]?.toString() ?? "",
-        assigneeId: res["assigneeId"]?.toString() ?? "");
+        assigneeId: res["assigneeId"]?.toString() ?? "", rush: res["rush"] == true);
     if (!mounted) return;
     if (r["ok"] == true) {
       final aName = res["assigneeName"]?.toString() ?? "";
@@ -186,7 +186,7 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
                           child: ListTile(
                             leading: CircleAvatar(backgroundColor: _statusColor(st).withOpacity(0.14),
                               child: Icon(_stIcon(st), color: _statusColor(st), size: 22)),
-                            title: Text("${r["no"]}  ${r["byName"]}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                            title: Text("${r["rush"] == true ? "🔥 " : ""}${r["no"]}  ${r["byName"]}", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: r["rush"] == true ? Colors.red.shade700 : null)),
                             subtitle: Text("$itemsText\n${reqTimeLocal(r["createdAt"])}${(r["remark"]?.toString().isNotEmpty ?? false) ? " · ${r["remark"]}" : ""}$assignTxt", style: const TextStyle(fontSize: 12)),
                             isThreeLine: true,
                             trailing: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
@@ -220,6 +220,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   String _search = "";
   List<Map> _warehouses = []; // 可选仓管员（指定备料）
   String _assigneeId = "";
+  bool _rush = false; // 急料：AGV优先排队+到站5分钟催扫广播
 
   @override
   void initState() {
@@ -308,6 +309,15 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
           controller: _remarkCtrl,
           decoration: const InputDecoration(hintText: "备注（用途/产线，可选）", isDense: true, border: OutlineInputBorder()),
         ),
+        InkWell(
+          onTap: () => setState(() => _rush = !_rush),
+          child: Padding(padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
+            child: Row(children: [
+              Icon(_rush ? Icons.check_box : Icons.check_box_outline_blank, size: 20, color: _rush ? Colors.red : Colors.grey),
+              const SizedBox(width: 6),
+              Text("急料（AGV排队优先，到站5分钟催扫广播全员）", style: TextStyle(fontSize: 12.5, color: _rush ? Colors.red.shade700 : Colors.blueGrey, fontWeight: _rush ? FontWeight.bold : FontWeight.normal)),
+            ])),
+        ),
         const SizedBox(height: 10),
         Row(children: [
           Expanded(child: OutlinedButton(onPressed: () => Navigator.pop(context), child: const Text("取消"))),
@@ -319,7 +329,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                 final p = widget.parts.firstWhere((x) => x.partNo == e.key);
                 return {"partNo": p.partNo, "itemName": p.itemName, "qty": int.parse(e.value.text.trim())};
               }).toList();
-              Navigator.pop(context, {"items": items, "remark": _remarkCtrl.text.trim(),
+              Navigator.pop(context, {"items": items, "remark": _remarkCtrl.text.trim(), "rush": _rush,
                 "assigneeId": _assigneeId,
                 "assigneeName": _assigneeId.isEmpty ? "" : (_warehouses.firstWhere((w) => w["id"] == _assigneeId)["name"]?.toString() ?? "")});
             },
@@ -932,6 +942,15 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Expanded(child: Text("${_r["no"]}  ${_r["byName"]}", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+            if (_r["rush"] == true) Padding(padding: const EdgeInsets.only(right: 6),
+              child: Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(color: Colors.red.withOpacity(0.1), borderRadius: BorderRadius.circular(6), border: Border.all(color: Colors.redAccent.withOpacity(0.6))),
+                child: const Text("🔥急料", style: TextStyle(fontSize: 11.5, color: Colors.red, fontWeight: FontWeight.bold)))),
+            if (isWh && (st == 'pending' || st == 'accepted')) TextButton(
+              style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact,
+                foregroundColor: _r["rush"] == true ? Colors.grey : Colors.red.shade700),
+              onPressed: _busy ? null : () => _act("rush", {"rush": _r["rush"] != true}),
+              child: Text(_r["rush"] == true ? "取消急料" : "标为急料", style: const TextStyle(fontSize: 12))),
             Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(color: widget.statusColor(st).withOpacity(0.12), borderRadius: BorderRadius.circular(6)),
               child: Text(_r["statusText"]?.toString() ?? st, style: TextStyle(fontSize: 12, color: widget.statusColor(st)))),

@@ -53,8 +53,9 @@ jobs:
           KS_PW: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
         run: |
           if ([string]::IsNullOrEmpty($env:KS_B64)) { Write-Host '未配置签名Secret，回退debug签名'; exit 0 }
-          [IO.File]::WriteAllBytes('android\app\keystore.jks', [Convert]::FromBase64String($env:KS_B64))
-          Set-Content -Path android\key.properties -Value @("storeFile=keystore.jks", "storePassword=$env:KS_PW", "keyAlias=scan_station", "keyPassword=$env:KS_PW")
+          [IO.File]::WriteAllBytes("$PWD/android/keystore.jks", [Convert]::FromBase64String($env:KS_B64))
+          Set-Content -Path "android/key.properties" -Value @("storeFile=keystore.jks", "storePassword=$env:KS_PW", "keyAlias=scan_station", "keyPassword=$env:KS_PW")
+          Write-Host "keystore还原完成: $(Test-Path 'android/keystore.jks') / key.properties: $(Test-Path 'android/key.properties')"
 
       - name: flutter pub get
         run: flutter pub get

@@ -177,6 +177,29 @@ function reqView(r) {
   });
   return { ...r, items, statusText: REQ_STATUS_TEXT[r.status] || r.status };
 }
+// 接单即派：按建议框自动入队（与PDA一键叫车完全同口径：同托合并/已发已叫剔除/仅NB02货架框）；返回入队数
+function autoEnqueueOnAccept(r, byName, byId) {
+  if (db.autoDispatch === false) return 0; // 全局开关（管理员可在设置关闭）
+  db.agvQueue = db.agvQueue || [];
+  let n = 0;
+  for (const it of r.items || []) {
+    const excl = new Set(((it.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
+    const sg = pickSuggest(it.partNo, Number(it.qty) || 0, excl, agvMapOf(it));
+    for (const bx of sg.boxes) {
+      const l = String(bx.l || '').toUpperCase();
+      if (!l.startsWith('NB02-') || l.includes('-CK-')) continue; // 只派货架框；地面/已在站台不动
+      const code = String((bx.codes && bx.codes[0]) || '').toUpperCase();
+      if (!code) continue;
+      if (bx.codes.some((c) => db.agvQueue.some((q) => String(q.code).toUpperCase() === String(c).toUpperCase() && !['完成', '取消', '失败'].includes(q.state)))) continue; // 同框已在队
+      db.agvQueue.push({ code, fromLoc: l, palletType: String(bx.f || ''), stationManual: '', reqId: r.id, reqNo: r.no, by: byName, state: '排队', rush: !!r.rush, auto: 1, station: '', at: Date.now(), updAt: Date.now() });
+      it.agvCalled = (it.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code);
+      it.agvCalled.push({ c: code, s: '', q: 1, by: byId, t: new Date().toISOString() }); // 登记叫车标记（建议区变🚗排队）
+      n++;
+    }
+  }
+  if (n) console.log(`[auto派] ${r.no} 接单即派入队 ${n} 框`);
+  return n;
+}
 function issuedOf(i) { return (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0, l: '' } : { c: String(x.c || ''), q: Number(x.q) || 0, l: String(x.l || '') }); }
 function uniqCodes(arr) { return [...new Set(arr.map(s => String(s).toUpperCase()))]; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -759,6 +782,33 @@ const server = http.createServer(async (req, res) => {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station));
         return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry' });
       }
+      // ===== ① 2D实时地图快照：路网(缓存)+车辆(实时)+货架占用(账本)+站台(判定)+交管锁点 =====
+      if (req.method === 'GET' && p === '/api/rcs/net') {
+        const lands = {}; for (const [k, v] of Object.entries(NetMap.lands)) lands[k] = { x: v.x, y: v.y };
+        const edges = []; for (const [a, list] of Object.entries(NetMap.adj)) for (const [b] of list) if (a < b || NetMap.adj[b] === undefined || !NetMap.adj[b].some((e2) => e2[0] === a)) edges.push([a, b]);
+        return send(res, 200, { ok: true, ready: NetMap.ready(), lands, edges });
+      }
+      if (req.method === 'GET' && p === '/api/rcs/map') {
+        const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
+        let cars = [];
+        if (tk) { try { const cr = await rcsReq('/uds/car/getCarInfoList', 'GET', tk); cars = typeof cr.data === 'string' ? JSON.parse(cr.data) : (cr.data || []); } catch (_) {} }
+        const locOf = (lc) => NetMap.landLoc[String(lc)] || '';
+        // 货架占用：landmark → {loc, codes}
+        const byLoc = {};
+        for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); (byLoc[l] = byLoc[l] || []).push(x.c); }
+        const shelf = [];
+        for (const [loc, codes] of Object.entries(byLoc)) { const lc = NetMap.landOf(loc); if (lc && NetMap.lands[lc]) shelf.push({ land: lc, loc, n: codes.length }); }
+        const stn = [];
+        for (const [code, s] of Object.entries(db.rcsStations || {})) { const lc = NetMap.landOf(code); if (lc && NetMap.lands[lc]) stn.push({ land: lc, code, state: s.state }); }
+        const tl = (() => { try { return typeof db.rcsTraffic === 'string' ? JSON.parse(db.rcsTraffic) : (db.rcsTraffic || {}); } catch (_) { return {}; } })();
+        const owners = (tl.landmarkLocks && tl.landmarkLocks.landmarkOwners) || {};
+        return send(res, 200, {
+          ok: true, at: new Date().toISOString(), netReady: NetMap.ready(),
+          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1 })),
+          shelf, stations: stn,
+          jam: Object.entries(owners).map(([land, car]) => ({ land, car })).filter((j) => NetMap.lands[j.land]),
+        });
+      }
       // ===== AGV 出库排队队列（一键叫车） =====
       if (req.method === 'POST' && p === '/api/agv/queue') { // 批量入队：items=[{code,fromLoc,palletType,partNo,stationManual?}]；入队即登记叫车标记防重复
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
@@ -773,7 +823,7 @@ const server = http.createServer(async (req, res) => {
           const code = String(it.code || '').trim().toUpperCase(), fromLoc = String(it.fromLoc || '').trim().toUpperCase();
           if (!code || !fromLoc) continue;
           if (db.agvQueue.some((q) => q.code === code && !['完成', '取消', '失败'].includes(q.state))) { dup++; continue; } // 同框已在队列
-          db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', station: '', at: Date.now(), updAt: Date.now() });
+          db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', rush: !!(rq && rq.rush), station: '', at: Date.now(), updAt: Date.now() });
           const ti = rq && (rq.items || []).find((i) => i.partNo === it.partNo); // 登记叫车标记：建议区变🚗排队，单框叫车自动跳过
           if (ti) { ti.agvCalled = (ti.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code); ti.agvCalled.push({ c: code, s: '', q: 1, by: u.id, t: new Date().toISOString() }); }
           added++;
@@ -796,7 +846,7 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, cancelled: n, msg: n ? `已取消 ${n} 框排队${dispatched ? `；另有 ${dispatched} 框已下发AGV，请到RCS调度界面取消任务` : ''}` : (dispatched ? `${dispatched} 框已下发AGV，需在RCS界面取消任务` : '本单没有排队项') });
         }
         let n = 0;
-        for (const q of db.agvQueue || []) { if (codes.has(q.code) && q.state === '排队') { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); n++; } }
+        for (const q of db.agvQueue || []) { if (codes.has(q.code) && (q.state === '排队' || q.state === '失败')) { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); n++; } }
         save();
         return send(res, 200, { ok: true, cancelled: n });
       }
@@ -964,6 +1014,7 @@ const server = http.createServer(async (req, res) => {
             remark: String(b.remark || ''), createdAt: now.toISOString(), history: [],
             assigneeId: assignee ? assignee.id : '', assigneeName: assignee ? assignee.name : '',
             assignOpenAt: assignee ? new Date(now.getTime() + 30 * 60000).toISOString() : '',
+            rush: b.rush === true, // 急料：调度优先插队+催扫5分钟广播
           };
           db.requisitions.push(r);
           if (assignee) {
@@ -1012,8 +1063,8 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, notifications: mine });
         }
 
-        // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv)$/);
+        // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush)$/);
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
@@ -1052,6 +1103,12 @@ const server = http.createServer(async (req, res) => {
             r.status = 'accepted'; r.acceptedBy = u.name;
             hpush(`接单（${u.name}）${r.assigneeName && r.assigneeId !== u.id ? '，原指定 ' + r.assigneeName + ' 超时未接' : ''}`);
             notify(r.by, 'req_accept', `你的领料单 ${r.no} 已由 ${u.name} 接单备料`, r.id);
+            // 接单即派：建议货架框自动入队（是否真实下发仍由演算/真实模式把关）
+            const nAuto = autoEnqueueOnAccept(r, u.name, u.id);
+            if (nAuto > 0) {
+              hpush(`接单即派：${nAuto} 个货架框已加入AGV队列`);
+              rcsPoll(); // 立即调度一轮
+            }
           } else if (act === 'reject') {
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可拒单' });
             if (r.status !== 'pending') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可拒单` });
@@ -1131,6 +1188,15 @@ const server = http.createServer(async (req, res) => {
             target.agvCalled = (target.agvCalled || []).filter(e => String(e.c).toUpperCase() !== code);
             target.agvCalled.push({ c: code, s: String(b.station || '').trim(), by: u.id, t: new Date().toISOString() });
             hpush(`叫AGV ${b.partNo} 标签 ${code} → ${b.station || '?'}`);
+          } else if (act === 'rush') {
+            // 急料开关：仅仓管/管理员；同步刷新该单未下发队列项的急标
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可标记急料' });
+            if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可标记` });
+            r.rush = b.rush === true;
+            for (const q of db.agvQueue || []) { if (String(q.reqId) === r.id && q.state === '排队') q.rush = r.rush; }
+            hpush(r.rush ? `标记急料（${u.name}）` : `取消急料（${u.name}）`);
+            if (r.rush) db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled && x.id !== u.id).forEach((x) =>
+              notify(x.id, 'req_new', `🔥 急料单 ${r.no}（${r.byName}），请优先备料`, r.id));
           } else if (act === 'transfer') {
             // 行级转MES回写：App 已把该行已扫箱真实转单成功，按实发件数记账（申请600只有500也可转500）
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可转单' });
@@ -1254,7 +1320,7 @@ const server = http.createServer(async (req, res) => {
 
       // ---- 管理员：功能开关 ----
       if (req.method === 'GET' && p === '/api/config') {
-        return send(res, 200, { ok: true, features: db.features, roles: ROLES, roleNames: ROLE_NAMES, featureNames: FEATURE_NAMES });
+        return send(res, 200, { ok: true, features: db.features, roles: ROLES, roleNames: ROLE_NAMES, featureNames: FEATURE_NAMES, autoDispatch: db.autoDispatch !== false });
       }
       if (req.method === 'PATCH' && p === '/api/config') {
         const b = await readBody(req);
@@ -1262,7 +1328,8 @@ const server = http.createServer(async (req, res) => {
           for (const role of ROLES) if (b.features[role]) db.features[role] = { ...db.features[role], ...b.features[role] };
           save(); console.log('[config] 功能开关已更新');
         }
-        return send(res, 200, { ok: true, features: db.features });
+        if (typeof b.autoDispatch === 'boolean') { db.autoDispatch = b.autoDispatch; save(); console.log(`[config] 接单即派=${b.autoDispatch}`); }
+        return send(res, 200, { ok: true, features: db.features, autoDispatch: db.autoDispatch !== false });
       }
     }
     return send(res, 404, { ok: false, msg: '接口不存在' });
@@ -1313,6 +1380,82 @@ function rcsTs(s) { s = String(s || ''); if (s.length < 14) return 0; return new
 function dstr(ms) { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()}`; } // 报表/驾驶舱共用
 // 任务节点时间：取货点(operType=0)完成=离开起始库位，放货点(operType=1)完成=到达目标库位
 function nodeTimes(t) { let pickAt = 0, putAt = 0; for (const d of (t.taskDetailList || [])) { if (Number(d.state) === 2) { if (Number(d.operType) === 0) pickAt = rcsTs(d.finishTime) || pickAt; else if (Number(d.operType) === 1) putAt = rcsTs(d.finishTime) || putAt; } } return { pickAt, putAt, startAt: rcsTs(t.exeTime), buildAt: rcsTs(t.buildTime) }; }
+
+// ================= 路网模块（地图/最近距离分配共用）：地标坐标+路径边+货位映射，每日刷新 =================
+const NetMap = {
+  lands: {}, // landCode → {x,y,name}
+  adj: {}, // landCode → [[toLand, w], ...]
+  locLand: {}, // 货位编码(NB02-…) → landCode
+  landLoc: {}, // landCode → 货位编码（反查）
+  ckLoc: {}, // 站台编码 → landCode
+  builtAt: 0,
+  ready() { return Object.keys(this.lands).length > 100 && Object.keys(this.adj).length > 100; },
+  async build(rcsGet) {
+    try {
+      const [lm, seg, rack] = await Promise.all([
+        rcsGet('/LandMark/GetLandMark'), rcsGet('/uds/mapSegment/getSegementVOList'), rcsGet('/rack/GetRackInfo'),
+      ]);
+      const parse = (d) => { try { return typeof d === 'string' ? JSON.parse(d) : (d || []); } catch (_) { return []; } };
+      const lands = {}, locLand = { ...(db.locLandLearned || {}) }, landLoc = {};
+      for (const l of parse(lm && lm.data)) {
+        const code = String(l.landCode || '');
+        if (!code) continue;
+        lands[code] = { x: Number(l.landX) || 0, y: Number(l.landY) || 0, name: String(l.landName || code) };
+      }
+      const adj = {};
+      for (const s of parse(seg && seg.data)) {
+        const a = String(s.beginLandmarkCode || ''), b = String(s.endLandmarkCode || '');
+        if (!a || !b || !lands[a] || !lands[b]) continue;
+        const w = Math.hypot(lands[a].x - lands[b].x, lands[a].y - lands[b].y);
+        if (!(s.enable === 0)) { (adj[a] = adj[a] || []).push([b, w]); if (s.direction !== 1) (adj[b] = adj[b] || []).push([a, w]); } // direction=1单向
+      }
+      // 货位编码↔landCode：rack表权威映射（718条覆盖NB02货架）+ 学习映射（站台等rack未覆盖处）
+      for (const r of parse(rack && rack.data)) {
+        const code = String(r.rackLandName || '').toUpperCase(), lc = String(r.landCode || '');
+        if (code && lc && lands[lc] && !locLand[code]) locLand[code] = lc;
+      }
+      for (const [loc, lc] of Object.entries(locLand)) { if (lands[lc]) landLoc[lc] = loc; }
+      if (Object.keys(lands).length > 100) { this.lands = lands; this.adj = adj; this.locLand = locLand; this.landLoc = landLoc; this.builtAt = Date.now(); console.log(`[netmap] 路网构建：地标${Object.keys(lands).length} 边${Object.keys(adj).length} 货位映射${Object.keys(locLand).length}`); }
+    } catch (e) { console.log('[netmap] 构建失败：', e.message); }
+  },
+  // 任务学习：从任务起终点编码↔途经点首末landCode 积累映射（rack表不含站台，靠这个学）
+  learn(tasks) {
+    if (!db.locLandLearned) db.locLandLearned = {};
+    let dirty = false;
+    for (const t of tasks || []) {
+      const { sp, ep } = parsePts(t);
+      let det = t.taskDetailList; if (typeof det === 'string') { try { det = JSON.parse(det); } catch (_) { det = []; } }
+      det = det || []; if (!det.length) continue;
+      const first = String(det[0].landCode || ''), last = String(det[det.length - 1].landCode || '');
+      if (sp && first && !db.locLandLearned[sp]) { db.locLandLearned[sp] = first; this.locLand[sp] = first; this.landLoc[first] = this.landLoc[first] || sp; dirty = true; }
+      if (ep && last && !db.locLandLearned[ep]) { db.locLandLearned[ep] = last; this.locLand[ep] = last; this.landLoc[last] = this.landLoc[last] || ep; dirty = true; }
+    }
+    return dirty;
+  },
+  landOf(loc) { return this.locLand[String(loc || '').toUpperCase()] || ''; },
+  // Dijkstra 最短路径米数（路网不可达/缺映射返回 -1）
+  dist(fromLoc, toLoc) {
+    const s = this.landOf(fromLoc), e = this.landOf(toLoc);
+    if (!s || !e) return -1;
+    if (s === e) return 0;
+    const D = { [s]: 0 }, pq = [[0, s]], seen = {};
+    while (pq.length) {
+      pq.sort((a, b) => a[0] - b[0]);
+      const [d, u] = pq.shift();
+      if (seen[u]) continue; seen[u] = 1;
+      if (u === e) return Math.round(d);
+      for (const [v, w] of (this.adj[u] || [])) { const nd = d + w; if (D[v] === undefined || nd < D[v]) { D[v] = nd; pq.push([nd, v]); } }
+    }
+    return -1;
+  },
+};
+setInterval(() => {
+  if (!db.rcsConfig || !db.rcsConfig.host) return;
+  const fresh = Date.now() - NetMap.builtAt < 24 * 3600 * 1000;
+  if (fresh && NetMap.ready()) return;
+  (async () => { const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin(); if (tk) await NetMap.build((p) => rcsReq(p, 'GET', tk)); })();
+}, 10 * 60 * 1000).unref();
+
 async function rcsPoll() {
   if (!db.rcsConfig || !db.rcsConfig.host) return;
   let tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
@@ -1324,6 +1467,10 @@ async function rcsPoll() {
   const parse = (d) => { try { return JSON.parse(typeof d === 'string' ? d : JSON.stringify(d || [])); } catch (_) { return []; } };
   const runT = parse(run.data), doneT = parse(done && done.code === 0 ? done.data : '[]');
   const isCK = (s) => s.includes('-CK-');
+  // 路网：从任务学站台↔地标映射 + 拉交管（地图快照/堵点告警共用）
+  try { NetMap.learn(runT); } catch (_) {}
+  const traffic = await rcsReq('/agv/debug/getLockResourceListForStatus', 'GET', tk);
+  if (traffic && traffic.code === 0) db.rcsTraffic = traffic.data;
   // 站台状态：出库到站(未清台)=有货；进行中的入库任务=占用中；其余空闲
   const stations = {};
   const mark = (stn, v) => { if (isCK(stn)) stations[stn] = Object.assign(stations[stn] || { station: stn, state: '空闲' }, v); };
@@ -1396,7 +1543,7 @@ async function rcsPoll() {
   // ===== 到站催扫：站台仍"有货"且到站超10分钟 → 通知叫车人（用快照标签，不受货架位补新框干扰） =====
   for (const [stn, s] of Object.entries(db.rcsStations)) {
     if (s.state !== '有货' || !(s.codes || []).length) continue;
-    if (nowMs - (s.ts || 0) < 10 * 60 * 1000 || nowMs - (s.ts || 0) > 2 * 3600 * 1000) continue;
+    if (nowMs - (s.ts || 0) < 5 * 60 * 1000 || nowMs - (s.ts || 0) > 2 * 3600 * 1000) continue; // 急料5分钟起催，普通单10分钟（下方按rush判断）
     const codes = s.codes.map(c => String(c).toUpperCase());
     const called = [];
     for (const r of db.requisitions || []) {
@@ -1409,11 +1556,43 @@ async function rcsPoll() {
     for (const cl of called) {
       const key = cl.c + '|' + stn;
       if (db.rcsRemind && db.rcsRemind[key]) continue;
-      notify(cl.by || cl.req.by, 'req_arrive', `⏰ 到站催扫：框 ${cl.c} 已到站台 ${stn} 超10分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台`, cl.req.id);
+      const rush = !!cl.req.rush;
+      if (!rush && nowMs - (s.ts || 0) < 10 * 60 * 1000) continue; // 普通单仍10分钟
+      const msg = `⏰ ${rush ? '🔥急料' : ''}到站催扫：框 ${cl.c} 已到站台 ${stn} 超${rush ? 5 : 10}分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台`;
+      if (rush) db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, cl.req.id));
+      else notify(cl.by || cl.req.by, 'req_arrive', msg, cl.req.id);
       db.rcsRemind = db.rcsRemind || {}; db.rcsRemind[key] = nowMs;
     }
   }
   if (db.rcsRemind) for (const [k, t0] of Object.entries(db.rcsRemind)) { if (nowMs - t0 > 4 * 3600 * 1000) delete db.rcsRemind[k]; }
+  // ===== ③ 堵点告警：车被交管卡住超3分钟 → 通知全体在线仓管（含锁点与前车） =====
+  try {
+    const tl = parse(db.rcsTraffic || '{}');
+    const owners = (tl.landmarkLocks && tl.landmarkLocks.landmarkOwners) || {};
+    const carName = (id) => 'AGV' + String(id).padStart(2, '0');
+    const zl = (tl.zoneLocks && tl.zoneLocks.zoneList) || [];
+    const blockedNow = {}; // carId → {zone, lockLand, lockers}
+    for (const z of zl) {
+      const bc = z.blockedCars || [], lc = z.lockCars || [];
+      for (const b of bc) {
+        const id = b && b.agvId !== undefined ? b.agvId : b;
+        if (id === undefined || id === null) continue;
+        blockedNow[id] = { zone: z.remarks || ('交管区' + z.zoneId), lockLand: lc.map((x) => (x && x.agvId !== undefined ? x.agvId : x)).map(carName).join('、'), lands: String(z.junctionLandmarkCodes || '') };
+      }
+    }
+    db.rcsJam = db.rcsJam || {};
+    for (const [id, info] of Object.entries(blockedNow)) {
+      if (!db.rcsJam[id]) { db.rcsJam[id] = { at: nowMs, notified: false, ...info }; continue; }
+      const j = db.rcsJam[id];
+      if (!j.notified && nowMs - j.at > 3 * 60 * 1000) {
+        j.notified = true;
+        const msg = `🚧 交管堵点：${carName(id)} 在 ${info.zone}${info.lands ? '（点位' + info.lands + '）' : ''} 被卡超3分钟，占行车辆：${info.lockLand || '未知'}`;
+        db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, ''));
+        console.log('[jam] ' + msg);
+      }
+    }
+    for (const id of Object.keys(db.rcsJam)) { if (!blockedNow[id]) delete db.rcsJam[id]; } // 已通行→清记录
+  } catch (_) {}
   agvDispatch(nowMs, runT).catch((e) => console.log('[agv-q] 调度异常', e.message)); // 排队调度：空闲站台→按队列下发
   save();
 }
@@ -1530,12 +1709,24 @@ async function agvDispatch(nowMs, runT) {
   });
   const waiting = db.agvQueue.filter((q) => q.state === '排队');
   if (!waiting.length) return;
+  // 急料优先插队；普通项等待超10分钟自动升级（aging防饿死）；同级保持FIFO
+  const effRush = (q) => !!q.rush || (nowMs - (q.at || 0) > 10 * 60 * 1000);
+  waiting.sort((a, b) => (effRush(b) ? 1 : 0) - (effRush(a) ? 1 : 0) || (a.at || 0) - (b.at || 0));
   const live = (db.agvDispatchMode || 'dry') === 'live';
   const assigned = [];
   for (const q of waiting) {
     if (live && assigned.length >= 4) break; // 一轮最多下发4单，保守节奏
     const manual = q.stationManual && agvStationFree(q.stationManual, nowMs, runT, assigned) ? q.stationManual : '';
-    const stn = manual || AGV_STNS.find((s) => agvStationFree(s, nowMs, runT, assigned));
+    // 距离感知：路网可用时选"离货架最近"的空闲台（AGV少跑一米是一米）；缺映射/不可达回退首个空闲台
+    let stn = manual;
+    if (!stn) {
+      const free = AGV_STNS.filter((s) => agvStationFree(s, nowMs, runT, assigned));
+      if (free.length) {
+        let best = '', bestD = Infinity;
+        if (NetMap.ready()) for (const s of free) { const d = NetMap.dist(q.fromLoc, s); if (d >= 0 && d < bestD) { bestD = d; best = s; } }
+        stn = best || free[0];
+      }
+    }
     if (!stn) continue; // 暂无空闲台：继续排队，下轮再看
     assigned.push(stn); q.station = stn; q.updAt = nowMs;
     if (!live) { q.plan = stn; console.log(`[agv-q·演算] 框 ${q.code} ${q.fromLoc} → ${stn}（切live后自动下发）`); continue; }

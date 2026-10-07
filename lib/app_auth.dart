@@ -90,11 +90,11 @@ class AuthApi {
       _req("PATCH", "/api/users/$id", body: patch, token: await AuthStore.token());
   static Future<Map> deleteUser(String id) async => _req("DELETE", "/api/users/$id", token: await AuthStore.token());
   static Future<Map> config() async => _req("GET", "/api/config", token: await AuthStore.token());
-  static Future<Map> setFeatures(Map features) async => _req("PATCH", "/api/config", body: {"features": features}, token: await AuthStore.token());
+  static Future<Map> setFeatures(Map features, {bool? autoDispatch}) async => _req("PATCH", "/api/config", body: {"features": features, if (autoDispatch != null) "autoDispatch": autoDispatch}, token: await AuthStore.token());
 
   // ---- 领料单 ----
-  static Future<Map> reqCreate(List<Map> items, String remark, {String assigneeId = ""}) async =>
-      _req("POST", "/api/requisitions", body: {"items": items, "remark": remark, "assigneeId": assigneeId}, token: await AuthStore.token());
+  static Future<Map> reqCreate(List<Map> items, String remark, {String assigneeId = "", bool rush = false}) async =>
+      _req("POST", "/api/requisitions", body: {"items": items, "remark": remark, "assigneeId": assigneeId, "rush": rush}, token: await AuthStore.token());
   /// 可选仓管员列表（新建单"指定仓管员"用）
   static Future<Map> reqWarehouseUsers() async =>
       _req("GET", "/api/requisitions/warehouse-users", token: await AuthStore.token());
@@ -128,6 +128,8 @@ class AuthApi {
   static Future<Map> rcsConfigSync({required String host, required String account, required String pwd}) async =>
       _req("POST", "/api/rcs/config", body: {"host": host, "account": account, "pwd": pwd}, token: await AuthStore.token());
   static Future<Map> rcsStations() async => _req("GET", "/api/rcs/stations", token: await AuthStore.token());
+  static Future<Map> rcsMap() async => _req("GET", "/api/rcs/map", token: await AuthStore.token());
+  static Future<Map> rcsNet() async => _req("GET", "/api/rcs/net", token: await AuthStore.token());
   static Future<Map> rcsClear(String station, {String state = "空闲"}) async => _req("POST", "/api/rcs/clear", body: {"station": station, "state": state}, token: await AuthStore.token());
   // ===== AGV 出库排队（一键叫车→服务器调度器自动分配站台） =====
   static Future<Map> agvQueueEnqueue({required String reqId, required String reqNo, required List<Map> items}) async =>
@@ -438,6 +440,7 @@ class _UserManagePageState extends State<UserManagePage> {
   List _users = [];
   Map _features = {};
   Map _featureNames = const {};
+  bool _autoDispatch = true; // 接单即派全局开关
   bool _loading = true; String _err = "";
 
   @override
@@ -449,7 +452,7 @@ class _UserManagePageState extends State<UserManagePage> {
     if (!mounted) return;
     if (ru["ok"] != true) { setState(() { _loading = false; _err = (ru["msg"] ?? "加载失败").toString(); }); return; }
     _users = List.from(ru["users"]);
-    if (rc["ok"] == true) { _features = Map.from(rc["features"]); _featureNames = Map.from(rc["featureNames"] ?? {}); }
+    if (rc["ok"] == true) { _features = Map.from(rc["features"]); _featureNames = Map.from(rc["featureNames"] ?? {}); _autoDispatch = rc["autoDispatch"] != false; }
     setState(() => _loading = false);
   }
 
@@ -499,14 +502,25 @@ class _UserManagePageState extends State<UserManagePage> {
   Future<void> _editFeatures() async {
     final copy = <String, Map<String, bool>>{};
     for (final e in _features.entries) { copy[e.key] = Map<String, bool>.from(e.value); }
+    bool autoDispatch = _autoDispatch;
     await showModalBottomSheet(context: context, isScrollControlled: true, builder: (ctx) => StatefulBuilder(builder: (ctx, setS) {
       const roleNames = {"material": "物料员", "warehouse": "仓管员", "admin": "管理员"};
       return Padding(padding: EdgeInsets.fromLTRB(16, 16, 16, MediaQuery.of(ctx).viewInsets.bottom + 16), child: SizedBox(
-        height: 460, width: double.infinity,
+        height: 500, width: double.infinity,
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const Text("功能开关（保存后各端心跳刷新，最迟5分钟生效）", style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           Expanded(child: SingleChildScrollView(child: Column(children: [
+            Card(margin: const EdgeInsets.only(bottom: 8), child: Padding(padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text("AGV 调度", style: TextStyle(fontWeight: FontWeight.bold)),
+              SwitchListTile(
+                dense: true, contentPadding: EdgeInsets.zero,
+                title: const Text("接单即派（领料单被接单后货架框自动入AGV队列）", style: TextStyle(fontSize: 13)),
+                subtitle: Text(autoDispatch ? "仓管只管扫码发料，叫车由调度器自动排队" : "关闭后需仓管在领料单手动一键叫车", style: const TextStyle(fontSize: 11)),
+                value: autoDispatch,
+                onChanged: (v) => setS(() => autoDispatch = v),
+              ),
+            ]))),
             for (final role in copy.keys) Card(child: Padding(padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(roleNames[role] ?? role, style: const TextStyle(fontWeight: FontWeight.bold)),
               for (final f in copy[role]!.keys) SwitchListTile(
@@ -521,7 +535,7 @@ class _UserManagePageState extends State<UserManagePage> {
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("取消")),
             const Spacer(),
             ElevatedButton(onPressed: () async {
-              final r = await AuthApi.setFeatures(copy);
+              final r = await AuthApi.setFeatures(copy, autoDispatch: autoDispatch);
               if (ctx.mounted) { Navigator.pop(ctx); ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text((r["msg"] ?? (r["ok"] == true ? "已保存" : "保存失败")).toString()), backgroundColor: r["ok"] == true ? Colors.green : Colors.red)); }
               _load();
             }, child: const Text("保存")),
