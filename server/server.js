@@ -860,6 +860,26 @@ const server = http.createServer(async (req, res) => {
             stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal: 8 },
           trend: Array.from({ length: 7 }, (_, i) => ({ d: dstr(todayStart + i * dayMs), in: trendIn[i], out: trendOut[i] })) });
       }
+      // ================= ⑦ AGV效率报表（只读聚合 db.agvTasks，登录可看；days=1~30） =================
+      if (req.method === 'GET' && p === '/api/agv/report') {
+        const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '7') || 7));
+        const since = Date.now() - days * 86400000;
+        const tasks = Object.values(db.agvTasks || {}).filter((t) => (t.fin || 0) >= since);
+        const byCar = {}; // 车号 → {n,durSum,out,in}
+        const heat = Array.from({ length: 7 }, () => Array(24).fill(0)); // 近7日×24h 任务热力
+        const dayBase = new Date(); dayBase.setHours(0, 0, 0, 0); dayBase.setDate(dayBase.getDate() - 6);
+        for (const t of tasks) {
+          const b = (byCar[t.car] = byCar[t.car] || { n: 0, durSum: 0, out: 0, in: 0 });
+          b.n++; if (t.dur) b.durSum += t.dur; if (t.ck === 'out') b.out++; else if (t.ck === 'in') b.in++;
+          const di = Math.floor((t.fin - dayBase.getTime()) / 86400000), hr = new Date(t.fin).getHours();
+          if (di >= 0 && di < 7 && hr >= 0 && hr < 24) heat[di][hr]++;
+        }
+        const cars = Object.entries(byCar).map(([id, v]) => ({ car: Number(id), n: v.n, out: v.out, in: v.in, avgDur: v.n && v.durSum ? Math.round(v.durSum / v.n) : 0 }))
+          .sort((a, b) => b.n - a.n);
+        const totalN = tasks.length, totalDur = tasks.reduce((s, t) => s + (t.dur || 0), 0);
+        return send(res, 200, { ok: true, days, totalN, avgDur: totalN ? Math.round(totalDur / totalN) : 0,
+          cars, heat, heatDays: Array.from({ length: 7 }, (_, i) => dstr(dayBase.getTime() + i * 86400000)) });
+      }
       if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工干预站台：state=有货(占用)/空闲(清台)
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
@@ -1332,6 +1352,17 @@ async function rcsPoll() {
   for (const v of Object.values(stations)) { if (!db.rcsStations[v.station]) db.rcsStations[v.station] = v; }
   db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, ...parsePts(t), ...nodeTimes(t) }));
   db.rcsAt = new Date().toISOString();
+  // ===== ⑦ AGV效率报表底仓：已完成任务摘要增量落库（RCS只留最近199条，本地攒30天） =====
+  db.agvTasks = db.agvTasks || {};
+  for (const t of doneT) {
+    const fin = rcsTs(t.finishTime);
+    if (!fin || !t.dispatchNo) continue;
+    if (db.agvTasks[t.dispatchNo]) continue; // 任务号去重
+    const { sp, ep } = parsePts(t);
+    const ex = rcsTs(t.exeTime);
+    db.agvTasks[t.dispatchNo] = { car: t.exeAgvId ?? 0, ex, fin, dur: ex && fin > ex ? Math.round((fin - ex) / 1000) : 0, sp, ep, ck: isCK(ep) && !isCK(sp) ? 'out' : isCK(sp) && !isCK(ep) ? 'in' : 'other' };
+  }
+  { const cutoff = nowMs - 30 * 86400000; for (const [k, v] of Object.entries(db.agvTasks)) { if ((v.fin || 0) < cutoff) delete db.agvTasks[k]; } }
   // ===== 到站催扫：站台仍"有货"且到站超10分钟 → 通知叫车人（用快照标签，不受货架位补新框干扰） =====
   for (const [stn, s] of Object.entries(db.rcsStations)) {
     if (s.state !== '有货' || !(s.codes || []).length) continue;

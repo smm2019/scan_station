@@ -40,6 +40,7 @@ part 'local_log.dart'; // ⑤本地审计日志 + ⑦全局异常兜底落盘 + 
 part 'diag_page.dart'; // ⑥设备诊断页
 part 'loc_map_page.dart'; // ③货位占用可视化
 part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
+part 'agv_report_page.dart'; // ⑦AGV效率报表
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
 
@@ -3196,6 +3197,12 @@ class SettingsMenuPage extends StatelessWidget {
             title: "数据驾驶舱", subtitle: "今日出入库/AGV/站台 实时KPI与7日趋势",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const DashPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.speed_outlined, color: const Color(0xFF283593),
+            title: "AGV效率报表", subtitle: "各车任务量/平均耗时/7×24搬运热力",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const AgvReportPage())),
           ),
           _settingTile(
             context, icon: Icons.grid_view_outlined, color: const Color(0xFF00897B),
