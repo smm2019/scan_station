@@ -1349,18 +1349,24 @@ async function wmasLocOf(code) {
   return (_wmasLoc || {})[String(code).toUpperCase()] || null;
 }
 async function wmasDispatchOne(q, tk) {
-  // 容器自动选号：该托盘类型候选 − 在途任务已占用
+  // 容器自动选号：优先挑"近30分钟无在途任务"的号；挑不到就复用（与人工叫车同款行为——WMAS不强校验容器号唯一，复用不影响叉货）
   const cr = await wmasHttp('GET', '/api/logistics/container/list?pageNum=1&pageSize=1000', tk);
   if (!wmasOk(cr)) return { ok: false, msg: '查容器主档失败：' + JSON.stringify(cr).slice(0, 80) };
   const t = String(q.palletType || '').toUpperCase();
   const cands = ((cr.data && cr.data.records) || []).map((x) => String(x.containerCode || '')).filter((c) => t && c.toUpperCase().includes(t)).sort();
+  if (!cands.length) return { ok: false, msg: `容器主档无「${q.palletType}」类型编码，请人工叫车` };
+  const nowMs = Date.now();
   const used = new Set();
   for (const st of ['PUSHED', 'DISPATCHED', 'IN_TRANSIT']) {
     const lr = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=100&status=${st}`, tk);
-    if (wmasOk(lr)) for (const x of ((lr.data && lr.data.records) || [])) if (x.containerNo) used.add(String(x.containerNo));
+    if (wmasOk(lr)) for (const x of ((lr.data && lr.data.records) || [])) {
+      if (!x.containerNo) continue;
+      const ts = Date.parse(String(x.creationDate || '').replace(' ', 'T'));
+      if (Number.isFinite(ts) && nowMs - ts > 30 * 60 * 1000) continue; // 30分钟前的PUSHED多为未关闭历史单，不算占用
+      used.add(String(x.containerNo));
+    }
   }
-  const cn = cands.find((c) => !used.has(c)) || '';
-  if (!cn) return { ok: false, msg: `托盘类型 ${q.palletType} 无空闲容器编码可选（在途占用完），请人工叫车` };
+  const cn = cands.find((c) => !used.has(c)) || cands[0];
   const s = await wmasLocOf(q.fromLoc), e = await wmasLocOf(q.station);
   if (!s || !e) return { ok: false, msg: '库位不在WMAS主档：' + q.fromLoc + '/' + q.station };
   const mk = await wmasHttp('POST', '/api/logistics/agv-task', tk, { taskType: 'CARRY', warehouse: s.wh, startArea: s.zone, startPoint: q.fromLoc, endArea: e.zone, endPoint: q.station, containerNo: cn, refNo: q.reqNo || '' });
