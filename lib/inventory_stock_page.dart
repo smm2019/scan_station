@@ -432,7 +432,7 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
     await _globalIsar.baselineBooks.where().deleteAll();
     await _globalIsar.baselineBooks.putAll(books);
     await _globalIsar.baselineLocs.where().deleteAll();
-    await _globalIsar.baselineLocs.putAll(locMap.values);
+    await _globalIsar.baselineLocs.putAll(locMap.values.toList());
   });
   return {"key": key, "books": books.length, "locs": locMap.length};
 }
