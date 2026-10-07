@@ -69,7 +69,7 @@ class _DashPageState extends State<DashPage> with AutomaticKeepAliveClientMixin 
         : RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(8), children: [
             Row(children: [tile("今日入库(框)", "${iv('inBoxes')}", const Color(0xFF2E7D32), Icons.login), tile("今日出库(框)", "${iv('outToday')}", const Color(0xFFE65100), Icons.logout), tile("今日AGV搬运", "${iv('agvToday')}", const Color(0xFF1565C0), Icons.local_shipping), tile("AGV队列中", "${iv('agvQueue')}", const Color(0xFF6A1B9A), Icons.quiz_outlined)]),
             Row(children: [tile("在库(框)", "${iv('stockBoxes')}", const Color(0xFF00838F), Icons.inventory_2), tile("占用货位", "${iv('stockLocs')}", const Color(0xFF4E342E), Icons.grid_view), tile("待接单", "${iv('pending')}", Colors.orange, Icons.mark_email_unread_outlined), tile("备料中", "${iv('accepted')}", const Color(0xFF3949AB), Icons.pending)]),
-            Row(children: [tile("站台在用", "${iv('stnBusy')}/${iv('stnTotal')}", iv('stnBusy') >= 7 ? Colors.red : Colors.teal, Icons.parking_outlined),
+            Row(children: [tile("站台在用", "${iv('stnBusy')}/${iv('stnTotal')}", iv('stnBusy') >= 7 ? Colors.red : Colors.teal, Icons.pin_drop_outlined),
               Expanded(child: Container(margin: const EdgeInsets.all(4), padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6, offset: const Offset(0, 2))]),
                 child: Column(children: [
