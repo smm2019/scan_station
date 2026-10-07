@@ -1344,7 +1344,8 @@ async function rcsPoll() {
   db.rcsCleared = db.rcsCleared || {}; // 人工清台：站台 → 时间戳，早于该时刻到站的任务不再算有货
   db.rcsManual = db.rcsManual || {}; // 人工占用：站台 → 时间戳，30分钟内不被任务事件覆盖
   db.rcsDone = db.rcsDone || {}; // 已清台任务：站台|任务号 → 时间戳
-  const recent = doneT.filter(t => rcsTs(t.finishTime) && nowMs - rcsTs(t.finishTime) < 2 * 3600 * 1000);
+  const recent = doneT.filter(t => rcsTs(t.finishTime) && nowMs - rcsTs(t.finishTime) < 2 * 3600 * 1000)
+    .sort((a, b) => rcsTs(a.finishTime) - rcsTs(b.finishTime)); // 按完成时间升序：后发生的事件后处理，防入库旧/新任务乱序清掉刚到的"有货"
   for (const t of recent) {
     const { sp, ep } = parsePts(t);
     if (t.taskState !== 2) continue;
@@ -1356,7 +1357,10 @@ async function rcsPoll() {
         : (db.ledger || []).filter(x => String(x.l).toUpperCase() === sp).map(x => String(x.c || '').toUpperCase()).filter(Boolean);
       const nt2 = nodeTimes(t);
       db.rcsStations[ep] = { station: ep, state: '有货', dir: 'out', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn, pickAt: nt2.pickAt, startAt: nt2.startAt, buildAt: nt2.buildAt };
-    } else if (isCK(sp) && !isCK(ep)) { delete db.rcsStations[sp]; } // 入库叉回货架 → 站台清
+    } else if (isCK(sp) && !isCK(ep)) { // 入库叉回货架 → 仅当入库完成时刻晚于站台现有"有货"到站时刻才清台（防乱序穿越删除）
+      const cur = db.rcsStations[sp];
+      if (!cur || (cur.ts || 0) <= finTs) delete db.rcsStations[sp];
+    }
   }
   for (const [stn, s] of Object.entries(db.rcsStations)) {
     if (s.state !== '有货') continue;
