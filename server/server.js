@@ -1390,7 +1390,10 @@ async function agvDispatch(nowMs, runT) {
   for (const q of queue) {
     const s = (db.rcsStations || {})[q.station];
     const has = s && Array.isArray(s.codes) && s.codes.map((c) => String(c).toUpperCase()).includes(q.code);
-    if (q.state === '已下发') {
+    if (q.state === '下发中') {
+      // 下发中超过5分钟无回执（进程中断/异常残留）→ 判失败可重试，防止永久封死该站台
+      if (nowMs - (q.updAt || q.at) > 5 * 60 * 1000) { q.state = '失败'; q.err = '下发超时未回执，请重新叫车'; q.updAt = nowMs; }
+    } else if (q.state === '已下发') {
       if (s && s.state === '有货' && has) q.state = '到站'; // 按标签匹配（容器号尾6位≠RCS任务号尾6位，不能用via比对）
     } else if (q.state === '到站') {
       if (!has) q.state = '完成'; // 该框已不在台上（发走/清台）
@@ -1417,7 +1420,8 @@ async function agvDispatch(nowMs, runT) {
     q.state = '下发中';
     const tk = await wmasToken();
     if (!tk) { q.state = '失败'; q.err = 'WMAS未配置/登录失败（PDA设置→AGV调度系统同步WMAS账号）'; continue; }
-    const r = await wmasDispatchOne(q, tk);
+    let r;
+    try { r = await wmasDispatchOne(q, tk); } catch (e) { r = { ok: false, msg: '下发异常：' + e.message }; }
     q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.err = r.ok ? '' : r.msg;
     console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);
   }
