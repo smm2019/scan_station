@@ -58,8 +58,8 @@ class _DiagPageState extends State<DiagPage> {
         } catch (e) { add("服务器连通", "不通：$e"); }
       }
       try {
-        add("相机权限", (await Permission.camera.status()).isGranted ? "已授予" : "未授予");
-        add("通知权限", (await Permission.notification.status()).isGranted ? "已授予" : "未授予");
+        add("相机权限", (await Permission.camera.status).isGranted ? "已授予" : "未授予");
+        add("通知权限", (await Permission.notification.status).isGranted ? "已授予" : "未授予");
       } catch (e) { add("权限读取", "异常：$e"); }
       add("当前账号", "${Auth.user?.name ?? "-"}（${Auth.user?.role ?? "-"}）");
       add("已开通功能", (Auth.features.entries.where((e) => e.value).map((e) => e.key).toList()).join("、"));

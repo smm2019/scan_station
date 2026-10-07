@@ -83,7 +83,7 @@ class _LocMapPageState extends State<LocMapPage> {
       onTap: n == 0 ? null : () => _showLoc(code, boxes),
       child: Container(margin: const EdgeInsets.symmetric(horizontal: 2), height: 34,
         decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(4), border: Border.all(color: Colors.white)),
-        child: Center(child: Text(n == 0 ? "$f" + "F" : "$n框", style: TextStyle(fontSize: 10, color: n == 0 ? Colors.grey : const Color(0xFF1565C0), fontWeight: n == 0 ? FontWeight.normal : FontWeight.bold)))),
+        child: Center(child: Text(n == 0 ? "$floor" + "F" : "$n框", style: TextStyle(fontSize: 10, color: n == 0 ? Colors.grey : const Color(0xFF1565C0), fontWeight: n == 0 ? FontWeight.normal : FontWeight.bold)))),
     );
   }
 
