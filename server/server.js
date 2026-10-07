@@ -1230,7 +1230,7 @@ async function rcsLogin() {
 function parsePts(t) { try { const s = JSON.parse(t.suspensionMsg || '{}'); return { sp: String(s.startPoint || '').toUpperCase(), ep: String(s.endPoint || '').toUpperCase() }; } catch (_) { return { sp: '', ep: '' }; } }
 function rcsTs(s) { s = String(s || ''); if (s.length < 14) return 0; return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`).getTime(); }
 // 任务节点时间：取货点(operType=0)完成=离开起始库位，放货点(operType=1)完成=到达目标库位
-function nodeTimes(t) { let pickAt = 0, putAt = 0; for (const d of (t.taskDetailList || [])) { if (Number(d.state) === 2) { if (Number(d.operType) === 0) pickAt = rcsTs(d.finishTime) || pickAt; else if (Number(d.operType) === 1) putAt = rcsTs(d.finishTime) || putAt; } } return { pickAt, putAt, startAt: rcsTs(t.exeTime) }; }
+function nodeTimes(t) { let pickAt = 0, putAt = 0; for (const d of (t.taskDetailList || [])) { if (Number(d.state) === 2) { if (Number(d.operType) === 0) pickAt = rcsTs(d.finishTime) || pickAt; else if (Number(d.operType) === 1) putAt = rcsTs(d.finishTime) || putAt; } } return { pickAt, putAt, startAt: rcsTs(t.exeTime), buildAt: rcsTs(t.buildTime) }; }
 async function rcsPoll() {
   if (!db.rcsConfig || !db.rcsConfig.host) return;
   let tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
@@ -1248,8 +1248,8 @@ async function rcsPoll() {
   for (const t of runT) {
     const { sp, ep } = parsePts(t);
     const nt = nodeTimes(t);
-    if (isCK(ep)) mark(ep, { state: '占用中', dir: 'out', via: '任务 ' + (t.dispatchNo || '').slice(-6), pickAt: nt.pickAt, startAt: nt.startAt }); // 出库在途：startAt=接令离开待命点，pickAt>0=已叉出货架
-    if (isCK(sp)) mark(sp, { state: '占用中', dir: 'in', via: '任务 ' + (t.dispatchNo || '').slice(-6), pickAt: nt.pickAt, putAt: nt.putAt, startAt: nt.startAt }); // 入库取走中：pickAt=叉离站台，putAt=放货架
+    if (isCK(ep)) mark(ep, { state: '占用中', dir: 'out', via: '任务 ' + (t.dispatchNo || '').slice(-6), pickAt: nt.pickAt, startAt: nt.startAt, buildAt: nt.buildAt }); // 出库在途：buildAt=建单，startAt=车接令出发，pickAt>0=已叉出货架
+    if (isCK(sp)) mark(sp, { state: '占用中', dir: 'in', via: '任务 ' + (t.dispatchNo || '').slice(-6), pickAt: nt.pickAt, putAt: nt.putAt, startAt: nt.startAt, buildAt: nt.buildAt }); // 入库取走中：pickAt=叉离站台，putAt=放货架
   }
   // 出库完成→有货：按"到站那一刻快照的标签清单"判定清台；清台后的任务记入rcsDone，防止货架位补了新框又被误判有货
   const nowMs = Date.now();
@@ -1274,7 +1274,7 @@ async function rcsPoll() {
       const codes = (old && old.via === dn && (old.codes || []).length) ? old.codes // 同一任务沿用首次快照，不被货架位新框干扰
         : (db.ledger || []).filter(x => String(x.l).toUpperCase() === sp).map(x => String(x.c || '').toUpperCase()).filter(Boolean);
       const nt2 = nodeTimes(t);
-      db.rcsStations[ep] = { station: ep, state: '有货', dir: 'out', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn, pickAt: nt2.pickAt, startAt: nt2.startAt };
+      db.rcsStations[ep] = { station: ep, state: '有货', dir: 'out', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn, pickAt: nt2.pickAt, startAt: nt2.startAt, buildAt: nt2.buildAt };
     } else if (isCK(sp) && !isCK(ep)) { delete db.rcsStations[sp]; } // 入库叉回货架 → 站台清
   }
   for (const [stn, s] of Object.entries(db.rcsStations)) {

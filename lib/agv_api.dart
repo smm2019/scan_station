@@ -209,15 +209,16 @@ class AgvApi {
     return null;
   }
 
-  /// 站台任务时间线：接令(离开待命点)/叉出/放架；0=尚未发生不显示（防pickAt=0渲染成08:00假时间）
+  /// 站台任务时间线：建单(接到指令)→接令(车出发)→叉出/叉离→放架；每步发生即点亮，未发生不显示
   static String stationTimeline(Map? s) {
     final dir = s?["dir"]?.toString() ?? "out";
-    final st = asNum(s?["startAt"]), pk = asNum(s?["pickAt"]), pt = asNum(s?["putAt"]);
+    final bd = asNum(s?["buildAt"]), st = asNum(s?["startAt"]), pk = asNum(s?["pickAt"]), pt = asNum(s?["putAt"]);
     final seg = <String>[];
+    if (bd != null && bd > 0) seg.add("建单 ${fmtClock(bd)}");
     if (st != null && st > 0) seg.add("接令 ${fmtClock(st)}");
     if (pk != null && pk > 0) seg.add("${dir == "in" ? "叉离" : "叉出"} ${fmtClock(pk)}");
     if (pt != null && pt > 0) seg.add("放架 ${fmtClock(pt)}");
-    return seg.join(" · ");
+    return seg.join("·");
   }
 
   // ---------- 状态文案 ----------
@@ -474,7 +475,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
       Expanded(child: !_loaded && _err.isEmpty
         ? const Center(child: CircularProgressIndicator())
         : DefaultTabController(length: 5, child: Column(children: [
-            const TabBar(labelColor: Colors.white, unselectedLabelColor: Color(0xFF90A4AE), indicatorColor: Colors.cyan, tabs: [
+            const TabBar(labelColor: Color(0xFF1565C0), unselectedLabelColor: Color(0xFF90A4AE), indicatorColor: Colors.cyan, tabs: [
               Tab(text: "任务"), Tab(text: "车辆"), Tab(text: "站台"), Tab(text: "交管"), Tab(text: "实时界面")]),
             Expanded(child: TabBarView(
               physics: const NeverScrollableScrollPhysics(), // 内层只点不滑，横滑留给外层换模块
@@ -633,30 +634,33 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
     }
     Color cOf(String st) => st == "有货" ? const Color(0xFFE65100) : (st == "占用中" ? const Color(0xFF1565C0) : Colors.green);
     IconData iOf(String st) => st == "有货" ? Icons.inventory_2 : (st == "占用中" ? Icons.local_shipping : Icons.check_circle_outline);
-    return GridView.count(crossAxisCount: 2, childAspectRatio: 1.9, padding: const EdgeInsets.all(10), mainAxisSpacing: 8, crossAxisSpacing: 8,
+    return GridView.count(crossAxisCount: 2, childAspectRatio: 1.32, padding: const EdgeInsets.all(10), mainAxisSpacing: 8, crossAxisSpacing: 8,
       children: all.map((n) {
         final code = "NB02-CK-$n";
         final s = m[code];
         final st = s?["state"]?.toString() ?? "空闲";
         final c = cOf(st);
-        return Container(padding: const EdgeInsets.all(10),
+        final tl = AgvApi.stationTimeline(s);
+        return Container(padding: const EdgeInsets.all(9),
           decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: c.withOpacity(0.6), width: 1.2)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [Icon(iOf(st), size: 16, color: c), const SizedBox(width: 4),
-              Expanded(child: Text("CK-$n", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))),
-              Text(st, style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 13))]),
-            const Spacer(),
-            Text(st == "有货" ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}" : (st == "占用中" ? "任务 ${s?["via"] ?? ""}" : "可正常叫车/入库"),
-              maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, color: st == "空闲" ? Colors.blueGrey : c)),
-            // 节点时间线：占用中→按方向显示接令/叉出(出库)或接令/叉离(入库)；有货→接令·叉出·到站全程
-            if (st == "占用中" && AgvApi.stationTimeline(s).isNotEmpty) Text(AgvApi.stationTimeline(s) + (AgvApi.asNum(s?["pickAt"]) != null && AgvApi.asNum(s!["pickAt"])! > 0 && (s?["dir"] ?? "out") == "out" ? " · 即将到站" : ""), style: const TextStyle(fontSize: 10, color: Color(0xFF1565C0))),
-            if (st == "有货" && (s?["since"] ?? "").toString().isNotEmpty) Row(children: [
-              Expanded(child: Text((AgvApi.stationTimeline(s).isNotEmpty ? AgvApi.stationTimeline(s) + " · " : "") + "到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE)))),
-              if (_canCtl) GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _clearStation(code),
-                child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("清台", style: TextStyle(fontSize: 11, color: Color(0xFF1565C0), fontWeight: FontWeight.bold)))),
-            ]),
-            if (st == "空闲" && _canCtl) Align(alignment: Alignment.centerRight, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _markBusy(code),
-              child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("标记占用", style: TextStyle(fontSize: 10.5, color: Color(0xFFE65100), fontWeight: FontWeight.bold))))),
+            Row(children: [Icon(iOf(st), size: 15, color: c), const SizedBox(width: 4),
+              Expanded(child: Text("CK-$n", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13.5))),
+              Text(st, style: TextStyle(color: c, fontWeight: FontWeight.bold, fontSize: 12.5))]),
+            const SizedBox(height: 3),
+            Text(st == "有货" ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}" : (st == "占用中" ? "${s?["dir"] == "in" ? "入库取走中" : "出库在途"} ${s?["via"] ?? ""}" : "可正常叫车/入库"),
+              maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, height: 1.25, color: st == "空闲" ? Colors.blueGrey : c)),
+            // 时间线：每步发生即点亮（建单→接令→叉出/叉离→放架；有货末尾追加到站）
+            if (tl.isNotEmpty) Expanded(child: Padding(padding: const EdgeInsets.only(top: 2),
+              child: Text(tl + (st == "有货" ? "·到站 ${AgvApi.fmtT(s!["since"])}" : (st == "占用中" && (AgvApi.asNum(s?["putAt"]) ?? 0) == 0 ? "·进行中" : "")),
+                maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 9.5, height: 1.35, color: st == "有货" ? const Color(0xFF90A4AE) : c)))),
+            if (st == "有货" && _canCtl) Align(alignment: Alignment.centerRight, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _clearStation(code),
+              child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("清台", style: TextStyle(fontSize: 11.5, color: Color(0xFF1565C0), fontWeight: FontWeight.bold))))),
+            if (st == "空闲" && _canCtl) ...[
+              const Spacer(),
+              Align(alignment: Alignment.centerRight, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _markBusy(code),
+                child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("标记占用", style: TextStyle(fontSize: 10.5, color: Color(0xFFE65100), fontWeight: FontWeight.bold))))),
+            ],
           ]));
       }).toList());
   }
