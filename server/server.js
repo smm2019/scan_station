@@ -880,6 +880,24 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, days, totalN, avgDur: totalN ? Math.round(totalDur / totalN) : 0,
           cars, heat, heatDays: Array.from({ length: 7 }, (_, i) => dstr(dayBase.getTime() + i * 86400000)) });
       }
+      // ================= ⑬ APK 自动更新：版本查询 + 下载（登录可用） =================
+      const APP_DIR = path.join(DATA_DIR, 'app');
+      const APP_VER = path.join(APP_DIR, 'version.json');
+      const APP_APK = path.join(APP_DIR, 'app-release.apk');
+      if (req.method === 'GET' && p === '/api/app/version') {
+        try {
+          if (!fs.existsSync(APP_VER)) return send(res, 200, { ok: true, has: false });
+          const v = JSON.parse(fs.readFileSync(APP_VER, 'utf8'));
+          return send(res, 200, { ok: true, has: fs.existsSync(APP_APK), ...v, size: fs.existsSync(APP_APK) ? fs.statSync(APP_APK).size : 0 });
+        } catch (e) { return send(res, 200, { ok: false, msg: e.message }); }
+      }
+      if (req.method === 'GET' && p === '/api/app/download') {
+        if (!fs.existsSync(APP_APK)) return send(res, 404, { ok: false, msg: '尚无上传APK' });
+        const st = fs.statSync(APP_APK);
+        res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': st.size, 'Content-Disposition': 'attachment; filename="app-release.apk"' });
+        fs.createReadStream(APP_APK).pipe(res);
+        return;
+      }
       if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工干预站台：state=有货(占用)/空闲(清台)
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);

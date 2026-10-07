@@ -265,6 +265,7 @@ class _LoginPageState extends State<LoginPage> {
       // 修复：登录成功必须立即刷新全局会话，否则 Auth.user 仍是上次登录账号的残留
       Auth.user = lu;
       Auth.features = lf;
+      Future.delayed(const Duration(seconds: 3), () => AppUpdater.checkAtLaunch()); // ⑬登录后静默检查APK更新
       widget.onLoggedIn();
       if (Auth.user!.mustChangePw) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("首次登录，请尽快在 设置→账号与权限 修改密码"), backgroundColor: Colors.orange));

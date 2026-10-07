@@ -41,8 +41,11 @@ part 'diag_page.dart'; // ⑥设备诊断页
 part 'loc_map_page.dart'; // ③货位占用可视化
 part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 part 'agv_report_page.dart'; // ⑦AGV效率报表
+part 'update_page.dart'; // ⑬APK自动更新
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
+/// ⑬全局导航key：更新弹窗用（App启动即可弹，不依赖某页面context）
+final GlobalKey<NavigatorState> _globalNavigatorKey = GlobalKey<NavigatorState>();
 
 /// 全局底部扫码条：固定在页面底部，扫码枪输入永远有落点；提交后由各页处理器清空回焦
 class ScanBar extends StatelessWidget {
@@ -960,6 +963,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _globalNavigatorKey,
       title: "AGV货位采集器",
       theme: ThemeData(primarySwatch: Colors.blue),
       home: const AuthGate(), //登录门禁：无有效会话显示登录页
