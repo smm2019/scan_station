@@ -23,6 +23,13 @@ if (flutterVersionName == null) {
     flutterVersionName = '1.0'
 }
 
+// ⑬正式签名：CI 从 GitHub Secret 还原 keystore 并写 android/key.properties；本地无此文件时回退 debug 签名
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     namespace = "com.example.scan_station"
     compileSdk = flutter.compileSdkVersion
@@ -48,11 +55,21 @@ android {
         versionName flutterVersionName
     }
 
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            release {
+                keyAlias = keystoreProperties['keyAlias']
+                keyPassword = keystoreProperties['keyPassword']
+                storeFile = rootProject.file(keystoreProperties['storeFile'])
+                storePassword = keystoreProperties['storePassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.debug
+            // 有 key.properties=正式签名（CI出包，可自动更新覆盖）；无=debug签名（仅限本地调试，与线上包互斥）
+            signingConfig = keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
         }
     }
 }
