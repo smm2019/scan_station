@@ -209,6 +209,17 @@ class AgvApi {
     return null;
   }
 
+  /// 站台任务时间线：接令(离开待命点)/叉出/放架；0=尚未发生不显示（防pickAt=0渲染成08:00假时间）
+  static String stationTimeline(Map? s) {
+    final dir = s?["dir"]?.toString() ?? "out";
+    final st = asNum(s?["startAt"]), pk = asNum(s?["pickAt"]), pt = asNum(s?["putAt"]);
+    final seg = <String>[];
+    if (st != null && st > 0) seg.add("接令 ${fmtClock(st)}");
+    if (pk != null && pk > 0) seg.add("${dir == "in" ? "叉离" : "叉出"} ${fmtClock(pk)}");
+    if (pt != null && pt > 0) seg.add("放架 ${fmtClock(pt)}");
+    return seg.join(" · ");
+  }
+
   // ---------- 状态文案 ----------
   static const taskStateText = {-2: "已放弃", -1: "已挂起", 0: "待执行", 1: "执行中", 2: "已完成", 5: "已超时", 6: "已清除"};
   static String taskStateOf(dynamic s) { final v = s is int ? s : int.tryParse("$s") ?? 99; return taskStateText[v] ?? "状态$v"; }
@@ -637,10 +648,10 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
             const Spacer(),
             Text(st == "有货" ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}" : (st == "占用中" ? "任务 ${s?["via"] ?? ""}" : "可正常叫车/入库"),
               maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, color: st == "空闲" ? Colors.blueGrey : c)),
-            // 节点时间戳：占用中→已叉出货架（预计到达）；有货→叉出与到站全程
-            if (st == "占用中" && AgvApi.asNum(s?["pickAt"]) != null) Text("已叉出货架 ${AgvApi.fmtClock(AgvApi.asNum(s!["pickAt"])!)}", style: const TextStyle(fontSize: 10, color: Color(0xFF1565C0))),
+            // 节点时间线：占用中→按方向显示接令/叉出(出库)或接令/叉离(入库)；有货→接令·叉出·到站全程
+            if (st == "占用中" && AgvApi.stationTimeline(s).isNotEmpty) Text(AgvApi.stationTimeline(s) + (AgvApi.asNum(s?["pickAt"]) != null && AgvApi.asNum(s!["pickAt"])! > 0 && (s?["dir"] ?? "out") == "out" ? " · 即将到站" : ""), style: const TextStyle(fontSize: 10, color: Color(0xFF1565C0))),
             if (st == "有货" && (s?["since"] ?? "").toString().isNotEmpty) Row(children: [
-              Expanded(child: Text((AgvApi.asNum(s?["pickAt"]) != null ? "叉出 ${AgvApi.fmtClock(AgvApi.asNum(s!["pickAt"])!)} · " : "") + "到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE)))),
+              Expanded(child: Text((AgvApi.stationTimeline(s).isNotEmpty ? AgvApi.stationTimeline(s) + " · " : "") + "到站 ${AgvApi.fmtT(s!["since"])}", style: const TextStyle(fontSize: 10, color: Color(0xFF90A4AE)))),
               if (_canCtl) GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _clearStation(code),
                 child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("清台", style: TextStyle(fontSize: 11, color: Color(0xFF1565C0), fontWeight: FontWeight.bold)))),
             ]),
