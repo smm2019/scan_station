@@ -295,6 +295,20 @@ class AgvApi {
     }
     return [pick, put];
   }
+
+  /// 任务时间线：建单→接令→叉出→放架；未放架时按进度标注 排队中/取货中/送货中
+  static String taskTimeline(Map t) {
+    final bd = rcsTs(t["buildTime"]?.toString() ?? ""), ex = rcsTs(t["exeTime"]?.toString() ?? "");
+    final nt = nodeTimesOf(t);
+    final seg = <String>[];
+    if (bd > 0) seg.add("建单 ${fmtClock(bd)}");
+    if (ex > 0) seg.add("接令 ${fmtClock(ex)}");
+    if (nt[0] > 0) seg.add("叉出 ${fmtClock(nt[0])}");
+    if (nt[1] > 0) seg.add("放架 ${fmtClock(nt[1])}");
+    else if (ex > 0) seg.add(nt[0] > 0 ? "送货中" : "取货中");
+    else if (bd > 0) seg.add("排队中");
+    return seg.join(" · ");
+  }
 }
 
 // ===================== AGV模块主页面：任务 / 车辆 / 交管 / 实时界面 =====================
@@ -528,6 +542,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
             Text("货物：起点 $sp 未入账本/账本未同步，无法反查", style: const TextStyle(fontSize: 11, color: Color(0xFF90A4AE))),
           Text("创建 ${AgvApi.fmtT(t["buildTime"])}　执行 ${AgvApi.fmtT(t["exeTime"])}${done && t["finishTime"] != null ? "　完成 ${AgvApi.fmtT(t["finishTime"])}" : ""}",
             style: const TextStyle(fontSize: 11, color: Color(0xFF90A4AE))),
+          if (!done && AgvApi.taskTimeline(t).isNotEmpty) Padding(padding: const EdgeInsets.only(top: 3),
+            child: Text("⏱ ${AgvApi.taskTimeline(t)}", style: const TextStyle(fontSize: 11, color: Color(0xFF1565C0), fontWeight: FontWeight.w600))),
         ]));
     }
     final act = _tasks.where((t) => (t["taskState"] == 0 || t["taskState"] == 1)).toList();

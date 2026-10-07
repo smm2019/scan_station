@@ -1310,6 +1310,7 @@ async function rcsLogin() {
 }
 function parsePts(t) { try { const s = JSON.parse(t.suspensionMsg || '{}'); return { sp: String(s.startPoint || '').toUpperCase(), ep: String(s.endPoint || '').toUpperCase() }; } catch (_) { return { sp: '', ep: '' }; } }
 function rcsTs(s) { s = String(s || ''); if (s.length < 14) return 0; return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`).getTime(); }
+function dstr(ms) { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()}`; } // 报表/驾驶舱共用
 // 任务节点时间：取货点(operType=0)完成=离开起始库位，放货点(operType=1)完成=到达目标库位
 function nodeTimes(t) { let pickAt = 0, putAt = 0; for (const d of (t.taskDetailList || [])) { if (Number(d.state) === 2) { if (Number(d.operType) === 0) pickAt = rcsTs(d.finishTime) || pickAt; else if (Number(d.operType) === 1) putAt = rcsTs(d.finishTime) || putAt; } } return { pickAt, putAt, startAt: rcsTs(t.exeTime), buildAt: rcsTs(t.buildTime) }; }
 async function rcsPoll() {
@@ -1330,7 +1331,14 @@ async function rcsPoll() {
     const { sp, ep } = parsePts(t);
     const nt = nodeTimes(t);
     if (isCK(ep)) mark(ep, { state: '占用中', dir: 'out', via: '任务 ' + (t.dispatchNo || '').slice(-6), pickAt: nt.pickAt, startAt: nt.startAt, buildAt: nt.buildAt }); // 出库在途：buildAt=建单，startAt=车接令出发，pickAt>0=已叉出货架
-    if (isCK(sp)) mark(sp, { state: '占用中', dir: 'in', via: '任务 ' + (t.dispatchNo || '').slice(-6), pickAt: nt.pickAt, putAt: nt.putAt, startAt: nt.startAt, buildAt: nt.buildAt }); // 入库取走中：pickAt=叉离站台，putAt=放货架
+    if (isCK(sp)) {
+      if (nt.pickAt > 0) { // 入库已叉离站台：物理已空→立即转空闲，并压制该站台旧的"有货"判定（货被叉回货架途中）
+        db.rcsStations = db.rcsStations || {};
+        db.rcsCleared = db.rcsCleared || {};
+        db.rcsCleared[sp] = Math.max(db.rcsCleared[sp] || 0, nt.pickAt);
+        delete db.rcsStations[sp];
+      } else mark(sp, { state: '占用中', dir: 'in', via: '任务 ' + (t.dispatchNo || '').slice(-6), pickAt: nt.pickAt, putAt: nt.putAt, startAt: nt.startAt, buildAt: nt.buildAt }); // 入库去程：站台预留
+    }
   }
   // 出库完成→有货：按"到站那一刻快照的标签清单"判定清台；清台后的任务记入rcsDone，防止货架位补了新框又被误判有货
   const nowMs = Date.now();
@@ -1420,7 +1428,7 @@ function agvStationFree(stn, nowMs, runT, assigned) {
   const s = (db.rcsStations || {})[stn];
   if (s && (s.state === '有货' || s.state === '占用中')) return false;
   if ((db.rcsManual || {})[stn] && nowMs - db.rcsManual[stn] < 30 * 60000) return false;
-  for (const t of runT) { const { sp, ep } = parsePts(t); if (sp === stn || ep === stn) return false; } // 有任务(含入库)指向该台 → 出库排队等
+  for (const t of runT) { const { sp, ep } = parsePts(t); if (ep === stn) return false; if (sp === stn && !(nodeTimes(t).pickAt > 0)) return false; } // 出库将到=占用；入库已叉离=物理已空可用
   if ((assigned || []).includes(stn)) return false;
   for (const q of db.agvQueue || []) if (q.station === stn && (q.state === '下发中' || q.state === '已下发')) return false;
   return true;
