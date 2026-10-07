@@ -817,6 +817,49 @@ const server = http.createServer(async (req, res) => {
         save();
         return send(res, 200, { ok: true, msg: 'WMAS配置已保存' });
       }
+      // ================= 数据驾驶舱（只读聚合，登录即可看） =================
+      if (req.method === 'GET' && p === '/api/dashboard') {
+        const dayMs = 86400000;
+        const now = new Date();
+        const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const dstr = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()}`; };
+        // 今日入库：采集流水按标签去重（排除作废）
+        const inToday = new Map();
+        const trendIn = Array(7).fill(0), trendOut = Array(7).fill(0);
+        for (const s of Object.values(db.scanlog || {})) {
+          if (s.cx || !s.t) continue;
+          const dayIdx = Math.floor((s.t - todayStart) / dayMs);
+          if (dayIdx >= 0 && dayIdx <= 6) { trendIn[dayIdx] = 0; } // 占位，下面统一算
+          if (s.t >= todayStart) { if (!inToday.has(s.code) || (inToday.get(s.code).t || 0) < s.t) inToday.set(s.code, s); }
+        }
+        const inBoxes = inToday.size;
+        const inQty = [...inToday.values()].reduce((s, x) => s + (Number(x.q) || 0), 0);
+        // 7日入库/出库按天分桶（标签数口径）
+        const bucket = (arr, m) => { const day = Math.floor((m - todayStart) / dayMs); if (day >= 0 && day <= 6) arr[day]++; };
+        const inSeen = new Set(), outSeen = new Set();
+        for (const s of Object.values(db.scanlog || {})) {
+          if (s.cx || !s.t || !s.code || inSeen.has(s.code + Math.floor(s.t / dayMs))) continue;
+          inSeen.add(s.code + Math.floor(s.t / dayMs)); bucket(trendIn, s.t);
+        }
+        for (const tmb of db.ledgerTomb || []) { if (tmb.t) bucket(trendOut, tmb.t); }
+        // 今日AGV：领料单 agvCalled 时间戳在今天
+        let agvToday = 0;
+        const st = { pending: 0, accepted: 0, ready: 0 };
+        for (const r of db.requisitions || []) {
+          if (st[r.status] !== undefined) st[r.status]++;
+          for (const it of r.items || []) for (const e of (it.agvCalled || [])) {
+            const ms = Date.parse(String(e.t || '')); if (Number.isFinite(ms) && ms >= todayStart) agvToday++;
+          }
+        }
+        // 在库与站台
+        const locs = new Set(db.ledger.map((x) => String(x.l).toUpperCase()));
+        const stnBusy = Object.values(db.rcsStations || {}).filter((s) => s.state === '有货' || s.state === '占用中').length;
+        const queueNow = (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length;
+        return send(res, 200, { ok: true, at: new Date().toISOString(),
+          kpi: { inBoxes, inQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday, agvQueue: queueNow,
+            stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal: 8 },
+          trend: Array.from({ length: 7 }, (_, i) => ({ d: dstr(todayStart + i * dayMs), in: trendIn[i], out: trendOut[i] })) });
+      }
       if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工干预站台：state=有货(占用)/空闲(清台)
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);

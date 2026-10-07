@@ -39,6 +39,7 @@ part 'agv_api.dart'; // AGV调度系统(哈工库讯RCS)：任务/车辆/交管�
 part 'local_log.dart'; // ⑤本地审计日志 + ⑦全局异常兜底落盘 + 审计查看页
 part 'diag_page.dart'; // ⑥设备诊断页
 part 'loc_map_page.dart'; // ③货位占用可视化
+part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
 
@@ -3189,6 +3190,12 @@ class SettingsMenuPage extends StatelessWidget {
             title: "AGV调度系统(哈工库讯)", subtitle: "登录账号 / 实时大屏地址（AGV模块数据源）",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AgvSettingPage())),
+          ),
+          _settingTile(
+            context, icon: Icons.insights_outlined, color: const Color(0xFF3949AB),
+            title: "数据驾驶舱", subtitle: "今日出入库/AGV/站台 实时KPI与7日趋势",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const DashPage())),
           ),
           _settingTile(
             context, icon: Icons.grid_view_outlined, color: const Color(0xFF00897B),
