@@ -201,6 +201,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       _apply(r);
       setState(() => _stage = 2);
       _startBeat();
+      Future.delayed(const Duration(seconds: 3), () => AppUpdater.checkAtLaunch()); // 冷启动自动续期成功→静默查APK更新
     } else if (r["net"] == true) {
       // 网络异常 → 离线宽限
       final v = await AuthStore.lastVerifiedMs();

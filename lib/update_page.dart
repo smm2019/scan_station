@@ -3,28 +3,29 @@ part of 'main.dart';
 // ===================== ⑬ APK 自动更新：版本检查 + 下载进度 + 调起系统安装 =====================
 class AppUpdater {
   static const localVersion = "1.0.0"; // 与 pubspec version 一致，发版同步改
-  static const localBuild = 3;         // 与 pubspec +N 一致，发版同步改
+  static const localBuild = 4;         // 与 pubspec +N 一致，发版同步改
   static const _ch = MethodChannel("app.installer");
   static bool _asked = false;
+  static void _m(String m, {bool err = true}) { final c = nav.currentContext; if (c != null) _toast(c, m, err: err); }
 
   static GlobalKey<NavigatorState> get nav => _globalNavigatorKey;
 
   /// 登录后延迟检查：有新版弹窗（下次再说/立即更新）；任何失败完全静默不打扰
-  static Future<void> checkAtLaunch() async {
-    if (_asked) return;
+  static Future<void> checkAtLaunch({bool manual = false}) async {
+    if (!manual && _asked) return;
     _asked = true;
     try {
       final server = await AuthStore.serverUrl();
-      if (server.isEmpty) return;
+      if (server.isEmpty) { if (manual) _m("未配置服务器地址，无法检查更新"); return; }
       final r = await http.get(Uri.parse("$server/api/app/version"), headers: {"Authorization": "Bearer ${await AuthStore.token()}"})
           .timeout(const Duration(seconds: 6));
       final j = jsonDecode(utf8.decode(r.bodyBytes)) as Map;
-      if (j["ok"] != true || j["has"] != true) return;
+      if (j["ok"] != true || j["has"] != true) { if (manual) _m(j["ok"] != true ? "检查失败：${j["msg"] ?? "服务器异常"}" : "服务器暂无可更新的安装包"); return; }
       final build = (j["build"] as num?)?.toInt() ?? 0;
       // 本机基准：pubspec常量 与 上次成功调起安装的build 取大者（防更新后重复提示）
       final sp = await SharedPreferences.getInstance();
       final installed = sp.getInt('installed_build') ?? 0;
-      if (build <= (localBuild > installed ? localBuild : installed)) return;
+      if (build <= (localBuild > installed ? localBuild : installed)) { if (manual) _m("当前已是最新版本 v$localVersion+$localBuild", err: false); return; }
       final ctx = nav.currentContext;
       if (ctx == null) return;
       final mb = ((j["size"] as num?)?.toInt() ?? 0) / 1048576;
@@ -37,7 +38,7 @@ class AppUpdater {
         ],
       ));
       if (go == true) await _download(ctx, build);
-    } catch (_) {}
+    } catch (e) { if (manual) _m("检查更新失败：$e"); }
   }
 
   static Future<void> _download(BuildContext context, int build) async {

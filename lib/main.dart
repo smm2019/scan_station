@@ -1482,12 +1482,9 @@ class _MainPageState extends State<MainPage>
         setState(() {
           _currentBatchId = active.first.batchId;
         });
-      } else {
-        await _createNewBatch();
       }
-    } else {
-      await _createNewBatch();
     }
+    // 无未归档批次时保持空状态：不弹框、不自动建批，由操作者本人点「+ 新建采集批次」创建
   }
 
   //====修改：新建批次弹窗，增加批次备注输入====
@@ -4059,6 +4056,14 @@ class SettingsMenuPage extends StatelessWidget {
               ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text("请在底部「导出」菜单中开启 WiFi 局域网服务")));
             },
+          ),
+          _settingTile(
+            context,
+            icon: Icons.system_update_alt,
+            color: const Color(0xFF00897B),
+            title: "检查更新",
+            subtitle: "当前 v${AppUpdater.localVersion}+${AppUpdater.localBuild} · 手动查询服务器新版本",
+            onTap: () => AppUpdater.checkAtLaunch(manual: true),
           ),
           _settingTile(
             context,
