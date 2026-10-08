@@ -836,6 +836,27 @@ const server = http.createServer(async (req, res) => {
         const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '7') || 7));
         return send(res, 200, { ok: true, days, stages: buildFunnel(days) });
       }
+      // 按标签反查AGV搬运链路（采集详情用）：队列项+任务沉淀 起终点/车号/节点时间
+      if (req.method === 'GET' && p === '/api/agv/taskOf') {
+        const code = String(url.searchParams.get('c') || '').trim().toUpperCase();
+        if (!code) return send(res, 400, { ok: false, msg: '缺少 c' });
+        const q = (db.agvQueue || []).filter((x) => String(x.code).toUpperCase() === code).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+        const spKey = q ? String(q.fromLoc).toUpperCase() : '';
+        let task = null;
+        if (q && q.wmsTask && db.agvTasks && db.agvTasks[q.wmsTask]) task = { ...db.agvTasks[q.wmsTask], no: q.wmsTask };
+        if (!task) { // 时间窗+起点匹配最近一条出库任务
+          const lo = q ? (q.at || 0) - 3600000 : Date.now() - 2 * 86400000;
+          for (const [no, t] of Object.entries(db.agvTasks || {})) { if (t.ck === 'out' && t.sp === spKey && t.fin >= lo && (!task || t.fin > task.fin)) task = { ...t, no }; }
+        }
+        if (!task && spKey) { // 在途任务（未沉淀）
+          for (const t of db.rcsRun || []) { if (t.sp === spKey) { task = { no: t.no, sp: t.sp, ep: t.ep, ex: t.startAt || 0, pick: t.pickAt || 0, fin: 0 }; break; } }
+        }
+        const fmt2 = (ms) => ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+        const stText = task ? (task.fin ? '已完成' : (task.pick ? '已叉出送货中' : (task.ex ? '取货中' : '排队中'))) : '';
+        const tl = task ? [task.buildAt ? `建单 ${fmt2(task.buildAt)}` : '', task.ex ? `接令 ${fmt2(task.ex)}` : '', task.pick ? `叉出 ${fmt2(task.pick)}` : '', task.fin ? `到站 ${fmt2(task.fin)}` : ''].filter(Boolean).join(' · ') : '';
+        const car = task ? (task.car || (q ? 0 : 0)) : 0;
+        return send(res, 200, { ok: true, task: task ? { no: task.no, sp: task.sp, ep: task.ep, car: task.car || null, stateText: stText, tl } : null, queueState: q ? q.state : '' });
+      }
       if (req.method === 'POST' && p === '/api/agv/queue/cancel') { // 取消排队项；传 reqId 则清空该单全部未下发项
         const b = await readBody(req);
         const reqId = String(b.reqId || '').trim();

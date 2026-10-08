@@ -3119,11 +3119,60 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
             _detailItem("MES零件号", r.mesPartNo ?? "无"),
 _detailItem("MES数量", r.mesQty?.toString() ?? "无"),
 _detailItem("MES生产日期", r.mesCreateTime ?? "无"),
+            FutureBuilder<RecordExtra?>(
+              future: _globalIsar.recordExtras.filter().goodsCodeEqualTo(r.goodsCode.toUpperCase()).findFirst(),
+              builder: (ctx, ex) {
+                if (!ex.hasData) return const SizedBox.shrink();
+                final e = ex.data!;
+                return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _detailItem("托盘号", e.palletId.isEmpty ? "（单件，非整托）" : e.palletId),
+                  if (e.palletId.isNotEmpty) FutureBuilder<List<RecordExtra>>(
+                    future: _globalIsar.recordExtras.filter().palletIdEqualTo(e.palletId).findAll(),
+                    builder: (ctx2, s2) => _detailItem("同托标签", s2.hasData ? s2.data!.map((x) => x.goodsCode).join("、") : "…"),
+                  ),
+                  if ((e.mesItemName ?? "").isNotEmpty) _detailItem("物料名称", e.mesItemName),
+                  if ((e.mesLotNo ?? "").isNotEmpty) _detailItem("批次", e.mesLotNo),
+                  if ((e.operator ?? "").isNotEmpty) _detailItem("采集人", e.operator),
+                ]);
+              },
+            ),
+            if (r.workType == 0) FutureBuilder<Map>(
+              future: _fetchAgvChain(r),
+              builder: (ctx, f2) {
+                final d = f2.data;
+                if (d == null) return _detailItem("AGV搬运链路", f2.connectionState == ConnectionState.done ? "无AGV任务记录（人工搬运或历史已清理）" : "查询中…");
+                if (d.isEmpty) return _detailItem("AGV搬运链路", "无AGV任务记录（人工搬运或历史已清理）");
+                return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  _detailItem("搬运路线", "${d["sp"]} → ${d["ep"]}"),
+                  _detailItem("服务车辆", (d["car"] ?? "").isEmpty ? "未分配/未知" : d["car"].toString()),
+                  _detailItem("任务状态", (d["state"] ?? "").toString()),
+                  if ((d["tl"] ?? "").toString().isNotEmpty) _detailItem("节点时间", d["tl"].toString()),
+                ]);
+              },
+            ),
 
           ],
         ),
       ),
     );
+  }
+
+  /// 反查该货码的AGV搬运链路：服务器（队列+任务沉淀）查询，失败静默返回空
+  Future<Map> _fetchAgvChain(ScanRecord r) async {
+    final code = r.goodsCode.toUpperCase();
+    final server = await AuthStore.serverUrl();
+    final tk = await AuthStore.token();
+    if (server.isEmpty || tk.isEmpty) return {};
+    try {
+      final resp = await http.get(Uri.parse("$server/api/agv/taskOf?c=$code"), headers: {"Authorization": "Bearer $tk"}).timeout(const Duration(seconds: 6));
+      final j = jsonDecode(utf8.decode(resp.bodyBytes));
+      if (j is Map && j["ok"] == true && j["task"] is Map) {
+        final t = j["task"] as Map;
+        final carId = t["car"];
+        return {"sp": t["sp"] ?? "?", "ep": t["ep"] ?? "?", "car": carId is num ? "AGV${carId.toInt().toString().padLeft(2, "0")}" : "", "state": t["stateText"] ?? "", "tl": t["tl"] ?? ""};
+      }
+    } catch (_) {}
+    return {};
   }
 
   Widget _detailItem(String label, String value){
@@ -3248,7 +3297,7 @@ class SettingsMenuPage extends StatelessWidget {
             title: "关于", subtitle: "AGV货位采集器",
             onTap: () => showDialog(context: context, builder: (ctx) => AlertDialog(
               title: const Text("关于"),
-              content: const Text("AGV货位采集器 v1.0\n适配工业PDA\n支持MES标签查询与整托合并采集"),
+              content: Text("AGV货位采集器 v${AppUpdater.localVersion}+${AppUpdater.localBuild}\n适配工业PDA\n支持MES标签查询与整托合并采集"),
               actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("关闭"))],
             )),
           ),

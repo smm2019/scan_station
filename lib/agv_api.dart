@@ -118,14 +118,15 @@ class AgvApi {
   }
 
   /// AGV系统请求：自动带token，过期静默重登一次。返回 {ok,data} / {ok:false,msg}
-  static Future<Map<String, dynamic>> req(String method, String path, {Map? body}) async {
+  static Future<Map<String, dynamic>> req(String method, String path, {Map? body, String? rawBody}) async {
     var t = await token();
     if (t == null) return {"ok": false, "msg": "AGV系统未登录：请到 设置→AGV调度系统 填写账号密码"};
-    var r = await _raw(method, path, body == null ? null : jsonEncode(body), t);
+    final b = rawBody ?? (body == null ? null : jsonEncode(body));
+    var r = await _raw(method, path, b, t);
     if (_authFail(r)) {
       t = await login();
       if (t == null) return {"ok": false, "msg": "AGV系统登录失效且自动重登失败"};
-      r = await _raw(method, path, body == null ? null : jsonEncode(body), t);
+      r = await _raw(method, path, b, t);
     }
     if (r == null) return {"ok": false, "msg": "AGV系统无响应"};
     final j = r["json"];
@@ -179,6 +180,36 @@ class AgvApi {
   static Future<Map> traffic() async {
     final r = await req("GET", "/agv/debug/getLockResourceListForStatus");
     return r["ok"] == true && r["data"] is Map ? Map.of(r["data"] as Map) : {};
+  }
+
+  // ---------- 任务操作（写操作：与调度大屏同款按钮；detailId 0=取货 1=卸货） ----------
+  static const taskOps = {
+    "resetPick": {"label": "重置取货", "tip": "让该车重新执行取货动作", "danger": false},
+    "resetPut": {"label": "重置卸货", "tip": "让该车重新执行卸货动作", "danger": false},
+    "recoverPick": {"label": "恢复取货", "tip": "恢复已重置/异常的取货节点继续执行", "danger": false},
+    "recoverPut": {"label": "恢复卸货", "tip": "恢复已重置/异常的卸货节点继续执行", "danger": false},
+    "top": {"label": "置顶", "tip": "该任务插到调度队列最前，优先派车", "danger": false},
+    "cancelTop": {"label": "取消置顶", "tip": "恢复该任务正常排队顺序", "danger": false},
+    "delete": {"label": "删除任务", "tip": "删除该未执行任务，AGV 不会再执行它", "danger": true},
+  };
+  static Future<Map<String, dynamic>> taskAction(String op, String dispatchNo, {int detailId = 0}) async {
+    if (dispatchNo.isEmpty) return {"ok": false, "msg": "缺少任务号"};
+    final enc = Uri.encodeComponent(dispatchNo);
+    switch (op) {
+      case "resetPick": return req("GET", "/task/resetTask?dispatchNo=$enc&detailId=0");
+      case "resetPut": return req("GET", "/task/resetTask?dispatchNo=$enc&detailId=1");
+      case "recoverPick": return req("GET", "/task/recoverTask?dispatchNo=$enc&detailId=0");
+      case "recoverPut": return req("GET", "/task/recoverTask?dispatchNo=$enc&detailId=1");
+      case "top": return req("POST", "/task/taskToTop", rawBody: '"$dispatchNo"');
+      case "cancelTop": return req("POST", "/task/taskToCancelTop", rawBody: '"$dispatchNo"');
+      case "delete": return req("DELETE", "/task/deleteByDispatchNo", rawBody: '"$dispatchNo"');
+      default: return {"ok": false, "msg": "未知操作"};
+    }
+  }
+  /// 解除交管：强制释放指定点位的交管锁（车被死锁卡住时用）
+  static Future<Map<String, dynamic>> unlockStation(String landmarkCode) async {
+    if (landmarkCode.isEmpty) return {"ok": false, "msg": "缺点位号"};
+    return req("GET", "/agv/debug/unlockStation?landmarkCode=${Uri.encodeComponent(landmarkCode)}");
   }
 
   // ---------- 车辆控制（写操作：参数=车辆IP，与调度系统大屏同款按钮） ----------
@@ -430,6 +461,33 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
     if (r["ok"] == true) _load(silent: true);
   }
 
+  /// 任务操作：确认弹窗（删除红色警示）→ 下发 → 提示并刷新
+  Future<void> _taskAct(Map t, String op) async {
+    final a = AgvApi.taskOps[op];
+    if (a == null) return;
+    final no = "${t["dispatchNo"] ?? ""}";
+    final danger = a["danger"] == true;
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: Text(danger ? "⚠️ ${a["label"]}" : "${a["label"]}", style: TextStyle(color: danger ? Colors.red : null)),
+      content: Text("对任务 $no 执行「${a["label"]}」？\n${a["tip"]}\n\n注意：这会改变真实 AGV 调度。"),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+        FilledButton(style: danger ? FilledButton.styleFrom(backgroundColor: Colors.red) : null, onPressed: () => Navigator.pop(ctx, true), child: const Text("确认"))],
+    ));
+    if (ok != true || !mounted) return;
+    final r = await AgvApi.taskAction(op, no);
+    _toast(r["ok"] == true ? "✅ ${a["label"]}：已执行" : "❌ ${a["label"]}失败：${r["msg"]}");
+    if (r["ok"] == true) _load(silent: true);
+  }
+
+  Widget _taskOpBtn(Map t, String op) {
+    final a = AgvApi.taskOps[op]!, danger = a["danger"] == true;
+    final color = danger ? Colors.red : const Color(0xFF1565C0);
+    return ActionChip(avatar: Icon(danger ? Icons.delete_outline : Icons.tune, size: 14, color: color),
+      label: Text(a["label"].toString(), style: TextStyle(fontSize: 10.5, color: color, fontWeight: FontWeight.w600)),
+      visualDensity: VisualDensity.compact, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      onPressed: () => _taskAct(t, op));
+  }
+
   Widget _ctrlBtn(Map c, String act) {
     final a = AgvApi.carActions[act]!, danger = a["danger"] == true;
     final color = danger ? Colors.red : (act == "charge" ? Colors.teal : const Color(0xFF1565C0));
@@ -546,6 +604,11 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
             style: const TextStyle(fontSize: 11, color: Color(0xFF90A4AE))),
           if (!done && AgvApi.taskTimeline(t).isNotEmpty) Padding(padding: const EdgeInsets.only(top: 3),
             child: Text("⏱ ${AgvApi.taskTimeline(t)}", style: const TextStyle(fontSize: 11, color: Color(0xFF1565C0), fontWeight: FontWeight.w600))),
+          // 任务操作按钮（与调度大屏同款；仅 agv_control 权限可见；置顶/删除仅待执行，执行中删除会车停半路）
+          if (_canCtl && !isCharge) Padding(padding: const EdgeInsets.only(top: 5),
+            child: Wrap(spacing: 5, runSpacing: 3, children: done
+              ? [_taskOpBtn(t, "recoverPick"), _taskOpBtn(t, "recoverPut")]
+              : [if (st == 0) _taskOpBtn(t, "top"), if (st == 0) _taskOpBtn(t, "delete"), _taskOpBtn(t, "resetPick"), _taskOpBtn(t, "resetPut")])),
         ]));
     }
     final act = _tasks.where((t) => (t["taskState"] == 0 || t["taskState"] == 1)).toList();
@@ -683,7 +746,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
       }).toList());
   }
 
-  // ---- 交管页签 ----
+  // ---- 交管页签：车辆级实时堵点（对齐调度大屏口径）+ 解除交管 ----
   Widget _trafficView(Set<int> blocked) {
     final names = _carName;
     final lm = _traffic["landmarkLocks"];
@@ -691,32 +754,78 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
     final zl = _traffic["zoneLocks"];
     final zones = zl is Map && zl["zoneList"] is List ? (zl["zoneList"] as List).whereType<Map>().toList() : <Map>[];
     Widget row(String k, String v) => Padding(padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(children: [SizedBox(width: 70, child: Text(k, style: const TextStyle(fontSize: 11, color: Color(0xFF90A4AE)))), Expanded(child: Text(v, style: const TextStyle(fontSize: 12)))]));
-    String carOf(dynamic e) => e is Map ? (names[e["agvId"]] ?? "${e["agvId"]}") : "$e";
+      child: Row(children: [SizedBox(width: 84, child: Text(k, style: const TextStyle(fontSize: 11, color: Color(0xFF90A4AE)))), Expanded(child: Text(v, style: const TextStyle(fontSize: 12)))]));
+    // 被拦停车辆：交管等待集合 ∪ 车辆 pause/lock 状态（zoneList的lockCars实测常年为空，不可用）
+    final jam = _cars.where((c) => blocked.contains(c["agvId"]) || c["carState"] == "pause" || c["lock"] == true).toList();
+    String zoneOf(String land) {
+      for (final z in zones) {
+        if (z["junctionLandmarkCodes"].toString().split(",").contains(land)) {
+          final rm = z["remarks"]?.toString() ?? "";
+          return rm.isNotEmpty ? rm : "交管区${z["zoneId"]}";
+        }
+      }
+      return "非交管区";
+    }
+    String carNameOf(dynamic cid) {
+      final i = cid is int ? cid : int.tryParse("$cid");
+      return names[i] ?? "AGV${(i ?? 0).toString().padLeft(2, "0")}";
+    }
+    final myId = jam.map((c) => "${c["agvId"]}").toSet();
     return ListView(padding: const EdgeInsets.only(bottom: 16), children: [
-      if (_traffic.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Center(child: Text("无交管数据", style: TextStyle(color: Colors.blueGrey)))),
-      if (_traffic.isNotEmpty) Padding(padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-        child: Text("交管区 ${zones.length} 个 · 被交管等待 ${blocked.length} 台 · 锁定点位 ${owners.length}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-      ...zones.map((z) {
-        final lock = (z["lockCars"] is List ? z["lockCars"] as List : const []).map(carOf).join("、");
-        final blk = (z["blockedCars"] is List ? z["blockedCars"] as List : const []).map(carOf).join("、");
-        return Container(margin: const EdgeInsets.fromLTRB(10, 6, 10, 0), padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE3E8F0))),
+      Padding(padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+        child: Text("被拦停 ${jam.length} 台 · 锁定点位 ${owners.length} · 交管区 ${zones.length} 个",
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: jam.isEmpty ? Colors.green : Colors.red.shade700))),
+      if (jam.isEmpty) const Padding(padding: EdgeInsets.all(20), child: Center(child: Text("当前没有被交管拦停的车辆", style: TextStyle(color: Colors.green, fontSize: 13)))),
+      ...jam.map((c) {
+        final site = "${c["currentSite"] ?? ""}";
+        final lockers = ((c["routeLockLands"] as List?) ?? const []).map((e) => e.toString())
+            .where((l) => owners[l] != null && !myId.contains("${owners[l]}")).toList();
+        return Container(margin: const EdgeInsets.fromLTRB(10, 5, 10, 0), padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.red.shade200)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
-              Expanded(child: Text("${z["remarks"] ?? "交管区${z["zoneId"]}"}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-              _tag("通行限${z["carNumber"] ?? 1}车", Colors.blueGrey),
+              Text("${c["carName"] ?? "AGV${c["agvId"]}"}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+              const SizedBox(width: 6),
+              _tag(c["carState"] == "pause" ? "暂停等待" : "被交管锁住", Colors.red),
+              const Spacer(),
+              if (_canCtl && site.isNotEmpty) ActionChip(avatar: const Icon(Icons.lock_open, size: 14, color: Colors.deepOrange),
+                label: const Text("解除交管", style: TextStyle(fontSize: 10.5, color: Colors.deepOrange, fontWeight: FontWeight.w600)),
+                visualDensity: VisualDensity.compact, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                onPressed: () => _unlockStation(site)),
             ]),
-            row("点位", "${z["junctionLandmarkCodes"] ?? "-"}"),
-            row("占行车辆", lock.isEmpty ? "—" : lock),
-            row("等待车辆", blk.isEmpty ? "—" : blk),
+            row("当前点位", "$site（${zoneOf(site)}）"),
+            row("拦停它的前车", lockers.isEmpty ? "—" : lockers.map((l) => "$l→${carNameOf(owners[l])}").join("、")),
           ]));
       }),
       if (owners.isNotEmpty) Padding(padding: const EdgeInsets.fromLTRB(12, 12, 12, 0), child: Text("点位占用明细（${owners.length}）", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
       if (owners.isNotEmpty) Container(margin: const EdgeInsets.fromLTRB(10, 6, 10, 0), padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE3E8F0))),
-        child: Wrap(spacing: 8, runSpacing: 4, children: owners.entries.map((e) => Text("${e.key}→${names[e.value] ?? "车${e.value}"}", style: const TextStyle(fontSize: 11, color: Color(0xFF455A64)))).toList())),
+        child: Wrap(spacing: 8, runSpacing: 4, children: owners.entries.map((e) => Text("${e.key}→${carNameOf(e.value)}", style: const TextStyle(fontSize: 11, color: Color(0xFF455A64)))).toList())),
+      Padding(padding: const EdgeInsets.fromLTRB(12, 12, 12, 0), child: Text("交管区配置（${zones.length}）", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+      ...zones.map((z) => Container(margin: const EdgeInsets.fromLTRB(10, 5, 10, 0), padding: const EdgeInsets.all(9),
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE3E8F0))),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Expanded(child: Text("${z["remarks"] ?? "交管区${z["zoneId"]}"}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12.5))),
+            _tag("通行限${z["carNumber"] ?? 1}车", Colors.blueGrey),
+          ]),
+          Text("点位：${z["junctionLandmarkCodes"] ?? "-"}", maxLines: 2, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10.5, color: Color(0xFF90A4AE))),
+        ]))),
     ]);
+  }
+
+  /// 解除交管：二次确认（红色警示）→ 释放点位交管锁 → 刷新
+  Future<void> _unlockStation(String land) async {
+    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text("⚠️ 解除交管", style: TextStyle(color: Colors.red)),
+      content: Text("强制释放点位 $land 的交管锁？\n\n该操作会让被拦车辆跳过交管等待继续行驶，请确认现场无车占路，否则有碰撞风险。"),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+        FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(ctx, true), child: const Text("确认解除"))],
+    ));
+    if (ok != true || !mounted) return;
+    final r = await AgvApi.unlockStation(land);
+    _toast(r["ok"] == true ? "✅ 点位 $land 交管锁已解除" : "❌ 解除失败：${r["msg"]}");
+    if (r["ok"] == true) _load(silent: true);
   }
 
   // ---- 实时界面页签 ----
