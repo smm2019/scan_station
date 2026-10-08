@@ -141,6 +141,7 @@ class AuthApi {
   static Future<Map> agvWmasConfig({required String host, required String account, required String pwd}) async =>
       _req("POST", "/api/agv/wmas-config", body: {"host": host, "account": account, "pwd": pwd}, token: await AuthStore.token());
   static Future<Map> dashboard() async => _req("GET", "/api/dashboard", token: await AuthStore.token());
+  static Future<Map> agvFunnel(int days) async => _req("GET", "/api/agv/funnel?days=$days", token: await AuthStore.token());
   static Future<Map> agvReport(int days) async => _req("GET", "/api/agv/report?days=$days", token: await AuthStore.token());
   static Future<Map> outboundSync(Map order) async =>
       _req("POST", "/api/outbound/sync", body: order, token: await AuthStore.token());

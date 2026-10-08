@@ -780,7 +780,8 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && p === '/api/rcs/stations') {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station));
-        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry' });
+        const holdAvg = {}; for (const [k, v] of Object.entries(db.rcsHoldStat || {})) holdAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
+        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry', holdAvg });
       }
       // ===== ① 2D实时地图快照：路网(缓存)+车辆(实时)+货架占用(账本)+站台(判定)+交管锁点 =====
       if (req.method === 'GET' && p === '/api/rcs/net') {
@@ -830,6 +831,10 @@ const server = http.createServer(async (req, res) => {
         }
         save(); rcsPoll(); // 立即调度一轮
         return send(res, 200, { ok: true, added, dup, msg: `已排队 ${added} 框${dup ? `（${dup} 框已在队列跳过）` : ''}` });
+      }
+      if (req.method === 'GET' && p === '/api/agv/funnel') {
+        const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '7') || 7));
+        return send(res, 200, { ok: true, days, stages: buildFunnel(days) });
       }
       if (req.method === 'POST' && p === '/api/agv/queue/cancel') { // 取消排队项；传 reqId 则清空该单全部未下发项
         const b = await readBody(req);
@@ -1521,8 +1526,15 @@ async function rcsPoll() {
     if (s.state !== '有货') continue;
     const codes = (s.codes || []).filter(Boolean);
     const cleared = codes.length ? (codes.some(c => issuedAll.has(c)) || !codes.some(c => ledgerCodes.has(c))) : (nowMs - (s.ts || 0) > 2 * 3600 * 1000);
-    if (cleared) { delete db.rcsStations[stn]; db.rcsDone[stn + '|' + (s.via || '')] = nowMs; } // 快照标签已发料/已消位 → 清台并记住该任务已完结
-    else if (nowMs - (s.ts || 0) > 6 * 3600 * 1000) delete db.rcsStations[stn]; // 超6小时兜底过期
+    if (cleared) {
+      db.rcsStations = db.rcsStations || {}; db.rcsHoldStat = db.rcsHoldStat || {};
+      const hold = Math.round(((nowMs - (s.ts || nowMs)) / 1000) / 60);
+      if (s.ts && hold > 0 && hold < 360) { const h = db.rcsHoldStat[stn] || (db.rcsHoldStat[stn] = { n: 0, sum: 0 }); h.n++; h.sum += hold; }
+      delete db.rcsStations[stn]; db.rcsDone[stn + '|' + (s.via || '')] = nowMs;
+    } else if (nowMs - (s.ts || 0) > 6 * 3600 * 1000) {
+      db.rcsHoldStat = db.rcsHoldStat || {}; if (s.ts) { const h = db.rcsHoldStat[stn] || (db.rcsHoldStat[stn] = { n: 0, sum: 0 }); h.n++; h.sum += 360; }
+      delete db.rcsStations[stn];
+    }
   }
   for (const [k, t0] of Object.entries(db.rcsDone)) { if (nowMs - t0 > 6 * 3600 * 1000) delete db.rcsDone[k]; }
   for (const [k, t0] of Object.entries(db.rcsManual)) { if (nowMs - t0 > 30 * 60 * 1000) delete db.rcsManual[k]; }
@@ -1537,7 +1549,7 @@ async function rcsPoll() {
     if (db.agvTasks[t.dispatchNo]) continue; // 任务号去重
     const { sp, ep } = parsePts(t);
     const ex = rcsTs(t.exeTime);
-    db.agvTasks[t.dispatchNo] = { car: t.exeAgvId ?? 0, ex, fin, dur: ex && fin > ex ? Math.round((fin - ex) / 1000) : 0, sp, ep, ck: isCK(ep) && !isCK(sp) ? 'out' : isCK(sp) && !isCK(ep) ? 'in' : 'other' };
+    db.agvTasks[t.dispatchNo] = { car: t.exeAgvId ?? 0, ex, fin, pick: nodeTimes(t).pickAt, dur: ex && fin > ex ? Math.round((fin - ex) / 1000) : 0, sp, ep, ck: isCK(ep) && !isCK(sp) ? 'out' : isCK(sp) && !isCK(ep) ? 'in' : 'other' };
   }
   { const cutoff = nowMs - 30 * 86400000; for (const [k, v] of Object.entries(db.agvTasks)) { if ((v.fin || 0) < cutoff) delete db.agvTasks[k]; } }
   // ===== 到站催扫：站台仍"有货"且到站超10分钟 → 通知叫车人（用快照标签，不受货架位补新框干扰） =====
@@ -1594,6 +1606,7 @@ async function rcsPoll() {
     for (const id of Object.keys(db.rcsJam)) { if (!blockedNow[id]) delete db.rcsJam[id]; } // 已通行→清记录
   } catch (_) {}
   agvDispatch(nowMs, runT).catch((e) => console.log('[agv-q] 调度异常', e.message)); // 排队调度：空闲站台→按队列下发
+  lowBatWatch(tk, nowMs).catch(() => {}); // ④D 低电不归巢看门狗
   save();
 }
 setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, 20 * 1000).unref();
@@ -1730,7 +1743,7 @@ async function agvDispatch(nowMs, runT) {
     if (!stn) continue; // 暂无空闲台：继续排队，下轮再看
     assigned.push(stn); q.station = stn; q.updAt = nowMs;
     if (!live) { q.plan = stn; console.log(`[agv-q·演算] 框 ${q.code} ${q.fromLoc} → ${stn}（切live后自动下发）`); continue; }
-    q.state = '下发中';
+    q.state = '下发中'; q.sentAt = Date.now(); // 漏斗：记录真实下发时刻
     const tk = await wmasToken();
     if (!tk) { q.state = '失败'; q.err = 'WMAS未配置/登录失败（PDA设置→AGV调度系统同步WMAS账号）'; continue; }
     let r;
@@ -1738,6 +1751,67 @@ async function agvDispatch(nowMs, runT) {
     q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.err = r.ok ? '' : r.msg;
     console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);
   }
+}
+
+// ===== ④D 低电不归巢看门狗：电量≤25%、不在充电且空闲超20分钟 → 通知全体仓管 =====
+async function lowBatWatch(tk, nowMs) {
+  if (!tk) return;
+  let cars = []; try { const cr = await rcsReq('/uds/car/getCarInfoList', 'GET', tk); cars = typeof cr.data === 'string' ? JSON.parse(cr.data) : (cr.data || []); } catch (_) { return; }
+  db.rcsLowBat = db.rcsLowBat || {};
+  const seen = {};
+  for (const c of cars) {
+    const id = c.agvId; const pw = Number(c.power) || 0;
+    const idle = !c.executeTaskNo && c.carState === 'idle' && c.charging !== true && c.communicationBreak !== true && c.enable === 1;
+    if (id !== undefined && pw > 0 && pw <= 25 && idle) {
+      seen[id] = 1;
+      if (!db.rcsLowBat[id]) { db.rcsLowBat[id] = { at: nowMs, notified: false }; continue; }
+      const j = db.rcsLowBat[id];
+      if (!j.notified && nowMs - j.at > 20 * 60 * 1000) {
+        j.notified = true;
+        const msg = `🔋 低电提醒：AGV${String(id).padStart(2, '0')} 电量 ${pw}% 已空闲 ${Math.round((nowMs - j.at) / 60000)} 分钟未回充，请安排充电或手动回桩`;
+        db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, ''));
+        console.log('[lowbat] ' + msg);
+      }
+    }
+  }
+  for (const id of Object.keys(db.rcsLowBat)) { if (!seen[id]) delete db.rcsLowBat[id]; } // 已回充/有任务/离线→清记录
+}
+
+// ===== ④A 全链路交付漏斗：接单→叫车→排队→下发→叉出→到站→清台 分段平均耗时（起终点+时间窗关联） =====
+function buildFunnel(days) {
+  const nowMs = Date.now(), since = nowMs - days * 86400000;
+  const tasks = Object.values(db.agvTasks || {}).filter((t) => t.ck === 'out' && t.fin >= since);
+  const findTask = (sp, ep, lo, hi) => { let best = null; for (const t of tasks) { if (t.sp === sp && t.ep === ep && t.fin >= lo && t.fin <= hi && (!best || t.fin < best.fin)) best = t; } return best; };
+  const samples = [];
+  const reqs = (db.requisitions || []).filter((r) => r.createdAt && Date.parse(r.createdAt) >= since - 86400000 && ['accepted', 'ready', 'done'].includes(r.status));
+  for (const r of reqs) {
+    const acceptT = (r.history || []).filter((h) => /接单/.test(String(h.text))).map((h) => Date.parse(h.time)).filter(Number.isFinite).sort((a, b) => a - b)[0] || 0;
+    const issuedSet = new Set();
+    for (const it of r.items || []) for (const x of (it.issued || [])) issuedSet.add(String(typeof x === 'string' ? x : (x.c || '')).toUpperCase());
+    for (const it of r.items || []) for (const e of (it.agvCalled || [])) {
+      const code = String(e.c || '').toUpperCase();
+      const calledAt = Date.parse(e.t || '') || 0; if (!calledAt || calledAt < since) continue;
+      const q = (db.agvQueue || []).find((x) => String(x.code).toUpperCase() === code && Math.abs((x.at || 0) - calledAt) < 120000);
+      const sentAt = q ? (q.at || 0) : calledAt, dispAt = q ? (q.sentAt || 0) : 0;
+      const stn = ((q && q.station) || String(e.s || '')).toUpperCase();
+      const fromLoc = String((q && q.fromLoc) || it.loc || '').toUpperCase();
+      const tk = fromLoc && stn ? findTask(fromLoc, stn, sentAt - 60000, Math.max(dispAt, sentAt) + 6 * 3600000) : null;
+      const s = { call: 0, queue: 0, dispatch: 0, pick: 0, arrive: 0, hold: 0, total: 0 };
+      if (acceptT) s.call = (calledAt - acceptT) / 60000;
+      if (dispAt) s.queue = (dispAt - sentAt) / 60000;
+      if (tk) {
+        if (tk.ex) s.dispatch = (tk.ex - (dispAt || sentAt)) / 60000;
+        if (tk.pick && tk.ex) s.pick = (tk.pick - tk.ex) / 60000;
+        if (tk.fin && tk.pick) s.arrive = (tk.fin - tk.pick) / 60000;
+        if (s.queue > 0 && s.dispatch > 0 && tk.fin) s.total = (tk.fin - sentAt) / 60000;
+        const clearedAt = q && q.state === '完成' ? (q.updAt || 0) : (issuedSet.has(code) ? Math.max(tk.fin, nowMs) : 0);
+        if (clearedAt && clearedAt > tk.fin) s.hold = (clearedAt - tk.fin) / 60000;
+      }
+      samples.push(s);
+    }
+  }
+  const stat = (key) => { const a = samples.map((s) => s[key]).filter((v) => v > 0 && v < 720); return { avg: a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length * 10) / 10 : 0, n: a.length }; };
+  return { call: stat('call'), queue: stat('queue'), dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
 }
 
 server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); backupDb(); });

@@ -323,6 +323,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
   Map<String, String> _cargo = {}; // 任务起点货位 → 账本反查的货物描述（零件号×数量）
   List<Map> _stations = []; // 站台状态（服务器轮询RCS：有货/占用中/空闲）
   bool _stationsOn = false; // 服务器RCS轮询已开启（on标志）：列表为空但on=true=全空闲，不是未就绪
+  Map<String, int> _holdAvg = {}; // 站台历史平均占用分钟数（释放预测）
   bool _loading = false, _showDone = false, _loaded = false;
   String _err = "";
   Timer? _timer;
@@ -355,6 +356,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
         _tasks = rs[0] as List<Map>; _cars = rs[1] as List<Map>; _traffic = rs[2] as Map; _done = rs[3] as List<Map>;
         final st = rs[4]; _stations = st is Map && st["stations"] is List ? List<Map>.from(st["stations"] as List) : [];
         _stationsOn = st is Map && st["on"] == true;
+        if (st is Map && st["holdAvg"] is Map) _holdAvg = (st["holdAvg"] as Map).map((k, v) => MapEntry(k.toString(), (v as num).toInt()));
         _err = "";
       });
       unawaited(_buildCargo());
@@ -668,7 +670,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage> with AutomaticKeepAlive
               maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10.5, height: 1.25, color: st == "空闲" ? Colors.blueGrey : c)),
             // 时间线：每步发生即点亮（建单→接令→叉出/叉离→放架；有货末尾追加到站）
             if (tl.isNotEmpty) Expanded(child: Padding(padding: const EdgeInsets.only(top: 2),
-              child: Text(tl + (st == "有货" ? "·到站 ${AgvApi.fmtT(s!["since"])}" : (st == "占用中" && (AgvApi.asNum(s?["putAt"]) ?? 0) == 0 ? "·进行中" : "")),
+              child: Text(tl + (st == "有货" ? "·到站 ${AgvApi.fmtT(s!["since"])}${(_holdAvg[code] ?? 0) > 0 ? "\n预计约 ${_holdAvg[code]} 分钟清台（历史均值）" : ""}" : (st == "占用中" && (AgvApi.asNum(s?["putAt"]) ?? 0) == 0 ? "·进行中" : "")),
                 maxLines: 3, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 9.5, height: 1.35, color: st == "有货" ? const Color(0xFF90A4AE) : c)))),
             if (st == "有货" && _canCtl) Align(alignment: Alignment.centerRight, child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: () => _clearStation(code),
               child: const Padding(padding: EdgeInsets.fromLTRB(6, 2, 2, 2), child: Text("清台", style: TextStyle(fontSize: 11.5, color: Color(0xFF1565C0), fontWeight: FontWeight.bold))))),

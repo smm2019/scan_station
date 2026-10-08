@@ -11,6 +11,8 @@ class _DashPageState extends State<DashPage> with AutomaticKeepAliveClientMixin 
   Map? _data;
   String _err = "";
   Timer? _timer;
+  Map<String, dynamic> _funnel = {}; // 交付漏斗各阶段平均耗时
+  int _funnelDays = 7;
 
   @override
   bool get wantKeepAlive => true;
@@ -29,6 +31,8 @@ class _DashPageState extends State<DashPage> with AutomaticKeepAliveClientMixin 
     if (!mounted) return;
     if (r["ok"] == true) setState(() { _data = r; _err = ""; });
     else setState(() => _err = (r["msg"] ?? "加载失败").toString());
+    final f = await AuthApi.agvFunnel(_funnelDays);
+    if (mounted && f["ok"] == true) setState(() => _funnel = Map.from(f["stages"] ?? {}));
   }
 
   static String _fmtT(String iso) {
@@ -91,6 +95,45 @@ class _DashPageState extends State<DashPage> with AutomaticKeepAliveClientMixin 
                 ]),
                 const SizedBox(height: 8),
                 SizedBox(height: 130, child: trend.isEmpty ? const Center(child: Text("暂无数据", style: TextStyle(color: Colors.grey))) : CustomPaint(size: Size.infinite, painter: _TrendPainter(trend))),
+              ])),
+            const SizedBox(height: 6),
+            Container(padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6, offset: const Offset(0, 2))]),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  const Text("全链路交付漏斗（平均分钟）", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                  const Spacer(),
+                  for (final d in [1, 7, 30]) Padding(padding: const EdgeInsets.only(left: 6),
+                    child: GestureDetector(onTap: () { setState(() => _funnelDays = d); _load(); },
+                      child: Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                        decoration: BoxDecoration(color: _funnelDays == d ? const Color(0xFF3949AB) : const Color(0xFFEEF1F6), borderRadius: BorderRadius.circular(8)),
+                        child: Text(d == 1 ? "今日" : "$d日", style: TextStyle(fontSize: 10.5, color: _funnelDays == d ? Colors.white : Colors.blueGrey))))),
+                ]),
+                const SizedBox(height: 8),
+                if (_funnel.isEmpty) const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Center(child: Text("窗口内暂无完整交付样本", style: TextStyle(fontSize: 11.5, color: Colors.grey))))
+                else Builder(builder: (_) {
+                  Widget seg(String label, String key, Color color) {
+                    final v = (_funnel[key] as Map?)?["avg"];
+                    final n = (_funnel[key] as Map?)?["n"];
+                    final min = v is num ? v.toDouble() : 0.0;
+                    return Expanded(child: Column(children: [
+                      Text(min > 0 ? (min >= 60 ? "${(min / 60).toStringAsFixed(1)}h" : "${min.toStringAsFixed(1)}m") : "—",
+                        style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: min > 0 ? color : Colors.grey)),
+                      Text(label, style: const TextStyle(fontSize: 9.5, color: Colors.blueGrey)),
+                      Text(n is num && n.toInt() > 0 ? "n=${n.toInt()}" : "", style: const TextStyle(fontSize: 8.5, color: Colors.black26)),
+                    ]));
+                  }
+                  return Column(children: [
+                    Row(children: [seg("接单→叫车", "call", const Color(0xFF7B1FA2)), const Text("›", style: TextStyle(color: Colors.grey)), seg("排队等待", "queue", const Color(0xFFE65100)), const Text("›", style: TextStyle(color: Colors.grey)), seg("接令出发", "dispatch", const Color(0xFF1565C0)), const Text("›", style: TextStyle(color: Colors.grey)), seg("到达货架", "pick", const Color(0xFF00838F)), const Text("›", style: TextStyle(color: Colors.grey)), seg("叉出→到站", "arrive", const Color(0xFF2E7D32)), const Text("›", style: TextStyle(color: Colors.grey)), seg("站台占用", "hold", Colors.red.shade700!)]),
+                    const Divider(height: 14),
+                    Row(children: [
+                      const Expanded(child: Text("端到端（叫车→到站）", style: TextStyle(fontSize: 11.5, color: Colors.blueGrey))),
+                      Text(_funnel["total"] is Map && (_funnel["total"] as Map)["avg"] is num && ((_funnel["total"] as Map)["avg"] as num) > 0
+                          ? "${(_funnel["total"] as Map)["avg"]} 分钟 · n=${(_funnel["total"] as Map)["n"]}" : "样本不足",
+                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Color(0xFF3949AB))),
+                    ]),
+                  ]);
+                }),
               ])),
             const SizedBox(height: 80),
           ])),
