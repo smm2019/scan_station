@@ -1179,7 +1179,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush)$/);
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush|urge)$/);
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
@@ -1313,6 +1313,27 @@ const server = http.createServer(async (req, res) => {
             hpush(r.rush ? `标记急料（${u.name}）` : `取消急料（${u.name}）`);
             if (r.rush) db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled && x.id !== u.id).forEach((x) =>
               notify(x.id, 'req_new', `🔥 急料单 ${r.no}（${r.byName}），请优先备料`, r.id));
+          } else if (act === 'urge') {
+            // 催单：仅下单人/管理员；同单10分钟限一次防轰炸；pending催接单、accepted催备料
+            if (r.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅下单人或管理员可催单' });
+            if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]无需催单` });
+            const lastU = Date.parse(String(r.lastUrgeAt || '')) || 0;
+            const waitMin = Math.ceil((10 * 60 * 1000 - (Date.now() - lastU)) / 60000);
+            if (waitMin > 0) return send(res, 429, { ok: false, msg: `刚催过，请 ${waitMin} 分钟后再催` });
+            const note = String(b.note || '').trim().slice(0, 60);
+            r.lastUrgeAt = new Date().toISOString();
+            let tg;
+            if (r.status === 'accepted') {
+              tg = db.users.filter(x => x.enabled && x.name === r.acceptedBy && x.id !== u.id);
+              if (!tg.length) tg = db.users.filter(x => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && x.id !== u.id);
+            } else if (r.assigneeId && Date.now() < (Date.parse(String(r.assignOpenAt || '')) || 0)) {
+              tg = db.users.filter(x => x.id === r.assigneeId && x.enabled && x.id !== u.id);
+            } else {
+              tg = db.users.filter(x => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && x.id !== u.id);
+            }
+            const verb = r.status === 'accepted' ? '催备料' : '催接单';
+            tg.forEach(x => notify(x.id, 'req_urge', `⏰ ${u.name} ${verb}：领料单 ${r.no}${note ? '（' + note + '）' : ''}`, r.id));
+            hpush(`${verb}${note ? '：' + note : ''}（${u.name}，通知 ${tg.length} 人）`);
           } else if (act === 'transfer') {
             // 行级转MES回写：App 已把该行已扫箱真实转单成功，按实发件数记账（申请600只有500也可转500）
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可转单' });

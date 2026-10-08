@@ -1138,6 +1138,18 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                 icon: const Icon(Icons.how_to_reg), label: Text(assignBlocked ? "已指定 $aName" : "接单备料"))),
             ],
             if ((st == 'pending' || st == 'accepted') && (isOwner || Auth.isAdmin))
+              Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.deepOrange),
+                onPressed: _busy ? null : () async {
+                  final note = await _askReason(st == 'accepted' ? "催备料（可写哪个零件急用）" : "催接单（可补充说明）");
+                  if (note == null) return;
+                  setState(() => _busy = true);
+                  final res = await AuthApi.reqAction(_r["id"].toString(), "urge", {"note": note});
+                  if (!mounted) return;
+                  setState(() => _busy = false);
+                  widget.toast(res["ok"] == true ? "已催，仓管会收到通知" : (res["msg"] ?? "催单失败").toString(), err: res["ok"] != true);
+                  if (res["ok"] == true && res["req"] is Map) setState(() => _r = Map.from(res["req"] as Map));
+                }, icon: const Icon(Icons.alarm, size: 16), label: Text(st == 'accepted' ? "催备料" : "催接单"))),
+            if ((st == 'pending' || st == 'accepted') && (isOwner || Auth.isAdmin))
               Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
                 onPressed: _busy ? null : () => _act("cancel"), icon: const Icon(Icons.close, size: 16), label: const Text("取消订单"))),
             if (st == 'ready' && (isOwner || Auth.can("receive_confirm")))
@@ -1196,7 +1208,7 @@ class _MsgCenterPageState extends State<MsgCenterPage> {
     "req_new": Icons.assignment_add, "req_accept": Icons.how_to_reg, "req_reject": Icons.block,
     "req_ready": Icons.inventory_2, "req_ready_wh": Icons.inventory, "req_done": Icons.check_circle,
     "req_cancel": Icons.cancel, "req_timeout": Icons.hourglass_empty, "req_reassign": Icons.swap_horiz,
-    "req_arrive": Icons.local_shipping,
+    "req_arrive": Icons.local_shipping, "req_urge": Icons.alarm,
   };
 
   @override
