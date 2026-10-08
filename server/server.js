@@ -1538,6 +1538,8 @@ async function rcsPoll() {
   }
   for (const [k, t0] of Object.entries(db.rcsDone)) { if (nowMs - t0 > 6 * 3600 * 1000) delete db.rcsDone[k]; }
   for (const [k, t0] of Object.entries(db.rcsManual)) { if (nowMs - t0 > 30 * 60 * 1000) delete db.rcsManual[k]; }
+  // 占用中记录每轮重建：在途任务的接令/叉出时间戳实时刷新（旧逻辑只写一次会冻结），任务取消则记录自动消失
+  for (const [k, v] of Object.entries(db.rcsStations)) { if (v.state === '占用中') delete db.rcsStations[k]; }
   for (const v of Object.values(stations)) { if (!db.rcsStations[v.station]) db.rcsStations[v.station] = v; }
   db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, ...parsePts(t), ...nodeTimes(t) }));
   db.rcsAt = new Date().toISOString();

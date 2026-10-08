@@ -20,7 +20,7 @@ class _DiagPageState extends State<DiagPage> {
     final out = <List<String>>[];
     void add(String k, String v) => out.add([k, v]);
     try {
-      add("APP版本", "1.0.0+1");
+      add("APP版本", "1.0.0+2");
       add("系统", "${Platform.operatingSystem} ${Platform.operatingSystemVersion}");
       add("设备主机名", Platform.localHostname);
       final isar = _globalIsar;
