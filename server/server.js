@@ -1686,9 +1686,10 @@ async function wmasDispatchOne(q, tk) {
   const mk = await wmasHttp('POST', '/api/logistics/agv-task', tk, { taskType: 'CARRY', warehouse: s.wh, startArea: s.zone, startPoint: q.fromLoc, endArea: e.zone, endPoint: q.station, containerNo: cn, refNo: q.reqNo || '' });
   if (!wmasOk(mk)) return { ok: false, msg: '建任务失败：' + ((mk && (mk.message || mk.msg)) || '无响应') };
   let id = mk.data && mk.data.id;
-  if (!id) { const q2 = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=3&containerNo=${encodeURIComponent(cn)}`, tk); const recs = (q2 && q2.data && q2.data.records) || []; id = recs.length ? recs[0].id : null; }
+  let wmsTask = (mk.data && mk.data.taskNo) || '';
+  if (!id || !wmsTask) { const q2 = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=3&containerNo=${encodeURIComponent(cn)}`, tk); const recs = (q2 && q2.data && q2.data.records) || []; if (recs.length) { id = id || recs[0].id; wmsTask = wmsTask || String(recs[0].taskNo || ''); } }
   if (id) await wmasHttp('POST', '/api/logistics/agv-task/dispatch', tk, { ids: [id] });
-  return { ok: true, container: cn, msg: '已建任务并下发' };
+  return { ok: true, container: cn, taskNo: wmsTask, msg: '已建任务并下发' };
 }
 function clearQueueCall(reqId, code) { // 队列项取消/失败出队 → 解除该框排队叫车标记，允许重新叫车
   const rq = db.requisitions.find((x) => x.id === reqId); if (!rq) return;
@@ -1748,7 +1749,7 @@ async function agvDispatch(nowMs, runT) {
     if (!tk) { q.state = '失败'; q.err = 'WMAS未配置/登录失败（PDA设置→AGV调度系统同步WMAS账号）'; continue; }
     let r;
     try { r = await wmasDispatchOne(q, tk); } catch (e) { r = { ok: false, msg: '下发异常：' + e.message }; }
-    q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.err = r.ok ? '' : r.msg;
+    q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.wmsTask = r.taskNo || ''; q.err = r.ok ? '' : r.msg;
     console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);
   }
 }
@@ -1795,7 +1796,8 @@ function buildFunnel(days) {
       const sentAt = q ? (q.at || 0) : calledAt, dispAt = q ? (q.sentAt || 0) : 0;
       const stn = ((q && q.station) || String(e.s || '')).toUpperCase();
       const fromLoc = String((q && q.fromLoc) || it.loc || '').toUpperCase();
-      const tk = fromLoc && stn ? findTask(fromLoc, stn, sentAt - 60000, Math.max(dispAt, sentAt) + 6 * 3600000) : null;
+      const tk = (q && q.wmsTask && db.agvTasks[q.wmsTask]) // ①taskNo精确关联（WMAS与RCS同号）
+        || (fromLoc && stn ? findTask(fromLoc, stn, sentAt - 60000, Math.max(dispAt, sentAt) + 6 * 3600000) : null); // ②兜底：起终点+时间窗
       const s = { call: 0, queue: 0, dispatch: 0, pick: 0, arrive: 0, hold: 0, total: 0 };
       if (acceptT) s.call = (calledAt - acceptT) / 60000;
       if (dispAt) s.queue = (dispAt - sentAt) / 60000;
