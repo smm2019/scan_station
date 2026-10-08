@@ -643,6 +643,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   }
 
   /// 扫码框提交：查 MES 取该箱件数，按件数计入目标零件行；发满自动切下一行
+  /// MES 不可用时可走「应急人工登记」（记件数+原因+留痕），事后转单自动补查 MES 完成补转
   Future<void> _scanIssue() async {
     final code = _scanCtrl.text.trim();
     _scanCtrl.clear();
@@ -654,6 +655,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     if (_issuedCodesOf(target).contains(code)) { widget.toast("标签 $code 已扫过"); _refocusScan(); return; }
     setState(() => _busy = true);
     String? scanErr;
+    bool emEligible = false; // MES取不到数才允许应急；零件号不符等真实冲突仍硬拦
     double boxQty = 0;
     _lastBoxData = null;
     try {
@@ -661,6 +663,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       final mes = await mesQueryLabel(code);
       if (mes["ok"] != true) {
         scanErr = "标签 $code MES查询失败：${mes["msg"]}";
+        emEligible = true;
       } else {
         final mp = mes["partNo"]?.toString() ?? "";
         if (mp != target["partNo"]) { scanErr = "该箱零件号 $mp 与所选行 ${target["partNo"]} 不符"; }
@@ -678,35 +681,68 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       }
     } catch (e) {
       scanErr = "查询异常：$e";
-    }
-    if (scanErr != null) {
-      if (!mounted) return;
-      setState(() => _busy = false);
-      widget.toast(scanErr);
-      _refocusScan();
-      return;
+      emEligible = true;
     }
     final ledOld = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(code.toUpperCase()).findAll();
     final fromLoc = ledOld.isNotEmpty ? ledOld.first.loc : "";
-    final res = await AuthApi.reqAction(_r["id"].toString(), "scan", {"barcode": code, "partNo": target["partNo"], "qty": boxQty, "fromLoc": fromLoc});
+    Map<String, dynamic>? em; // 应急登记结果 {qty, why}；null=走正常流程或放弃
+    if (scanErr != null) {
+      setState(() => _busy = false);
+      if (!emEligible || !mounted) { // 零件号不符等：直接报错，不放开应急
+        if (mounted) { widget.toast(scanErr); _refocusScan(); }
+        return;
+      }
+      em = await _emergencyIssue(code, fromLoc); // 弹应急人工登记窗
+      if (!mounted) return;
+      if (em == null) { widget.toast(scanErr); _refocusScan(); return; } // 用户放弃应急
+      boxQty = (em["qty"] as num?)?.toDouble() ?? 0;
+    }
+    setState(() => _busy = true);
+    final res = await AuthApi.reqAction(_r["id"].toString(), "scan", em != null
+        ? {"barcode": code, "partNo": target["partNo"], "qty": boxQty, "fromLoc": fromLoc, "emergency": true, "why": em["why"]}
+        : {"barcode": code, "partNo": target["partNo"], "qty": boxQty, "fromLoc": fromLoc});
     if (!mounted) return;
     setState(() => _busy = false);
     if (res["ok"] != true) { widget.toast((res["msg"] ?? "发料失败").toString()); _refocusScan(); return; }
     setState(() {
       _r = Map.from(res["req"]);
-      _boxData[code] = _lastBoxData ?? {}; // 缓存该箱 MES 数据供转单组报文
+      _boxData[code] = _lastBoxData ?? {}; // 缓存该箱 MES 数据供转单组报文（应急时为空，转单再补查）
     });
     final items2 = List<Map>.from(_r["items"] ?? []);
     final nowT = items2.firstWhere((e) => e["partNo"] == _issuePart, orElse: () => const {});
     final tGot = nowT.isEmpty ? 0.0 : _issuedQtyOf(nowT);
     final tNeed = (nowT["qty"] as num?)?.toDouble() ?? 0.0;
-    widget.toast("已发 $code（$boxQty 件）累计 ${_fmtInvNum(tGot)}/${_fmtInvNum(tNeed)}${fromLoc.isNotEmpty ? " · 原$fromLoc 已拣下" : ""}", err: false);
+    widget.toast("${em != null ? "⚠️应急已发" : "已发"} $code（$boxQty 件）累计 ${_fmtInvNum(tGot)}/${_fmtInvNum(tNeed)}${fromLoc.isNotEmpty ? " · 原$fromLoc 已拣下" : ""}", err: false);
     if (fromLoc.isNotEmpty) ledgerRemoveBoxAndPush(code.toUpperCase()); //发料扫码即整框拣下（同托兄弟码一并消位）
     if (tGot >= tNeed) {
       final next = items2.firstWhere((e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0), orElse: () => const {});
       if (!next.isEmpty) setState(() => _issuePart = next["partNo"].toString());
     }
     _refocusScan();
+  }
+
+  /// MES 不可用时的应急人工登记窗：核对件数 + 填原因（留审计痕迹），返回 {qty, why}，取消返回 null
+  Future<Map<String, dynamic>?> _emergencyIssue(String code, String fromLoc) async {
+    final qtyCtrl = TextEditingController();
+    final whyCtrl = TextEditingController();
+    final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+      title: const Text("⚠️ MES 不可用 · 应急发料登记", style: TextStyle(color: Colors.deepOrange)),
+      content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("标签 $code 无法向 MES 查询（网络/接口异常）。应急登记会本地记账并${fromLoc.isNotEmpty ? "拣下原货位 $fromLoc，" : ""}事后转单时自动补查 MES 完成转单。"),
+        const SizedBox(height: 8),
+        TextField(controller: qtyCtrl, keyboardType: TextInputType.number, autofocus: true, decoration: const InputDecoration(labelText: "本箱件数（务必按实物核对）", isDense: true, border: OutlineInputBorder())),
+        const SizedBox(height: 8),
+        TextField(controller: whyCtrl, decoration: const InputDecoration(labelText: "应急原因（必填·入审计留痕）", isDense: true, border: OutlineInputBorder())),
+      ])),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+        FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.deepOrange), onPressed: () => Navigator.pop(ctx, true), child: const Text("确认应急登记"))],
+    ));
+    if (yes != true) return null;
+    final q = double.tryParse(qtyCtrl.text.trim()) ?? 0;
+    final why = whyCtrl.text.trim();
+    if (q <= 0) { widget.toast("请填写有效的本箱件数"); return null; }
+    if (why.isEmpty) { widget.toast("请填写应急原因"); return null; }
+    return {"qty": q, "why": why};
   }
 
   void _refocusScan() {
@@ -1042,7 +1078,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                     ]),
                     const SizedBox(height: 4),
                     Wrap(spacing: 6, runSpacing: 4, children: [
-                      ...codes.map((c) => Chip(label: Text(boxQs[c] != null && boxQs[c]! > 0 ? "$c·${_fmtInvNum(boxQs[c]!)}" : c, style: const TextStyle(fontSize: 10, color: Colors.white)), backgroundColor: transferred ? Colors.green.shade700 : Colors.green, padding: EdgeInsets.zero, visualDensity: VisualDensity.compact)),
+                      ...codes.map((c) { final isEm = List.from(item["issued"] ?? []).any((x) => x is Map && (x["c"]?.toString() ?? "") == c && x["e"] == 1); return Chip(label: Text("${isEm ? "⚠" : ""}${boxQs[c] != null && boxQs[c]! > 0 ? "$c·${_fmtInvNum(boxQs[c]!)}" : c}", style: const TextStyle(fontSize: 10, color: Colors.white)), backgroundColor: isEm ? Colors.deepOrange : (transferred ? Colors.green.shade700 : Colors.green), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact); }),
                     ]),
                     _buildSuggest(item, transferred || skipped),
                     if (st == 'accepted' && isWh && !transferred && !skipped) Padding(

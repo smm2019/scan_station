@@ -148,6 +148,11 @@ class AuthApi {
   // AGV 叫车占位：同容器（15分钟）或同站台（60秒内）已有占位则拒绝，两台PDA并发点击只放行一个
   static Future<Map> agvClaim({required String container, required String station, required String fromLoc}) async =>
       _req("POST", "/api/agv/claim", body: {"container": container, "station": station, "fromLoc": fromLoc}, token: await AuthStore.token());
+  // 货架移库：起终点人工指定，服务器复用出库下发通道建CARRY任务（dry=1仅演算）
+  static Future<Map> agvTransfer({required String from, required String to, String kind = "shelf2shelf", String palletType = "", bool dry = false}) async =>
+      _req("POST", "/api/agv/transfer", body: {"from": from, "to": to, "kind": kind, "palletType": palletType, if (dry) "dry": "1"}, token: await AuthStore.token());
+  static Future<Map> agvTransferCancel(String id) async =>
+      _req("POST", "/api/agv/transfer/cancel", body: {"id": id}, token: await AuthStore.token());
   static Future<void> agvRelease({required String container, required String station}) async {
     try { await _req("POST", "/api/agv/release", body: {"container": container, "station": station}, token: await AuthStore.token()); } catch (_) {}
   }

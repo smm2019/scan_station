@@ -24,7 +24,6 @@ import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart'; // AGV实时调度大屏WebView
 
-
 part 'main.g.dart';
 part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传
 part 'inventory_page.dart'; // 盘点模式：任务/基准绑定/扫码判定/差异报表
@@ -44,10 +43,13 @@ part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 part 'agv_map_page.dart'; // ①2D实时地图
 part 'agv_report_page.dart'; // ⑦AGV效率报表
 part 'update_page.dart'; // ⑬APK自动更新
+
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
+
 /// ⑬全局导航key：更新弹窗用（App启动即可弹，不依赖某页面context）
-final GlobalKey<NavigatorState> _globalNavigatorKey = GlobalKey<NavigatorState>();
+final GlobalKey<NavigatorState> _globalNavigatorKey =
+    GlobalKey<NavigatorState>();
 
 /// 全局底部扫码条：固定在页面底部，扫码枪输入永远有落点；提交后由各页处理器清空回焦
 class ScanBar extends StatelessWidget {
@@ -56,39 +58,62 @@ class ScanBar extends StatelessWidget {
   final String hint;
   final void Function(String) onSubmit;
   final VoidCallback? camera;
-  const ScanBar({super.key, required this.ctrl, required this.focus, required this.hint, required this.onSubmit, this.camera});
+  const ScanBar(
+      {super.key,
+      required this.ctrl,
+      required this.focus,
+      required this.hint,
+      required this.onSubmit,
+      this.camera});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.fromLTRB(10, 8, 10, 8 + MediaQuery.of(context).padding.bottom),
-      decoration: const BoxDecoration(color: Colors.white, border: Border(top: BorderSide(color: Color(0xFFE0E0E0)))),
+      padding: EdgeInsets.fromLTRB(
+          10, 8, 10, 8 + MediaQuery.of(context).padding.bottom),
+      decoration: const BoxDecoration(
+          color: Colors.white,
+          border: Border(top: BorderSide(color: Color(0xFFE0E0E0)))),
       child: Row(children: [
-        Expanded(child: TextField(
-          controller: ctrl, focusNode: focus, autofocus: true, textInputAction: TextInputAction.done,
+        Expanded(
+            child: TextField(
+          controller: ctrl,
+          focusNode: focus,
+          autofocus: true,
+          textInputAction: TextInputAction.done,
           decoration: InputDecoration(
-            hintText: hint, isDense: true, filled: true, fillColor: const Color(0xFFF2F3FA),
-            prefixIcon: const Icon(Icons.qr_code_scanner, size: 20, color: Color(0xFF515BD4)),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-            contentPadding: const EdgeInsets.symmetric(vertical: 11)),
-          onSubmitted: (v) { final s = v.trim(); if (s.isNotEmpty) onSubmit(s); },
+              hintText: hint,
+              isDense: true,
+              filled: true,
+              fillColor: const Color(0xFFF2F3FA),
+              prefixIcon: const Icon(Icons.qr_code_scanner,
+                  size: 20, color: Color(0xFF515BD4)),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none),
+              contentPadding: const EdgeInsets.symmetric(vertical: 11)),
+          onSubmitted: (v) {
+            final s = v.trim();
+            if (s.isNotEmpty) onSubmit(s);
+          },
         )),
         if (camera != null) ...[
           const SizedBox(width: 8),
-          SizedBox(height: 42, child: ElevatedButton(onPressed: camera,
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 12)),
-            child: const Text("相机", style: TextStyle(fontSize: 12)))),
+          SizedBox(
+              height: 42,
+              child: ElevatedButton(
+                  onPressed: camera,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF515BD4),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(horizontal: 12)),
+                  child: const Text("相机", style: TextStyle(fontSize: 12)))),
         ],
       ]),
     );
   }
 }
 // ============粘贴刚刚更新好的rsaEncryptPemKey函数============
-
-
-
-
-
 
 class MesConfig {
   static const String keyHost = "mes_host";
@@ -101,15 +126,12 @@ class MesConfig {
   static const String keyModuleId = "mes_moduleId";
   static const String keyOrgId = "mes_orgId";
 
-
   // ========== 新增：登录返回的 OrgId、UserInfoId 等 ==========
   static const String keyMesOrgId = "mes_org_id";
   static const String keyMesUserId = "mes_user_id";
   static const String keyMesUserName = "mes_user_name";
   static const String keyMesDisplayName = "mes_display_name";
   static const String keyMesModuleId = "mes_module_id";
-
-
 
   //保存配置
   static Future<void> saveConfig({
@@ -119,8 +141,8 @@ class MesConfig {
     required String pwd,
     required String token,
     required int timeout,
-    required String moduleId,   //新增
-    required String orgId,      //新增
+    required String moduleId, //新增
+    required String orgId, //新增
   }) async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString(keyHost, host);
@@ -150,7 +172,7 @@ class MesConfig {
     };
   }
 
-   // ========== 清除 Token（退出登录用） ==========
+  // ========== 清除 Token（退出登录用） ==========
   static Future<void> clearToken() async {
     final sp = await SharedPreferences.getInstance();
     await sp.remove(keyToken);
@@ -209,7 +231,6 @@ class MesConfig {
   }
 }
 
-
 // =========【MesConfig结束】=========
 
 // ===================== 声音/震动设置（持久化） =====================
@@ -238,9 +259,7 @@ class AppSettings {
   }
 }
 
-
 // ===================== Isar数据库模型 =====================
-
 
 @collection
 class ScanRecord {
@@ -251,14 +270,14 @@ class ScanRecord {
 
   String? groundLocation; //地面货位A1‑D18，仅模式1使用
   String goodsCode;
-String? containerType; // 新增这一行！用来存容器类型
+  String? containerType; // 新增这一行！用来存容器类型
   String remark;
   String batchId;
   bool isCancel = false; //标记：true=人工作废，保留原始数据，仅业务失效，不可用于站台占用校验
   //=====新增MES字段，只加这3行=====
-  String? mesPartNo;      //零件号 PartCode
-  double? mesQty;         //数量 QTY
-  String? mesCreateTime;  //MES DATETIME_CREATED
+  String? mesPartNo; //零件号 PartCode
+  double? mesQty; //数量 QTY
+  String? mesCreateTime; //MES DATETIME_CREATED
   ScanRecord({
     required this.scanTime,
     required this.workType,
@@ -268,7 +287,7 @@ String? containerType; // 新增这一行！用来存容器类型
     required this.remark,
     required this.batchId,
     this.isCancel = false,
-this.containerType, // 新增
+    this.containerType, // 新增
 // =========【BUG在这里！！】=========
     // 你构造函数写了 mesProduceDate，但类里面字段名字是 mesCreateTime，名字不一致！
     this.mesPartNo,
@@ -276,6 +295,7 @@ this.containerType, // 新增
     this.mesCreateTime, //把原来的 mesProduceDate 改成 mesCreateTime
   });
 }
+
 @collection
 class BatchInfo {
   Id id = Isar.autoIncrement;
@@ -287,9 +307,9 @@ class BatchInfo {
   bool isArchived = false;
   int taskKind = 0; //0=采集批次，1=盘点任务（盘点独立于采集批次体系展示）
   //====盘点任务元数据（taskKind==1 时有效）====
-  String invBookKey = "";  //绑定的账面基准 fileKey
-  String invLocKey = "";   //绑定的货位基准 fileKey
-  bool blindMode = true;   //盲盘：现场不显示账面数量对照
+  String invBookKey = ""; //绑定的账面基准 fileKey
+  String invLocKey = ""; //绑定的货位基准 fileKey
+  bool blindMode = true; //盲盘：现场不显示账面数量对照
   List<String> invScope = []; //循环盘点范围：货架前缀列表（如 MB02-A-01），空=全盘
   BatchInfo({
     required this.batchId,
@@ -310,10 +330,10 @@ class RecordExtra {
   Id id = Isar.autoIncrement;
   @Index(unique: true)
   String goodsCode; // 关联 ScanRecord.goodsCode（货码唯一）
-  String palletId = "";   // 托号，空串=非整托记录
+  String palletId = ""; // 托号，空串=非整托记录
   String mesItemName = ""; // 物料描述（MES返回名称字段）
-  String mesLotNo = "";    // 批次（MES返回LOT_NO）
-  String operator = "";    // 采集操作人（登录账号姓名，库存入库流水用）
+  String mesLotNo = ""; // 批次（MES返回LOT_NO）
+  String operator = ""; // 采集操作人（登录账号姓名，库存入库流水用）
   RecordExtra({
     required this.goodsCode,
     this.palletId = "",
@@ -333,13 +353,24 @@ List<String> _parseCsvLine(String line) {
     final ch = line[i];
     if (inQuote) {
       if (ch == '"') {
-        if (i + 1 < line.length && line[i + 1] == '"') { cur.write('"'); i++; }
-        else { inQuote = false; }
-      } else { cur.write(ch); }
+        if (i + 1 < line.length && line[i + 1] == '"') {
+          cur.write('"');
+          i++;
+        } else {
+          inQuote = false;
+        }
+      } else {
+        cur.write(ch);
+      }
     } else {
-      if (ch == '"') { inQuote = true; }
-      else if (ch == ',') { out.add(cur.toString().trim()); cur.clear(); }
-      else { cur.write(ch); }
+      if (ch == '"') {
+        inQuote = true;
+      } else if (ch == ',') {
+        out.add(cur.toString().trim());
+        cur.clear();
+      } else {
+        cur.write(ch);
+      }
     }
   }
   out.add(cur.toString().trim());
@@ -350,11 +381,15 @@ List<String> _parseCsvLine(String line) {
 int _findCol(List<String> header, List<String> keys) {
   for (var k = 0; k < header.length; k++) {
     final h = header[k].replaceAll(RegExp(r"\s"), "");
-    for (final key in keys) { if (h == key) return k; }
+    for (final key in keys) {
+      if (h == key) return k;
+    }
   }
   for (var k = 0; k < header.length; k++) {
     final h = header[k].replaceAll(RegExp(r"\s"), "");
-    for (final key in keys) { if (h.contains(key)) return k; }
+    for (final key in keys) {
+      if (h.contains(key)) return k;
+    }
   }
   return -1;
 }
@@ -367,10 +402,10 @@ double _parseQtyCell(String v) {
 }
 
 class BaselineParseResult {
-  String kind = "unknown";        //book=账面基准 part=货位基准 unknown=未识别
+  String kind = "unknown"; //book=账面基准 part=货位基准 unknown=未识别
   final List<BaselineBook> books = [];
   final List<BaselineLoc> locs = [];
-  int dirtyRows = 0;            //数量非法/关键字段缺失而跳过的行数
+  int dirtyRows = 0; //数量非法/关键字段缺失而跳过的行数
   String message = "";
 }
 
@@ -378,25 +413,47 @@ class BaselineParseResult {
 BaselineParseResult parseBaselineCsv(String rawContent, String fileKey) {
   final res = BaselineParseResult();
   var text = rawContent;
-  if (text.isNotEmpty && text.codeUnitAt(0) == 0xFEFF) text = text.substring(1); //去BOM
+  if (text.isNotEmpty && text.codeUnitAt(0) == 0xFEFF)
+    text = text.substring(1); //去BOM
   text = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
   final lines = text.split("\n").where((l) => l.trim().isNotEmpty).toList();
-  if (lines.length < 2) { res.kind = "unknown"; res.message = "文件行数不足（需表头+数据行）"; return res; }
+  if (lines.length < 2) {
+    res.kind = "unknown";
+    res.message = "文件行数不足（需表头+数据行）";
+    return res;
+  }
 
   final header = _parseCsvLine(lines.first);
-  final colPart = _findCol(header, ["零件号", "PartCode", "零件编号", "料号", "物料编码", "物料号", "Part No", "partno", "零件代码"]);
-  final colQty = _findCol(header, ["期末库存", "库存数量", "账面数量", "在库数量", "结存数量", "账面库存", "数量", "Qty", "库存"]);
-  final colLoc = _findCol(header, ["货位编码", "货位", "库位", "库位编码", "货架位", "储位", "Location", "货位号"]);
-  final colName = _findCol(header, ["物料名称", "零件名称", "品名", "物料描述", "MITEM_NAME", "名称"]);
-  final colCode = _findCol(header, ["标签号", "货物标签", "货码", "标签", "LabelNo", "条码"]);
+  final colPart = _findCol(header, [
+    "零件号",
+    "PartCode",
+    "零件编号",
+    "料号",
+    "物料编码",
+    "物料号",
+    "Part No",
+    "partno",
+    "零件代码"
+  ]);
+  final colQty = _findCol(header,
+      ["期末库存", "库存数量", "账面数量", "在库数量", "结存数量", "账面库存", "数量", "Qty", "库存"]);
+  final colLoc = _findCol(
+      header, ["货位编码", "货位", "库位", "库位编码", "货架位", "储位", "Location", "货位号"]);
+  final colName =
+      _findCol(header, ["物料名称", "零件名称", "品名", "物料描述", "MITEM_NAME", "名称"]);
+  final colCode =
+      _findCol(header, ["标签号", "货物标签", "货码", "标签", "LabelNo", "条码"]);
 
   final isLocBase = colLoc >= 0 && colPart >= 0 && colQty >= 0;
   final isBookBase = colPart >= 0 && colQty >= 0;
-  if (isLocBase) { res.kind = "part"; }
-  else if (isBookBase) { res.kind = "book"; }
-  else {
+  if (isLocBase) {
+    res.kind = "part";
+  } else if (isBookBase) {
+    res.kind = "book";
+  } else {
     res.kind = "unknown";
-    res.message = "未识别的基准表头。零件号列:${colPart >= 0 ? "已找到" : "缺失"}、数量列:${colQty >= 0 ? "已找到" : "缺失"}"
+    res.message =
+        "未识别的基准表头。零件号列:${colPart >= 0 ? "已找到" : "缺失"}、数量列:${colQty >= 0 ? "已找到" : "缺失"}"
         "${colLoc >= 0 ? "、货位列:已找到(但缺零件号或数量列)" : ""}";
     return res;
   }
@@ -413,11 +470,18 @@ BaselineParseResult parseBaselineCsv(String rawContent, String fileKey) {
       if (bookMap.containsKey(part)) {
         bookMap[part]!.bookQty += qty;
       } else {
-        bookMap[part] = BaselineBook(fileKey: fileKey, partNo: part, itemName: cell(colName), bookQty: qty);
+        bookMap[part] = BaselineBook(
+            fileKey: fileKey,
+            partNo: part,
+            itemName: cell(colName),
+            bookQty: qty);
       }
     } else {
       final loc = cell(colLoc);
-      if (loc.isEmpty) { res.dirtyRows++; continue; }
+      if (loc.isEmpty) {
+        res.dirtyRows++;
+        continue;
+      }
       final key = "$loc|$part";
       if (locMap.containsKey(key)) {
         final old = locMap[key]!;
@@ -425,14 +489,25 @@ BaselineParseResult parseBaselineCsv(String rawContent, String fileKey) {
         final gc = cell(colCode);
         if (gc.isNotEmpty && old.goodsCode.isEmpty) old.goodsCode = gc;
       } else {
-        locMap[key] = BaselineLoc(fileKey: fileKey, locCode: loc, partNo: part, qty: qty, goodsCode: cell(colCode));
+        locMap[key] = BaselineLoc(
+            fileKey: fileKey,
+            locCode: loc,
+            partNo: part,
+            qty: qty,
+            goodsCode: cell(colCode));
       }
     }
   }
   res.books.addAll(bookMap.values);
   res.locs.addAll(locMap.values);
-  if (res.kind == "book" && res.books.isEmpty) { res.kind = "unknown"; res.message = "表头可识别，但未解析到任何含零件号的数据行"; }
-  if (res.kind == "part" && res.locs.isEmpty) { res.kind = "unknown"; res.message = "表头可识别，但未解析到任何含货位+零件号的数据行"; }
+  if (res.kind == "book" && res.books.isEmpty) {
+    res.kind = "unknown";
+    res.message = "表头可识别，但未解析到任何含零件号的数据行";
+  }
+  if (res.kind == "part" && res.locs.isEmpty) {
+    res.kind = "unknown";
+    res.message = "表头可识别，但未解析到任何含货位+零件号的数据行";
+  }
   return res;
 }
 
@@ -475,7 +550,11 @@ class BaselineBook {
   String partNo;
   String itemName = "";
   double bookQty = 0; //期末库存
-  BaselineBook({required this.fileKey, required this.partNo, this.itemName = "", this.bookQty = 0});
+  BaselineBook(
+      {required this.fileKey,
+      required this.partNo,
+      this.itemName = "",
+      this.bookQty = 0});
 }
 
 /// 货位基准（货位×零件级）：来源=二楼货架列表导出CSV
@@ -489,7 +568,12 @@ class BaselineLoc {
   String partNo;
   double qty = 0;
   String goodsCode = ""; //台账预登记货码（可空，仅参考，不做拦截）
-  BaselineLoc({required this.fileKey, required this.locCode, required this.partNo, this.qty = 0, this.goodsCode = ""});
+  BaselineLoc(
+      {required this.fileKey,
+      required this.locCode,
+      required this.partNo,
+      this.qty = 0,
+      this.goodsCode = ""});
 }
 
 /// 盘点扫描流水：一次盘点任务内每扫一码一行，独立于 ScanRecord，不污染采集数据
@@ -508,20 +592,29 @@ class InventoryScan {
   double qty = 0; //MES QTY
   int flag = 0; //判定：0正常 1重复 2MES无码 3账外料 4串位 5超量 6批次不符(挂起)
   String remark = "";
-  InventoryScan({required this.taskId, required this.goodsCode, required this.scanTime, this.locCode = ""});
+  InventoryScan(
+      {required this.taskId,
+      required this.goodsCode,
+      required this.scanTime,
+      this.locCode = ""});
 }
+
 // ===================== 全局Isar实例 =====================
 late Isar _globalIsar;
 
 // ===== 整托模式·末段子表：与主表同12列结构，按托聚合一行 =====
 // 一行 = 一托×一个零件号：货物标签"; "拼接、MES数量累加、采集时间取该组首码、托号填列；
 // 非整托有效记录逐码原样一行（托号留空）。本批次无整托记录时不输出该段。
-String _buildPalletAggCsv(List<ScanRecord> records, Map<String, RecordExtra> extraMap) {
+String _buildPalletAggCsv(
+    List<ScanRecord> records, Map<String, RecordExtra> extraMap) {
   String cf(String v) {
-    if (v.contains(",") || v.contains("\"") || v.contains("\n")) return "\"${v.replaceAll("\"", "\"\"")}\"";
+    if (v.contains(",") || v.contains("\"") || v.contains("\n"))
+      return "\"${v.replaceAll("\"", "\"\"")}\"";
     return v;
   }
-  String fq(double q) => q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
+
+  String fq(double q) =>
+      q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
   final Map<String, List<ScanRecord>> groups = {}; //插入顺序=首扫时间顺序
   bool hasPallet = false;
   for (final r in records) {
@@ -531,7 +624,8 @@ String _buildPalletAggCsv(List<ScanRecord> records, Map<String, RecordExtra> ext
       groups.putIfAbsent("SINGLE|${r.goodsCode}|${r.id}", () => []).add(r);
     } else {
       hasPallet = true;
-      final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
+      final pn =
+          (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
       groups.putIfAbsent("$pid|$pn", () => []).add(r);
     }
   }
@@ -550,29 +644,46 @@ String _buildPalletAggCsv(List<ScanRecord> records, Map<String, RecordExtra> ext
       if (batch.isEmpty) batch = e.mesCreateTime ?? "";
     }
     final codes = rs.map((e) => e.goodsCode).join("; ");
-    final remarks = rs.map((e) => e.remark).where((e) => e.trim().isNotEmpty).toSet().join("；");
-    final pn = (first.mesPartNo?.isNotEmpty ?? false) ? first.mesPartNo! : (entry.key.contains("|") && !entry.key.startsWith("SINGLE|") ? entry.key.substring(entry.key.indexOf("|") + 1) : "");
+    final remarks = rs
+        .map((e) => e.remark)
+        .where((e) => e.trim().isNotEmpty)
+        .toSet()
+        .join("；");
+    final pn = (first.mesPartNo?.isNotEmpty ?? false)
+        ? first.mesPartNo!
+        : (entry.key.contains("|") && !entry.key.startsWith("SINGLE|")
+            ? entry.key.substring(entry.key.indexOf("|") + 1)
+            : "");
     final totalQty = rs.fold<double>(0, (sum, e) => sum + (e.mesQty ?? 0));
-    final pid = entry.key.startsWith("SINGLE|") ? "" : entry.key.substring(0, entry.key.indexOf("|"));
-    s += "$timeStr,${first.workType},${cf(st)},${cf(gl)},${cf(container)},${cf(codes)},${cf(remarks)},正常,${cf(pn)},${fq(totalQty)},${cf(batch)},${cf(pid)}\n";
+    final pid = entry.key.startsWith("SINGLE|")
+        ? ""
+        : entry.key.substring(0, entry.key.indexOf("|"));
+    s +=
+        "$timeStr,${first.workType},${cf(st)},${cf(gl)},${cf(container)},${cf(codes)},${cf(remarks)},正常,${cf(pn)},${fq(totalQty)},${cf(batch)},${cf(pid)}\n";
   }
   return s;
 }
+
 // ===================== MES登录（手动登录与静默重登共用） =====================
 /// 阶段1：获取RSA公钥与一次性KeyToken
-Future<Map<String, String>?> getValidateKey2(String serverIp, String serverPort, String userId, int timeoutSec) async {
+Future<Map<String, String>?> getValidateKey2(
+    String serverIp, String serverPort, String userId, int timeoutSec) async {
   try {
     final baseUrl = "http://$serverIp:$serverPort";
-    final uri = Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
+    final uri =
+        Uri.parse("$baseUrl/platform/sign/getvalidatekey2?u=$userId&isweb=Y");
     final headers = {
       "Accept": "*/*",
       "Accept-Encoding": "gzip, deflate",
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
       "Culture": "zh-CN",
     };
     debugPrint("【阶段1】请求getvalidatekey2：$uri");
-    final resp = await http.get(uri, headers: headers).timeout(Duration(seconds: timeoutSec));
+    final resp = await http
+        .get(uri, headers: headers)
+        .timeout(Duration(seconds: timeoutSec));
     debugPrint("【阶段1】接口返回code:${resp.statusCode}");
     if (resp.statusCode == 200) {
       final jsonObj = jsonDecode(resp.body);
@@ -605,7 +716,8 @@ String rsaEncryptPassword(String pubPem, String plainPwd) {
   String hexOf(List<int> b, int n) =>
       b.take(n).map((x) => x.toRadixString(16).padLeft(2, '0')).join(' ');
   diag.writeln("【诊断v2】公钥长度=${pubPem.length}");
-  diag.writeln("公钥原文(前100字符)=${pubPem.length > 100 ? pubPem.substring(0, 100) : pubPem}");
+  diag.writeln(
+      "公钥原文(前100字符)=${pubPem.length > 100 ? pubPem.substring(0, 100) : pubPem}");
   try {
     var b64 = pubPem
         .replaceAll(r'\r\n', '')
@@ -629,7 +741,8 @@ String rsaEncryptPassword(String pubPem, String plainPwd) {
         innerB64 = "$innerB64=";
       }
       pemBytes = Uint8List.fromList(base64.decode(innerB64));
-      diag.writeln("检测到双重base64→第二次解码后长度=${pemBytes.length} 前16字节=${hexOf(pemBytes, 16)}");
+      diag.writeln(
+          "检测到双重base64→第二次解码后长度=${pemBytes.length} 前16字节=${hexOf(pemBytes, 16)}");
     }
     // 解析 SubjectPublicKeyInfo: SEQUENCE { AlgorithmIdentifier, BIT STRING }
     final asn1Parser = ASN1Parser(pemBytes);
@@ -641,13 +754,15 @@ String rsaEncryptPassword(String pubPem, String plainPwd) {
       throw Exception("顶层不是含≥2元素的SEQUENCE，实际类型=${topLevel.runtimeType}");
     }
     final topElements = topLevel.elements!;
-    diag.writeln("顶层元素数=${topElements.length} 类型=${topElements.map((x) => x.runtimeType).join(',')}");
+    diag.writeln(
+        "顶层元素数=${topElements.length} 类型=${topElements.map((x) => x.runtimeType).join(',')}");
     // SPKI第2个元素是BIT STRING：其value字节去掉首字节(unusedbits)才是内层RSAPublicKey
     final ASN1Sequence pubKeySeq;
     if (topElements[1] is ASN1BitString) {
       final bitString = topElements[1] as ASN1BitString;
       final innerDer = Uint8List.fromList(bitString.valueBytes!.sublist(1));
-      diag.writeln("走SPKI分支 内层长度=${innerDer.length} 前16字节=${hexOf(innerDer, 16)}");
+      diag.writeln(
+          "走SPKI分支 内层长度=${innerDer.length} 前16字节=${hexOf(innerDer, 16)}");
       pubKeySeq = ASN1Parser(innerDer).nextObject() as ASN1Sequence;
     } else {
       diag.writeln("走裸RSAPublicKey分支");
@@ -657,13 +772,17 @@ String rsaEncryptPassword(String pubPem, String plainPwd) {
     if (pubElements == null || pubElements.length < 2) {
       throw Exception("公钥PEM解析失败：公钥序列元素不足");
     }
-    diag.writeln("公钥序列元素数=${pubElements.length} 类型=${pubElements.map((x) => x.runtimeType).join(',')}");
+    diag.writeln(
+        "公钥序列元素数=${pubElements.length} 类型=${pubElements.map((x) => x.runtimeType).join(',')}");
     final int1 = pubElements[0] as ASN1Integer;
     final int2 = pubElements[1] as ASN1Integer;
-    diag.writeln("元素0位数=${int1.integer?.bitLength} 元素1位数=${int2.integer?.bitLength}");
+    diag.writeln(
+        "元素0位数=${int1.integer?.bitLength} 元素1位数=${int2.integer?.bitLength}");
     // 按数值大小自动识别：模数n是大数，指数e通常是65537
-    final BigInt n = (int1.integer! > int2.integer!) ? int1.integer! : int2.integer!;
-    final BigInt e = (int1.integer! > int2.integer!) ? int2.integer! : int1.integer!;
+    final BigInt n =
+        (int1.integer! > int2.integer!) ? int1.integer! : int2.integer!;
+    final BigInt e =
+        (int1.integer! > int2.integer!) ? int2.integer! : int1.integer!;
     diag.writeln("最终采用 模数位数=${n.bitLength} 指数=$e");
     debugPrint("【阶段2】模数位数=${n.bitLength} 指数=$e");
     // ⚠️pointycastle的RSAPublicKey构造函数参数顺序是(modulus, exponent)——模数在前！
@@ -698,28 +817,33 @@ Future<Map<String, String>> mesPerformLogin({
   }
   final String keyToken = validateResult["keyToken"]!;
   // =========阶段2：RSA加密密码=========
-  final String encryptedPwd = rsaEncryptPassword(validateResult["publicKey"]!, pwd);
+  final String encryptedPwd =
+      rsaEncryptPassword(validateResult["publicKey"]!, pwd);
   // =========阶段3：提交登录请求，获取token=========
   final String baseUrl = "http://$ip:$port";
   debugPrint("【阶段3】请求登录接口 $baseUrl/platform/sign/signin2");
-  final loginResp = await http.post(
-    Uri.parse("$baseUrl/platform/sign/signin2"),
-    headers: {
-      "Content-Type": "application/json;charset=utf-8",
-      "Accept": "*/*",
-      "Accept-Encoding": "gzip, deflate",
-      "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
-      "Culture": "zh-CN",
-      "EnterpriseId": "*",
-      "X-TZ-Offset": "-480",
-      "Referer": "$baseUrl/h5/login.html",
-      "Origin": "$baseUrl",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0 Safari/537.36 Edg/153.0.0",
-    },
-    body: jsonEncode([account, encryptedPwd, keyToken]),
-  ).timeout(Duration(seconds: timeoutSec));
+  final loginResp = await http
+      .post(
+        Uri.parse("$baseUrl/platform/sign/signin2"),
+        headers: {
+          "Content-Type": "application/json;charset=utf-8",
+          "Accept": "*/*",
+          "Accept-Encoding": "gzip, deflate",
+          "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+          "Culture": "zh-CN",
+          "EnterpriseId": "*",
+          "X-TZ-Offset": "-480",
+          "Referer": "$baseUrl/h5/login.html",
+          "Origin": "$baseUrl",
+          "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0 Safari/537.36 Edg/153.0.0",
+        },
+        body: jsonEncode([account, encryptedPwd, keyToken]),
+      )
+      .timeout(Duration(seconds: timeoutSec));
   if (loginResp.statusCode != 200) {
-    throw Exception("阶段3失败：登录接口Http状态码${loginResp.statusCode}，返回：${loginResp.body}");
+    throw Exception(
+        "阶段3失败：登录接口Http状态码${loginResp.statusCode}，返回：${loginResp.body}");
   }
   final loginJson = jsonDecode(loginResp.body);
   if (loginJson["success"] != true) {
@@ -731,22 +855,41 @@ Future<Map<String, String>> mesPerformLogin({
   }
   // ===== token获取：实测鼎捷MES把token放在 signin2 响应头 "token"(小写)，优先取头，再兜底体 =====
   String token = "";
-  for (final h in ["token", "access-token", "accesstoken", "x-token", "x-access-token", "authorization"]) {
+  for (final h in [
+    "token",
+    "access-token",
+    "accesstoken",
+    "x-token",
+    "x-access-token",
+    "authorization"
+  ]) {
     final v = loginResp.headers[h];
     if (v != null && v.trim().isNotEmpty) {
-      token = v.trim().replaceFirst(RegExp(r'^Bearer\s+', caseSensitive: false), '');
+      token = v
+          .trim()
+          .replaceFirst(RegExp(r'^Bearer\s+', caseSensitive: false), '');
       debugPrint("【阶段3】token来自响应头 $h");
       break;
     }
   }
   if (token.isEmpty) {
-    for (final k in ["token", "Token", "access_token", "accessToken", "AccessToken"]) {
+    for (final k in [
+      "token",
+      "Token",
+      "access_token",
+      "accessToken",
+      "AccessToken"
+    ]) {
       final v = dataObj[k]?.toString();
-      if (v != null && v.isNotEmpty) { token = v; break; }
+      if (v != null && v.isNotEmpty) {
+        token = v;
+        break;
+      }
     }
   }
   if (token.isEmpty) {
-    final headerDump = loginResp.headers.entries.map((e) => "${e.key}: ${e.value}").join("\n");
+    final headerDump =
+        loginResp.headers.entries.map((e) => "${e.key}: ${e.value}").join("\n");
     throw Exception("阶段3失败：登录成功但响应体和响应头都没找到token。\n----响应头----\n$headerDump");
   }
   // ===== 用户信息解析：兼容camelCase与服务器实际的snake_case =====
@@ -757,7 +900,9 @@ Future<Map<String, String>> mesPerformLogin({
     }
     return "";
   }
-  final String userId = pick(["userId", "user_id", "UserInfoId", "userinfo_id"]);
+
+  final String userId =
+      pick(["userId", "user_id", "UserInfoId", "userinfo_id"]);
   final String userName = pick(["userName", "user_name"]);
   final String displayName = pick(["displayName", "display_name"]);
   String orgId = pick(["orgId", "org_id"]);
@@ -765,7 +910,8 @@ Future<Map<String, String>> mesPerformLogin({
     // 从组织列表取默认组织（is_default=true 或 str_default=Y）
     final orgs = dataObj["organizations"] as List;
     for (final o in orgs) {
-      if (o is Map && (o["is_default"] == true || o["str_default"]?.toString() == "Y")) {
+      if (o is Map &&
+          (o["is_default"] == true || o["str_default"]?.toString() == "Y")) {
         orgId = o["id"]?.toString() ?? "";
         break;
       }
@@ -800,7 +946,8 @@ Future<bool> mesSilentLogin() async {
       debugPrint("MES静默重登跳过：账号/密码/地址未配置");
       return false;
     }
-    final r = await mesPerformLogin(ip: ip, port: port, account: account, pwd: pwd, timeoutSec: timeoutSec);
+    final r = await mesPerformLogin(
+        ip: ip, port: port, account: account, pwd: pwd, timeoutSec: timeoutSec);
     await MesConfig.saveLoginInfo(
       token: r["token"]!,
       orgId: r["orgId"]!,
@@ -845,11 +992,27 @@ Future<Map<String, dynamic>> _mesQueryOnce(String labelNo) async {
     String baseUrl = "http://${mesCfg["host"]}:${mesCfg["port"]}";
     String token = mesCfg["token"];
     if (token.isEmpty) return {'ok': false, 'msg': 'MES Token为空，请到设置页登录MES'};
-    final uri = Uri.parse("$baseUrl/api/station/label/GetLableList").replace(queryParameters: {
-      "start": "0", "length": "20", "mitemCode": "", "mitemName": "", "warehouseCode": "",
-      "baseCode": "", "baseName": "", "districtCode": "", "locCode": "", "supplierCode": "",
-      "lotNo": "", "labelNo": labelNo, "status": "", "poNo": "", "bDate": "", "eDate": "",
-      "warehouse": "", "mitemSize": "", "supplier": "",
+    final uri = Uri.parse("$baseUrl/api/station/label/GetLableList")
+        .replace(queryParameters: {
+      "start": "0",
+      "length": "20",
+      "mitemCode": "",
+      "mitemName": "",
+      "warehouseCode": "",
+      "baseCode": "",
+      "baseName": "",
+      "districtCode": "",
+      "locCode": "",
+      "supplierCode": "",
+      "lotNo": "",
+      "labelNo": labelNo,
+      "status": "",
+      "poNo": "",
+      "bDate": "",
+      "eDate": "",
+      "warehouse": "",
+      "mitemSize": "",
+      "supplier": "",
     });
     final httpClient = HttpClient();
     final req = await httpClient.getUrl(uri);
@@ -870,30 +1033,51 @@ Future<Map<String, dynamic>> _mesQueryOnce(String labelNo) async {
     final resp = await req.close();
     final respBody = await resp.transform(utf8.decoder).join();
     if (resp.statusCode == 401 || resp.statusCode == 403) {
-      return {'ok': false, 'msg': 'MES登录已失效(HTTP ${resp.statusCode})，自动重登后仍失败，请到设置页重新登录MES'};
+      return {
+        'ok': false,
+        'msg': 'MES登录已失效(HTTP ${resp.statusCode})，自动重登后仍失败，请到设置页重新登录MES'
+      };
     }
     dynamic decoded;
-    try { decoded = jsonDecode(respBody); } catch (_) { decoded = null; }
+    try {
+      decoded = jsonDecode(respBody);
+    } catch (_) {
+      decoded = null;
+    }
     if (decoded is! Map<String, dynamic>) {
       return {'ok': false, 'msg': 'MES登录已失效，响应非JSON，自动重登后仍失败，请到设置页重新登录MES'};
     }
     if (decoded["success"] == true && decoded["data"] != null) {
       final rawData = decoded["data"]["data"];
-      final List rows = rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
-      if (rows.isEmpty) return {'ok': false, 'msg': 'MES查询结果为空(recordsTotal=${decoded["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确'};
+      final List rows =
+          rawData is List ? rawData : (rawData is Map ? [rawData] : const []);
+      if (rows.isEmpty)
+        return {
+          'ok': false,
+          'msg':
+              'MES查询结果为空(recordsTotal=${decoded["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确'
+        };
       final row = rows.first as Map;
       return {
         'ok': true,
         'partNo': (row["PartCode"] ?? row["MITEM_CODE"])?.toString() ?? '',
         'qty': (row["QTY"] as num?)?.toDouble() ?? 0,
         'createTime': row["DATETIME_CREATED"]?.toString() ?? '',
-        'itemName': (row["MITEM_NAME"] ?? row["MitemName"] ?? row["mitemName"] ?? "").toString(),
+        'itemName':
+            (row["MITEM_NAME"] ?? row["MitemName"] ?? row["mitemName"] ?? "")
+                .toString(),
         'lotNo': (row["LOT_NO"] ?? row["lotNo"] ?? "").toString(),
       };
     }
     final String msg = decoded["message"]?.toString() ?? '';
-    final bool auth = RegExp(r"token|session|unauthor|forbidden|invalid|expire|过期|失效|未授权|未登录|重新登录|登录", caseSensitive: false).hasMatch(msg);
-    return {'ok': false, 'msg': auth ? 'MES登录已失效：$msg，自动重登后仍失败，请到设置页重新登录MES' : 'MES接口返回异常：$msg'};
+    final bool auth = RegExp(
+            r"token|session|unauthor|forbidden|invalid|expire|过期|失效|未授权|未登录|重新登录|登录",
+            caseSensitive: false)
+        .hasMatch(msg);
+    return {
+      'ok': false,
+      'msg': auth ? 'MES登录已失效：$msg，自动重登后仍失败，请到设置页重新登录MES' : 'MES接口返回异常：$msg'
+    };
   } catch (e) {
     return {'ok': false, 'msg': 'MES查询异常：$e'};
   }
@@ -920,13 +1104,20 @@ Future<List<Map<String, dynamic>>> listBaselineFiles() async {
     final st = f.statSync();
     final name = f.uri.pathSegments.last;
     final key = '$name@${st.modified.millisecondsSinceEpoch}';
-    return {'name': name, 'path': f.path, 'fileKey': key, 'size': st.size, 'mtime': st.modified.toIso8601String()};
+    return {
+      'name': name,
+      'path': f.path,
+      'fileKey': key,
+      'size': st.size,
+      'mtime': st.modified.toIso8601String()
+    };
   }).toList();
 }
 
 /// 把某个基准文件解析入库（同名 fileKey 覆盖式重导：先删该 kind 旧数据再写）。
 /// kind: book=账面基准 / part=货位基准
-Future<BaselineParseResult> importBaselineFile(String path, String fileKey, String kind) async {
+Future<BaselineParseResult> importBaselineFile(
+    String path, String fileKey, String kind) async {
   final raw = await File(path).readAsString(encoding: utf8);
   final res = parseBaselineCsv(raw, fileKey);
   if (res.kind == "unknown") return res;
@@ -941,25 +1132,50 @@ Future<BaselineParseResult> importBaselineFile(String path, String fileKey, Stri
   });
   return res;
 }
+
 // ===================== 程序入口 =====================
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   // 错误显形：release下build抛异常不再灰屏，而是红字显示原因，便于现场定位
-  ErrorWidget.builder = (FlutterErrorDetails d) => Container(color: const Color(0xFFFFEBEE), padding: const EdgeInsets.all(12), alignment: Alignment.topLeft, child: SingleChildScrollView(child: Text('界面渲染异常：\n${d.exception}', style: const TextStyle(color: Color(0xFFB71C1C), fontSize: 12))));
+  ErrorWidget.builder = (FlutterErrorDetails d) => Container(
+      color: const Color(0xFFFFEBEE),
+      padding: const EdgeInsets.all(12),
+      alignment: Alignment.topLeft,
+      child: SingleChildScrollView(
+          child: Text('界面渲染异常：\n${d.exception}',
+              style: const TextStyle(color: Color(0xFFB71C1C), fontSize: 12))));
   await Isar.initializeIsarCore(download: true);
   final dir = await getApplicationDocumentsDirectory();
   _globalIsar = await Isar.open(
-    [ScanRecordSchema, BatchInfoSchema, RecordExtraSchema, BaselineBookSchema, BaselineLocSchema, InventoryScanSchema, OutboundOrderSchema, InventoryOpeningSchema, ShelfPlacementSchema, LabelInfoSchema],
+    [
+      ScanRecordSchema,
+      BatchInfoSchema,
+      RecordExtraSchema,
+      BaselineBookSchema,
+      BaselineLocSchema,
+      InventoryScanSchema,
+      OutboundOrderSchema,
+      InventoryOpeningSchema,
+      ShelfPlacementSchema,
+      LabelInfoSchema
+    ],
     directory: dir.path,
   );
   await LocalLog.init(dir.path);
   LocalLog.pruneOld();
   LocalLog.op('启动', 'AGV货位采集器');
   // ⑦全局异常兜底：未捕获异常写审计日志，App 不闪退
-  FlutterError.onError = (d) { FlutterError.presentError(d); LocalLog.err('Flutter', d.exception, d.stack); };
-  WidgetsBinding.instance.platformDispatcher.onError = (e, s) { LocalLog.err('未捕获', e, s); return true; };
+  FlutterError.onError = (d) {
+    FlutterError.presentError(d);
+    LocalLog.err('Flutter', d.exception, d.stack);
+  };
+  WidgetsBinding.instance.platformDispatcher.onError = (e, s) {
+    LocalLog.err('未捕获', e, s);
+    return true;
+  };
   runApp(const MyApp());
 }
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
@@ -973,30 +1189,35 @@ class MyApp extends StatelessWidget {
     );
   }
 }
+
 class MainPage extends StatefulWidget {
   const MainPage({super.key});
   @override
   State<MainPage> createState() => _MainPageState();
 }
-class _MainPageState extends State<MainPage> with SingleTickerProviderStateMixin {
+
+class _MainPageState extends State<MainPage>
+    with SingleTickerProviderStateMixin {
   late Isar _isar;
   String? _currentBatchId;
   int _workType = 0; //0 AGV站台，1人工地面
   String? _selectedStation; //【修改：存储编码 NB02-CK-05】
   String? _selectedGroundLoc;
-String? _containerType;
-  final TextEditingController _ledgerLocCtrl = TextEditingController(); //采集页顺手登记：货位账本编码（选填）
+  String? _containerType;
+  final TextEditingController _ledgerLocCtrl =
+      TextEditingController(); //采集页顺手登记：货位账本编码（选填）
   Timer? _ledgerSyncTimer; //账本同步防抖：连扫攒一批再全量推
 
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
   final FocusNode _goodsFocusNode = FocusNode(); //【新增】货码输入框焦点控制器
 // 滚动控制器
-final ScrollController _mainScrollCtrl = ScrollController();
+  final ScrollController _mainScrollCtrl = ScrollController();
 // GlobalKey 用于定位三个区域
-final GlobalKey _keyContainerArea = GlobalKey();
-final GlobalKey _keyLocationArea = GlobalKey();
-final GlobalKey _keyScanInputArea = GlobalKey();
+  final GlobalKey _keyContainerArea = GlobalKey();
+  final GlobalKey _keyLocationArea = GlobalKey();
+  final GlobalKey _keyScanInputArea = GlobalKey();
+
   /// 滚动到指定GlobalKey组件
   Future<void> _scrollToKey(GlobalKey key) async {
     final ctx = key.currentContext;
@@ -1023,15 +1244,21 @@ final GlobalKey _keyScanInputArea = GlobalKey();
   int _cancelCount = 0;
   bool _recordPanelExpanded = false;
   late TabController _tabController;
-  bool _showCollect = true, _showInv = true, _showDirect = true, _showReq = true, _showAgv = true; // 角色化Tab可见性
+  bool _showCollect = true,
+      _showInv = true,
+      _showDirect = true,
+      _showReq = true,
+      _showAgv = true; // 角色化Tab可见性
   List<String> _tabKeys = const [];
   List<String> _selectedBatchIds = [];
   // ===== 整托合并模式状态 =====
-  bool _palletMode = false;                     //整托开关
-  String? _currentPalletId;                     //当前托号（首码自动创建）
-  List<Map<String, dynamic>> _palletSummary = []; //本托汇总 [{partNo,itemName,boxes,qty}]
-  int _palletTotalBoxes = 0;                    //本托已扫框数
-  String _fmtQty(double q) => q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
+  bool _palletMode = false; //整托开关
+  String? _currentPalletId; //当前托号（首码自动创建）
+  List<Map<String, dynamic>> _palletSummary =
+      []; //本托汇总 [{partNo,itemName,boxes,qty}]
+  int _palletTotalBoxes = 0; //本托已扫框数
+  String _fmtQty(double q) =>
+      q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
 
   HttpServer? _webServer;
   bool _webServiceRunning = false;
@@ -1050,7 +1277,15 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     _showDirect = Auth.can("direct_transfer");
     _showReq = wh || Auth.can("requisition") || Auth.can("receive_confirm");
     _showAgv = wh || Auth.can("agv_monitor");
-    _tabKeys = [ if (_showCollect) 'collect', if (_showCollect) 'history', if (_showInv) 'inv', if (_showDirect) 'direct', 'stock', if (_showReq) 'req', if (_showAgv) 'agv' ];
+    _tabKeys = [
+      if (_showCollect) 'collect',
+      if (_showCollect) 'history',
+      if (_showInv) 'inv',
+      if (_showDirect) 'direct',
+      'stock',
+      if (_showReq) 'req',
+      if (_showAgv) 'agv'
+    ];
     _tabController = TabController(length: _tabKeys.length, vsync: this);
     _startNotifPolling();
     _restoreWorkMode(); // ②按登录账号恢复上次工作模式（AGV站台/人工地面）
@@ -1058,20 +1293,24 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
     _initLoadData();
   }
+
   ///【修复BUG：新增】启动数据加载：先恢复当前批次号，再刷新记录列表与统计
   Future<void> _initLoadData() async {
-    await _loadLastBatch();          // 恢复 _currentBatchId（或弹窗新建批次）
+    await _loadLastBatch(); // 恢复 _currentBatchId（或弹窗新建批次）
     if (!mounted) return;
     if (_currentBatchId == null) return; // 用户取消新建，保持空状态
-    await _refreshRecord();           // 加载本批次采集记录
-    await _refreshBatchStat();        // 刷新正常/作废统计
+    await _refreshRecord(); // 加载本批次采集记录
+    await _refreshBatchStat(); // 刷新正常/作废统计
     if (_palletMode) await _refreshPalletSummary();
   }
+
   /// 领料通知轮询：每30秒拉一次，未读消息弹横幅，点击跳领料页
   void _startNotifPolling() {
     _notifTimer?.cancel();
-    _notifTimer = Timer.periodic(const Duration(seconds: 30), (_) => _pollNotifications());
+    _notifTimer = Timer.periodic(
+        const Duration(seconds: 30), (_) => _pollNotifications());
   }
+
   Future<void> _pollNotifications() async {
     if (Auth.user == null) return;
     final r = await AuthApi.notifications();
@@ -1081,11 +1320,21 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     final first = list.first;
     final text = first["text"]?.toString() ?? "领料单有新消息";
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(list.length > 1 ? "$text（共 ${list.length} 条新消息）" : text, maxLines: 2, overflow: TextOverflow.ellipsis),
-      backgroundColor: const Color(0xFF37474F), duration: const Duration(seconds: 6),
-      action: SnackBarAction(label: "查看", textColor: Colors.amber, onPressed: () { kUnreadMsgs.value += list.length; final i = _tabKeys.indexOf('req'); _tabController.animateTo(i >= 0 ? i : 0); }),
+      content: Text(list.length > 1 ? "$text（共 ${list.length} 条新消息）" : text,
+          maxLines: 2, overflow: TextOverflow.ellipsis),
+      backgroundColor: const Color(0xFF37474F),
+      duration: const Duration(seconds: 6),
+      action: SnackBarAction(
+          label: "查看",
+          textColor: Colors.amber,
+          onPressed: () {
+            kUnreadMsgs.value += list.length;
+            final i = _tabKeys.indexOf('req');
+            _tabController.animateTo(i >= 0 ? i : 0);
+          }),
     ));
   }
+
   @override
   void dispose() {
     _notifTimer?.cancel();
@@ -1093,14 +1342,19 @@ final GlobalKey _keyScanInputArea = GlobalKey();
     _goodsFocusNode.dispose(); //【新增】释放焦点资源
     _goodsInputCtrl.dispose();
     _remarkInputCtrl.dispose();
-_mainScrollCtrl.dispose(); //新增
-    _ledgerSyncTimer?.cancel(); _ledgerLocCtrl.dispose(); //采集页顺手登记资源
+    _mainScrollCtrl.dispose(); //新增
+    _ledgerSyncTimer?.cancel();
+    _ledgerLocCtrl.dispose(); //采集页顺手登记资源
     super.dispose();
   }
+
   ///【MOD‑新增2：刷新正常/作废统计，替换原有统计】
   Future<void> _refreshBatchStat() async {
     if (_currentBatchId == null) return;
-    final records = await _isar.scanRecords.filter().batchIdEqualTo(_currentBatchId!).findAll();
+    final records = await _isar.scanRecords
+        .filter()
+        .batchIdEqualTo(_currentBatchId!)
+        .findAll();
     setState(() {
       _normalCount = records.where((r) => !r.isCancel).length;
       _cancelCount = records.where((r) => r.isCancel).length;
@@ -1133,12 +1387,15 @@ _mainScrollCtrl.dispose(); //新增
     for (final r in records) {
       if (!codeSet.contains(r.goodsCode)) continue;
       totalBoxes++;
-      final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
-      final g = grouped.putIfAbsent(pn, () => {"partNo": pn, "itemName": "", "boxes": 0, "qty": 0.0});
+      final pn =
+          (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
+      final g = grouped.putIfAbsent(
+          pn, () => {"partNo": pn, "itemName": "", "boxes": 0, "qty": 0.0});
       g["boxes"] = (g["boxes"] as int) + 1;
       g["qty"] = (g["qty"] as double) + (r.mesQty ?? 0);
       final name = extraMap[r.goodsCode]?.mesItemName ?? "";
-      if ((g["itemName"] as String).isEmpty && name.isNotEmpty) g["itemName"] = name;
+      if ((g["itemName"] as String).isEmpty && name.isNotEmpty)
+        g["itemName"] = name;
     }
     final list = grouped.values.toList()
       ..sort((a, b) => (b["boxes"] as int).compareTo(a["boxes"] as int));
@@ -1157,8 +1414,12 @@ _mainScrollCtrl.dispose(); //新增
         title: const Text("结束本托"),
         content: Text("本托已扫 $_palletTotalBoxes 框，确认结束并释放货位，开始下一托？"),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认结托")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text("取消")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text("确认结托")),
         ],
       ),
     );
@@ -1173,7 +1434,8 @@ _mainScrollCtrl.dispose(); //新增
       _containerType = null;
       _ledgerLocCtrl.clear(); //整托结托：顺手登记参数归零
     });
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("本托已结束，请选择新货位开下一托")));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(const SnackBar(content: Text("本托已结束，请选择新货位开下一托")));
   }
 
   ///【整托：开关切换】
@@ -1186,8 +1448,12 @@ _mainScrollCtrl.dispose(); //新增
           title: const Text("关闭整托模式"),
           content: const Text("当前托尚未结束，关闭将结束本托并释放货位，确认？"),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
-            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认")),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text("取消")),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text("确认")),
           ],
         ),
       );
@@ -1204,24 +1470,26 @@ _mainScrollCtrl.dispose(); //新增
       _ledgerLocCtrl.clear(); //切整托开关：顺手登记参数归零
     });
   }
+
   Future<void> _loadLastBatch() async {
     List<BatchInfo> allBatch = await _isar.batchInfos.where().findAll();
-    allBatch = allBatch.where((b)=>b.taskKind == 0).toList(); //盘点任务不进入采集批次体系
-    if(allBatch.isNotEmpty){
+    allBatch = allBatch.where((b) => b.taskKind == 0).toList(); //盘点任务不进入采集批次体系
+    if (allBatch.isNotEmpty) {
       //只筛选未归档批次作为可采集候选
-  final active = allBatch.where((b)=>!b.isArchived).toList();
-      if(active.isNotEmpty){
+      final active = allBatch.where((b) => !b.isArchived).toList();
+      if (active.isNotEmpty) {
         active.sort((a, b) => b.createTime.compareTo(a.createTime));
         setState(() {
           _currentBatchId = active.first.batchId;
         });
-      }else{
+      } else {
         await _createNewBatch();
       }
     } else {
       await _createNewBatch();
     }
   }
+
   //====修改：新建批次弹窗，增加批次备注输入====
   Future<void> _createNewBatch() async {
     if (_webServiceRunning) {
@@ -1240,13 +1508,21 @@ _mainScrollCtrl.dispose(); //新增
           ),
         ),
         actions: [
-          TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
-          TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认新建")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text("取消")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text("确认新建")),
         ],
       ),
     );
-    if(confirmCreate != true) return;
-    final nowStr = DateTime.now().toString().substring(0, 16).replaceAll(" ", "-").replaceAll(":", "");
+    if (confirmCreate != true) return;
+    final nowStr = DateTime.now()
+        .toString()
+        .substring(0, 16)
+        .replaceAll(" ", "-")
+        .replaceAll(":", "");
     final newBatch = BatchInfo(
       batchId: "B$nowStr",
       createTime: DateTime.now().toString(),
@@ -1263,31 +1539,37 @@ _mainScrollCtrl.dispose(); //新增
       _selectedTags.clear(); //新建批次清空多选标签
       _ledgerLocCtrl.clear(); //顺手登记参数归零
       _remarkInputCtrl.clear();
-_containerType = null;
+      _containerType = null;
       // 新批次开始，结束未完成的托
       _currentPalletId = null;
       _palletSummary = [];
       _palletTotalBoxes = 0;
-
     });
     _refreshRecord();
     await _refreshBatchStat();
   }
+
   Future<BatchInfo?> _getCurrentBatch() async {
     if (_currentBatchId == null) return null;
-    return await _isar.batchInfos.filter().batchIdEqualTo(_currentBatchId!).findFirst();
+    return await _isar.batchInfos
+        .filter()
+        .batchIdEqualTo(_currentBatchId!)
+        .findFirst();
   }
+
   //====本次新增校验：禁止向已归档批次录入数据====
-  Future<bool> _checkBatchArchived() async{
+  Future<bool> _checkBatchArchived() async {
     final batch = await _getCurrentBatch();
-    if(batch?.isArchived == true){
-      if(mounted){
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("当前批次已归档，不可新增采集记录！")));
+    if (batch?.isArchived == true) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("当前批次已归档，不可新增采集记录！")));
       }
       return true;
     }
     return false;
   }
+
   //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug】
   Future<bool> _isCodeDuplicate(String code) async {
     final exist = await _isar.scanRecords
@@ -1307,7 +1589,8 @@ _containerType = null;
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("该货码已登记"),
-        content: Text("货码：$code\n登记位置：$posInfo\n状态：${exist.isCancel ? "【已作废】" : "正常有效"}"),
+        content: Text(
+            "货码：$code\n登记位置：$posInfo\n状态：${exist.isCancel ? "【已作废】" : "正常有效"}"),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, "view"),
@@ -1335,17 +1618,21 @@ _containerType = null;
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text("采集时间：${exist.scanTime.toString().substring(0,19)}"),
-                Text("作业类型：${exist.workType==0?"AGV站台":"人工货位"}"),
+                Text("采集时间：${exist.scanTime.toString().substring(0, 19)}"),
+                Text("作业类型：${exist.workType == 0 ? "AGV站台" : "人工货位"}"),
                 Text("位置：$posInfo"),
-                Text("零件号：${(exist.mesPartNo?.isNotEmpty ?? false) ? exist.mesPartNo : "无"}"),
+                Text(
+                    "零件号：${(exist.mesPartNo?.isNotEmpty ?? false) ? exist.mesPartNo : "无"}"),
                 Text("数量：${exist.mesQty ?? "无"}"),
-                Text("备注：${exist.remark.isNotEmpty?exist.remark:"无"}"),
-                Text("状态：${exist.isCancel?"已作废":"正常"}"),
+                Text("备注：${exist.remark.isNotEmpty ? exist.remark : "无"}"),
+                Text("状态：${exist.isCancel ? "已作废" : "正常"}"),
               ],
             ),
           ),
-          actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("关闭"))],
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))
+          ],
         ),
       );
       return true;
@@ -1355,10 +1642,10 @@ _containerType = null;
       await _isar.writeTxn(() async {
         exist.isCancel = tempCancelFlag;
         await _isar.scanRecords.put(exist);
-        if(exist.workType == 0 && exist.stationNo != null){
+        if (exist.workType == 0 && exist.stationNo != null) {
           BatchInfo? batch = await _getCurrentBatch();
-          if(batch != null){
-                       List<String> mutableList = batch.usedStation.toList();
+          if (batch != null) {
+            List<String> mutableList = batch.usedStation.toList();
 
             mutableList.remove(exist.stationNo);
             batch.usedStation = mutableList;
@@ -1367,11 +1654,14 @@ _containerType = null;
         }
       });
       LocalLog.op('作废旧记录', exist.goodsCode);
-      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("旧记录已标记作废，可录入新记录")));
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("旧记录已标记作废，可录入新记录")));
       return false;
     }
     return true;
   }
+
   Future<void> _scanSuccessAction() async {
     try {
       if (await AppSettings.getVibrationEnabled()) {
@@ -1384,11 +1674,15 @@ _containerType = null;
       }
     } catch (_) {}
   }
+
   Future<void> _saveRecord(String code) async {
-    if(_isSaving) return;
+    if (_isSaving) return;
     // 服务端功能门禁：角色未开通"采集录入"则拒绝保存
     if (!Auth.can("collect")) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${Auth.user?.roleName ?? "当前角色"}未开通采集录入权限，请联系管理员"), backgroundColor: Colors.red));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("${Auth.user?.roleName ?? "当前角色"}未开通采集录入权限，请联系管理员"),
+            backgroundColor: Colors.red));
       _isSaving = false;
       return;
     }
@@ -1397,7 +1691,9 @@ _containerType = null;
     try {
       //校验1：容器类型不能为空
       if (_containerType == null) {
-        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择容器类型！")));
+        if (mounted)
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text("请先选择容器类型！")));
         await _scrollToKey(_keyContainerArea);
         _isSaving = false;
         return;
@@ -1410,7 +1706,9 @@ _containerType = null;
         locationValid = _selectedGroundLoc != null;
       }
       if (!locationValid) {
-        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择货位！")));
+        if (mounted)
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text("请先选择货位！")));
         await _scrollToKey(_keyLocationArea);
         _isSaving = false;
         return;
@@ -1419,17 +1717,20 @@ _containerType = null;
       debugPrint("校验滚动异常 $e");
     }
     // ==========【前置校验结束，下面原有代码保留不变】==========
-    try{
+    try {
       //归档拦截校验
-      if(await _checkBatchArchived()) return;
+      if (await _checkBatchArchived()) return;
       if (_currentBatchId == null) {
-        if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
+        if (mounted)
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
         return;
       }
       if (await _isCodeDuplicate(code)) return;
       if (_workType == 0 && _selectedStation == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择站台！")));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text("请先选择站台！")));
         }
         return;
       }
@@ -1443,30 +1744,38 @@ _containerType = null;
         // 整托模式：本托内的记录不算占用，允许同托多码共用站台；非本托记录仍拦截
         String? occupiedByOtherPallet;
         for (final rec in existStationRecord) {
-          final extra = await _isar.recordExtras.filter().goodsCodeEqualTo(rec.goodsCode).findFirst();
+          final extra = await _isar.recordExtras
+              .filter()
+              .goodsCodeEqualTo(rec.goodsCode)
+              .findFirst();
           final recPallet = extra?.palletId ?? "";
-          if (!(_palletMode && _currentPalletId != null && recPallet == _currentPalletId && recPallet.isNotEmpty)) {
+          if (!(_palletMode &&
+              _currentPalletId != null &&
+              recPallet == _currentPalletId &&
+              recPallet.isNotEmpty)) {
             occupiedByOtherPallet = rec.goodsCode;
             break;
           }
         }
         if (occupiedByOtherPallet != null) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${_selectedStation}站台已登记货物，不可再次使用！")));
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text("${_selectedStation}站台已登记货物，不可再次使用！")));
           }
           return;
         }
       }
       if (_workType == 1 && _selectedGroundLoc == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
         }
         return;
       }
       // =========改动2‑2：拼接多选标签=========
       String finalRemark = _selectedTags.join("｜");
-      if(_remarkInputCtrl.text.isNotEmpty){
-        if(finalRemark.isNotEmpty) finalRemark += "｜";
+      if (_remarkInputCtrl.text.isNotEmpty) {
+        if (finalRemark.isNotEmpty) finalRemark += "｜";
         finalRemark += _remarkInputCtrl.text.trim();
       }
       // =========整托模式：首码自动建托号=========
@@ -1476,43 +1785,48 @@ _containerType = null;
           _currentPalletId = "TP${ts.millisecondsSinceEpoch}";
         });
       }
-      final String palletIdForSave = _palletMode ? (_currentPalletId ?? "") : "";
+      final String palletIdForSave =
+          _palletMode ? (_currentPalletId ?? "") : "";
 
 // ===================== MES接口请求【统一走 mesQueryLabel：失效自动静默重登并重试一次】=====================
-String? mesPartNo;
-double? mesQty;
-String? mesCreateTime;
-String mesItemName = "";
-String mesLotNo = "";
-try {
-  final mesResult = await mesQueryLabel(code);
-  if (mesResult["ok"] == true) {
-    final String pn = mesResult["partNo"]?.toString() ?? "";
-    final String ct = mesResult["createTime"]?.toString() ?? "";
-    mesPartNo = pn.isEmpty ? null : pn;
-    mesQty = (mesResult["qty"] as num?)?.toDouble();
-    mesCreateTime = ct.isEmpty ? null : ct;
-    mesItemName = mesResult["itemName"]?.toString() ?? "";
-    mesLotNo = mesResult["lotNo"]?.toString() ?? "";
-    if (mesResult["relogin"] == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("MES登录已自动续期，查询正常")));
-    }
-  } else if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("MES查询失败：${mesResult["msg"]}，仅保存本地采集信息"))
-    );
-  }
-} catch (mesErr) {
-  if(mounted){
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("MES查询失败：${mesErr.toString()}，仅保存本地采集信息"))
-    );
-  }
-  //MES查询失败，字段保留null，不阻断保存流程
-}
-      if(_palletMode && _currentPalletId != null && (mesPartNo?.isNotEmpty ?? false)){
+      String? mesPartNo;
+      double? mesQty;
+      String? mesCreateTime;
+      String mesItemName = "";
+      String mesLotNo = "";
+      try {
+        final mesResult = await mesQueryLabel(code);
+        if (mesResult["ok"] == true) {
+          final String pn = mesResult["partNo"]?.toString() ?? "";
+          final String ct = mesResult["createTime"]?.toString() ?? "";
+          mesPartNo = pn.isEmpty ? null : pn;
+          mesQty = (mesResult["qty"] as num?)?.toDouble();
+          mesCreateTime = ct.isEmpty ? null : ct;
+          mesItemName = mesResult["itemName"]?.toString() ?? "";
+          mesLotNo = mesResult["lotNo"]?.toString() ?? "";
+          if (mesResult["relogin"] == true && mounted) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(const SnackBar(content: Text("MES登录已自动续期，查询正常")));
+          }
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text("MES查询失败：${mesResult["msg"]}，仅保存本地采集信息")));
+        }
+      } catch (mesErr) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text("MES查询失败：${mesErr.toString()}，仅保存本地采集信息")));
+        }
+        //MES查询失败，字段保留null，不阻断保存流程
+      }
+      if (_palletMode &&
+          _currentPalletId != null &&
+          (mesPartNo?.isNotEmpty ?? false)) {
         // 非首码时：若零件号在本托未出现过，轻提示防误扫（不拦截）
-        final codesInPallet = await _isar.recordExtras.filter().palletIdEqualTo(_currentPalletId!).findAll();
+        final codesInPallet = await _isar.recordExtras
+            .filter()
+            .palletIdEqualTo(_currentPalletId!)
+            .findAll();
         final pCodes = codesInPallet.map((e) => e.goodsCode).toSet();
         final pRecords = await _isar.scanRecords
             .filter()
@@ -1525,24 +1839,25 @@ try {
             .toSet();
         if (knownParts.isNotEmpty && !knownParts.contains(mesPartNo)) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("⚠️ 本托出现新零件号 $mesPartNo，请确认属于同一托")));
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text("⚠️ 本托出现新零件号 $mesPartNo，请确认属于同一托")));
           }
         }
       }
       final rec = ScanRecord(
-  scanTime: DateTime.now(),
-  workType: _workType,
-  stationNo: _workType == 0 ? _selectedStation : null,
-  groundLocation: _workType == 1 ? _selectedGroundLoc : null,
-  goodsCode: code,
-  remark: finalRemark,
-  batchId: _currentBatchId!,
-  containerType: _containerType,
-  //MES参数
-  mesPartNo: mesPartNo,
-  mesQty: mesQty,
-  mesCreateTime: mesCreateTime,
-);
+        scanTime: DateTime.now(),
+        workType: _workType,
+        stationNo: _workType == 0 ? _selectedStation : null,
+        groundLocation: _workType == 1 ? _selectedGroundLoc : null,
+        goodsCode: code,
+        remark: finalRemark,
+        batchId: _currentBatchId!,
+        containerType: _containerType,
+        //MES参数
+        mesPartNo: mesPartNo,
+        mesQty: mesQty,
+        mesCreateTime: mesCreateTime,
+      );
       await _isar.writeTxn(() async {
         await _isar.scanRecords.put(rec);
         // 扩展信息写入新表（同货码旧扩展记录先清掉，防作废重扫唯一索引冲突）
@@ -1555,12 +1870,12 @@ try {
           operator: Auth.user?.name ?? Auth.user?.username ?? "",
         );
         await _isar.recordExtras.put(extraRec);
-        if(_workType ==0 && _selectedStation != null){
+        if (_workType == 0 && _selectedStation != null) {
           BatchInfo? batch = await _getCurrentBatch();
-          if(batch != null){
-             List<String> mutableList = batch.usedStation.toList();
+          if (batch != null) {
+            List<String> mutableList = batch.usedStation.toList();
 
-            if(!mutableList.contains(_selectedStation)){
+            if (!mutableList.contains(_selectedStation)) {
               mutableList.add(_selectedStation!);
               batch.usedStation = mutableList;
               await _isar.batchInfos.put(batch);
@@ -1571,18 +1886,18 @@ try {
       LocalLog.op('扫码保存', code);
       await _scanSuccessAction();
       _goodsInputCtrl.clear();
-      setState((){
+      setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
         _remarkInputCtrl.clear();
         if (!_palletMode) {
           _containerType = null; // 新增：保存成功，容器类型取消选中
         }
-        if(_workType == 1 && !_palletMode){
+        if (_workType == 1 && !_palletMode) {
           _selectedGroundLoc = null; // ✅人工模式，录入成功清空地面货位
         }
       });
-      if(_workType ==0 && !_palletMode){
-        setState((){
+      if (_workType == 0 && !_palletMode) {
+        setState(() {
           _selectedStation = null;
         });
       }
@@ -1591,20 +1906,24 @@ try {
       await _refreshRecord();
       await _refreshBatchStat();
       await _refreshPalletSummary();
-      if(mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("采集保存成功")));
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("采集保存成功")));
       //【修复】保存后重挂扫码框焦点：节点可能自认为仍有焦点但原生输入连接已断，
       //PDA扫码枪按键进不来；先 unfocus 释放，再隔一帧重新申请，强制重建输入连接
       _goodsFocusNode.unfocus();
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if(mounted){
+        if (mounted) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if(mounted) _goodsFocusNode.requestFocus();
+            if (mounted) _goodsFocusNode.requestFocus();
           });
         }
       });
-    }catch(e){
-      if(mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("保存异常：${e.toString()}")));
-    }finally{
+    } catch (e) {
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text("保存异常：${e.toString()}")));
+    } finally {
       _isSaving = false;
     }
   }
@@ -1613,54 +1932,87 @@ try {
   ///留空则不写账本，与改动前行为完全一致；编码格式不符或货位已被他人占用时只提示不写入。
   Future<void> _ledgerRegisterOnSave(String code) async {
     try {
-      if (_ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO') { //自动分配：先按零件号定货位并回填
+      if (_ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO') {
+        //自动分配：先按零件号定货位并回填
         await _handleAutoLedger(code);
       }
       var loc = _ledgerLocCtrl.text.trim().toUpperCase();
       if (loc == 'AUTO') return; //AUTO 分配失败的情形，不写账本
-      if (loc.isEmpty && _workType == 1 && (_selectedGroundLoc ?? "").isNotEmpty) {
+      if (loc.isEmpty &&
+          _workType == 1 &&
+          (_selectedGroundLoc ?? "").isNotEmpty) {
         // 地面模式未填编码：在人选的区内自动分配第一个空格位
         final auto = await this.nb03AutoSlot(_selectedGroundLoc!);
         if (auto == null) {
-          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$_selectedGroundLoc 区 12 格位已满，请在货位账本登记框手动指定其他区"), backgroundColor: Colors.orange));
+          if (mounted)
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text("$_selectedGroundLoc 区 12 格位已满，请在货位账本登记框手动指定其他区"),
+                backgroundColor: Colors.orange));
           return;
         }
         loc = auto;
         if (mounted) setState(() => _ledgerLocCtrl.text = auto);
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$_selectedGroundLoc 区内自动分配格位：$auto"), backgroundColor: const Color(0xFF00897B)));
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text("$_selectedGroundLoc 区内自动分配格位：$auto"),
+              backgroundColor: const Color(0xFF00897B)));
       }
       if (loc.isEmpty) return;
       if (!RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc)) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("货位编码「$loc」格式不符（例 NB02-A-08-2F / NB03-B-13-07），本筐未入账本"), backgroundColor: Colors.orange));
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content:
+                  Text("货位编码「$loc」格式不符（例 NB02-A-08-2F / NB03-B-13-07），本筐未入账本"),
+              backgroundColor: Colors.orange));
         return; //保留输入内容，改正后可直接重扫标签再保存
       }
       final ctype = _containerType ?? "";
       final oper = Auth.user?.name ?? Auth.user?.username ?? "采集页";
       final codes = <String>{code.toUpperCase()};
-      if (_palletMode && _currentPalletId != null && _currentPalletId!.isNotEmpty) {
-        final mates = await _isar.recordExtras.filter().palletIdEqualTo(_currentPalletId!).findAll();
+      if (_palletMode &&
+          _currentPalletId != null &&
+          _currentPalletId!.isNotEmpty) {
+        final mates = await _isar.recordExtras
+            .filter()
+            .palletIdEqualTo(_currentPalletId!)
+            .findAll();
         codes.addAll(mates.map((m) => m.goodsCode.toUpperCase())); //同托多码共用一个货位
       }
       //占用核对：该货位上不属于本托/本码的其他标签才算冲突
-      final prior = await _isar.shelfPlacements.filter().locEqualTo(loc).findAll();
-      final foreign = prior.where((p) => !codes.contains(p.goodsCode.toUpperCase())).toList();
+      final prior =
+          await _isar.shelfPlacements.filter().locEqualTo(loc).findAll();
+      final foreign = prior
+          .where((p) => !codes.contains(p.goodsCode.toUpperCase()))
+          .toList();
       if (foreign.isNotEmpty) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$loc 已登记给 ${foreign.first.goodsCode}，本筐未入账本，请核对货位"), backgroundColor: Colors.orange));
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content:
+                  Text("$loc 已登记给 ${foreign.first.goodsCode}，本筐未入账本，请核对货位"),
+              backgroundColor: Colors.orange));
         return;
       }
       final now = DateTime.now().millisecondsSinceEpoch;
       await _isar.writeTxn(() async {
         for (final c in codes) {
-          final olds = await _isar.shelfPlacements.filter().goodsCodeEqualTo(c).findAll();
+          final olds = await _isar.shelfPlacements
+              .filter()
+              .goodsCodeEqualTo(c)
+              .findAll();
           await _isar.shelfPlacements.deleteAll(olds.map((e) => e.id).toList());
           await _isar.shelfPlacements.put(ShelfPlacement()
-            ..goodsCode = c ..loc = loc ..container = ctype ..operator = oper ..assignedAt = now);
+            ..goodsCode = c
+            ..loc = loc
+            ..container = ctype
+            ..operator = oper
+            ..assignedAt = now);
         }
       });
       if (_workType == 1) {
         // 采集流水地面位置升级为完整格位编码（原来只有 B13 区）；整托兄弟码一并更新
         for (final cG in codes) {
-          final recsG = await _isar.scanRecords.filter().goodsCodeEqualTo(cG).findAll();
+          final recsG =
+              await _isar.scanRecords.filter().goodsCodeEqualTo(cG).findAll();
           for (final rg in recsG) {
             if (!rg.isCancel && rg.groundLocation != loc) {
               rg.groundLocation = loc;
@@ -1673,9 +2025,15 @@ try {
       await ledgerUnmarkDeleted(codes); //重新登记→撤销本地墓碑，别台PDA拉取后复活本位
       if (!_palletMode) _ledgerLocCtrl.clear(); //登记成功后才清；整托多码保留复用同位
       _scheduleLedgerSync();
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("账本已登记：$loc（${codes.length} 码）"), backgroundColor: const Color(0xFF2E7D32)));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("账本已登记：$loc（${codes.length} 码）"),
+            backgroundColor: const Color(0xFF2E7D32)));
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("账本登记异常：$e（采集记录已保存）"), backgroundColor: Colors.orange));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("账本登记异常：$e（采集记录已保存）"),
+            backgroundColor: Colors.orange));
     }
   }
 
@@ -1685,10 +2043,11 @@ try {
   Future<void> onStationTap(int stationNum) async {
     final batch = await _getCurrentBatch();
     if (batch == null) return;
-    String stationCode = "NB02-CK-${stationNum.toString().padLeft(2,"0")}";
+    String stationCode = "NB02-CK-${stationNum.toString().padLeft(2, "0")}";
     if (batch.usedStation.contains(stationCode)) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("${stationNum}号站台已使用，无法选择！")));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text("${stationNum}号站台已使用，无法选择！")));
       }
       return;
     }
@@ -1696,63 +2055,71 @@ try {
       _selectedStation = stationCode;
     });
   }
+
   void _selectGroundLoc(int num) {
     setState(() {
       _selectedGroundLoc = "${_curLocGroup}${num}";
     });
   }
+
   Future<void> _refreshRecord() async {
     if (_currentBatchId == null) return;
     List<ScanRecord> all = await _isar.scanRecords
         .filter()
         .batchIdEqualTo(_currentBatchId!)
         .findAll();
-    all.sort((a,b)=>b.scanTime.compareTo(a.scanTime));
+    all.sort((a, b) => b.scanTime.compareTo(a.scanTime));
     //【修复BUG：此处强制setState，保证数据变更立刻刷新界面，解决保存成功看不到记录】
     setState(() {
       _recordList = all;
     });
   }
+
   //====修改：支持多批次合并导出｜改动2：函数改为异步，移除同步查询｜整托：托号列+汇总段
   Future<String> _generateCsvText({List<String>? targetBatchIds}) async {
-  String csvField(String v){ //含逗号/引号的字段加引号转义，保证台账不串列
-    if (v.contains(",") || v.contains("\"")) return "\"${v.replaceAll("\"", "\"\"")}\"";
-    return v;
-  }
-  String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期,托号\n";
+    String csvField(String v) {
+      //含逗号/引号的字段加引号转义，保证台账不串列
+      if (v.contains(",") || v.contains("\""))
+        return "\"${v.replaceAll("\"", "\"\"")}\"";
+      return v;
+    }
 
+    String header =
+        "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期,托号\n";
 
     String content = header;
     List<ScanRecord> targetRecords = [];
-    if(targetBatchIds != null && targetBatchIds.isNotEmpty){
-      for(var bid in targetBatchIds){
-        final list = await _isar.scanRecords.filter().batchIdEqualTo(bid).findAll();
+    if (targetBatchIds != null && targetBatchIds.isNotEmpty) {
+      for (var bid in targetBatchIds) {
+        final list =
+            await _isar.scanRecords.filter().batchIdEqualTo(bid).findAll();
         targetRecords.addAll(list);
       }
-    }else{
+    } else {
       targetRecords = _recordList;
     }
-    targetRecords.sort((a,b)=>a.scanTime.compareTo(b.scanTime));
+    targetRecords.sort((a, b) => a.scanTime.compareTo(b.scanTime));
     //预取所有扩展信息（托号/物料名）
     final extras = await _isar.recordExtras.where().findAll();
-    final Map<String,RecordExtra> extraMap = {for (var e in extras) e.goodsCode: e};
+    final Map<String, RecordExtra> extraMap = {
+      for (var e in extras) e.goodsCode: e
+    };
     for (var r in targetRecords) {
       String timeStr = r.scanTime.toString().substring(0, 19);
       String wt = r.workType.toString();
       String st = r.stationNo ?? "";
       String gl = r.groundLocation ?? "";
-String container = r.containerType ?? "";
+      String container = r.containerType ?? "";
 
       String code = r.goodsCode;
       String rem = r.remark;
-     String statusText = r.isCancel ? "作废" : "正常";
-String pn = r.mesPartNo ?? "";
-String qty = r.mesQty?.toString() ?? "";
-String pd = r.mesCreateTime ?? "";
-String pid = extraMap[code]?.palletId ?? "";
-content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,$pid\n";
-
-
+      String statusText = r.isCancel ? "作废" : "正常";
+      String pn = r.mesPartNo ?? "";
+      String qty = r.mesQty?.toString() ?? "";
+      String pd = r.mesCreateTime ?? "";
+      String pid = extraMap[code]?.palletId ?? "";
+      content +=
+          "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,$pid\n";
     }
     // ===== 整托汇总段：一行 = 托(货位)+零件号；同零件号多码标签号拼接、数量累加 =====
     final Map<String, List<ScanRecord>> palletGroups = {};
@@ -1767,20 +2134,28 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
       content += "托号,作业类型,站台编号,地面货位编码,容器类型,零件号,物料名称,框数,标签号(分号分隔),数量合计\n";
       final keys = palletGroups.keys.toList()..sort();
       for (final pid in keys) {
-        final rs = palletGroups[pid]!..sort((a,b)=>a.scanTime.compareTo(b.scanTime));
+        final rs = palletGroups[pid]!
+          ..sort((a, b) => a.scanTime.compareTo(b.scanTime));
         // 同托内按零件号再分组
         final Map<String, List<ScanRecord>> byPart = {};
         for (final r in rs) {
-          final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
+          final pn =
+              (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
           byPart.putIfAbsent(pn, () => []).add(r);
         }
         for (final entry in byPart.entries) {
           final rowsOfPart = entry.value;
           final codes = rowsOfPart.map((e) => e.goodsCode).join("；");
-          final names = rowsOfPart.map((e) => extraMap[e.goodsCode]?.mesItemName ?? "").where((e) => e.isNotEmpty).toSet().join("；");
-          final totalQty = rowsOfPart.fold<double>(0, (s, e) => s + (e.mesQty ?? 0));
+          final names = rowsOfPart
+              .map((e) => extraMap[e.goodsCode]?.mesItemName ?? "")
+              .where((e) => e.isNotEmpty)
+              .toSet()
+              .join("；");
+          final totalQty =
+              rowsOfPart.fold<double>(0, (s, e) => s + (e.mesQty ?? 0));
           final loc0 = rowsOfPart.first;
-          content += "${csvField(pid)},${loc0.workType},${csvField(loc0.stationNo ?? "")},${csvField(loc0.groundLocation ?? "")},${csvField(loc0.containerType ?? "")},${csvField(entry.key)},${csvField(names)},${rowsOfPart.length},${csvField(codes)},${_fmtQty(totalQty)}\n";
+          content +=
+              "${csvField(pid)},${loc0.workType},${csvField(loc0.stationNo ?? "")},${csvField(loc0.groundLocation ?? "")},${csvField(loc0.containerType ?? "")},${csvField(entry.key)},${csvField(names)},${rowsOfPart.length},${csvField(codes)},${_fmtQty(totalQty)}\n";
         }
       }
     }
@@ -1788,6 +2163,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
     content += _buildPalletAggCsv(targetRecords, extraMap);
     return content;
   }
+
   Future<void> _saveCsvToFile({List<String>? batchIds}) async {
     String csvText = await _generateCsvText(targetBatchIds: batchIds);
     final dir = await getExternalStorageDirectory();
@@ -1795,11 +2171,13 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
     String suffix = batchIds != null ? "多批次合并" : (_currentBatchId ?? "");
     String filePath = "${dir.path}/采集_${suffix}.csv";
     File file = File(filePath);
-   await file.writeAsString(csvText, encoding: utf8);
+    await file.writeAsString(csvText, encoding: utf8);
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
     }
   }
+
   Future<String?> _getLocalIp() async {
     try {
       final interfaces = await NetworkInterface.list(
@@ -1820,18 +2198,22 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
     }
     return null;
   }
+
   Future<void> startWebService() async {
     if (_webServiceRunning) return;
     // 读本机网卡 IP 无需附近设备权限（那是扫描其他设备用的），直接取 IP：
     final ip = await _getLocalIp();
     if (ip == null) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("未获取到局域网IP，请确认已连接WiFi，并关闭移动数据")));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text("未获取到局域网IP，请确认已连接WiFi，并关闭移动数据")));
       return;
     }
     _localIpAddress = ip;
     // ===== 网页门户：批次列表 / 任意批次下载 / 基准CSV上传（原"一律返回当前批次CSV"已升级） =====
     final handler = createCollectWebService(
-      csvForBatches: (ids) => _generateCsvText(targetBatchIds: ids.isEmpty ? null : ids),
+      csvForBatches: (ids) =>
+          _generateCsvText(targetBatchIds: ids.isEmpty ? null : ids),
       currentBatchId: () => _currentBatchId,
     );
     try {
@@ -1840,15 +2222,18 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
         _webServiceRunning = true;
       });
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("传输服务已开启，地址：http://${ip}:${_webPort}")));
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("传输服务已开启，地址：http://${ip}:${_webPort}")));
       }
     } catch (e) {
-      if(mounted){
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("端口启动失败：${e.toString()}，请使用复制导出模式")));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("端口启动失败：${e.toString()}，请使用复制导出模式")));
       }
       return;
     }
   }
+
   Future<void> stopWebService() async {
     if (_webServer != null) {
       await _webServer!.close();
@@ -1859,9 +2244,11 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
       _localIpAddress = null;
     });
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("局域网传输服务已关闭")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("局域网传输服务已关闭")));
     }
   }
+
   void _openCameraScan() async {
     bool scannedHandled = false;
     final result = await showDialog(
@@ -1884,13 +2271,17 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
             },
           ),
         ),
-        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))
+        ],
       ),
     );
-    if(result != null && result.toString().trim().isNotEmpty){
+    if (result != null && result.toString().trim().isNotEmpty) {
       await _saveRecord(result.toString().trim());
     }
   }
+
   Widget _buildStationPanel() {
     return FutureBuilder<BatchInfo?>(
       future: _getCurrentBatch(),
@@ -1898,156 +2289,180 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
         List<String> used = snapshot.data?.usedStation ?? [];
         // 8个站台，两行，每行4个：[5,6,7,8] / [9,10,11,12]
         final List<List<int>> stationRows = [
-          [5,6,7,8],
-          [9,10,11,12]
+          [5, 6, 7, 8],
+          [9, 10, 11, 12]
         ];
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: stationRows.map((rowStationList){
-            return Padding(
-              padding: const EdgeInsets.only(bottom:12),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: rowStationList.map((num) {
-                  String stationCode = "NB02-CK-${num.toString().padLeft(2,"0")}";
-                  bool locked = used.contains(stationCode);
-                  bool selected = _selectedStation == stationCode;
-                  return SizedBox(
-                    width: 80,
-                    height: 64,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: locked ? Colors.amber.shade600 : (selected ? Color(0xFF515BD4) : Colors.white),
-                        foregroundColor: selected ? Colors.white : Colors.black87,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        elevation: 2
-                      ),
-                      onPressed: locked ? null : () => onStationTap(num),
-                      child: Text("$num号",style: TextStyle(fontSize:18)),
-                    ),
-                  );
-                }).toList().cast<Widget>(),
-              ),
-            );
-          }).toList().cast<Widget>(),
+          children: stationRows
+              .map((rowStationList) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: rowStationList
+                        .map((num) {
+                          String stationCode =
+                              "NB02-CK-${num.toString().padLeft(2, "0")}";
+                          bool locked = used.contains(stationCode);
+                          bool selected = _selectedStation == stationCode;
+                          return SizedBox(
+                            width: 80,
+                            height: 64,
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                  backgroundColor: locked
+                                      ? Colors.amber.shade600
+                                      : (selected
+                                          ? Color(0xFF515BD4)
+                                          : Colors.white),
+                                  foregroundColor:
+                                      selected ? Colors.white : Colors.black87,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12)),
+                                  elevation: 2),
+                              onPressed:
+                                  locked ? null : () => onStationTap(num),
+                              child:
+                                  Text("$num号", style: TextStyle(fontSize: 18)),
+                            ),
+                          );
+                        })
+                        .toList()
+                        .cast<Widget>(),
+                  ),
+                );
+              })
+              .toList()
+              .cast<Widget>(),
         );
       },
     );
   }
- Widget _buildGroundLocPanel() {
-  return Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      //【A~H区域选择：横向滚动】
-      SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: _locGroup.map((g) => Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: ChoiceChip(
-              label: Text(g),
-              selected: _curLocGroup == g,
-              onSelected: (s) => setState(() => _curLocGroup = g),
-            ),
-          )).toList().cast<Widget>(),
-        ),
-      ),
-      const SizedBox(height: 8),
-      // ========= 货位数字区域：横向滚动 + 两行布局 =========
-      SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 第一行：1~9
-            Row(
-              children: List.generate(9, (i) {
-                int n = i + 1;
-                String locCode = "$_curLocGroup$n";
-                bool isSelected = _selectedGroundLoc == locCode;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal:3),
-                  child: SizedBox(
-                    width: 42,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: isSelected ? Color(0xFF515BD4) : Colors.white,
-                        foregroundColor: isSelected ? Colors.white : Colors.black,
-                        elevation:2,
-                      ),
-                      onPressed: () => _selectGroundLoc(n),
-                      child: Text("$n",style: TextStyle(fontSize:16)),
-                    ),
-                  ),
-                );
-              }),
-            ),
-            const SizedBox(height:6),
-            // 第二行：10~18
-            Row(
-              children: List.generate(9, (i) {
-                int n = i + 10;
-                String locCode = "$_curLocGroup$n";
-                bool isSelected = _selectedGroundLoc == locCode;
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal:3),
-                  child: SizedBox(
-                    width: 42,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: isSelected ? Color(0xFF515BD4) : Colors.white,
-                        foregroundColor: isSelected ? Colors.white : Colors.black,
-                        elevation:2,
-                      ),
-                      onPressed: () => _selectGroundLoc(n),
-                      child: Text("$n",style: TextStyle(fontSize:16)),
-                    ),
-                  ),
-                );
-              }),
-            ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 10),
-      Text("已选货位：${_selectedGroundLoc ?? "未选择"}")
-    ],
-  );
-}
 
-  Widget _buildContainerButton({required String showText,required String dbValue}){
+  Widget _buildGroundLocPanel() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        //【A~H区域选择：横向滚动】
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: _locGroup
+                .map((g) => Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: ChoiceChip(
+                        label: Text(g),
+                        selected: _curLocGroup == g,
+                        onSelected: (s) => setState(() => _curLocGroup = g),
+                      ),
+                    ))
+                .toList()
+                .cast<Widget>(),
+          ),
+        ),
+        const SizedBox(height: 8),
+        // ========= 货位数字区域：横向滚动 + 两行布局 =========
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 第一行：1~9
+              Row(
+                children: List.generate(9, (i) {
+                  int n = i + 1;
+                  String locCode = "$_curLocGroup$n";
+                  bool isSelected = _selectedGroundLoc == locCode;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: SizedBox(
+                      width: 42,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              isSelected ? Color(0xFF515BD4) : Colors.white,
+                          foregroundColor:
+                              isSelected ? Colors.white : Colors.black,
+                          elevation: 2,
+                        ),
+                        onPressed: () => _selectGroundLoc(n),
+                        child: Text("$n", style: TextStyle(fontSize: 16)),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+              const SizedBox(height: 6),
+              // 第二行：10~18
+              Row(
+                children: List.generate(9, (i) {
+                  int n = i + 10;
+                  String locCode = "$_curLocGroup$n";
+                  bool isSelected = _selectedGroundLoc == locCode;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 3),
+                    child: SizedBox(
+                      width: 42,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              isSelected ? Color(0xFF515BD4) : Colors.white,
+                          foregroundColor:
+                              isSelected ? Colors.white : Colors.black,
+                          elevation: 2,
+                        ),
+                        onPressed: () => _selectGroundLoc(n),
+                        child: Text("$n", style: TextStyle(fontSize: 16)),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 10),
+        Text("已选货位：${_selectedGroundLoc ?? "未选择"}")
+      ],
+    );
+  }
+
+  Widget _buildContainerButton(
+      {required String showText, required String dbValue}) {
     bool selected = _containerType == dbValue;
     return SizedBox(
-      height:48,
+      height: 48,
       child: ElevatedButton(
         style: ElevatedButton.styleFrom(
           backgroundColor: selected ? Color(0xFF515BD4) : Colors.white,
           foregroundColor: selected ? Colors.white : Colors.black87,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          elevation:2,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          elevation: 2,
         ),
-        onPressed: (){
+        onPressed: () {
           setState(() {
-            if(_containerType == dbValue){
+            if (_containerType == dbValue) {
               _containerType = null;
-            }else{
+            } else {
               _containerType = dbValue;
             }
           });
         },
-        child: Text(showText,style: TextStyle(fontSize:15)),
+        child: Text(showText, style: TextStyle(fontSize: 15)),
       ),
     );
   }
 
   //【MOD‑Bug2｜完整替换此函数】
   Widget _buildRecordList() {
-    if(_recordList.isEmpty){
-      return const Center(child:Text("本批次暂无采集记录"));
+    if (_recordList.isEmpty) {
+      return const Center(child: Text("本批次暂无采集记录"));
     }
     return ListView.builder(
       shrinkWrap: true,
-    physics: const NeverScrollableScrollPhysics(), // 改动这里
+      physics: const NeverScrollableScrollPhysics(), // 改动这里
       itemCount: _recordList.length,
       itemBuilder: (ctx, idx) {
         var r = _recordList[idx];
@@ -2062,10 +2477,9 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
           margin: EdgeInsets.symmetric(vertical: 6),
           padding: EdgeInsets.all(10),
           decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            boxShadow: [BoxShadow(color: Colors.black12, blurRadius:2)]
-          ),
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 2)]),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -2073,11 +2487,13 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text("${r.goodsCode}",style: TextStyle(fontSize:20,fontWeight: FontWeight.bold)),
-                    SizedBox(height:4),
-                    Text("📍 $posTxt｜容器:${r.containerType ?? "未选择"} ⏱ $timeTxt"),
-
-                    SizedBox(height:4),
+                    Text("${r.goodsCode}",
+                        style: TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold)),
+                    SizedBox(height: 4),
+                    Text(
+                        "📍 $posTxt｜容器:${r.containerType ?? "未选择"} ⏱ $timeTxt"),
+                    SizedBox(height: 4),
                     Text("📝 ${r.remark.isNotEmpty ? r.remark : "无"}"),
                   ],
                 ),
@@ -2086,14 +2502,17 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Container(
-                    padding: EdgeInsets.symmetric(horizontal:8,vertical:3),
+                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: r.isCancel ? Colors.red.shade100 : Colors.green.shade100,
-                      borderRadius: BorderRadius.circular(8)
-                    ),
-                    child: Text(r.isCancel?"作废":"正常",style: TextStyle(color: r.isCancel?Colors.red:Colors.green)),
+                        color: r.isCancel
+                            ? Colors.red.shade100
+                            : Colors.green.shade100,
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Text(r.isCancel ? "作废" : "正常",
+                        style: TextStyle(
+                            color: r.isCancel ? Colors.red : Colors.green)),
                   ),
-                  if(!r.isCancel)
+                  if (!r.isCancel)
                     TextButton(
                       style: TextButton.styleFrom(foregroundColor: Colors.red),
                       onPressed: () async {
@@ -2103,17 +2522,21 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
                             title: const Text("删除记录"),
                             content: const Text("确定删除本条采集记录？"),
                             actions: [
-                              TextButton(onPressed: ()=>Navigator.pop(ctx,false), child: const Text("取消")),
-                              TextButton(onPressed: ()=>Navigator.pop(ctx,true), child: const Text("确认")),
+                              TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text("取消")),
+                              TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text("确认")),
                             ],
                           ),
                         );
-                        if(confirm != true) return;
+                        if (confirm != true) return;
                         await _isar.writeTxn(() async {
                           await _isar.scanRecords.delete(r.id);
-                          if(r.workType ==0 && r.stationNo != null){
+                          if (r.workType == 0 && r.stationNo != null) {
                             BatchInfo? batch = await _getCurrentBatch();
-                            if(batch != null){
+                            if (batch != null) {
                               List<String> mutable = batch.usedStation.toList();
                               mutable.remove(r.stationNo);
                               batch.usedStation = mutable;
@@ -2124,7 +2547,7 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
                         await _refreshRecord();
                         await _refreshBatchStat();
                       },
-                      child: const Text("删除",style: TextStyle(fontSize:14)),
+                      child: const Text("删除", style: TextStyle(fontSize: 14)),
                     ),
                 ],
               )
@@ -2134,41 +2557,45 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
       },
     );
   }
+
   //====本次【修改重点】历史批次页面【完全对齐截图布局】====
-  Widget _buildHistoryBatchPage(){
+  Widget _buildHistoryBatchPage() {
     return FutureBuilder<List<BatchInfo>>(
-      future: _isar.batchInfos.where().findAll().then((list){
-        list = list.where((b)=>b.taskKind == 0).toList(); //只显示采集批次
-        list.sort((a,b)=>b.createTime.compareTo(a.createTime)); //按创建时间倒序，最新在上
+      future: _isar.batchInfos.where().findAll().then((list) {
+        list = list.where((b) => b.taskKind == 0).toList(); //只显示采集批次
+        list.sort(
+            (a, b) => b.createTime.compareTo(a.createTime)); //按创建时间倒序，最新在上
         return list;
       }),
-      builder: (ctx,snap){
-        if(!snap.hasData) return const Center(child: CircularProgressIndicator());
+      builder: (ctx, snap) {
+        if (!snap.hasData)
+          return const Center(child: CircularProgressIndicator());
         final batches = snap.data!;
         return Column(
           children: [
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal:12,vertical:8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Row(
                     children: [
                       Checkbox(
-                        value: _selectedBatchIds.length == batches.length && batches.isNotEmpty,
-                        onChanged: (sel){
+                        value: _selectedBatchIds.length == batches.length &&
+                            batches.isNotEmpty,
+                        onChanged: (sel) {
                           setState(() {
-                            if(sel == true){
-                                                         _selectedBatchIds = batches.map((b)=>b.batchId).toList();
-
-                            }else{
+                            if (sel == true) {
+                              _selectedBatchIds =
+                                  batches.map((b) => b.batchId).toList();
+                            } else {
                               _selectedBatchIds.clear();
                             }
                           });
                         },
                       ),
                       const Text("全选"),
-                      SizedBox(width:12),
+                      SizedBox(width: 12),
                       Text("已选: ${_selectedBatchIds.length}个"),
                     ],
                   ),
@@ -2177,50 +2604,63 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
             ),
             Expanded(
               child: ListView.builder(
-                padding: EdgeInsets.symmetric(horizontal:12),
+                padding: EdgeInsets.symmetric(horizontal: 12),
                 itemCount: batches.length,
-                itemBuilder: (ctx,idx){
+                itemBuilder: (ctx, idx) {
                   final b = batches[idx];
-                  Future<int> getCount()async{
-                    return await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).count();
+                  Future<int> getCount() async {
+                    return await _isar.scanRecords
+                        .filter()
+                        .batchIdEqualTo(b.batchId)
+                        .count();
                   }
+
                   return FutureBuilder<int>(
-                    future:getCount(),
-                    builder: (ctx,countSnap){
+                    future: getCount(),
+                    builder: (ctx, countSnap) {
                       final recCount = countSnap.data ?? 0;
                       //状态标签样式完全匹配截图
                       Widget statusWidget;
-                      if(b.isArchived){
+                      if (b.isArchived) {
                         statusWidget = Container(
-                          padding: EdgeInsets.symmetric(horizontal:8,vertical:3),
-                          decoration: BoxDecoration(color:Colors.grey.shade200,borderRadius:BorderRadius.circular(8)),
-                          child:Text("已归档",style:TextStyle(color:Colors.grey)),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                              color: Colors.grey.shade200,
+                              borderRadius: BorderRadius.circular(8)),
+                          child:
+                              Text("已归档", style: TextStyle(color: Colors.grey)),
                         );
-                      }else{
+                      } else {
                         statusWidget = Container(
-                          padding: EdgeInsets.symmetric(horizontal:8,vertical:3),
-                          decoration: BoxDecoration(color:Color(0xFFE8EDFF),borderRadius:BorderRadius.circular(8)),
-                          child:Text("进行中",style:TextStyle(color:Color(0xFF4056D6))),
+                          padding:
+                              EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                              color: Color(0xFFE8EDFF),
+                              borderRadius: BorderRadius.circular(8)),
+                          child: Text("进行中",
+                              style: TextStyle(color: Color(0xFF4056D6))),
                         );
                       }
                       return Container(
-                        margin: EdgeInsets.only(bottom:10),
+                        margin: EdgeInsets.only(bottom: 10),
                         padding: EdgeInsets.all(14),
-                        decoration:BoxDecoration(
-                          color:Colors.white,
-                          borderRadius:BorderRadius.circular(14),
-                          boxShadow:[BoxShadow(color:Colors.black12,blurRadius:4)]
-                        ),
+                        decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(14),
+                            boxShadow: [
+                              BoxShadow(color: Colors.black12, blurRadius: 4)
+                            ]),
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Checkbox(
                               value: _selectedBatchIds.contains(b.batchId),
-                              onChanged: (sel){
+                              onChanged: (sel) {
                                 setState(() {
-                                  if(sel == true){
+                                  if (sel == true) {
                                     _selectedBatchIds.add(b.batchId);
-                                  }else{
+                                  } else {
                                     _selectedBatchIds.remove(b.batchId);
                                   }
                                 });
@@ -2232,85 +2672,150 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
                                 children: [
                                   Row(
                                     children: [
-                                      Expanded(child:Text(b.batchId,style:TextStyle(fontSize:16,fontWeight:FontWeight.bold,overflow:TextOverflow.ellipsis))),
-                                      SizedBox(width:8),
+                                      Expanded(
+                                          child: Text(b.batchId,
+                                              style: TextStyle(
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.bold,
+                                                  overflow:
+                                                      TextOverflow.ellipsis))),
+                                      SizedBox(width: 8),
                                       statusWidget
                                     ],
                                   ),
-                                  SizedBox(height:4),
-                                  Text("🕒 ${b.createTime.substring(0,16)}"),
-                                  SizedBox(height:4),
-                                  Text("📂 $recCount 条记录  📍 ${b.batchRemark.isNotEmpty?b.batchRemark:"无货位信息"}"),
+                                  SizedBox(height: 4),
+                                  Text("🕒 ${b.createTime.substring(0, 16)}"),
+                                  SizedBox(height: 4),
+                                  Text(
+                                      "📂 $recCount 条记录  📍 ${b.batchRemark.isNotEmpty ? b.batchRemark : "无货位信息"}"),
                                 ],
                               ),
                             ),
-                            SizedBox(width:8),
+                            SizedBox(width: 8),
                             Column(
                               mainAxisSize: MainAxisSize.min,
                               children: [
                                 SizedBox(
-                                  width:70,
-                                  child:ElevatedButton(
-                                    style:ElevatedButton.styleFrom(padding:EdgeInsets.symmetric(vertical:4)),
-                              onPressed: () {
-  Navigator.push(
-    context,
-    MaterialPageRoute(builder: (ctx) => BatchDetailPage(batch: b)),
-  );
-},
-                                    child:const Text("查看",style:TextStyle(fontSize:12)),
-                                  ),
-                                ),
-                                if(!b.isArchived)
-                                SizedBox(
-                                  width:70,
-                                  child:ElevatedButton(
-                                    style:ElevatedButton.styleFrom(padding:EdgeInsets.symmetric(vertical:4),backgroundColor:Colors.grey.shade200,foregroundColor:Colors.black87),
-                                    onPressed:()async{
-                                      final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("归档批次"),content:const Text("归档后无法新增采集记录，确认归档？"),actions:[
-                                        TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
-                                        TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认归档")),
-                                      ]));
-                                      if(ok==true){
-                                        await _isar.writeTxn(()async{
-                                          b.isArchived = true;
-                                          await _isar.batchInfos.put(b);
-                                        });
-                                        setState((){});
-                                      }
+                                  width: 70,
+                                  child: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                        padding:
+                                            EdgeInsets.symmetric(vertical: 4)),
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                            builder: (ctx) =>
+                                                BatchDetailPage(batch: b)),
+                                      );
                                     },
-                                    child:const Text("归档",style:TextStyle(fontSize:12)),
+                                    child: const Text("查看",
+                                        style: TextStyle(fontSize: 12)),
                                   ),
                                 ),
+                                if (!b.isArchived)
+                                  SizedBox(
+                                    width: 70,
+                                    child: ElevatedButton(
+                                      style: ElevatedButton.styleFrom(
+                                          padding:
+                                              EdgeInsets.symmetric(vertical: 4),
+                                          backgroundColor: Colors.grey.shade200,
+                                          foregroundColor: Colors.black87),
+                                      onPressed: () async {
+                                        final ok = await showDialog<bool>(
+                                            context: context,
+                                            builder: (ctx) => AlertDialog(
+                                                    title: const Text("归档批次"),
+                                                    content: const Text(
+                                                        "归档后无法新增采集记录，确认归档？"),
+                                                    actions: [
+                                                      TextButton(
+                                                          onPressed: () =>
+                                                              Navigator.pop(
+                                                                  ctx, false),
+                                                          child:
+                                                              const Text("取消")),
+                                                      TextButton(
+                                                          onPressed: () =>
+                                                              Navigator.pop(
+                                                                  ctx, true),
+                                                          child: const Text(
+                                                              "确认归档")),
+                                                    ]));
+                                        if (ok == true) {
+                                          await _isar.writeTxn(() async {
+                                            b.isArchived = true;
+                                            await _isar.batchInfos.put(b);
+                                          });
+                                          setState(() {});
+                                        }
+                                      },
+                                      child: const Text("归档",
+                                          style: TextStyle(fontSize: 12)),
+                                    ),
+                                  ),
                                 SizedBox(
-                                  width:70,
-                                  child:ElevatedButton(
-                                    style:ElevatedButton.styleFrom(padding:EdgeInsets.symmetric(vertical:4),backgroundColor:Colors.red.shade100,foregroundColor:Colors.red),
-                                    onPressed:()async{
-                                      final ok = await showDialog<bool>(context:context,builder:(ctx)=>AlertDialog(title:const Text("删除批次"),content:const Text("警告！会永久删除该批次所有采集数据，不可恢复！"),actions:[
-                                        TextButton(onPressed:()=>Navigator.pop(ctx,false),child:const Text("取消")),
-                                        TextButton(onPressed:()=>Navigator.pop(ctx,true),child:const Text("确认删除")),
-                                      ]));
-                                      if(ok==true){
-                                        await _isar.writeTxn(()async{
+                                  width: 70,
+                                  child: ElevatedButton(
+                                    style: ElevatedButton.styleFrom(
+                                        padding:
+                                            EdgeInsets.symmetric(vertical: 4),
+                                        backgroundColor: Colors.red.shade100,
+                                        foregroundColor: Colors.red),
+                                    onPressed: () async {
+                                      final ok = await showDialog<bool>(
+                                          context: context,
+                                          builder: (ctx) => AlertDialog(
+                                                  title: const Text("删除批次"),
+                                                  content: const Text(
+                                                      "警告！会永久删除该批次所有采集数据，不可恢复！"),
+                                                  actions: [
+                                                    TextButton(
+                                                        onPressed: () =>
+                                                            Navigator.pop(
+                                                                ctx, false),
+                                                        child:
+                                                            const Text("取消")),
+                                                    TextButton(
+                                                        onPressed: () =>
+                                                            Navigator.pop(
+                                                                ctx, true),
+                                                        child:
+                                                            const Text("确认删除")),
+                                                  ]));
+                                      if (ok == true) {
+                                        await _isar.writeTxn(() async {
                                           // 先收集货码，连带清理扩展表，防托号串批
-                                          final delCodes = await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).findAll();
-                                          await _isar.scanRecords.filter().batchIdEqualTo(b.batchId).deleteAll();
-                                          for(final dr in delCodes){
-                                            await _isar.recordExtras.filter().goodsCodeEqualTo(dr.goodsCode).deleteAll();
+                                          final delCodes = await _isar
+                                              .scanRecords
+                                              .filter()
+                                              .batchIdEqualTo(b.batchId)
+                                              .findAll();
+                                          await _isar.scanRecords
+                                              .filter()
+                                              .batchIdEqualTo(b.batchId)
+                                              .deleteAll();
+                                          for (final dr in delCodes) {
+                                            await _isar.recordExtras
+                                                .filter()
+                                                .goodsCodeEqualTo(dr.goodsCode)
+                                                .deleteAll();
                                           }
                                           await _isar.batchInfos.delete(b.id);
                                         });
-                                        AuthApi.scanlogDeleteBatch(b.batchId); //同步删除电脑侧该批流水，防多PDA看板残留
+                                        AuthApi.scanlogDeleteBatch(
+                                            b.batchId); //同步删除电脑侧该批流水，防多PDA看板残留
                                         //如果删除的是当前批次，则自动切换可用批次
-                                        if(_currentBatchId == b.batchId){
+                                        if (_currentBatchId == b.batchId) {
                                           await _loadLastBatch();
                                           await _refreshBatchStat();
                                         }
-                                        setState((){});
+                                        setState(() {});
                                       }
                                     },
-                                    child:const Text("删除",style:TextStyle(fontSize:12)),
+                                    child: const Text("删除",
+                                        style: TextStyle(fontSize: 12)),
                                   ),
                                 ),
                               ],
@@ -2329,37 +2834,49 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
                 children: [
                   Expanded(
                     child: SizedBox(
-                      height:48,
-                      child:ElevatedButton(
-                        style:ElevatedButton.styleFrom(backgroundColor:Colors.grey.shade200,foregroundColor:Colors.black87),
-                        onPressed: _selectedBatchIds.isEmpty ? null : ()async{
-                          for(var bid in _selectedBatchIds){
-                            final batch = await _isar.batchInfos.filter().batchIdEqualTo(bid).findFirst();
-                            if(batch != null && !batch.isArchived){
-                              await _isar.writeTxn(()async{
-                                batch.isArchived = true;
-                                await _isar.batchInfos.put(batch);
-                              });
-                            }
-                          }
-                          setState(()=>_selectedBatchIds.clear());
-                        },
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.grey.shade200,
+                            foregroundColor: Colors.black87),
+                        onPressed: _selectedBatchIds.isEmpty
+                            ? null
+                            : () async {
+                                for (var bid in _selectedBatchIds) {
+                                  final batch = await _isar.batchInfos
+                                      .filter()
+                                      .batchIdEqualTo(bid)
+                                      .findFirst();
+                                  if (batch != null && !batch.isArchived) {
+                                    await _isar.writeTxn(() async {
+                                      batch.isArchived = true;
+                                      await _isar.batchInfos.put(batch);
+                                    });
+                                  }
+                                }
+                                setState(() => _selectedBatchIds.clear());
+                              },
                         child: const Text("批量归档"),
                       ),
                     ),
                   ),
-                  SizedBox(width:10),
+                  SizedBox(width: 10),
                   Expanded(
-                    child:SizedBox(
-                      height:48,
-                      child:ElevatedButton(
-                        style:ElevatedButton.styleFrom(
-                          backgroundColor:_selectedBatchIds.isNotEmpty ? Color(0xFF515BD4) : Colors.grey.shade300,
+                    child: SizedBox(
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _selectedBatchIds.isNotEmpty
+                              ? Color(0xFF515BD4)
+                              : Colors.grey.shade300,
                         ),
-                        onPressed: _selectedBatchIds.isEmpty ? null : ()async{
-                          await _saveCsvToFile(batchIds: _selectedBatchIds);
-                          setState(()=>_selectedBatchIds.clear());
-                        },
+                        onPressed: _selectedBatchIds.isEmpty
+                            ? null
+                            : () async {
+                                await _saveCsvToFile(
+                                    batchIds: _selectedBatchIds);
+                                setState(() => _selectedBatchIds.clear());
+                              },
                         child: const Text("批量导出"),
                       ),
                     ),
@@ -2372,10 +2889,12 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
       },
     );
   }
+
   Future<void> _exportCsvFile() async {
     LocalLog.op('导出CSV');
     await _saveCsvToFile();
   }
+
   Future<void> _toggleWifiServer() async {
     LocalLog.op('WiFi服务', _webServiceRunning ? '关闭' : '开启');
     if (_webServiceRunning) {
@@ -2384,15 +2903,17 @@ content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,
       await startWebService();
     }
   }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Color(0xFF515BD4),
-toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
-               bottom: TabBar(
+        toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
+        bottom: TabBar(
           controller: _tabController,
-          isScrollable: true, tabAlignment: TabAlignment.start, // 7个页签可横滑，标签不再被压成一个字
+          isScrollable: true,
+          tabAlignment: TabAlignment.start, // 7个页签可横滑，标签不再被压成一个字
           labelColor: Colors.white, //选中文字白色
           labelStyle: TextStyle(fontWeight: FontWeight.bold), //选中加粗
           unselectedLabelColor: Color(0xFFD0D4F8), //未选中浅白色
@@ -2412,287 +2933,367 @@ toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
         controller: _tabController,
         children: [
           if (_showCollect)
-          //采集录入页面（内容可滚，扫码条固定底部）
-          Column(children: [
-            Expanded(child: SingleChildScrollView(
-  controller: _mainScrollCtrl,
-  padding: const EdgeInsets.all(12),
-  child: Column(
-
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                //【MOD‑新增2｜替换为截图样式3个统计卡片】
-                Row(
+            //采集录入页面（内容可滚，扫码条固定底部）
+            Column(children: [
+              Expanded(
+                  child: SingleChildScrollView(
+                controller: _mainScrollCtrl,
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: _statItem("正常", "$_normalCount",Color(0xFFE8F5E9),Colors.green),
+                    //【MOD‑新增2｜替换为截图样式3个统计卡片】
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _statItem("正常", "$_normalCount",
+                              Color(0xFFE8F5E9), Colors.green),
+                        ),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: _statItem("作废", "$_cancelCount",
+                              Color(0xFFFFEBEE), Colors.red),
+                        ),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: _statItem(
+                              "本批合计",
+                              "${_normalCount + _cancelCount}",
+                              Color(0xFFE8EAF6),
+                              Color(0xFF515BD4),
+                              isCircle: true),
+                        ),
+                      ],
                     ),
-                    SizedBox(width:10),
-                    Expanded(
-                      child: _statItem("作废", "$_cancelCount",Color(0xFFFFEBEE),Colors.red),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Color(0xFF515BD4),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 8), // 增加垂直内边距，防止文字紧贴上下边缘
+                        ),
+                        onPressed: () => _createNewBatch(),
+                        child: const Text(
+                          "+ 新建采集批次",
+                          style: TextStyle(
+                            fontSize: 16,
+                            color: Colors.white, // 强制白色文字，提升和紫色背景对比度，解决看不清
+                            fontWeight: FontWeight.w500, // 字重加粗，文字更清晰
+                          ),
+                        ),
+                      ),
                     ),
-                    SizedBox(width:10),
-                    Expanded(
-                      child: _statItem("本批合计", "${_normalCount+_cancelCount}",Color(0xFFE8EAF6),Color(0xFF515BD4),isCircle:true),
-                    ),
-                  ],
-                ),
-              const SizedBox(height:16),
-SizedBox(
-  width: double.infinity,
-  height:52,
-  child: ElevatedButton(
-    style:ElevatedButton.styleFrom(
-      backgroundColor:Color(0xFF515BD4),
-      shape:RoundedRectangleBorder(borderRadius:BorderRadius.circular(12)),
-      padding: const EdgeInsets.symmetric(vertical: 8), // 增加垂直内边距，防止文字紧贴上下边缘
-    ),
-    onPressed: ()=>_createNewBatch(),
-    child: const Text(
-      "+ 新建采集批次",
-      style:TextStyle(
-        fontSize:16,
-        color: Colors.white, // 强制白色文字，提升和紫色背景对比度，解决看不清
-        fontWeight: FontWeight.w500, // 字重加粗，文字更清晰
-      ),
-    ),
-  ),
-),
 
-const SizedBox(height:16),
-const Text("作业模式",style:TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-const SizedBox(height:6),
-Row(
-  children: [
-    Expanded(
-      child: InkWell(
-        onTap: (){
-          // AGV模式点击逻辑写这里
-        },
-        child: _workModeCard(0,"AGV站台模式","AGV站台扫码采集"),
-      ),
-    ),
-    const SizedBox(width:10),
-    Expanded(
-      child: InkWell(
-        onTap: (){
-          // 人工模式点击逻辑写这里
-        },
-        child: _workModeCard(1,"人工地面摆放","人工地堆托盘扫码"),
-      ),
-    ),
-  ],
-),
+                    const SizedBox(height: 16),
+                    const Text("作业模式",
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () {
+                              // AGV模式点击逻辑写这里
+                            },
+                            child: _workModeCard(0, "AGV站台模式", "AGV站台扫码采集"),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () {
+                              // 人工模式点击逻辑写这里
+                            },
+                            child: _workModeCard(1, "人工地面摆放", "人工地堆托盘扫码"),
+                          ),
+                        ),
+                      ],
+                    ),
 
 // ===== 整托合并模式：开关 + 当前托汇总卡片 =====
-Container(
-  margin: const EdgeInsets.only(top:12),
-  padding: const EdgeInsets.symmetric(horizontal:12, vertical:6),
-  decoration: BoxDecoration(
-    color: _palletMode ? const Color(0xFFF0FFF4) : Colors.white,
-    borderRadius: BorderRadius.circular(12),
-    border: Border.all(color: _palletMode ? Colors.green.shade300 : Colors.grey.shade300),
-  ),
-  child: Row(
-    children: [
-      const Text("整托合并模式",style: TextStyle(fontSize:15,fontWeight: FontWeight.w500)),
-      const SizedBox(width:6),
-      Expanded(
-        child: Text(_palletMode ? (_currentPalletId==null ? "已开启，扫码自动开托" : "当前托：$_currentPalletId") : "一托多码按零件号累加数量",
-          style: TextStyle(fontSize:12,color:Colors.grey.shade600),overflow: TextOverflow.ellipsis),
-      ),
-      if (_palletMode && _currentPalletId != null)
-        TextButton(onPressed: _endPallet, child: const Text("结束本托",style: TextStyle(color:Color(0xFF515BD4)))),
-      Switch(value: _palletMode, activeColor: Colors.green, onChanged: _togglePalletMode),
-    ],
-  ),
-),
-if (_palletMode && _palletTotalBoxes > 0)
-  Container(
-    width: double.infinity,
-    margin: const EdgeInsets.only(top:8),
-    padding: const EdgeInsets.all(12),
-    decoration: BoxDecoration(
-      color: const Color(0xFFF7F8FF),
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: const Color(0xFFC7CDF0)),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text("当前托汇总（已扫 $_palletTotalBoxes 框）",style: const TextStyle(fontSize:14,fontWeight: FontWeight.bold,color:Color(0xFF515BD4))),
-        const SizedBox(height:6),
-        ..._palletSummary.map((g) => Padding(
-          padding: const EdgeInsets.symmetric(vertical:2),
-          child: Text("${g["partNo"]}  ${g["itemName"].toString().isNotEmpty ? g["itemName"] : ""}  ${g["boxes"]}框  数量合计：${_fmtQty(g["qty"] as double)}",
-            style: const TextStyle(fontSize:13)),
-        )),
-      ],
-    ),
-  ),
-
-               const SizedBox(height:12),
-Container(
-  key: _keyContainerArea,
-  child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const Text("容器类型",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-      const SizedBox(height:6),
-      SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          children: [
-            _buildContainerButton(showText:"1.8米铁框",dbValue:"1800*1200_2"),
-            const SizedBox(width:8),
-            _buildContainerButton(showText:"1.6米铁框",dbValue:"1600*1100"),
-            const SizedBox(width:8),
-            _buildContainerButton(showText:"2.4米铁框",dbValue:"2.4米铁框"),
-            const SizedBox(width:8),
-            _buildContainerButton(showText:"华强铁框",dbValue:"华强铁框"),
-            const SizedBox(width:8),
-            _buildContainerButton(showText:"托盘",dbValue:"托盘"),
-          ],
-        ),
-      ),
-    ],
-  ),
-),
-const SizedBox(height:12),
-
- Container(
-  key: _keyLocationArea,
-  child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const Text("选择货位 *",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-      const SizedBox(height:6),
-      if (_workType == 0) _buildStationPanel(),
-      if (_workType == 1) _buildGroundLocPanel(),
-      _buildLedgerExtras(),
-      const SizedBox(height:8),
-      Row(
-        children: [
-          const Text("货位账本登记",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-          const SizedBox(width:6),
-          Text("选填 · 填了才写账本",style:TextStyle(fontSize:12,color:Colors.grey)),
-        ],
-      ),
-      const SizedBox(height:4),
-      TextField(
-        controller:_ledgerLocCtrl,
-        textCapitalization: TextCapitalization.characters,
-        enabled: !_palletMode || _currentPalletId != null,
-        decoration: InputDecoration(
-          hintText: _palletMode && _currentPalletId == null ? "整托：先扫首件，再填此项（如 NB02-A-08-2F）" : "完整货位编码（如 NB02-A-08-2F / NB03-B-13-07）",
-          isDense:true,
-          border:const OutlineInputBorder(),
-        ),
-      ),
-    ],
-  ),
-),
-const SizedBox(height: 12),
-
-                const Text("扫码录入",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-                const SizedBox(height:4),
-                const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Text("👇 扫码框已固定在屏幕底部，随时可扫", style: TextStyle(fontSize: 12, color: Colors.grey))),
-         const SizedBox(height:16),
-Row(
-  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-  children: [
-    const Text("备注标签",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-    Text("可多选 · 冲突项目自动互斥",style:TextStyle(fontSize:12,color:Colors.grey)),
-  ],
-),
-const SizedBox(height:8),
-SingleChildScrollView(
-  scrollDirection: Axis.horizontal,
-  child: Row(
-    children: [
-      //第一组 quickRemarkTags
-      ..._quickRemarkTags.map((tag)=>Padding(
-        padding: const EdgeInsets.only(right:10),
-        child: FilterChip(
-          label:Text(tag),
-          selected:_selectedTags.contains(tag),
-          onSelected:(sel){
-            setState(() {
-              if(sel){
-                _selectedTags.add(tag);
-              }else{
-                _selectedTags.remove(tag);
-              }
-            });
-          },
-        ),
-      )).toList().cast<Widget>(),
-      //第二组 extraTags，接在同一行后面
-      ..._extraTags.map((tag)=>Padding(
-        padding: const EdgeInsets.only(right:6),
-        child: FilterChip(
-          label:Text(tag,style:TextStyle(fontSize:12)),
-          selected:_selectedTags.contains(tag),
-          onSelected:(sel){
-            setState(() {
-              if(sel){
-                _selectedTags.add(tag);
-              }else{
-                _selectedTags.remove(tag);
-              }
-            });
-          },
-        ),
-      )).toList().cast<Widget>(),
-    ],
-  ),
-),
-
-
-                const SizedBox(height:12),
-                TextField(
-                  controller:_remarkInputCtrl,
-                  decoration:const InputDecoration(
-                    hintText:"自定义补充备注（可选）",
-                    border:OutlineInputBorder(),
-                    isDense:true
-                  ),
-                ),
-                const SizedBox(height: 12),
-                const Divider(),
-                InkWell(
-                  onTap: (){
-                    setState(() {
-                      _recordPanelExpanded = !_recordPanelExpanded;
-                    });
-                  },
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
+                    Container(
+                      margin: const EdgeInsets.only(top: 12),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: _palletMode
+                            ? const Color(0xFFF0FFF4)
+                            : Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                            color: _palletMode
+                                ? Colors.green.shade300
+                                : Colors.grey.shade300),
+                      ),
+                      child: Row(
                         children: [
-                          const Text("本批次采集记录",style: TextStyle(fontSize:16,fontWeight: FontWeight.w500)),
-                          SizedBox(width:8),
-                          Text("共 ${_recordList.length}条",style:TextStyle(fontSize:13,color:Colors.grey)),
+                          const Text("整托合并模式",
+                              style: TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.w500)),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                                _palletMode
+                                    ? (_currentPalletId == null
+                                        ? "已开启，扫码自动开托"
+                                        : "当前托：$_currentPalletId")
+                                    : "一托多码按零件号累加数量",
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.grey.shade600),
+                                overflow: TextOverflow.ellipsis),
+                          ),
+                          if (_palletMode && _currentPalletId != null)
+                            TextButton(
+                                onPressed: _endPallet,
+                                child: const Text("结束本托",
+                                    style:
+                                        TextStyle(color: Color(0xFF515BD4)))),
+                          Switch(
+                              value: _palletMode,
+                              activeColor: Colors.green,
+                              onChanged: _togglePalletMode),
                         ],
                       ),
-                      Icon(_recordPanelExpanded ? Icons.expand_less : Icons.expand_more),
-                    ],
-                  ),
-                ),
-                const SizedBox(height:6),
-                // =========【修改：移除固定高度，改用自适应+最大高度约束】 =========
-             if(_recordPanelExpanded)
-  _buildRecordList(),
+                    ),
+                    if (_palletMode && _palletTotalBoxes > 0)
+                      Container(
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(top: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF7F8FF),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFC7CDF0)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text("当前托汇总（已扫 $_palletTotalBoxes 框）",
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF515BD4))),
+                            const SizedBox(height: 6),
+                            ..._palletSummary.map((g) => Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 2),
+                                  child: Text(
+                                      "${g["partNo"]}  ${g["itemName"].toString().isNotEmpty ? g["itemName"] : ""}  ${g["boxes"]}框  数量合计：${_fmtQty(g["qty"] as double)}",
+                                      style: const TextStyle(fontSize: 13)),
+                                )),
+                          ],
+                        ),
+                      ),
 
-                const SizedBox(height:16),
-              ],
-            ),
-            )),
-            ScanBar(ctrl: _goodsInputCtrl, focus: _goodsFocusNode, hint: "扫描或输入货物条码", camera: _openCameraScan,
-              onSubmit: (s) => WidgetsBinding.instance.addPostFrameCallback((_) => _saveRecord(s))),
-          ]),
-                  //历史批次页面
+                    const SizedBox(height: 12),
+                    Container(
+                      key: _keyContainerArea,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("容器类型",
+                              style: TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w500)),
+                          const SizedBox(height: 6),
+                          SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            child: Row(
+                              children: [
+                                _buildContainerButton(
+                                    showText: "1.8米铁框", dbValue: "1800*1200_2"),
+                                const SizedBox(width: 8),
+                                _buildContainerButton(
+                                    showText: "1.6米铁框", dbValue: "1600*1100"),
+                                const SizedBox(width: 8),
+                                _buildContainerButton(
+                                    showText: "2.4米铁框", dbValue: "2.4米铁框"),
+                                const SizedBox(width: 8),
+                                _buildContainerButton(
+                                    showText: "华强铁框", dbValue: "华强铁框"),
+                                const SizedBox(width: 8),
+                                _buildContainerButton(
+                                    showText: "托盘", dbValue: "托盘"),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    Container(
+                      key: _keyLocationArea,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("选择货位 *",
+                              style: TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w500)),
+                          const SizedBox(height: 6),
+                          if (_workType == 0) _buildStationPanel(),
+                          if (_workType == 1) _buildGroundLocPanel(),
+                          _buildLedgerExtras(),
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              const Text("货位账本登记",
+                                  style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w500)),
+                              const SizedBox(width: 6),
+                              Text("选填 · 填了才写账本",
+                                  style: TextStyle(
+                                      fontSize: 12, color: Colors.grey)),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          TextField(
+                            controller: _ledgerLocCtrl,
+                            textCapitalization: TextCapitalization.characters,
+                            enabled: !_palletMode || _currentPalletId != null,
+                            decoration: InputDecoration(
+                              hintText: _palletMode && _currentPalletId == null
+                                  ? "整托：先扫首件，再填此项（如 NB02-A-08-2F）"
+                                  : "完整货位编码（如 NB02-A-08-2F / NB03-B-13-07）",
+                              isDense: true,
+                              border: const OutlineInputBorder(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    const Text("扫码录入",
+                        style: TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 4),
+                    const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 10),
+                        child: Text("👇 扫码框已固定在屏幕底部，随时可扫",
+                            style:
+                                TextStyle(fontSize: 12, color: Colors.grey))),
+                    const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text("备注标签",
+                            style: TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w500)),
+                        Text("可多选 · 冲突项目自动互斥",
+                            style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          //第一组 quickRemarkTags
+                          ..._quickRemarkTags
+                              .map((tag) => Padding(
+                                    padding: const EdgeInsets.only(right: 10),
+                                    child: FilterChip(
+                                      label: Text(tag),
+                                      selected: _selectedTags.contains(tag),
+                                      onSelected: (sel) {
+                                        setState(() {
+                                          if (sel) {
+                                            _selectedTags.add(tag);
+                                          } else {
+                                            _selectedTags.remove(tag);
+                                          }
+                                        });
+                                      },
+                                    ),
+                                  ))
+                              .toList()
+                              .cast<Widget>(),
+                          //第二组 extraTags，接在同一行后面
+                          ..._extraTags
+                              .map((tag) => Padding(
+                                    padding: const EdgeInsets.only(right: 6),
+                                    child: FilterChip(
+                                      label: Text(tag,
+                                          style: TextStyle(fontSize: 12)),
+                                      selected: _selectedTags.contains(tag),
+                                      onSelected: (sel) {
+                                        setState(() {
+                                          if (sel) {
+                                            _selectedTags.add(tag);
+                                          } else {
+                                            _selectedTags.remove(tag);
+                                          }
+                                        });
+                                      },
+                                    ),
+                                  ))
+                              .toList()
+                              .cast<Widget>(),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _remarkInputCtrl,
+                      decoration: const InputDecoration(
+                          hintText: "自定义补充备注（可选）",
+                          border: OutlineInputBorder(),
+                          isDense: true),
+                    ),
+                    const SizedBox(height: 12),
+                    const Divider(),
+                    InkWell(
+                      onTap: () {
+                        setState(() {
+                          _recordPanelExpanded = !_recordPanelExpanded;
+                        });
+                      },
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Row(
+                            children: [
+                              const Text("本批次采集记录",
+                                  style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w500)),
+                              SizedBox(width: 8),
+                              Text("共 ${_recordList.length}条",
+                                  style: TextStyle(
+                                      fontSize: 13, color: Colors.grey)),
+                            ],
+                          ),
+                          Icon(_recordPanelExpanded
+                              ? Icons.expand_less
+                              : Icons.expand_more),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    // =========【修改：移除固定高度，改用自适应+最大高度约束】 =========
+                    if (_recordPanelExpanded) _buildRecordList(),
+
+                    const SizedBox(height: 16),
+                  ],
+                ),
+              )),
+              ScanBar(
+                  ctrl: _goodsInputCtrl,
+                  focus: _goodsFocusNode,
+                  hint: "扫描或输入货物条码",
+                  camera: _openCameraScan,
+                  onSubmit: (s) => WidgetsBinding.instance
+                      .addPostFrameCallback((_) => _saveRecord(s))),
+            ]),
+          //历史批次页面
           if (_showCollect) _buildHistoryBatchPage(),
           //盘点模式页面
           if (_showInv) const InventoryHomePage(),
@@ -2706,7 +3307,7 @@ SingleChildScrollView(
           if (_showAgv) const AgvMonitorPage()
         ],
       ),
-    bottomNavigationBar: BottomNavigationBar(
+      bottomNavigationBar: BottomNavigationBar(
         items: const [
           BottomNavigationBarItem(icon: SizedBox.shrink(), label: "采集"),
           BottomNavigationBarItem(icon: SizedBox.shrink(), label: "导出"),
@@ -2716,18 +3317,19 @@ SingleChildScrollView(
         type: BottomNavigationBarType.fixed,
         showSelectedLabels: true,
         showUnselectedLabels: true,
-        onTap: (idx) async{
-          if(idx ==0){
+        onTap: (idx) async {
+          if (idx == 0) {
             _tabController.animateTo(0);
-          }else if(idx ==1){
-            await showMenu(context: context,
-                position: const RelativeRect.fromLTRB(100,500,100,100),
+          } else if (idx == 1) {
+            await showMenu(
+                context: context,
+                position: const RelativeRect.fromLTRB(100, 500, 100, 100),
                 items: [
                   PopupMenuItem(value: "copy", child: Text("复制CSV内容")),
                   PopupMenuItem(value: "export", child: Text("导出CSV文件")),
                   PopupMenuItem(value: "wifi", child: Text("开启WiFi局域网服务")),
-                ]).then((val)async{
-              switch(val){
+                ]).then((val) async {
+              switch (val) {
                 case "copy":
                   final csv = await _generateCsvText();
                   await Clipboard.setData(ClipboardData(text: csv));
@@ -2740,41 +3342,47 @@ SingleChildScrollView(
                   break;
               }
             });
+          } else if (idx == 2) {
+            //跳转设置菜单页（内含MES服务器设置、声音震动设置等）
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const SettingsMenuPage()),
+            );
           }
-      else if(idx ==2){
-  //跳转设置菜单页（内含MES服务器设置、声音震动设置等）
-  Navigator.push(
-    context,
-    MaterialPageRoute(builder: (context)=>const SettingsMenuPage()),
-  );
-}
-
         },
       ),
     );
-
   }
 
   //统计卡片组件
-  Widget _statItem(String title,String num,Color bg,Color txtColor,{bool isCircle=false}){
+  Widget _statItem(String title, String num, Color bg, Color txtColor,
+      {bool isCircle = false}) {
     return Container(
       padding: EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color:bg,
-        borderRadius:BorderRadius.circular(12)
-      ),
-      child:Column(
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(12)),
+      child: Column(
         children: [
-          isCircle?
-          Container(
-            width:40,
-            height:40,
-            decoration:BoxDecoration(color:txtColor,shape:BoxShape.circle),
-            child:Center(child:Text(num,style:TextStyle(color:Colors.white,fontSize:18,fontWeight:FontWeight.bold))),
-          )
-          :Text(num,style:TextStyle(fontSize:22,fontWeight:FontWeight.bold,color:txtColor)),
-          const SizedBox(height:4),
-          Text(title,style:const TextStyle(fontSize:13)),
+          isCircle
+              ? Container(
+                  width: 40,
+                  height: 40,
+                  decoration:
+                      BoxDecoration(color: txtColor, shape: BoxShape.circle),
+                  child: Center(
+                      child: Text(num,
+                          style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold))),
+                )
+              : Text(num,
+                  style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: txtColor)),
+          const SizedBox(height: 4),
+          Text(title, style: const TextStyle(fontSize: 13)),
         ],
       ),
     );
@@ -2786,49 +3394,57 @@ SingleChildScrollView(
     final v = sp.getInt('worktype_' + (Auth.user?.id ?? ''));
     if (v == 1 && mounted) setState(() => _workType = 1);
   }
+
   void _saveWorkMode(int type) {
-    SharedPreferences.getInstance().then((sp) => sp.setInt('worktype_' + (Auth.user?.id ?? ''), type));
+    SharedPreferences.getInstance()
+        .then((sp) => sp.setInt('worktype_' + (Auth.user?.id ?? ''), type));
   }
 
   //作业模式卡片组件
-  Widget _workModeCard(int type,String title,String sub){
+  Widget _workModeCard(int type, String title, String sub) {
     bool selected = _workType == type;
     return InkWell(
-      onTap:(){
+      onTap: () {
         setState(() {
           _workType = type;
           _saveWorkMode(type); // ②记住本账号工作模式
-          if(type ==0){
+          if (type == 0) {
             _selectedGroundLoc = null;
-          }else{
+          } else {
             _selectedStation = null;
           }
-_containerType = null;
+          _containerType = null;
           // 切换作业模式：结束当前托，防止跨托串号
           _currentPalletId = null;
           _palletSummary = [];
           _palletTotalBoxes = 0;
-
         });
       },
-      child:Container(
-       padding: const EdgeInsets.symmetric(horizontal:12, vertical:10), // ← 改这里，上下内边距缩小
-        decoration:BoxDecoration(
-          color: selected ? Color(0xFFF0F0FF) : Colors.white,
-          borderRadius:BorderRadius.circular(12),
-          border: Border.all(color: selected ? Color(0xFF515BD4):Colors.grey.shade200,width:selected?2:1)
-        ),
-        child:Column(
-mainAxisSize: MainAxisSize.min, // 关键！让Column高度自适应内容，不自动撑高
-          children:[
-                       Text(title,style:TextStyle(fontSize:16,fontWeight:selected?FontWeight.bold:FontWeight.normal,color:selected?Color(0xFF515BD4):Colors.black87)),
-            SizedBox(height:4),
-                     ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+            horizontal: 12, vertical: 10), // ← 改这里，上下内边距缩小
+        decoration: BoxDecoration(
+            color: selected ? Color(0xFFF0F0FF) : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+                color: selected ? Color(0xFF515BD4) : Colors.grey.shade200,
+                width: selected ? 2 : 1)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min, // 关键！让Column高度自适应内容，不自动撑高
+          children: [
+            Text(title,
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                    color: selected ? Color(0xFF515BD4) : Colors.black87)),
+            SizedBox(height: 4),
+          ],
         ),
       ),
     );
   }
 }
+
 class BatchDetailPage extends StatefulWidget {
   final BatchInfo batch;
   const BatchDetailPage({super.key, required this.batch});
@@ -2881,8 +3497,12 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
         title: const Text("删除记录"),
         content: const Text("确定删除本条采集记录？"),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text("取消")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text("确认")),
         ],
       ),
     );
@@ -2895,7 +3515,7 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
             .batchIdEqualTo(widget.batch.batchId)
             .findFirst();
         if (b != null) {
-            List<String> mut = b.usedStation.toList();
+          List<String> mut = b.usedStation.toList();
 
           mut.remove(r.stationNo);
           b.usedStation = mut;
@@ -2906,84 +3526,100 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
     await _loadRecords();
   }
 
-Future<void> _exportThisBatch() async {
-  String csvField(String v){
-    if (v.contains(",") || v.contains("\"")) return "\"${v.replaceAll("\"", "\"\"")}\"";
-    return v;
-  }
-  //【修改这里，增加MES三列｜整托：托号列+汇总段】
-  String header = "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期,托号\n";
-  String content = header;
-  List<ScanRecord> targetRecords = _records;
-  targetRecords.sort((a, b) => a.scanTime.compareTo(b.scanTime));
-  final extras = await _isar.recordExtras.where().findAll();
-  final Map<String,RecordExtra> extraMap = {for (var e in extras) e.goodsCode: e};
-  for (var r in targetRecords) {
-    String timeStr = r.scanTime.toString().substring(0, 19);
-    String wt = r.workType.toString();
-    String st = r.stationNo ?? "";
-    String gl = r.groundLocation ?? "";
-    String container = r.containerType ?? "";
-    String code = r.goodsCode;
-    String rem = r.remark;
-    String statusText = r.isCancel ? "作废" : "正常";
-    //新增MES
-    String pn = r.mesPartNo ?? "";
-    String qty = r.mesQty?.toString() ?? "";
-    String pd = r.mesCreateTime ?? "";
-    String pid = extraMap[code]?.palletId ?? "";
-    content += "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,$pid\n";
-  }
-  // 整托汇总段：一行 = 托(货位)+零件号
-  final Map<String, List<ScanRecord>> palletGroups = {};
-  for (final r in targetRecords) {
-    if (r.isCancel) continue;
-    final pid = extraMap[r.goodsCode]?.palletId ?? "";
-    if (pid.isEmpty) continue;
-    palletGroups.putIfAbsent(pid, () => []).add(r);
-  }
-  if (palletGroups.isNotEmpty) {
-    content += "\n===整托汇总(一行=托+零件号)===\n";
-    content += "托号,作业类型,站台编号,地面货位编码,容器类型,零件号,物料名称,框数,标签号(分号分隔),数量合计\n";
-    final keys = palletGroups.keys.toList()..sort();
-    for (final pid in keys) {
-      final rs = palletGroups[pid]!..sort((a,b)=>a.scanTime.compareTo(b.scanTime));
-      final Map<String, List<ScanRecord>> byPart = {};
-      for (final r in rs) {
-        final pn = (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
-        byPart.putIfAbsent(pn, () => []).add(r);
-      }
-      for (final entry in byPart.entries) {
-        final rowsOfPart = entry.value;
-        final codes = rowsOfPart.map((e) => e.goodsCode).join("；");
-        final names = rowsOfPart.map((e) => extraMap[e.goodsCode]?.mesItemName ?? "").where((e) => e.isNotEmpty).toSet().join("；");
-        final totalQty = rowsOfPart.fold<double>(0, (s, e) => s + (e.mesQty ?? 0));
-        final loc0 = rowsOfPart.first;
-        content += "${csvField(pid)},${loc0.workType},${csvField(loc0.stationNo ?? "")},${csvField(loc0.groundLocation ?? "")},${csvField(loc0.containerType ?? "")},${csvField(entry.key)},${csvField(names)},${rowsOfPart.length},${csvField(codes)},${_fmtQtyLocal(totalQty)}\n";
+  Future<void> _exportThisBatch() async {
+    String csvField(String v) {
+      if (v.contains(",") || v.contains("\""))
+        return "\"${v.replaceAll("\"", "\"\"")}\"";
+      return v;
+    }
+
+    //【修改这里，增加MES三列｜整托：托号列+汇总段】
+    String header =
+        "采集时间,作业类型,站台编号,地面货位编码,容器类型,货物标签,备注,记录状态,MES零件号,MES数量,MES生产日期,托号\n";
+    String content = header;
+    List<ScanRecord> targetRecords = _records;
+    targetRecords.sort((a, b) => a.scanTime.compareTo(b.scanTime));
+    final extras = await _isar.recordExtras.where().findAll();
+    final Map<String, RecordExtra> extraMap = {
+      for (var e in extras) e.goodsCode: e
+    };
+    for (var r in targetRecords) {
+      String timeStr = r.scanTime.toString().substring(0, 19);
+      String wt = r.workType.toString();
+      String st = r.stationNo ?? "";
+      String gl = r.groundLocation ?? "";
+      String container = r.containerType ?? "";
+      String code = r.goodsCode;
+      String rem = r.remark;
+      String statusText = r.isCancel ? "作废" : "正常";
+      //新增MES
+      String pn = r.mesPartNo ?? "";
+      String qty = r.mesQty?.toString() ?? "";
+      String pd = r.mesCreateTime ?? "";
+      String pid = extraMap[code]?.palletId ?? "";
+      content +=
+          "$timeStr,$wt,$st,$gl,$container,$code,$rem,$statusText,$pn,$qty,$pd,$pid\n";
+    }
+    // 整托汇总段：一行 = 托(货位)+零件号
+    final Map<String, List<ScanRecord>> palletGroups = {};
+    for (final r in targetRecords) {
+      if (r.isCancel) continue;
+      final pid = extraMap[r.goodsCode]?.palletId ?? "";
+      if (pid.isEmpty) continue;
+      palletGroups.putIfAbsent(pid, () => []).add(r);
+    }
+    if (palletGroups.isNotEmpty) {
+      content += "\n===整托汇总(一行=托+零件号)===\n";
+      content += "托号,作业类型,站台编号,地面货位编码,容器类型,零件号,物料名称,框数,标签号(分号分隔),数量合计\n";
+      final keys = palletGroups.keys.toList()..sort();
+      for (final pid in keys) {
+        final rs = palletGroups[pid]!
+          ..sort((a, b) => a.scanTime.compareTo(b.scanTime));
+        final Map<String, List<ScanRecord>> byPart = {};
+        for (final r in rs) {
+          final pn =
+              (r.mesPartNo?.isNotEmpty ?? false) ? r.mesPartNo! : "未知(MES未查到)";
+          byPart.putIfAbsent(pn, () => []).add(r);
+        }
+        for (final entry in byPart.entries) {
+          final rowsOfPart = entry.value;
+          final codes = rowsOfPart.map((e) => e.goodsCode).join("；");
+          final names = rowsOfPart
+              .map((e) => extraMap[e.goodsCode]?.mesItemName ?? "")
+              .where((e) => e.isNotEmpty)
+              .toSet()
+              .join("；");
+          final totalQty =
+              rowsOfPart.fold<double>(0, (s, e) => s + (e.mesQty ?? 0));
+          final loc0 = rowsOfPart.first;
+          content +=
+              "${csvField(pid)},${loc0.workType},${csvField(loc0.stationNo ?? "")},${csvField(loc0.groundLocation ?? "")},${csvField(loc0.containerType ?? "")},${csvField(entry.key)},${csvField(names)},${rowsOfPart.length},${csvField(codes)},${_fmtQtyLocal(totalQty)}\n";
+        }
       }
     }
+    // ===== 整托末段子表：主表同12列，按托聚合一行 =====
+    content += _buildPalletAggCsv(targetRecords, extraMap);
+    final dir = await getExternalStorageDirectory();
+    if (dir == null) return;
+    String filePath = "${dir.path}/采集_${widget.batch.batchId}.csv";
+    File file = File(filePath);
+    await file.writeAsString(content, encoding: utf8);
+    if (mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
+    }
   }
-  // ===== 整托末段子表：主表同12列，按托聚合一行 =====
-  content += _buildPalletAggCsv(targetRecords, extraMap);
-  final dir = await getExternalStorageDirectory();
-  if (dir == null) return;
-  String filePath = "${dir.path}/采集_${widget.batch.batchId}.csv";
-  File file = File(filePath);
-  await file.writeAsString(content, encoding: utf8);
-  if (mounted) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("文件已保存：$filePath")));
-  }
-}
 
-  String _fmtQtyLocal(double q) => q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
-
+  String _fmtQtyLocal(double q) =>
+      q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
 
   @override
   Widget build(BuildContext context) {
     bool archived = widget.batch.isArchived;
     return Scaffold(
       appBar: AppBar(
-        title: Text("${widget.batch.batchId} ${archived ? "【已归档‑只读】" : "【进行中】"}"),
+        title:
+            Text("${widget.batch.batchId} ${archived ? "【已归档‑只读】" : "【进行中】"}"),
         backgroundColor: const Color(0xFF515BD4),
         actions: [
           TextButton(
@@ -3017,7 +3653,8 @@ Future<void> _exportThisBatch() async {
       itemCount: _records.length,
       itemBuilder: (c, idx) {
         var r = _records[idx];
-        String posTxt = r.workType == 0 ? "站台${r.stationNo}" : "货位${r.groundLocation}";
+        String posTxt =
+            r.workType == 0 ? "站台${r.stationNo}" : "货位${r.groundLocation}";
         String timeTxt = r.scanTime.toString().substring(0, 19);
         return Card(
           margin: const EdgeInsets.only(bottom: 8),
@@ -3032,7 +3669,8 @@ Future<void> _exportThisBatch() async {
                     children: [
                       Text(
                         "货码：${r.goodsCode}",
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 4),
                       Text("📍 $posTxt｜容器:${r.containerType ?? "未选择"}"),
@@ -3041,7 +3679,8 @@ Future<void> _exportThisBatch() async {
                       const SizedBox(height: 4),
                       Text(
                         r.isCancel ? "⚠️ 已作废" : "✅ 正常",
-                        style: TextStyle(color: r.isCancel ? Colors.red : Colors.green),
+                        style: TextStyle(
+                            color: r.isCancel ? Colors.red : Colors.green),
                       ),
                     ],
                   ),
@@ -3055,14 +3694,17 @@ Future<void> _exportThisBatch() async {
                         // 点击查看，打开ScanRecordDetailPage，把r传过去
                         Navigator.push(
                           context,
-                          MaterialPageRoute(builder: (ctx) => ScanRecordDetailPage(record: r)),
+                          MaterialPageRoute(
+                              builder: (ctx) =>
+                                  ScanRecordDetailPage(record: r)),
                         );
                       },
                       child: const Text("查看"),
                     ),
                     if (!archived && !r.isCancel)
                       TextButton(
-                        style: TextButton.styleFrom(foregroundColor: Colors.red),
+                        style:
+                            TextButton.styleFrom(foregroundColor: Colors.red),
                         onPressed: () => _deleteRecord(r),
                         child: const Text("删除"),
                       ),
@@ -3090,7 +3732,8 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
   @override
   Widget build(BuildContext context) {
     final r = widget.record;
-    String posTxt = r.workType == 0 ? "站台${r.stationNo}" : "货位${r.groundLocation}";
+    String posTxt =
+        r.workType == 0 ? "站台${r.stationNo}" : "货位${r.groundLocation}";
     String timeTxt = r.scanTime.toString().substring(0, 19);
     return Scaffold(
       appBar: AppBar(
@@ -3106,51 +3749,118 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
               "货码：${r.goodsCode}",
               style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
-            const SizedBox(height:12),
+            const SizedBox(height: 12),
             _detailItem("作业位置", posTxt),
             FutureBuilder<ShelfPlacement?>(
-              future: _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(r.goodsCode.toUpperCase()).findFirst(),
-              builder: (ctx, s) => _detailItem("当前货位(账本)", !s.hasData ? "…" : ((s.data?.loc ?? "").isEmpty ? "未登记" : s.data!.loc)),
+              future: _globalIsar.shelfPlacements
+                  .filter()
+                  .goodsCodeEqualTo(r.goodsCode.toUpperCase())
+                  .findFirst(),
+              builder: (ctx, s) => _detailItem(
+                  "当前货位(账本)",
+                  !s.hasData
+                      ? "…"
+                      : ((s.data?.loc ?? "").isEmpty ? "未登记" : s.data!.loc)),
             ),
             _detailItem("容器类型", r.containerType ?? "未选择"),
             _detailItem("采集时间", timeTxt),
             _detailItem("备注", r.remark.isNotEmpty ? r.remark : "无"),
             _detailItem("记录状态", r.isCancel ? "⚠️ 已作废" : "✅ 正常"),
             _detailItem("MES零件号", r.mesPartNo ?? "无"),
-_detailItem("MES数量", r.mesQty?.toString() ?? "无"),
-_detailItem("MES生产日期", r.mesCreateTime ?? "无"),
+            _detailItem("MES数量", r.mesQty?.toString() ?? "无"),
+            _detailItem("MES生产日期", r.mesCreateTime ?? "无"),
             FutureBuilder<RecordExtra?>(
-              future: _globalIsar.recordExtras.filter().goodsCodeEqualTo(r.goodsCode.toUpperCase()).findFirst(),
+              future: _globalIsar.recordExtras
+                  .filter()
+                  .goodsCodeEqualTo(r.goodsCode.toUpperCase())
+                  .findFirst(),
               builder: (ctx, ex) {
                 if (!ex.hasData) return const SizedBox.shrink();
                 final e = ex.data!;
-                return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  _detailItem("托盘号", e.palletId.isEmpty ? "（单件，非整托）" : e.palletId),
-                  if (e.palletId.isNotEmpty) FutureBuilder<List<RecordExtra>>(
-                    future: _globalIsar.recordExtras.filter().palletIdEqualTo(e.palletId).findAll(),
-                    builder: (ctx2, s2) => _detailItem("同托标签", s2.hasData ? s2.data!.map((x) => x.goodsCode).join("、") : "…"),
-                  ),
-                  if ((e.mesItemName ?? "").isNotEmpty) _detailItem("物料名称", e.mesItemName),
-                  if ((e.mesLotNo ?? "").isNotEmpty) _detailItem("批次", e.mesLotNo),
-                  if ((e.operator ?? "").isNotEmpty) _detailItem("采集人", e.operator),
-                ]);
+                return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _detailItem(
+                          "托盘号", e.palletId.isEmpty ? "（单件，非整托）" : e.palletId),
+                      if (e.palletId.isNotEmpty)
+                        FutureBuilder<List<RecordExtra>>(
+                          future: _globalIsar.recordExtras
+                              .filter()
+                              .palletIdEqualTo(e.palletId)
+                              .findAll(),
+                          builder: (ctx2, s2) => _detailItem(
+                              "同托标签",
+                              s2.hasData
+                                  ? s2.data!.map((x) => x.goodsCode).join("、")
+                                  : "…"),
+                        ),
+                      if ((e.mesItemName ?? "").isNotEmpty)
+                        _detailItem("物料名称", e.mesItemName),
+                      if ((e.mesLotNo ?? "").isNotEmpty)
+                        _detailItem("批次", e.mesLotNo),
+                      if ((e.operator ?? "").isNotEmpty)
+                        _detailItem("采集人", e.operator),
+                    ]);
               },
             ),
-            if (r.workType == 0) FutureBuilder<Map>(
-              future: _fetchAgvChain(r),
-              builder: (ctx, f2) {
-                final d = f2.data;
-                if (d == null) return _detailItem("AGV搬运链路", f2.connectionState == ConnectionState.done ? "无AGV任务记录（人工搬运或历史已清理）" : "查询中…");
-                if (d.isEmpty) return _detailItem("AGV搬运链路", "无AGV任务记录（人工搬运或历史已清理）");
-                return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  _detailItem("搬运路线", "${d["sp"]} → ${d["ep"]}"),
-                  _detailItem("服务车辆", (d["car"] ?? "").isEmpty ? "未分配/未知" : d["car"].toString()),
-                  _detailItem("任务状态", (d["state"] ?? "").toString()),
-                  if ((d["tl"] ?? "").toString().isNotEmpty) _detailItem("节点时间", d["tl"].toString()),
-                ]);
-              },
-            ),
-
+            if (r.workType == 0)
+              FutureBuilder<Map>(
+                future: _fetchAgvChain(r),
+                builder: (ctx, f2) {
+                  final d = f2.data;
+                  if (d == null)
+                    return _detailItem(
+                        "AGV搬运链路",
+                        f2.connectionState == ConnectionState.done
+                            ? "无AGV任务记录（人工搬运或历史已清理）"
+                            : "查询中…");
+                  if (d.isEmpty)
+                    return _detailItem("AGV搬运链路", "无AGV任务记录（人工搬运或历史已清理）");
+                  return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _detailItem("搬运路线", "${d["sp"]} → ${d["ep"]}"),
+                        _detailItem(
+                            "服务车辆",
+                            (d["car"] ?? "").isEmpty
+                                ? "未分配/未知"
+                                : d["car"].toString()),
+                        _detailItem("任务状态", (d["state"] ?? "").toString()),
+                        if ((d["tl"] ?? "").toString().isNotEmpty)
+                          _detailItem("节点时间", d["tl"].toString()),
+                        if (d["chain"] is Map && (d["chain"] as Map).isNotEmpty)
+                          _detailItem("出库链路", (() {
+                            final ch = d["chain"] as Map;
+                            final _fm = (Object? v) {
+                              final n = v is num ? v.toInt() : 0;
+                              if (n == 0) return "";
+                              final dt = DateTime.fromMillisecondsSinceEpoch(n);
+                              final p = (int x) => x.toString().padLeft(2, "0");
+                              return "${p(dt.month)}-${p(dt.day)} ${p(dt.hour)}:${p(dt.minute)}";
+                            };
+                            const steps = [
+                              ["created", "下单"],
+                              ["accept", "接单"],
+                              ["issue", "发料"],
+                              ["call", "叫车"],
+                              ["enqueue", "入队"],
+                              ["dispatch", "下发"],
+                              ["exe", "接令"],
+                              ["pick", "叉出"],
+                              ["arrive", "到站"],
+                              ["transfer", "转MES"],
+                              ["confirm", "签收"]
+                            ];
+                            final parts = <String>[];
+                            for (final e in steps) {
+                              final s = _fm(ch[e[0]]);
+                              if (s.isNotEmpty) parts.add("${e[1]}$s");
+                            }
+                            return parts.join(" → ");
+                          })()),
+                      ]);
+                },
+              ),
           ],
         ),
       ),
@@ -3164,30 +3874,48 @@ _detailItem("MES生产日期", r.mesCreateTime ?? "无"),
     final tk = await AuthStore.token();
     if (server.isEmpty || tk.isEmpty) return {};
     try {
-      final resp = await http.get(Uri.parse("$server/api/agv/taskOf?c=$code"), headers: {"Authorization": "Bearer $tk"}).timeout(const Duration(seconds: 6));
+      final resp = await http.get(Uri.parse("$server/api/agv/taskOf?c=$code"),
+          headers: {
+            "Authorization": "Bearer $tk"
+          }).timeout(const Duration(seconds: 6));
       final j = jsonDecode(utf8.decode(resp.bodyBytes));
       if (j is Map && j["ok"] == true && j["task"] is Map) {
         final t = j["task"] as Map;
         final carId = t["car"];
-        return {"sp": t["sp"] ?? "?", "ep": t["ep"] ?? "?", "car": carId is num ? "AGV${carId.toInt().toString().padLeft(2, "0")}" : "", "state": t["stateText"] ?? "", "tl": t["tl"] ?? ""};
+        return {
+          "sp": t["sp"] ?? "?",
+          "ep": t["ep"] ?? "?",
+          "car": carId is num
+              ? "AGV${carId.toInt().toString().padLeft(2, "0")}"
+              : "",
+          "state": t["stateText"] ?? "",
+          "tl": t["tl"] ?? "",
+          "chain": j["chain"] is Map
+              ? Map.of(j["chain"] as Map)
+              : const <String, dynamic>{}
+        };
       }
     } catch (_) {}
     return {};
   }
 
-  Widget _detailItem(String label, String value){
+  Widget _detailItem(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical:6),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(width:90,child:Text("$label：",style: TextStyle(fontWeight: FontWeight.w500,fontSize:16))),
-          Expanded(child:Text(value,style: TextStyle(fontSize:16))),
+          SizedBox(
+              width: 90,
+              child: Text("$label：",
+                  style: TextStyle(fontWeight: FontWeight.w500, fontSize: 16))),
+          Expanded(child: Text(value, style: TextStyle(fontSize: 16))),
         ],
       ),
     );
   }
 }
+
 // ===================== 设置菜单主页 =====================
 class SettingsMenuPage extends StatelessWidget {
   const SettingsMenuPage({super.key});
@@ -3203,89 +3931,129 @@ class SettingsMenuPage extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         children: [
           _settingTile(
-            context, icon: Icons.cloud_outlined, color: const Color(0xFF515BD4),
-            title: "账号与权限", subtitle: "当前账号 / 修改密码 / 用户与功能管理",
+            context,
+            icon: Icons.cloud_outlined,
+            color: const Color(0xFF515BD4),
+            title: "账号与权限",
+            subtitle: "当前账号 / 修改密码 / 用户与功能管理",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AccountPage())),
           ),
           if (Auth.can("location_reg"))
             _settingTile(
-              context, icon: Icons.shelves, color: Colors.teal,
-              title: "位置登记", subtitle: "上架 / 移库 / 拣下 / 导入WPS货架账本",
+              context,
+              icon: Icons.shelves,
+              color: Colors.teal,
+              title: "位置登记",
+              subtitle: "上架 / 移库 / 拣下 / 导入WPS货架账本",
               onTap: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const LocationRegPage())),
             )
           else
             _settingTile(
-              context, icon: Icons.cloud_download, color: Colors.teal,
-              title: "拉取货位账本", subtitle: "从电脑服务器合并最新账本（库存/领料选件用）",
+              context,
+              icon: Icons.cloud_download,
+              color: Colors.teal,
+              title: "拉取货位账本",
+              subtitle: "从电脑服务器合并最新账本（库存/领料选件用）",
               onTap: () async {
                 final r = await ledgerPullMerge();
                 if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(r["ok"] == true
-                      ? "账本已合并：新增 ${r["added"]} · 更新 ${r["updated"]} · 删除 ${r["deleted"]}（共 ${r["total"]} 条）"
-                      : "拉取失败：${r["msg"]}"),
-                  backgroundColor: r["ok"] == true ? Colors.green : Colors.red));
+                    content: Text(r["ok"] == true
+                        ? "账本已合并：新增 ${r["added"]} · 更新 ${r["updated"]} · 删除 ${r["deleted"]}（共 ${r["total"]} 条）"
+                        : "拉取失败：${r["msg"]}"),
+                    backgroundColor:
+                        r["ok"] == true ? Colors.green : Colors.red));
               },
             ),
           _settingTile(
-            context, icon: Icons.dns_outlined, color: const Color(0xFF3F51B5),
-            title: "MES服务器设置", subtitle: "服务地址 / 账号登录 / 退出登录",
+            context,
+            icon: Icons.dns_outlined,
+            color: const Color(0xFF3F51B5),
+            title: "MES服务器设置",
+            subtitle: "服务地址 / 账号登录 / 退出登录",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const MesSettingPage())),
           ),
           _settingTile(
-            context, icon: Icons.local_shipping_outlined, color: const Color(0xFF00897B),
-            title: "WMAS(AGV)设置", subtitle: "调度服务地址 / 一键建任务账号",
+            context,
+            icon: Icons.local_shipping_outlined,
+            color: const Color(0xFF00897B),
+            title: "WMAS(AGV)设置",
+            subtitle: "调度服务地址 / 一键建任务账号",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const WmasSettingPage())),
           ),
           _settingTile(
-            context, icon: Icons.smart_toy_outlined, color: const Color(0xFF37474F),
-            title: "AGV调度系统(哈工库讯)", subtitle: "登录账号 / 实时大屏地址（AGV模块数据源）",
+            context,
+            icon: Icons.smart_toy_outlined,
+            color: const Color(0xFF37474F),
+            title: "AGV调度系统(哈工库讯)",
+            subtitle: "登录账号 / 实时大屏地址（AGV模块数据源）",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AgvSettingPage())),
           ),
           _settingTile(
-            context, icon: Icons.insights_outlined, color: const Color(0xFF3949AB),
-            title: "数据驾驶舱", subtitle: "今日出入库/AGV/站台 实时KPI与7日趋势",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const DashPage())),
+            context,
+            icon: Icons.insights_outlined,
+            color: const Color(0xFF3949AB),
+            title: "数据驾驶舱",
+            subtitle: "今日出入库/AGV/站台 实时KPI与7日趋势",
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const DashPage())),
           ),
           _settingTile(
-            context, icon: Icons.speed_outlined, color: const Color(0xFF283593),
-            title: "AGV效率报表", subtitle: "各车任务量/平均耗时/7×24搬运热力",
+            context,
+            icon: Icons.speed_outlined,
+            color: const Color(0xFF283593),
+            title: "AGV效率报表",
+            subtitle: "各车任务量/平均耗时/7×24搬运热力",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AgvReportPage())),
           ),
           _settingTile(
-            context, icon: Icons.grid_view_outlined, color: const Color(0xFF00897B),
-            title: "货位占用图", subtitle: "AGV货架/地面库位 实时在库热力视图",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const LocMapPage())),
+            context,
+            icon: Icons.grid_view_outlined,
+            color: const Color(0xFF00897B),
+            title: "货位占用图",
+            subtitle: "AGV货架/地面库位 实时在库热力视图",
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const LocMapPage())),
           ),
           _settingTile(
-            context, icon: Icons.monitor_heart_outlined, color: const Color(0xFF455A64),
-            title: "设备诊断", subtitle: "数据库/网络/权限自查 · 异常日志导出",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const DiagPage())),
+            context,
+            icon: Icons.monitor_heart_outlined,
+            color: const Color(0xFF455A64),
+            title: "设备诊断",
+            subtitle: "数据库/网络/权限自查 · 异常日志导出",
+            onTap: () => Navigator.push(
+                context, MaterialPageRoute(builder: (_) => const DiagPage())),
           ),
           _settingTile(
-            context, icon: Icons.volume_up_outlined, color: Colors.teal,
-            title: "声音和震动设置", subtitle: "扫码成功提示音与震动开关",
+            context,
+            icon: Icons.volume_up_outlined,
+            color: Colors.teal,
+            title: "声音和震动设置",
+            subtitle: "扫码成功提示音与震动开关",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const SoundVibrationPage())),
           ),
           _settingTile(
-            context, icon: Icons.fact_check_outlined, color: const Color(0xFF6D4C41),
-            title: "操作审计日志", subtitle: "关键操作流水 / 一键导出排查",
+            context,
+            icon: Icons.fact_check_outlined,
+            color: const Color(0xFF6D4C41),
+            title: "操作审计日志",
+            subtitle: "关键操作流水 / 一键导出排查",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AuditLogPage())),
           ),
           _settingTile(
-            context, icon: Icons.phone_android_outlined, color: Colors.deepOrange,
-            title: "WiFi局域网服务", subtitle: "开启后电脑浏览器下载采集CSV",
+            context,
+            icon: Icons.phone_android_outlined,
+            color: Colors.deepOrange,
+            title: "WiFi局域网服务",
+            subtitle: "开启后电脑浏览器下载采集CSV",
             onTap: () {
               // 通过回调方式不可靠，直接提示用户到"导出"菜单开启
               ScaffoldMessenger.of(context).showSnackBar(
@@ -3293,27 +4061,45 @@ class SettingsMenuPage extends StatelessWidget {
             },
           ),
           _settingTile(
-            context, icon: Icons.info_outline, color: Colors.blueGrey,
-            title: "关于", subtitle: "AGV货位采集器",
-            onTap: () => showDialog(context: context, builder: (ctx) => AlertDialog(
-              title: const Text("关于"),
-              content: Text("AGV货位采集器 v${AppUpdater.localVersion}+${AppUpdater.localBuild}\n适配工业PDA\n支持MES标签查询与整托合并采集"),
-              actions: [TextButton(onPressed: ()=>Navigator.pop(ctx), child: const Text("关闭"))],
-            )),
+            context,
+            icon: Icons.info_outline,
+            color: Colors.blueGrey,
+            title: "关于",
+            subtitle: "AGV货位采集器",
+            onTap: () => showDialog(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                      title: const Text("关于"),
+                      content: Text(
+                          "AGV货位采集器 v${AppUpdater.localVersion}+${AppUpdater.localBuild}\n适配工业PDA\n支持MES标签查询与整托合并采集"),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.pop(ctx),
+                            child: const Text("关闭"))
+                      ],
+                    )),
           ),
         ],
       ),
     );
   }
 
-  Widget _settingTile(BuildContext context, {required IconData icon, required Color color,
-      required String title, required String subtitle, required VoidCallback onTap}) {
+  Widget _settingTile(BuildContext context,
+      {required IconData icon,
+      required Color color,
+      required String title,
+      required String subtitle,
+      required VoidCallback onTap}) {
     return Card(
-      margin: const EdgeInsets.only(bottom:12),
+      margin: const EdgeInsets.only(bottom: 12),
       child: ListTile(
-        leading: CircleAvatar(backgroundColor: color.withOpacity(0.12), child: Icon(icon, color: color)),
-        title: Text(title, style: const TextStyle(fontSize:16, fontWeight: FontWeight.w500)),
-        subtitle: Text(subtitle, style: TextStyle(fontSize:12, color: Colors.grey.shade600)),
+        leading: CircleAvatar(
+            backgroundColor: color.withOpacity(0.12),
+            child: Icon(icon, color: color)),
+        title: Text(title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+        subtitle: Text(subtitle,
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
         trailing: const Icon(Icons.chevron_right, color: Colors.grey),
         onTap: onTap,
       ),
@@ -3342,19 +4128,27 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
   Future<void> _load() async {
     final s = await AppSettings.getSoundEnabled();
     final v = await AppSettings.getVibrationEnabled();
-    setState(() { _sound = s; _vibration = v; _loaded = true; });
+    setState(() {
+      _sound = s;
+      _vibration = v;
+      _loaded = true;
+    });
   }
 
   Future<void> _preview() async {
     if (_sound) await SystemSound.play(SystemSoundType.click);
     if (_vibration) {
-      try { if ((await Vibration.hasVibrator()) ?? false) await Vibration.vibrate(duration: 120); } catch (_) {}
+      try {
+        if ((await Vibration.hasVibrator()) ?? false)
+          await Vibration.vibrate(duration: 120);
+      } catch (_) {}
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!_loaded) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (!_loaded)
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     return Scaffold(
       appBar: AppBar(
         title: const Text("声音和震动设置"),
@@ -3365,8 +4159,9 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
         children: [
           Card(
             child: SwitchListTile(
-              title: const Text("扫码成功提示音", style: TextStyle(fontSize:16)),
-              subtitle: const Text("每次采集保存成功后播放提示音", style: TextStyle(fontSize:12)),
+              title: const Text("扫码成功提示音", style: TextStyle(fontSize: 16)),
+              subtitle:
+                  const Text("每次采集保存成功后播放提示音", style: TextStyle(fontSize: 12)),
               value: _sound,
               activeColor: const Color(0xFF515BD4),
               onChanged: (v) async {
@@ -3378,22 +4173,29 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
           ),
           Card(
             child: SwitchListTile(
-              title: const Text("扫码成功震动", style: TextStyle(fontSize:16)),
-              subtitle: const Text("每次采集保存成功后震动反馈", style: TextStyle(fontSize:12)),
+              title: const Text("扫码成功震动", style: TextStyle(fontSize: 16)),
+              subtitle:
+                  const Text("每次采集保存成功后震动反馈", style: TextStyle(fontSize: 12)),
               value: _vibration,
               activeColor: const Color(0xFF515BD4),
               onChanged: (v) async {
                 await AppSettings.setVibrationEnabled(v);
                 setState(() => _vibration = v);
                 if (v) {
-                  try { if ((await Vibration.hasVibrator()) ?? false) await Vibration.vibrate(duration: 120); } catch (_) {}
+                  try {
+                    if ((await Vibration.hasVibrator()) ?? false)
+                      await Vibration.vibrate(duration: 120);
+                  } catch (_) {}
                 }
               },
             ),
           ),
-          const SizedBox(height:16),
+          const SizedBox(height: 16),
           ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.grey.shade200, foregroundColor: Colors.black87, minimumSize: const Size(double.infinity, 48)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.grey.shade200,
+                foregroundColor: Colors.black87,
+                minimumSize: const Size(double.infinity, 48)),
             onPressed: _preview,
             icon: const Icon(Icons.play_arrow),
             label: const Text("试听测试（按当前开关反馈一次）"),
@@ -3418,8 +4220,8 @@ class _MesSettingPageState extends State<MesSettingPage> {
   final TextEditingController accountCtrl = TextEditingController();
   final TextEditingController pwdCtrl = TextEditingController();
   //新增
-final TextEditingController moduleIdCtrl = TextEditingController();
-final TextEditingController orgIdCtrl = TextEditingController();
+  final TextEditingController moduleIdCtrl = TextEditingController();
+  final TextEditingController orgIdCtrl = TextEditingController();
   bool _pwdVisible = false;
   String? _token;
 
@@ -3438,75 +4240,77 @@ final TextEditingController orgIdCtrl = TextEditingController();
       accountCtrl.text = cfg["account"];
       pwdCtrl.text = cfg["pwd"];
       //新增
-    moduleIdCtrl.text = cfg["moduleId"];
-    orgIdCtrl.text = cfg["orgId"];
+      moduleIdCtrl.text = cfg["moduleId"];
+      orgIdCtrl.text = cfg["orgId"];
     });
   }
   // getValidateKey2 / RSA加密 / 三阶段登录 已提取为顶层共用函数（手动登录与静默重登共用）
 
   // ========== MES登录方法（复用顶层 mesPerformLogin，失败弹窗含诊断详情） ==========
-Future<bool> _testMesLogin() async {
-  final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
-  // 先保存表单配置
-  await MesConfig.saveConfig(
-    host: hostCtrl.text,
-    port: portCtrl.text,
-    account: accountCtrl.text,
-    pwd: pwdCtrl.text,
-    token: "",
-    timeout: timeoutSec,
-    moduleId: moduleIdCtrl.text.trim(),
-    orgId: orgIdCtrl.text.trim(),
-  );
-  try {
-    final r = await mesPerformLogin(
-      ip: hostCtrl.text.trim(),
-      port: portCtrl.text.trim(),
-      account: accountCtrl.text.trim(),
-      pwd: pwdCtrl.text.trim(),
-      timeoutSec: timeoutSec,
-    );
-    _token = r["token"];
-    debugPrint("【阶段3成功】获取token：${r["token"]}");
-    await MesConfig.saveLoginInfo(
-      token: r["token"]!,
-      orgId: r["orgId"]!,
-      userId: r["userId"]!,
-      userName: r["userName"]!,
-      displayName: r["displayName"]!,
-      moduleId: r["moduleId"]!,
-    );
+  Future<bool> _testMesLogin() async {
+    final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
+    // 先保存表单配置
     await MesConfig.saveConfig(
       host: hostCtrl.text,
       port: portCtrl.text,
       account: accountCtrl.text,
       pwd: pwdCtrl.text,
-      token: r["token"]!,
+      token: "",
       timeout: timeoutSec,
       moduleId: moduleIdCtrl.text.trim(),
       orgId: orgIdCtrl.text.trim(),
     );
-    return true;
-  } catch (e) {
-    String errMsg = e.toString();
-    debugPrint("MES登录异常:$errMsg");
-    if(mounted){
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text("❌ 登录失败"),
-          content: SingleChildScrollView(
-            child: SelectableText(errMsg, style: const TextStyle(fontSize: 12)),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭")),
-          ],
-        ),
+    try {
+      final r = await mesPerformLogin(
+        ip: hostCtrl.text.trim(),
+        port: portCtrl.text.trim(),
+        account: accountCtrl.text.trim(),
+        pwd: pwdCtrl.text.trim(),
+        timeoutSec: timeoutSec,
       );
+      _token = r["token"];
+      debugPrint("【阶段3成功】获取token：${r["token"]}");
+      await MesConfig.saveLoginInfo(
+        token: r["token"]!,
+        orgId: r["orgId"]!,
+        userId: r["userId"]!,
+        userName: r["userName"]!,
+        displayName: r["displayName"]!,
+        moduleId: r["moduleId"]!,
+      );
+      await MesConfig.saveConfig(
+        host: hostCtrl.text,
+        port: portCtrl.text,
+        account: accountCtrl.text,
+        pwd: pwdCtrl.text,
+        token: r["token"]!,
+        timeout: timeoutSec,
+        moduleId: moduleIdCtrl.text.trim(),
+        orgId: orgIdCtrl.text.trim(),
+      );
+      return true;
+    } catch (e) {
+      String errMsg = e.toString();
+      debugPrint("MES登录异常:$errMsg");
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text("❌ 登录失败"),
+            content: SingleChildScrollView(
+              child:
+                  SelectableText(errMsg, style: const TextStyle(fontSize: 12)),
+            ),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx), child: const Text("关闭")),
+            ],
+          ),
+        );
+      }
+      return false;
     }
-    return false;
   }
-}
 
   @override
   void dispose() {
@@ -3516,9 +4320,9 @@ Future<bool> _testMesLogin() async {
     accountCtrl.dispose();
     pwdCtrl.dispose();
     //新增释放
-  moduleIdCtrl.dispose();
-  orgIdCtrl.dispose();
-  
+    moduleIdCtrl.dispose();
+    orgIdCtrl.dispose();
+
     super.dispose();
   }
 
@@ -3586,29 +4390,30 @@ Future<bool> _testMesLogin() async {
                 labelText: "密码",
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
-                  icon: Icon(_pwdVisible ? Icons.visibility : Icons.visibility_off),
+                  icon: Icon(
+                      _pwdVisible ? Icons.visibility : Icons.visibility_off),
                   onPressed: () => setState(() => _pwdVisible = !_pwdVisible),
                 ),
               ),
             ),
             const SizedBox(height: 10),
-TextField(
-  controller: moduleIdCtrl,
-  decoration: const InputDecoration(
-    labelText: "ModuleId",
-    hintText: "MES接口ModuleId",
-    border: OutlineInputBorder(),
-  ),
-),
-const SizedBox(height: 10),
-TextField(
-  controller: orgIdCtrl,
-  decoration: const InputDecoration(
-    labelText: "OrgId",
-    hintText: "MES接口OrgId",
-    border: OutlineInputBorder(),
-  ),
-),
+            TextField(
+              controller: moduleIdCtrl,
+              decoration: const InputDecoration(
+                labelText: "ModuleId",
+                hintText: "MES接口ModuleId",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: orgIdCtrl,
+              decoration: const InputDecoration(
+                labelText: "OrgId",
+                hintText: "MES接口OrgId",
+                border: OutlineInputBorder(),
+              ),
+            ),
             const SizedBox(height: 20),
             Row(
               children: [
@@ -3620,10 +4425,14 @@ TextField(
                     onPressed: () async {
                       // 测试连通性
                       try {
-                        final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
-                        final uri = Uri.parse("http://${hostCtrl.text}:${portCtrl.text}");
+                        final int timeoutSec =
+                            int.tryParse(timeoutCtrl.text) ?? 10;
+                        final uri = Uri.parse(
+                            "http://${hostCtrl.text}:${portCtrl.text}");
                         final client = HttpClient();
-                        final req = await client.getUrl(uri).timeout(Duration(seconds: timeoutSec));
+                        final req = await client
+                            .getUrl(uri)
+                            .timeout(Duration(seconds: timeoutSec));
                         final resp = await req.close();
                         if (resp.statusCode >= 200 && resp.statusCode < 300) {
                           if (mounted) {
@@ -3682,16 +4491,16 @@ TextField(
                 ),
                 onPressed: () async {
                   final int timeoutSec = int.tryParse(timeoutCtrl.text) ?? 10;
-                await MesConfig.saveConfig(
-                  host: hostCtrl.text,
-                  port: portCtrl.text,
-                  account: accountCtrl.text,
-                  pwd: pwdCtrl.text,
-                  token: "",
-                  timeout: timeoutSec,
-                  moduleId: moduleIdCtrl.text.trim(),
-                  orgId: orgIdCtrl.text.trim(),
-                );
+                  await MesConfig.saveConfig(
+                    host: hostCtrl.text,
+                    port: portCtrl.text,
+                    account: accountCtrl.text,
+                    pwd: pwdCtrl.text,
+                    token: "",
+                    timeout: timeoutSec,
+                    moduleId: moduleIdCtrl.text.trim(),
+                    orgId: orgIdCtrl.text.trim(),
+                  );
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text("✅ 配置保存成功")),
@@ -3716,8 +4525,12 @@ TextField(
                       title: const Text("退出登录"),
                       content: const Text("确认退出当前 MES 登录吗？退出后需重新登录才能查询标签信息。"),
                       actions: [
-                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
-                        TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认退出")),
+                        TextButton(
+                            onPressed: () => Navigator.pop(ctx, false),
+                            child: const Text("取消")),
+                        TextButton(
+                            onPressed: () => Navigator.pop(ctx, true),
+                            child: const Text("确认退出")),
                       ],
                     ),
                   );
