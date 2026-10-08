@@ -31,7 +31,7 @@ class AppUpdater {
       final mb = ((j["size"] as num?)?.toInt() ?? 0) / 1048576;
       final go = await showDialog<bool>(context: ctx, builder: (c) => AlertDialog(
         title: const Text("发现新版本"),
-        content: Text("v${j["version"] ?? build}（当前 v$localVersion+$localBuild · ${mb.toStringAsFixed(1)} MB）\n\n建议更新以获得最新功能与修复。"),
+        content: Text("v${j["version"] ?? localVersion}+$build（当前 v$localVersion+$localBuild · ${mb.toStringAsFixed(1)} MB）\n\n建议更新以获得最新功能与修复。"),
         actions: [
           TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("下次再说")),
           FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text("立即更新")),
