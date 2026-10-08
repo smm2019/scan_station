@@ -107,9 +107,25 @@ class AuditLogPage extends StatefulWidget {
 }
 class _AuditLogPageState extends State<AuditLogPage> {
   List<String> _lines = [];
+  String _type = "全部";
+  final _qCtrl = TextEditingController();
   @override
   void initState() { super.initState(); _reload(); }
+  @override void dispose() { _qCtrl.dispose(); super.dispose(); }
   void _reload() => setState(() => _lines = LocalLog.readRecent(300));
+  bool _match(String raw) {
+    try {
+      final e = ((jsonDecode(raw) as Map)["e"] ?? "").toString();
+      if (_type == "异常" && !e.contains("异常")) return false;
+      if (_type == "启动" && e != "启动") return false;
+      if (_type == "登录" && e != "登录") return false;
+      if (_type == "操作" && (e.contains("异常") || e == "启动" || e == "登录")) return false;
+      final q = _qCtrl.text.trim();
+      if (q.isNotEmpty && !raw.contains(q)) return false;
+      return true;
+    } catch (_) { return _qCtrl.text.trim().isEmpty; }
+  }
+  List<String> get _shown => _lines.where(_match).toList();
 
   String _pretty(String raw) {
     try {
@@ -133,11 +149,23 @@ class _AuditLogPageState extends State<AuditLogPage> {
           if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已导出并复制路径：\n$p"), backgroundColor: Colors.green, duration: const Duration(seconds: 6)));
         }),
       ]),
-      body: _lines.isEmpty
-        ? const Center(child: Text("暂无审计记录", style: TextStyle(color: Colors.grey)))
-        : ListView.builder(padding: const EdgeInsets.all(8), itemCount: _lines.length,
-            itemBuilder: (_, i) => Padding(padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 6),
-              child: Text(_pretty(_lines[i]), style: const TextStyle(fontSize: 12, fontFamily: "monospace")))),
+      body: Column(children: [
+        Padding(padding: const EdgeInsets.fromLTRB(10, 8, 10, 4), child: TextField(controller: _qCtrl, onChanged: (_) => setState(() => {}), decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "搜索标签/操作/人", contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 6), border: OutlineInputBorder()))),
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 10), child: Wrap(spacing: 6, runSpacing: 4, children: ["全部", "操作", "登录", "启动", "异常"].map((t) => ChoiceChip(label: Text(t, style: const TextStyle(fontSize: 12)), selected: _type == t, onSelected: (_) => setState(() => _type = t))).toList())),
+        const SizedBox(height: 4),
+        Expanded(
+          child: _shown.isEmpty
+              ? Center(child: Text(_lines.isEmpty ? "暂无审计记录" : "无匹配记录", style: const TextStyle(color: Colors.grey)))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(8),
+                  itemCount: _shown.length,
+                  itemBuilder: (_, i) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 6),
+                    child: Text(_pretty(_shown[i]), style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
+                  ),
+                ),
+        ),
+      ]),
     );
   }
 }

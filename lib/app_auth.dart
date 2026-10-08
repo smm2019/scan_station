@@ -201,6 +201,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       _apply(r);
       setState(() => _stage = 2);
       _startBeat();
+      LocalLog.op('登录', '自动续期');
       Future.delayed(const Duration(seconds: 3), () => AppUpdater.checkAtLaunch()); // 冷启动自动续期成功→静默查APK更新
     } else if (r["net"] == true) {
       // 网络异常 → 离线宽限
@@ -271,6 +272,7 @@ class _LoginPageState extends State<LoginPage> {
       final lu = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
       final lf = Map<String, bool>.from(r["features"] ?? {});
       await AuthStore.saveSession(r["token"], lu, lf);
+      LocalLog.op('登录', lu.name);
       // 修复：登录成功必须立即刷新全局会话，否则 Auth.user 仍是上次登录账号的残留
       Auth.user = lu;
       Auth.features = lf;

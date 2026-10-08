@@ -1559,6 +1559,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         dry: choice == "dry");
     _toast(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ ${r["msg"]}");
     if (r["ok"] == true) _load(silent: true);
+    LocalLog.op('移库', r["ok"] == true ? '$from→$to 已下发' : '$from→$to 失败');
   }
 
   Future<void> _cancelTransfer(Map q) async {
@@ -1572,6 +1573,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
     final r = await AuthApi.agvTransferCancel((q["at"] ?? "").toString());
     _toast(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ ${r["msg"]}");
     if (r["ok"] == true) _load(silent: true);
+    LocalLog.op('移库取消', r["ok"] == true ? '已请求取消' : '取消失败');
   }
 
   /// 解除交管：二次确认（红色警示）→ 释放点位交管锁 → 刷新

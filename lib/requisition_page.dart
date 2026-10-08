@@ -657,6 +657,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     String? scanErr;
     bool emEligible = false; // MES取不到数才允许应急；零件号不符等真实冲突仍硬拦
     double boxQty = 0;
+    String scanLot = ""; // 扫入框批次（MES LOT_NO），FIFO 比对用
+    Map<String, dynamic>? fifoMark; // 非空=用户确认过FIFO违反，随scan上报留痕
     _lastBoxData = null;
     try {
       // 查 MES 拿该箱件数与零件号（复用采集页查询通道：失效自动重登）
@@ -668,6 +670,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         final mp = mes["partNo"]?.toString() ?? "";
         if (mp != target["partNo"]) { scanErr = "该箱零件号 $mp 与所选行 ${target["partNo"]} 不符"; }
         boxQty = (mes["qty"] as num?)?.toDouble() ?? 0;
+        scanLot = (mes["lotNo"] ?? "").toString().trim();
         // 抓转MES所需完整标签数据（物料ID/编码/名称/UOM）；失败不阻塞发料记账，转单时再补查
         try {
           final d = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
@@ -697,10 +700,34 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       if (em == null) { widget.toast(scanErr); _refocusScan(); return; } // 用户放弃应急
       boxQty = (em["qty"] as num?)?.toDouble() ?? 0;
     }
+    // 🟡 FIFO 强控：扫入批次晚于账本该零件最早批次 → 黄色警告，确认才放行（本地+单据历史双留痕）；应急登记时批次未知不判
+    if (em == null) {
+      final sg = target["suggest"];
+      String oldest = "";
+      if (sg is Map) { for (final bx in List<Map>.from(sg["boxes"] ?? [])) { final bb = (bx["b"] ?? "").toString().trim(); if (bb.isNotEmpty) { oldest = bb; break; } } }
+      if (scanLot.isNotEmpty && oldest.isNotEmpty && scanLot.compareTo(oldest) > 0) {
+        if (!mounted) return;
+        setState(() => _busy = false);
+        final go = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 36),
+          backgroundColor: const Color(0xFFFFF8E1),
+          title: const Text("非最早批次（先进先出提醒）"),
+          content: Text("标签 $code 批次 $scanLot\n该零件账本最早批次为 $oldest\n\n正常应先发最早批。确认仍发 $scanLot？（会写入审计留痕）"),
+          actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消，改拣最早批")),
+            FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black87), onPressed: () => Navigator.pop(ctx, true), child: const Text("确认继续"))],
+        ));
+        if (go != true) { if (mounted) { widget.toast("已取消：请按先进先出先拣批次 $oldest"); _refocusScan(); } return; }
+        fifoMark = {"lot": scanLot, "oldest": oldest, "ok": 1};
+        LocalLog.op('FIFO违反', '$code 批$scanLot（最早$oldest）确认继续');
+        if (!mounted) return;
+      }
+    }
     setState(() => _busy = true);
-    final res = await AuthApi.reqAction(_r["id"].toString(), "scan", em != null
-        ? {"barcode": code, "partNo": target["partNo"], "qty": boxQty, "fromLoc": fromLoc, "emergency": true, "why": em["why"]}
-        : {"barcode": code, "partNo": target["partNo"], "qty": boxQty, "fromLoc": fromLoc});
+    final res = await AuthApi.reqAction(_r["id"].toString(), "scan", {
+      "barcode": code, "partNo": target["partNo"], "qty": boxQty, "fromLoc": fromLoc,
+      if (em != null) "emergency": true, if (em != null) "why": em["why"],
+      if (fifoMark != null) "fifo": fifoMark,
+    });
     if (!mounted) return;
     setState(() => _busy = false);
     if (res["ok"] != true) { widget.toast((res["msg"] ?? "发料失败").toString()); _refocusScan(); return; }
@@ -742,6 +769,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final why = whyCtrl.text.trim();
     if (q <= 0) { widget.toast("请填写有效的本箱件数"); return null; }
     if (why.isEmpty) { widget.toast("请填写应急原因"); return null; }
+    LocalLog.op('应急发料', '$code · $why');
     return {"qty": q, "why": why};
   }
 
@@ -838,6 +866,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         }
         final ob = await createOutboundOrder(
           rows.map((r) => {...r, "PART_NO": partNo}).toList(), _to, linkReqNo: _r["no"].toString(), fromLocs: fromLocs, agvCodes: agvCodes);
+        LocalLog.op('转MES', '${item["partNo"]} ${ob.orderNo}');
         widget.toast("已转MES（${_fmtInvNum(_issuedQtyOf(item))}件），出库单 ${ob.orderNo}", err: false);
       } catch (_) {
         widget.toast("已转MES，出库台账落库失败（不影响转单）", err: false);

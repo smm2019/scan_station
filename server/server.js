@@ -1280,6 +1280,7 @@ const server = http.createServer(async (req, res) => {
             target.issued.push(Object.assign({ c: code, q, l: String(b.fromLoc || '').trim().toUpperCase() }, em ? { e: 1, by: u.name, why: String(b.why || '').trim() } : {}));
             const got = issuedQty(target);
             hpush(`${em ? '⚠️应急发料' : '发料'} ${b.partNo} 标签 ${code}（${q}件，累计 ${got}/${target.qty}）${em ? ' · MES不可用改人工录入（' + u.name + (String(b.why || '').trim() ? '：' + String(b.why || '').trim() : '') + '）' : ''}`);
+            const ff = b.fifo; if (ff && ff.ok) hpush(`🟡FIFO违反 ${b.partNo} 标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);
             // 不再自动置 ready：ready 由每行 transfer/skip 到终态后 finalize 决定
           } else if (act === 'agv') {
             // 叫AGV登记：仓管从货架叫车叉框后记账，建议区该框标"已叫AGV"防重复叫车/漏叫
