@@ -207,6 +207,7 @@ class NotifyService {
       final wav = '${dir.path}/sp_${DateTime.now().microsecondsSinceEpoch}.wav';
       File(wav).writeAsBytesSync([...head.buffer.asUint8List(), ...body]);
       final p = _digPlayer ??= AudioPlayer();
+      try { await p.setRate((0.5 + (await RemindPrefs.rateVal()) * 1.1).clamp(0.6, 2.0)); } catch (_) {}
       await p.stop();
       await p.setReleaseMode(ReleaseMode.release);
       unawaited(p.play(DeviceFileSource(wav)).catchError((_) {}) as Future<void>);

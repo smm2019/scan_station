@@ -3,7 +3,7 @@ part of 'main.dart';
 // ===================== ⑬ APK 自动更新：版本检查 + 下载进度 + 调起系统安装 =====================
 class AppUpdater {
   static const localVersion = "1.0.0"; // 与 pubspec version 一致，发版同步改
-  static const localBuild = 16;         // 与 pubspec +N 一致，发版同步改
+  static const localBuild = 17;         // 与 pubspec +N 一致，发版同步改
   static const _ch = MethodChannel("app.installer");
   static bool _asked = false;
   static void _m(String m, {bool err = true}) { final c = nav.currentContext; if (c != null) _toast(c, m, err: err); }
@@ -24,8 +24,7 @@ class AppUpdater {
       final build = (j["build"] as num?)?.toInt() ?? 0;
       // 本机基准：pubspec常量 与 上次成功调起安装的build 取大者（防更新后重复提示）
       final sp = await SharedPreferences.getInstance();
-      final installed = sp.getInt('installed_build') ?? 0;
-      if (build <= (localBuild > installed ? localBuild : installed)) { if (manual) _m("当前已是最新版本 v$localVersion+$localBuild", err: false); return; }
+      if (build <= localBuild) { if (manual) _m("当前已是最新版本 v$localVersion+$localBuild", err: false); return; }
       final ctx = nav.currentContext;
       if (ctx == null) return;
       final mb = ((j["size"] as num?)?.toInt() ?? 0) / 1048576;
@@ -37,15 +36,20 @@ class AppUpdater {
           FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text("立即更新")),
         ],
       ));
-      if (go == true) await _download(ctx, build);
+      if (go == true) await _download(ctx, build, sp);
     } catch (e) { if (manual) _m("检查更新失败：$e"); }
   }
 
-  static Future<void> _download(BuildContext context, int build) async {
+  static Future<void> _download(BuildContext context, int build, SharedPreferences sp) async {
     final server = await AuthStore.serverUrl();
     if (server.isEmpty) { _toast(context, "未配置服务器地址"); return; }
     final dir = await getExternalStorageDirectory() ?? await getApplicationDocumentsDirectory();
     final save = File("${dir.path}/update-release.apk");
+    if (sp.getInt('dl_build') == build && await save.exists()) {
+      final ok0 = await _ch.invokeMethod<bool>("installApk", {"path": save.path}) ?? false;
+      _toast(context, ok0 ? "已下载过，直接调起安装器，请在弹窗确认安装" : "调起安装失败，请手动安装 update-release.apk", err: !ok0);
+      return;
+    }
     try { if (save.existsSync()) save.deleteSync(); } catch (_) {}
     final pct = ValueNotifier<double>(-1);
     var dlgClosed = false;
@@ -67,7 +71,7 @@ class AppUpdater {
       await Future.delayed(const Duration(milliseconds: 400));
       if (!dlgClosed) _pop();
       final ok = await _ch.invokeMethod<bool>("installApk", {"path": save.path}) ?? false;
-      if (ok) { final sp = await SharedPreferences.getInstance(); await sp.setInt('installed_build', build); }
+      if (ok) await sp.setInt('dl_build', build);
       _toast(context, ok ? "已调起系统安装器，请在弹窗确认安装" : "调起安装失败，请手动安装 update-release.apk", err: !ok);
     } catch (e) {
       if (!dlgClosed) _pop();
