@@ -4223,7 +4223,16 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
 
   Future<void> _setKey(String key, bool v) async {
     await RemindPrefs.setEnabled(key, v);
-    setState(() {});
+    setState(() {
+      // 同步界面绑定字段：否则Switch读旧值弹回，表现为关不掉
+      if (key == RemindPrefs.kNew) _nNew = v;
+      else if (key == RemindPrefs.kUrge) _nUrge = v;
+      else if (key == RemindPrefs.kArrive) _nArrive = v;
+      else if (key == RemindPrefs.kResult) _nResult = v;
+      else if (key == RemindPrefs.kWatch) _nWatch = v;
+      else if (key == RemindPrefs.kStock) _nStock = v;
+      else if (key == RemindPrefs.kVoice) _voice = v;
+    });
   }
 
   Future<void> _askNotifPerm() async {
