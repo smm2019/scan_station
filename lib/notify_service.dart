@@ -270,13 +270,17 @@ class VoicePack {
   }
 
   static Future<bool> speak(String text) async {
-    if (_broken || await disabled() || !await _ensureEngine()) return false;
+    if (_broken || await disabled()) return false;
     File? sent;
     try {
       sent = File(await _sentPath());
-      sent.writeAsStringSync(DateTime.now().toIso8601String()); // 哨兵：崩溃则残留，下次启动自动停用
+      sent.writeAsStringSync(DateTime.now().toIso8601String()); // 哨兵先行：引擎加载阶段崩溃（低内存设备）也能被下次启动识别
       LocalLog.op('语音合成', text);
     } catch (_) {}
+    if (!await _ensureEngine()) {
+      try { sent?.deleteSync(); } catch (_) {} // Dart层可恢复的加载失败：撤哨兵不误判
+      return false;
+    }
     try {
       final speed = (0.5 + (await RemindPrefs.rateVal()) * 1.1).clamp(0.6, 2.0);
       final audio = _tts.generate(text: text, speed: speed) as sherpa.GeneratedAudio;
