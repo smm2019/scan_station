@@ -27,8 +27,9 @@ class NotifyService {
           if (p.isNotEmpty) kNotifTap.value = '$p@${DateTime.now().millisecondsSinceEpoch}';
         },
       );
-      final ch = _android(chId, chName, '待接单/催单/到站等领料提醒，悬浮横幅+锁屏+提示音', playSound: true);
-      await (await _n.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>())?.createNotificationChannel(ch);
+      await (await _n.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>())?.createNotificationChannel(
+        const AndroidNotificationChannel(chId, chName, description: '待接单/催单/到站等领料提醒，悬浮横幅+锁屏+提示音', importance: Importance.max),
+      );
     } catch (e) {
       debugPrint('[notify] 初始化失败：$e');
     }
@@ -120,7 +121,7 @@ class NotifyService {
     if (_ttsTried) return _ttsReady;
     _ttsTried = true;
     try {
-      final langs = await _tts.getLanguages();
+      final langs = await _tts.getLanguages;
       _ttsReady = langs != null && langs.isNotEmpty;
       if (_ttsReady) {
         await _tts.setLanguage('zh-CN');
@@ -275,23 +276,23 @@ class VoicePack {
       }
     }
     wstr(0, 'RIFF');
-    buf.setUint32(4, 36 + n * 2, true);
+    buf.setUint32(4, 36 + n * 2, Endian.little);
     wstr(8, 'WAVE');
     wstr(12, 'fmt ');
-    buf.setUint32(16, 16, true);
-    buf.setUint16(20, 1, true);
-    buf.setUint16(22, 1, true);
-    buf.setUint32(24, rate, true);
-    buf.setUint32(28, rate * 2, true);
-    buf.setUint16(32, 2, true);
-    buf.setUint16(34, 16, true);
+    buf.setUint32(16, 16, Endian.little);
+    buf.setUint16(20, 1, Endian.little);
+    buf.setUint16(22, 1, Endian.little);
+    buf.setUint32(24, rate, Endian.little);
+    buf.setUint32(28, rate * 2, Endian.little);
+    buf.setUint16(32, 2, Endian.little);
+    buf.setUint16(34, 16, Endian.little);
     wstr(36, 'data');
-    buf.setUint32(40, n * 2, true);
+    buf.setUint32(40, n * 2, Endian.little);
     for (var i = 0; i < n; i++) {
       var v = (samples[i] * 32767).round();
       if (v > 32767) v = 32767;
       if (v < -32768) v = -32768;
-      buf.setInt16(44 + i * 2, v, true);
+      buf.setInt16(44 + i * 2, v, Endian.little);
     }
     return buf.buffer.asUint8List();
   }

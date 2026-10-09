@@ -41,7 +41,7 @@ String invZoneOf(String locCode) {
   final c = locCode.trim().toUpperCase();
   if (c.startsWith('NB03-')) {
     final seg = c.split('-');
-    if (seg.length >= 3) return seg.slice(0, 3).join('-');
+    if (seg.length >= 3) return seg.sublist(0, 3).join('-');
   }
   return invShelfOf(c);
 }
