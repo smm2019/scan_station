@@ -6,7 +6,8 @@ part of 'main.dart';
 final Set<String> _colCalled = {}; // 本会话已叫车的货位（防重复叫车）
 extension CollectionLedgerExt on _MainPageState {
   static const List<String> _lz = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-  static const Set<String> _nb03R13 = {'NB03-A-11', 'NB03-C-11'}; //有13号加位的排
+  static Map<String, int> _gSlots = {}; // ⑮地面排格数覆盖（服务器拉取，缺省12）
+  static int nb03SlotMax(String prefix) => _gSlots[prefix] ?? 12;
 
   ///NB02 全主档 512 格位（区→架→层顺序，兜底分配即按此"集满靠前排"）
   List<String> nb02MasterAll() {
@@ -135,7 +136,7 @@ extension CollectionLedgerExt on _MainPageState {
     final g = zone.substring(0, 1);
     final nn = zone.substring(1).padLeft(2, '0');
     final prefix = 'NB03-$g-$nn';
-    final maxSlot = _nb03R13.contains(prefix) ? 13 : 12;
+    final maxSlot = nb03SlotMax(prefix);
     final byLoc = await _ledgerByLoc();
     for (var s = 1; s <= maxSlot; s++) {
       final code = '$prefix-${s.toString().padLeft(2, '0')}';
@@ -234,7 +235,7 @@ extension CollectionLedgerExt on _MainPageState {
     final g = gl.substring(0, 1);
     final num = gl.substring(1).padLeft(2, '0');
     final prefix = 'NB03-$g-$num';
-    final maxSlot = _nb03R13.contains(prefix) ? 13 : 12;
+    final maxSlot = nb03SlotMax(prefix);
     final byLoc = await _ledgerByLoc();
     if (!mounted) return;
     final cells = <Widget>[];
@@ -519,6 +520,14 @@ Future<String> ledgerLocOfCode(String code) async {
 
 /// 从电脑服务器拉取账本并**增量合并**进本机（物料员/新PDA看库存的关键：本机没采集也能有数据）。
 /// 规则与服务器一致：标签级"登记时间新者胜"；服务器墓碑比本机新→本机消位并落墓碑。
+/// ⑮拉取地面排格数配置（随账本拉取顺带刷新，改动低频）
+Future<void> pullGroundSlots() async {
+  try {
+    final r = await AuthApi.groundSlotsGet();
+    if (r["ok"] == true) CollectionLedgerExt._gSlots = Map<String, int>.from((r["slots"] as Map).map((k, v) => MapEntry(k.toString(), (v as num).toInt())));
+  } catch (_) {}
+}
+
 Future<Map> ledgerPullMerge() async {
   try {
     final r = await AuthApi.ledgerGet();
@@ -581,6 +590,7 @@ Future<Map> ledgerPullMerge() async {
       m.addAll(tombAdds);
       await _saveTombs(m);
     }
+    unawaited(pullGroundSlots()); // ⑮顺带刷新地面排格数
     return {"ok": true, "added": added, "updated": updated, "deleted": deleted, "total": items.length};
   } catch (e) {
     return {"ok": false, "msg": "$e"};

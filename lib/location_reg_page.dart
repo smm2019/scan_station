@@ -38,6 +38,56 @@ class _LocationRegPageState extends State<LocationRegPage> {
   @override
   void dispose() { _labelCtrl.dispose(); _labelFocus.dispose(); _locCtrl.dispose(); super.dispose(); }
 
+  /// ⑮ 地面排格数设置：每排默认12格，可改成任意数（1~60），存服务器全局共享
+  Future<void> _openGroundSlots() async {
+    final r = await AuthApi.groundSlotsGet();
+    if (!mounted) return;
+    if (r["ok"] != true) { _toast("读取格数配置失败：${r["msg"]}"); return; }
+    final slots = Map<String, dynamic>.from(r["slots"] ?? {});
+    // 排清单：A~D × 01~18（地面规划区），已改过的排优先显示当前值
+    final rows = <String, int>{};
+    for (final g in ['A', 'B', 'C', 'D']) {
+      for (var n = 1; n <= 18; n++) {
+        final k = 'NB03-$g-${n.toString().padLeft(2, "0")}';
+        rows[k] = (slots[k] as num?)?.toInt() ?? 12;
+      }
+    }
+    final ctrl = TextEditingController();
+    await showDialog<void>(context: context, builder: (dctx) => StatefulBuilder(builder: (bctx, setSt) {
+      return AlertDialog(
+        title: const Text("地面排格数设置"),
+        content: SizedBox(width: 360, height: 440, child: Column(children: [
+          TextField(controller: ctrl, textCapitalization: TextCapitalization.characters, onChanged: (v) { setState(() {}); setSt(() {}); },
+              decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "筛选排号，如 A-11 / B13", border: OutlineInputBorder())),
+          const SizedBox(height: 6),
+          const Text("默认每排 12 格；改后自动分配空位与选位网格立即生效", style: TextStyle(fontSize: 11, color: Colors.blueGrey)),
+          const SizedBox(height: 4),
+          Expanded(child: ListView(children: rows.entries.where((e) {
+            final q = ctrl.text.trim().toUpperCase().replaceAll('-', '');
+            if (q.isEmpty) return true;
+            return e.key.replaceAll('-', '').contains(q) || e.key.contains(ctrl.text.trim().toUpperCase());
+          }).map((e) => Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: Row(children: [
+            SizedBox(width: 110, child: Text(e.key, style: const TextStyle(fontSize: 12.5, fontFamily: "monospace", fontWeight: FontWeight.w600))),
+            Expanded(child: Slider(value: e.value.toDouble().clamp(1, 60), min: 1, max: 60, divisions: 59, label: "${e.value}格",
+                activeColor: const Color(0xFF00897B), onChanged: (v) => setSt(() => rows[e.key] = v.round()))),
+            SizedBox(width: 40, child: Text("${e.value}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF00897B)))),
+          ]))).toList())),
+        ])),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dctx), child: const Text("取消")),
+          FilledButton(onPressed: () async {
+            final entries = rows.entries.map((e) => {"prefix": e.key, "count": e.value}).toList();
+            final rr = await AuthApi.groundSlotsSet(entries);
+            if (!bctx.mounted) return;
+            Navigator.pop(dctx);
+            if (!mounted) return;
+            _toast(rr["ok"] == true ? "格数配置已保存（全设备生效）" : "保存失败：${rr["msg"]}", err: rr["ok"] != true);
+          }, child: const Text("保存")),
+        ],
+      );
+    }));
+  }
+
   void _toast(String m, {bool err = true}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), backgroundColor: err ? Colors.red : Colors.green));
@@ -339,6 +389,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF515BD4), title: const Text("位置登记"),
         actions: [
+          IconButton(tooltip: "地面排格数设置", icon: const Icon(Icons.view_array), onPressed: _openGroundSlots),
           if (_backfilling)
             const Padding(padding: EdgeInsets.symmetric(horizontal: 12), child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.2, color: Colors.white))))
           else

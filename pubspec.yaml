@@ -1,6 +1,6 @@
 name: agv_collector
 description: AGV站台&人工地面货位采集APP，适配工业PDA，增加局域网Web下载
-version: 1.0.0+7
+version: 1.0.0+12
 environment:
   sdk: '>=3.4.0 <3.5.0'
 
@@ -22,6 +22,11 @@ dependencies:
   xml: ^6.5.0
   asn1lib: ^1.6.4
   webview_flutter: 4.7.0 # AGV模块：哈工库讯实时调度大屏WebView
+  flutter_local_notifications: 17.2.4 # ⑭系统通知：悬浮横幅/锁屏/息屏/自定义铃声
+  flutter_tts: 4.0.2 # ⑭扫码语音播报：零件号后四位+件数
+  audioplayers: 6.1.0 # ⑭数字拼播/⑯离线合成播放
+  archive: 3.6.1 # ⑯离线语音包zip解压
+  sherpa_onnx: 1.12.14 # ⑯离线TTS引擎（piper中文，模型包局域网下载）
 
 dev_dependencies:
   flutter_test:
@@ -35,3 +40,5 @@ flutter:
   # 此前该节点为空，Flutter 不会把 MaterialIcons 图标字体打包进 APK，
   # 导致 PDA 上所有 Icons.xxx 渲染成"带叉方框"（豆腐块）。
   uses-material-design: true
+  assets:
+    - assets/voice/

@@ -422,7 +422,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       mainAxisSize: MainAxisSize.min, children: [
         Padding(padding: const EdgeInsets.fromLTRB(12, 12, 4, 0), child: Row(children: [
           const Expanded(child: Text("AGV 排队队列", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
-          TextButton.icon(
+          if (Auth.can("agv_control")) TextButton.icon(
             style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
             onPressed: _queueItems.isEmpty ? null : () async {
               final yes = await showDialog<bool>(context: mctx, builder: (c2) => AlertDialog(
@@ -447,7 +447,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               child: Text(switch (q["state"]?.toString()) { "排队" => "排", "下发中" => "运", "已下发" => "运", "到站" => "达", _ => "其" }, style: const TextStyle(fontSize: 12))),
             title: Text("${q["code"]}  ${q["fromLoc"]}${(q["station"] ?? "").toString().isNotEmpty ? " → ${q["station"]}" : ((q["plan"] ?? "").toString().isNotEmpty ? " → ${q["plan"]}（计划）" : "")}", style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
             subtitle: Text("${q["state"]}${(q["err"] ?? "").toString().isNotEmpty ? " · ${q["err"]}" : ""}${(q["palletType"] ?? "").toString().isNotEmpty ? " · ${q["palletType"]}" : ""}", style: const TextStyle(fontSize: 11)),
-            trailing: (q["state"] == "排队" || q["state"] == "失败") ? TextButton(
+            trailing: Auth.can("agv_control") && (q["state"] == "排队" || q["state"] == "失败") ? TextButton(
               style: TextButton.styleFrom(foregroundColor: Colors.red),
               onPressed: () => _cancelQueued(q["code"].toString()),
               child: const Text("取消", style: TextStyle(fontSize: 12))) : null,
@@ -542,9 +542,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     return List.from(item["issued"] ?? []).map((x) => x is Map ? (x["c"]?.toString() ?? "") : x.toString()).toList();
   }
 
-  /// 建议框点击：NB02 货架位 → 弹叫AGV出库窗（人工选站台），成功后登记"已叫AGV"；地面/其他 → 复制标签去扫码
+  /// 建议框点击：有车辆控制权限且NB02货架位 → 弹叫AGV出库窗；无权限/地面/其他 → 复制标签去扫码
   void _onSuggestTap(String code, String loc, String ftype, String partNo) async {
-    if (loc.startsWith('NB02-') && !loc.contains('-CK-')) {
+    if (loc.startsWith('NB02-') && !loc.contains('-CK-') && Auth.can("agv_control")) {
       final stn = await showDialog<String>(context: context,
         builder: (_) => AgvCallDialog(fromLoc: loc, containerType: ftype, label: code, toast: widget.toast));
       if (stn == null || !mounted) return;
@@ -577,6 +577,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             style: const TextStyle(fontSize: 11, color: Colors.deepOrange)),
       );
     }
+    final canCtl = Auth.can("agv_control"); // 叫车是车辆控制权限：物料员只见建议不露叫车按钮
     // 同货位标签总数（>1 即同托多码），用于 chip 上标注"同托多码"
     final perBoxCodes = <String, int>{};
     for (final b in boxes) {
@@ -589,9 +590,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       decoration: BoxDecoration(color: const Color(0xFFF0F4FF), borderRadius: BorderRadius.circular(8)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
-          Expanded(child: Text("💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件 · 点标签单独叫车",
+          Expanded(child: Text("💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件 · ${canCtl ? '点标签单独叫车' : '点标签复制'}",
               style: const TextStyle(fontSize: 11, color: Color(0xFF3949AB), fontWeight: FontWeight.w600))),
-          if (boxes.any((b) => (b["l"]?.toString().startsWith('NB02-') ?? false) && (b["l"]?.toString().contains('-CK-') ?? true) == false))
+          if (canCtl && boxes.any((b) => (b["l"]?.toString().startsWith('NB02-') ?? false) && (b["l"]?.toString().contains('-CK-') ?? true) == false))
             TextButton(
               style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact),
               onPressed: _busy ? null : () => _queueAll(item, boxes),

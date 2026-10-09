@@ -46,6 +46,9 @@ function defaultDb() {
     scanlogAt: '', scanlogCount: 0,
     outbound: {}, // 出库单（按单号存最新快照）
     outboundAt: '', outboundCount: 0,
+    watchlist: [], // ⑮预约来料 [{userId,partNo,at}]
+    groundSlots: {}, // ⑮地面排格数覆盖 {"NB03-A-11":13}，缺省12
+    stockAlert: {}, // ⑮断料告警去重 {零件号: 最近告警日}
   };
 }
 function loadDb() {
@@ -68,6 +71,9 @@ function loadDb() {
   if (typeof d.ledgerRev !== 'number') { d.ledgerRev = 0; added = true; }
   if (typeof d.scanlog !== 'object' || d.scanlog === null || Array.isArray(d.scanlog)) { d.scanlog = {}; added = true; }
   if (typeof d.outbound !== 'object' || d.outbound === null || Array.isArray(d.outbound)) { d.outbound = {}; added = true; }
+  if (!Array.isArray(d.watchlist)) { d.watchlist = []; added = true; }
+  if (typeof d.groundSlots !== 'object' || d.groundSlots === null || Array.isArray(d.groundSlots)) { d.groundSlots = {}; added = true; }
+  if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   return d;
 }
@@ -131,6 +137,54 @@ function sweepAssignOpen() {
   if (changed) save();
 }
 // 框键：有托号按托号合并（整托多码=1框）；无托号按"同货位+同零件号"合并（与PDA库存口径一致）；都缺才一码一框
+// ===== ⑮ 库存事件检测：预约到料 + 断料预警（账本合并后调用） =====
+const _wseen = new Set(); // 到料通知10分钟聚合去重（内存级，重启即清可接受）
+function partBoxCounts() {
+  const m = {}, seen = {}; // 按框计（同托多码=1框）
+  for (const x of db.ledger || []) {
+    const p = String(x.p || '').toUpperCase(); if (!p) continue;
+    const kk = p + '|' + boxKeyOf(x); if (seen[kk]) continue; seen[kk] = 1;
+    m[p] = (m[p] || 0) + 1;
+  }
+  return m;
+}
+function stockWatchScan(pre, byName) {
+  try {
+    const post = partBoxCounts();
+    const t0 = new Date(); t0.setHours(0, 0, 0, 0);
+    // 预约到料：今日新上账框命中 watchlist
+    const wl = db.watchlist || [];
+    if (wl.length) {
+      const arrived = {}, _abseen = {};
+      for (const x of db.ledger || []) { if ((x.t || 0) < t0.getTime()) continue; const p = String(x.p || '').toUpperCase(); if (!p) continue; const kk = p + '|' + boxKeyOf(x); if (_abseen[kk]) continue; _abseen[kk] = 1; arrived[p] = (arrived[p] || 0) + 1; }
+      const slot = Math.floor(Date.now() / 600000); // 10分钟窗口
+      for (const w of wl) {
+        const p = String(w.partNo || '').toUpperCase();
+        if (!p || !arrived[p]) continue;
+        const lk = p + '|' + w.userId + '|' + slot;
+        if (_wseen.has(lk)) continue; _wseen.add(lk);
+        if (_wseen.size > 8000) _wseen.clear();
+        const user = db.users.find((x) => x.id === w.userId);
+        if (!user || !user.enabled) continue;
+        notify(w.userId, 'watch_in', `🛒 预约到料：零件 ${p} 今日入库 ${arrived[p]} 框，当前在架 ${post[p] || 0} 框`, '');
+      }
+    }
+    // 断料预警：合并前有、合并后清零；每零件每天最多一次
+    const day = new Date().toISOString().slice(0, 10);
+    db.stockAlert = db.stockAlert || {};
+    for (const p of Object.keys(pre)) {
+      if (post[p]) { delete db.stockAlert[p]; continue; }
+      if (db.stockAlert[p] === day) continue;
+      db.stockAlert[p] = day;
+      db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'stock_out', `⚠️ 断料预警：零件 ${p} 在架已清零（${byName} 操作后），请安排补货`, ''));
+      (db.requisitions || []).forEach((r) => { if (!['pending', 'accepted'].includes(r.status)) return; if ((r.items || []).some((i) => String(i.partNo || '').toUpperCase() === p)) notify(r.by, 'stock_out', `⚠️ 断料预警：你的领料单 ${r.no} 所需零件 ${p} 在架已清零`, r.id); });
+      wl.filter((w) => String(w.partNo || '').toUpperCase() === p).forEach((w) => notify(w.userId, 'stock_out', `⚠️ 你预约的零件 ${p} 在架已清零（补货后会自动通知到料）`, ''));
+      console.log('[stock-out] ' + p);
+    }
+    save();
+  } catch (e) { console.log('[stock] 检测异常：', e.message); }
+}
+
 function boxKeyOf(x) {
   const pid = String(x.pid || '').toUpperCase();
   if (pid) return 'P|' + pid;
@@ -683,6 +737,7 @@ const server = http.createServer(async (req, res) => {
             mv: String((it && it.mv) || '').slice(0, 10), src: String((it && it.src) || '').slice(0, 40) });
         }
         // 增量合并：按标签号 upsert（登记时间新者胜）+ 墓碑删除，多PDA互不覆盖
+        const _preCounts = partBoxCounts(); // ⑮合并前在架快照（断料检测基线）
         const cur = new Map(db.ledger.map(x => [String(x.c).toUpperCase(), x]));
         const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), Number(x.t) || 0]));
         const seenNew = new Set(); // 本次合并真正新增上账的标签（急货入库提醒用）
@@ -714,6 +769,7 @@ const server = http.createServer(async (req, res) => {
         db.ledgerBy = u.name;
         save();
         console.log(`[ledger] ${u.name} 合并：+${added} 改${updated} 删${delApplied} 忽略${skipped + delSkipped} → v${db.ledgerRev}（共 ${db.ledger.length} 条）`);
+        stockWatchScan(_preCounts, u.name); // ⑮预约到料+断料预警
         // ===== ③ 急货入库提醒：本次新上账零件命中待处理领料单 → 通知下单人与全体仓管 =====
         try {
           if (added > 0) {
@@ -911,6 +967,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, task: task ? { no: task.no, sp: task.sp, ep: task.ep, car: task.car || null, stateText: stText, tl } : null, queueState: q ? q.state : '', chain });
       }
       if (req.method === 'POST' && p === '/api/agv/queue/cancel') { // 取消排队项；传 reqId 则清空该单全部未下发项
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const reqId = String(b.reqId || '').trim();
         const codes = new Set((Array.isArray(b.codes) ? b.codes : []).map((c) => String(c).toUpperCase()));
@@ -928,6 +985,40 @@ const server = http.createServer(async (req, res) => {
         for (const q of db.agvQueue || []) { if (codes.has(q.code) && (q.state === '排队' || q.state === '失败')) { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); n++; } }
         save();
         return send(res, 200, { ok: true, cancelled: n });
+      }
+      if (req.method === 'GET' && p === '/api/watchlist') {
+        return send(res, 200, { ok: true, list: (db.watchlist || []).filter((w) => w.userId === u.id) });
+      }
+      if (req.method === 'POST' && p === '/api/watchlist') {
+        const b = await readBody(req);
+        const pn = String(b.partNo || '').trim().toUpperCase().slice(0, 40);
+        if (!pn) return send(res, 400, { ok: false, msg: '缺少 partNo' });
+        db.watchlist = db.watchlist || [];
+        if (b.on === false) { db.watchlist = db.watchlist.filter((w) => !(w.userId === u.id && w.partNo === pn)); }
+        else if (!db.watchlist.some((w) => w.userId === u.id && w.partNo === pn)) {
+          if (db.watchlist.length > 3000) return send(res, 400, { ok: false, msg: '预约条目已满，请先清理' });
+          db.watchlist.push({ userId: u.id, partNo: pn, at: Date.now() });
+        }
+        save();
+        return send(res, 200, { ok: true });
+      }
+      if (req.method === 'GET' && p === '/api/ground-slots') {
+        return send(res, 200, { ok: true, slots: db.groundSlots || {} });
+      }
+      if (req.method === 'POST' && p === '/api/ground-slots') {
+        if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
+        const b = await readBody(req);
+        const entries = Array.isArray(b.entries) ? b.entries : [];
+        db.groundSlots = db.groundSlots || {};
+        for (const e of entries) {
+          const k = String(e.prefix || '').trim().toUpperCase();
+          const v = Number(e.count) || 0;
+          if (!/^NB03-[A-Z]-\d{2}$/.test(k)) continue;
+          if (v < 1 || v > 60) { delete db.groundSlots[k]; continue; } // 1~60之外=恢复默认12
+          db.groundSlots[k] = v;
+        }
+        save();
+        return send(res, 200, { ok: true, slots: db.groundSlots });
       }
       if (req.method === 'POST' && p === '/api/agv/transfer') {
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
@@ -1055,6 +1146,20 @@ const server = http.createServer(async (req, res) => {
           const v = JSON.parse(fs.readFileSync(APP_VER, 'utf8'));
           return send(res, 200, { ok: true, has: fs.existsSync(APP_APK), ...v, size: fs.existsSync(APP_APK) ? fs.statSync(APP_APK).size : 0 });
         } catch (e) { return send(res, 200, { ok: false, msg: e.message }); }
+      }
+      // ⑯离线语音包分发（登录即可拉；zip内含 model.onnx/tokens.txt/espeak-ng-data）
+      if (req.method === 'GET' && p === '/api/tts/info') {
+        const zf = path.join(DATA_DIR, 'app', 'tts-model.zip');
+        if (!fs.existsSync(zf)) return send(res, 200, { ok: false, msg: '服务器未放置 tts-model.zip' });
+        return send(res, 200, { ok: true, size: fs.statSync(zf).size });
+      }
+      if (req.method === 'GET' && p === '/api/tts/model') {
+        const zf = path.join(DATA_DIR, 'app', 'tts-model.zip');
+        if (!fs.existsSync(zf)) return send(res, 404, { ok: false, msg: '无语音包' });
+        const st = fs.statSync(zf);
+        res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': st.size });
+        fs.createReadStream(zf).pipe(res);
+        return;
       }
       if (req.method === 'GET' && p === '/api/app/download') {
         if (!fs.existsSync(APP_APK)) return send(res, 404, { ok: false, msg: '尚无上传APK' });

@@ -203,7 +203,7 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
   @override
   void initState() {
     super.initState();
-    _tc = TabController(length: 3, vsync: this);
+    _tc = TabController(length: 4, vsync: this);
     _autoPullThenReload();
     _stockTimer = Timer.periodic(const Duration(seconds: 45), (_) => _reloadSilent()); // ⑪自动刷新
   }
@@ -246,8 +246,9 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
             controller: _tc, isScrollable: true, tabAlignment: TabAlignment.start,
             labelColor: const Color(0xFF515BD4), unselectedLabelColor: Colors.grey,
             indicatorColor: const Color(0xFF515BD4),
-            tabs: const [Tab(text: "库存汇总"), Tab(text: "货架库位"), Tab(text: "出入库流水")],
+            tabs: const [Tab(text: "库存汇总"), Tab(text: "货架库位"), Tab(text: "出入库流水"), Tab(text: "我的预约")],
           )),
+          if (Auth.can("agv_control")) IconButton(tooltip: "货架移库（AGV整架搬位）", icon: const Icon(Icons.swap_horiz, color: Color(0xFFEF6C00)), onPressed: () => showTransferDialog(context)),
           IconButton(icon: const Icon(Icons.refresh, color: Color(0xFF515BD4)), onPressed: _reload),
         ]),
       ),
@@ -260,6 +261,7 @@ class _InventoryStockPageState extends State<InventoryStockPage> with SingleTick
                 _StockSummaryTab(agg: _agg!, search: _search, onSearch: (v) => setState(() => _search = v), onReload: _reload),
                 _ShelfTab(agg: _agg!),
                 _FlowTab(agg: _agg!),
+                const _WatchTab(),
               ],
             )),
     ]);
@@ -312,8 +314,9 @@ class _StockSummaryTab extends StatelessWidget {
                   margin: const EdgeInsets.symmetric(vertical: 4),
                   child: ListTile(
                     dense: true,
+                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => PartProfilePage(partNo: r.partNo))),
                     title: Text("${r.partNo}  ${r.itemName}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
-                    subtitle: Text("在库 ${r.inBoxes} 框 · 数量 ${_fmtInvNum(r.inStockQty)}${r.opening > 0 ? "（另有期初 ${_fmtInvNum(r.opening)}）" : ""}", style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                    subtitle: Text("在库 ${r.inBoxes} 框 · 数量 ${_fmtInvNum(r.inStockQty)}${r.opening > 0 ? "（另有期初 ${_fmtInvNum(r.opening)}）" : ""} · 点击查看每框出入库全链路", style: const TextStyle(fontSize: 11, color: Colors.grey)),
                     trailing: Text(_fmtInvNum(r.stock), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32))),
                   ),
                 );
@@ -532,4 +535,426 @@ class _OpeningTab extends StatelessWidget {
             })),
     ]);
   }
+}
+
+
+// ===================== 零件档案：逐框入库/出库全链路 =====================
+class _PPBox {
+  String barcode = "", itemName = "", lot = "", pallet = "", container = "";
+  double qty = 0;
+  DateTime? inTime;
+  String inOperator = "", inLoc = "", inBatch = "";
+  bool cancelled = false;
+  String curLoc = "";
+  DateTime? outTime;
+  String outOrder = "", outTo = "", outOperator = "", outMove = "", outFrom = "", outLink = "";
+  String agvChain = ""; // 领料出库时服务器AGV节点链路（A补充）
+  bool get inStock => !cancelled && outTime == null;
+  bool get ledgerOnly => inTime == null;
+}
+
+class _PPData {
+  String partNo = "", itemName = "";
+  double opening = 0, inQty = 0, outQty = 0, stockQty = 0;
+  int inBoxes = 0, outBoxes = 0, cancelBoxes = 0;
+  bool serverOk = false; // 服务器数据合并成功（B）
+  final List<_PPBox> boxes = [];
+}
+
+Future<_PPData> loadPartProfile(String partNo) async {
+  final isar = _globalIsar;
+  final key = partNo.trim().toUpperCase();
+  final d = _PPData()..partNo = partNo;
+  final recs = (await isar.scanRecords.where().findAll()).where((r) => (r.mesPartNo ?? "").toUpperCase() == key).toList()
+    ..sort((a, b) => a.scanTime.compareTo(b.scanTime));
+  final extras = {for (final e in await isar.recordExtras.where().findAll()) e.goodsCode: e};
+  final infos = {for (final e in await isar.labelInfos.where().findAll()) e.goodsCode: e};
+  final places = {for (final p in await isar.shelfPlacements.where().findAll()) p.goodsCode: p};
+  final outHit = <String, Map<String, Object>>{};
+  // 服务器出库单先入表，本机出库单覆盖（本机更权威）：别台设备转单的框也能拿到出库链路
+  try {
+    final ob = await AuthApi.outboundGet().timeout(const Duration(seconds: 8));
+    if (ob["ok"] == true) {
+      d.serverOk = true;
+      for (final o in List<Map>.from(ob["items"] ?? [])) {
+        final no = o["orderNo"]?.toString() ?? "";
+        if (no.isEmpty) continue;
+        for (final e in List<Map>.from(o["items"] ?? [])) {
+          final bc = (e["barcode"]?.toString() ?? "").toUpperCase();
+          if (bc.isEmpty) continue;
+          outHit[bc] = {"t": (o["createdAt"] as num?)?.toInt() ?? 0, "no": no, "to": o["toLoc"]?.toString() ?? "", "op": o["operator"]?.toString() ?? "", "move": (e["move"] ?? "").toString(), "from": (e["fromLoc"] ?? "").toString(), "link": o["linkReqNo"]?.toString() ?? ""};
+        }
+      }
+    }
+  } catch (_) {}
+  for (final o in await isar.outboundOrders.where().findAll()) {
+    try {
+      for (final e in (jsonDecode(o.itemsJson) as List)) {
+        final m = Map<String, dynamic>.from(e as Map);
+        final bc = (m["barcode"]?.toString() ?? "").toUpperCase();
+        if (bc.isEmpty) continue;
+        outHit[bc] = {"t": o.createdAt, "no": o.orderNo, "to": o.toLoc, "op": o.operator, "move": (m["move"] ?? "").toString(), "from": (m["fromLoc"] ?? "").toString(), "link": o.linkReqNo};
+      }
+    } catch (_) {}
+  }
+  void fillOut(_PPBox b) {
+    final oh = outHit[b.barcode.toUpperCase()];
+    if (oh == null) return;
+    b.outTime = DateTime.fromMillisecondsSinceEpoch(oh["t"] as int);
+    b.outOrder = oh["no"].toString(); b.outTo = oh["to"].toString(); b.outOperator = oh["op"].toString();
+    b.outMove = oh["move"].toString(); b.outFrom = oh["from"].toString(); b.outLink = oh["link"].toString();
+  }
+  final seen = <String>{};
+  for (final r in recs) {
+    final b = _PPBox()
+      ..barcode = r.goodsCode ..qty = r.mesQty ?? 0 ..inTime = r.scanTime ..inBatch = r.batchId
+      ..container = r.containerType ?? "" ..cancelled = r.isCancel
+      ..inLoc = r.workType == 0 ? (r.stationNo ?? "") : (r.groundLocation ?? "");
+    final ex = extras[r.goodsCode];
+    if (ex != null) { b.itemName = ex.mesItemName; b.lot = ex.mesLotNo; b.pallet = ex.palletId; b.inOperator = ex.operator; }
+    if (d.itemName.isEmpty) d.itemName = b.itemName;
+    final p = places[r.goodsCode] ?? places[r.goodsCode.toUpperCase()];
+    if (p != null) b.curLoc = p.loc;
+    fillOut(b);
+    seen.add(r.goodsCode.toUpperCase());
+    d.boxes.add(b);
+  }
+  // 服务器采集流水：补全别台设备采集的入库框（B：全厂口径）
+  try {
+    final sl = await AuthApi.scanlogGet().timeout(const Duration(seconds: 8));
+    if (sl["ok"] == true) {
+      d.serverOk = true;
+      for (final s in List<Map>.from(sl["items"] ?? [])) {
+        if ((s["pn"]?.toString() ?? "").toUpperCase() != key) continue;
+        final code = (s["code"]?.toString() ?? "").toUpperCase();
+        if (code.isEmpty || seen.contains(code)) continue;
+        final t = (s["t"] as num?)?.toInt() ?? 0;
+        final b = _PPBox()
+          ..barcode = code ..qty = (s["q"] as num?)?.toDouble() ?? 0 ..inBatch = s["batch"]?.toString() ?? ""
+          ..container = s["ct"]?.toString() ?? "" ..cancelled = s["cx"] == true
+          ..inLoc = ((s["wt"] as num?)?.toInt() ?? 0) == 0 ? (s["st"]?.toString() ?? "") : (s["gl"]?.toString() ?? "")
+          ..inOperator = s["op"]?.toString() ?? "" ..itemName = s["nm"]?.toString() ?? "" ..lot = s["lot"]?.toString() ?? "" ..pallet = s["pid"]?.toString() ?? "";
+        if (t > 0) b.inTime = DateTime.fromMillisecondsSinceEpoch(t);
+        if (d.itemName.isEmpty) d.itemName = b.itemName;
+        final p = places[code];
+        if (p != null) b.curLoc = p.loc;
+        fillOut(b);
+        seen.add(code);
+        d.boxes.add(b);
+      }
+    }
+  } catch (_) {}
+  // 账本独有存量（从未进过任何采集流水）
+  for (final p in places.values) {
+    if (seen.contains(p.goodsCode.toUpperCase())) continue;
+    final info = infos[p.goodsCode];
+    if (info == null || info.partNo.toUpperCase() != key) continue;
+    final b = _PPBox()
+      ..barcode = p.goodsCode ..qty = info.qty ..itemName = info.itemName ..lot = info.lotNo
+      ..curLoc = p.loc ..inLoc = p.loc ..inOperator = p.operator;
+    if (d.itemName.isEmpty) d.itemName = b.itemName;
+    fillOut(b);
+    seen.add(p.goodsCode.toUpperCase());
+    d.boxes.add(b);
+  }
+  for (final op in await isar.inventoryOpenings.where().findAll()) {
+    if (op.partNo.toUpperCase() == key) d.opening += op.qty;
+  }
+  for (final b in d.boxes) {
+    if (b.cancelled) { d.cancelBoxes++; continue; }
+    d.inQty += b.qty;
+    if (b.outTime != null) { d.outBoxes++; d.outQty += b.qty; } else { d.inBoxes++; d.stockQty += b.qty; }
+  }
+  d.boxes.sort((a, b) {
+    if (a.inStock != b.inStock) return a.inStock ? -1 : 1;
+    final ta = a.outTime ?? a.inTime ?? DateTime(2000);
+    final tb = b.outTime ?? b.inTime ?? DateTime(2000);
+    return tb.compareTo(ta);
+  });
+  // A补充：领料出库的框向服务器查AGV全链路节点时刻（限20框并行，失败静默）
+  final chainTodo = d.boxes.where((b) => b.outLink.startsWith("LL") && b.outTime != null).take(20).toList();
+  if (chainTodo.isNotEmpty) {
+    await Future.wait(chainTodo.map((b) async {
+      try {
+        final r = await AuthApi.agvTaskOf(b.barcode).timeout(const Duration(seconds: 8));
+        final ch = r["chain"];
+        if (ch is! Map) return;
+        String fm(Object? v) {
+          final n = v is num ? v.toInt() : 0;
+          if (n == 0) return "";
+          final dt = DateTime.fromMillisecondsSinceEpoch(n);
+          final p2 = (int x) => x.toString().padLeft(2, "0");
+          return "${p2(dt.month)}-${p2(dt.day)} ${p2(dt.hour)}:${p2(dt.minute)}";
+        }
+        const steps = [["call", "叫车"], ["enqueue", "入队"], ["dispatch", "下发"], ["exe", "接令"], ["pick", "叉出"], ["arrive", "到站"], ["transfer", "转MES"], ["confirm", "签收"]];
+        final parts = <String>[];
+        for (final e in steps) { final s = fm(ch[e[0]]); if (s.isNotEmpty) parts.add("${e[1]}$s"); }
+        if (parts.isNotEmpty) b.agvChain = parts.join(" → ");
+      } catch (_) {}
+    }));
+  }
+  return d;
+}
+class PartProfilePage extends StatefulWidget {
+  final String partNo;
+  const PartProfilePage({super.key, required this.partNo});
+  @override
+  State<PartProfilePage> createState() => _PartProfilePageState();
+}
+
+class _PartProfilePageState extends State<PartProfilePage> {
+  late Future<_PPData> _f;
+  String _filter = "全部";
+  bool _watched = false;
+
+  @override
+  void initState() { super.initState(); _f = loadPartProfile(widget.partNo); _loadWatch(); }
+
+  Future<void> _loadWatch() async {
+    try {
+      final r = await AuthApi.watchlistGet();
+      if (!mounted) return;
+      final list = List<Map>.from(r["list"] ?? []);
+      setState(() => _watched = list.any((w) => (w["partNo"]?.toString() ?? "").toUpperCase() == widget.partNo.toUpperCase()));
+    } catch (_) {}
+  }
+
+  Future<void> _toggleWatch() async {
+    final r = await AuthApi.watchlistSet(widget.partNo, !_watched);
+    if (!mounted) return;
+    if (r["ok"] != true) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("操作失败：${r["msg"]}"))); return; }
+    setState(() => _watched = !_watched);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_watched ? "已预约：${widget.partNo} 入库时会通知你" : "已取消预约"), backgroundColor: _watched ? Colors.green : Colors.orange));
+  }
+
+  String _t(DateTime? t) => t == null ? "" : t.toString().substring(5, 16);
+
+  Widget _stepLine(IconData ic, Color c, String title, String detail) {
+    return Padding(padding: const EdgeInsets.only(top: 7), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: c.withOpacity(0.12), borderRadius: BorderRadius.circular(5)), child: Icon(ic, size: 14, color: c)),
+      const SizedBox(width: 8),
+      Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(title, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: c)),
+        Text(detail, style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey, height: 1.35)),
+      ])),
+    ]));
+  }
+
+  Widget _boxCard(_PPBox b) {
+    final badge = b.cancelled
+        ? const _PpBadge("作废", Colors.grey)
+        : (b.outTime != null ? const _PpBadge("已出库", Color(0xFFE65100)) : (b.ledgerOnly ? const _PpBadge("账本存量", Color(0xFF0891B2)) : const _PpBadge("在库", Colors.green)));
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 5),
+      child: Padding(padding: const EdgeInsets.fromLTRB(12, 10, 12, 12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: Text(b.barcode, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700, fontFamily: "monospace"))),
+          Text(" ${_fmtInvNum(b.qty)} 件 ", style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+          badge,
+        ]),
+        if (b.pallet.isNotEmpty || b.itemName.isNotEmpty) Padding(padding: const EdgeInsets.only(top: 2), child: Text("${b.itemName}${b.pallet.isNotEmpty ? "  · 托 ${b.pallet}" : ""}", style: const TextStyle(fontSize: 11.5, color: Colors.grey))),
+        if (b.inTime != null) _stepLine(Icons.login, const Color(0xFF2E7D32), "入库", "${_t(b.inTime)}  ·  ${b.inOperator.isEmpty ? "历史记录" : b.inOperator}  ·  批次 ${b.inBatch}${b.inLoc.isNotEmpty ? "  ·  初始位 ${b.inLoc}" : ""}${b.lot.isNotEmpty ? "  ·  批号 ${b.lot}" : ""}${b.container.isNotEmpty ? "  ·  ${b.container}" : ""}"),
+        if (b.inStock && b.curLoc.isNotEmpty) _stepLine(Icons.place, Colors.teal, "在库", "当前货位 ${b.curLoc}"),
+        if (b.cancelled) _stepLine(Icons.block, Colors.grey, "已作废", "人工作废，不计入库存"),
+        if (b.outTime != null) _stepLine(Icons.logout, const Color(0xFFE65100), "出库", "${_t(b.outTime)}  ·  ${b.outFrom.isNotEmpty ? b.outFrom : "?"} → ${b.outTo}  ·  ${b.outMove.isEmpty ? "" : "${b.outMove}搬运 · "}${b.outOrder}${b.outLink.isNotEmpty ? "（领料单 ${b.outLink}）" : ""}  ·  ${b.outOperator}"),
+        if (b.agvChain.isNotEmpty) _stepLine(Icons.route, Colors.indigo, "AGV链路", b.agvChain),
+      ])),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF4F6FA),
+      appBar: AppBar(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, title: Text("零件档案 · ${widget.partNo}", style: const TextStyle(fontSize: 15)),
+        actions: [TextButton.icon(style: TextButton.styleFrom(foregroundColor: Colors.white), onPressed: _toggleWatch, icon: Icon(_watched ? Icons.shopping_cart : Icons.shopping_cart_outlined, size: 18, color: _watched ? Colors.amber : Colors.white), label: Text(_watched ? "已预约" : "预约来料", style: const TextStyle(fontSize: 12)))]),
+      body: FutureBuilder<_PPData>(future: _f, builder: (ctx, sn) {
+        if (!sn.hasData) return const Center(child: CircularProgressIndicator());
+        final d = sn.data!;
+        final shown = d.boxes.where((b) => _filter == "全部" ? true : _filter == "在库" ? b.inStock : _filter == "已出库" ? b.outTime != null : b.cancelled).toList();
+        return Column(children: [
+          Padding(padding: const EdgeInsets.fromLTRB(12, 12, 12, 0), child: Card(child: Padding(padding: const EdgeInsets.all(14), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(d.itemName.isEmpty ? widget.partNo : "${widget.partNo}  ${d.itemName}", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Expanded(child: Wrap(spacing: 10, runSpacing: 2, children: [
+                Text("期初 ${_fmtInvNum(d.opening)}", style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+                Text("累计入库 ${_fmtInvNum(d.inQty)}", style: const TextStyle(fontSize: 12, color: Color(0xFF2E7D32))),
+                Text("累计出库 ${_fmtInvNum(d.outQty)}（${d.outBoxes} 框）", style: const TextStyle(fontSize: 12, color: Color(0xFFE65100))),
+                if (d.cancelBoxes > 0) Text("作废 ${d.cancelBoxes} 框", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              ])),
+              Text("当前库存 ", style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+              Text(_fmtInvNum(d.stockQty), style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800, color: const Color(0xFF2E7D32))),
+            ]),
+            const SizedBox(height: 4),
+            Text(d.serverOk ? "数据源：本机 + 服务器全厂合并" : "数据源：仅本机（服务器未连通，别台设备的框可能缺失）", style: TextStyle(fontSize: 10.5, color: d.serverOk ? Colors.blueGrey : Colors.orange)),
+          ])))),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), child: Row(children: [
+            for (final t in ["全部", "在库", "已出库", "作废"]) ...[
+              ChoiceChip(label: Text(t, style: const TextStyle(fontSize: 12)), selected: _filter == t, onSelected: (_) => setState(() => _filter = t)),
+              const SizedBox(width: 6),
+            ],
+            const Spacer(),
+            Text("${shown.length} 框", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          ])),
+          Expanded(child: shown.isEmpty
+              ? const Center(child: Text("该筛选下暂无框", style: TextStyle(color: Colors.grey)))
+              : ListView(padding: const EdgeInsets.fromLTRB(10, 0, 10, 16), children: shown.map(_boxCard).toList())),
+        ]);
+      }),
+    );
+  }
+}
+
+class _PpBadge extends StatelessWidget {
+  final String txt; final Color c;
+  const _PpBadge(this.txt, this.c);
+  @override
+  Widget build(BuildContext context) => Container(padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2), decoration: BoxDecoration(color: c.withOpacity(0.12), borderRadius: BorderRadius.circular(6), border: Border.all(color: c.withOpacity(0.5))), child: Text(txt, style: TextStyle(fontSize: 11, color: c, fontWeight: FontWeight.w700)));
+}
+
+// ---------- ⑮ 我的预约（来料提醒）Tab ----------
+class _WatchTab extends StatefulWidget {
+  const _WatchTab();
+  @override
+  State<_WatchTab> createState() => _WatchTabState();
+}
+
+class _WatchTabState extends State<_WatchTab> {
+  List<Map> _items = [];
+  bool _loading = true;
+  String _err = "";
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    setState(() { _loading = true; _err = ""; });
+    final r = await AuthApi.watchlistGet();
+    if (!mounted) return;
+    if (r["ok"] == true) setState(() { _items = List<Map>.from(r["list"] ?? []); _loading = false; });
+    else setState(() { _loading = false; _err = (r["msg"] ?? "加载失败").toString(); });
+  }
+
+  /// 已知零件候选：采集流水∪出库流水∪期初（含历史来过但当前在架=0 的零件）
+  Future<List<_PnHit>> _knownParts() async {
+    final isar = _globalIsar;
+    final m = <String, String>{};
+    for (final r in await isar.scanRecords.where().findAll()) {
+      final p = (r.mesPartNo ?? "").trim().toUpperCase();
+      if (p.isEmpty) continue;
+      if (!m.containsKey(p)) {
+        final e = await isar.recordExtras.filter().goodsCodeEqualTo(r.goodsCode.toUpperCase()).findFirst();
+        m[p] = e?.mesItemName ?? "";
+      }
+    }
+    for (final o in await isar.outboundOrders.where().findAll()) {
+      try {
+        for (final e in (jsonDecode(o.itemsJson) as List)) {
+          final mm = Map<String, dynamic>.from(e as Map);
+          final p = (mm["code"]?.toString() ?? "").trim().toUpperCase();
+          if (p.isEmpty) continue;
+          m.putIfAbsent(p, () => mm["name"]?.toString() ?? "");
+        }
+      } catch (_) {}
+    }
+    for (final op in await isar.inventoryOpenings.where().findAll()) {
+      final p = op.partNo.trim().toUpperCase();
+      if (p.isNotEmpty) m.putIfAbsent(p, () => op.itemName);
+    }
+    final out = m.entries.map((e) => _PnHit(e.key, e.value)).toList()..sort((a, b) => a.partNo.compareTo(b.partNo));
+    return out;
+  }
+
+  Future<void> _add() async {
+    final known = await _knownParts();
+    if (!mounted) return;
+    final ctrl = TextEditingController();
+    String q = "";
+    final picked = await showDialog<_PnHit>(context: context, builder: (dctx) => StatefulBuilder(builder: (bctx, setSt) {
+      final lower = q.trim().toLowerCase();
+      final hits = lower.isEmpty
+          ? known.take(60).toList()
+          : known.where((h) => h.partNo.toLowerCase().contains(lower) || h.itemName.toLowerCase().contains(lower)).take(60).toList();
+      return AlertDialog(
+        title: const Text("预约来料提醒"),
+        content: SizedBox(width: 360, height: 430, child: Column(children: [
+          TextField(controller: ctrl, autofocus: true, textCapitalization: TextCapitalization.characters, onChanged: (v) => setSt(() => q = v),
+              decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "输入零件号/物料名搜索选择；查无结果可手动预约", border: OutlineInputBorder())),
+          const SizedBox(height: 4),
+          Expanded(child: ListView(children: [
+            if (hits.isEmpty && q.trim().isNotEmpty) const Padding(padding: EdgeInsets.all(10), child: Text("系统中未搜到该零件", style: TextStyle(fontSize: 12, color: Colors.grey))),
+            ...hits.map((h) => ListTile(dense: true, leading: const Icon(Icons.history, size: 18, color: Color(0xFF00897B)),
+                title: Text(h.partNo, style: const TextStyle(fontSize: 13, fontFamily: "monospace", fontWeight: FontWeight.w600)),
+                subtitle: h.itemName.isEmpty ? null : Text(h.itemName, style: const TextStyle(fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
+                onTap: () => Navigator.pop(bctx, h))),
+          ])),
+        ])),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dctx), child: const Text("取消")),
+          OutlinedButton(onPressed: () { final t = ctrl.text.trim().toUpperCase(); if (t.isNotEmpty) Navigator.pop(dctx, _PnHit(t, "")); }, child: const Text("手动预约该零件号")),
+        ],
+      );
+    }));
+    ctrl.dispose();
+    if (picked == null || picked.partNo.isEmpty || !mounted) return;
+    final isKnown = known.any((h) => h.partNo == picked.partNo);
+    if (!isKnown) {
+      final yes = await showDialog<bool>(context: context, builder: (c2) => AlertDialog(
+        title: const Text("确认陌生零件号", style: TextStyle(color: Colors.orange)),
+        content: Text("「${picked.partNo}」在系统中从未出现过（无采集/出库/期初记录）。\n\n新零件首次来料属正常情况；若是老零件，请核对 MES 零件号是否一字不差——输错一位预约将永远不触发。"),
+        actions: [TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("再核对一下")),
+          FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.orange), onPressed: () => Navigator.pop(c2, true), child: const Text("确认预约"))],
+      ));
+      if (yes != true || !mounted) return;
+    }
+    final r = await AuthApi.watchlistSet(picked.partNo, true);
+    if (!mounted) return;
+    if (r["ok"] != true) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("预约失败：${r["msg"]}"))); return; }
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已预约：${picked.partNo} 入库时会通知你"), backgroundColor: Colors.green));
+    await _load();
+  }
+
+  Future<void> _remove(String pn) async {
+    final r = await AuthApi.watchlistSet(pn, false);
+    if (!mounted) return;
+    if (r["ok"] != true) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("取消失败：${r["msg"]}"))); return; }
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(children: [
+      Padding(padding: const EdgeInsets.fromLTRB(10, 8, 10, 0), child: Row(children: [
+        const Expanded(child: Text("到料时通知我的零件号（入库后推送，同零件10分钟聚合一条）", style: TextStyle(fontSize: 12, color: Colors.blueGrey))),
+        FilledButton.icon(style: FilledButton.styleFrom(backgroundColor: const Color(0xFF00897B)), onPressed: _add, icon: const Icon(Icons.add, size: 16), label: const Text("添加预约")),
+      ])),
+      Expanded(child: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _err.isNotEmpty
+              ? Center(child: Text(_err, style: const TextStyle(color: Colors.red)))
+              : _items.isEmpty
+                  ? const Center(child: Text("暂无预约：去零件档案页点「🛒 预约来料」，或点右上添加", style: TextStyle(color: Colors.grey)))
+                  : ListView.builder(padding: const EdgeInsets.all(10), itemCount: _items.length, itemBuilder: (ctx, i) {
+                      final w = _items[i];
+                      final pn = w["partNo"]?.toString() ?? "";
+                      final at = (w["at"] as num?)?.toInt() ?? 0;
+                      return Card(margin: const EdgeInsets.symmetric(vertical: 4), child: ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.shopping_cart_outlined, color: Color(0xFF00897B), size: 22),
+                        title: Text(pn, style: const TextStyle(fontSize: 14, fontFamily: "monospace", fontWeight: FontWeight.w600)),
+                        subtitle: Text(at > 0 ? "预约于 ${DateTime.fromMillisecondsSinceEpoch(at).toString().substring(0, 16)}" : "", style: const TextStyle(fontSize: 11)),
+                        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                          IconButton(tooltip: "查看档案", icon: const Icon(Icons.info_outline, size: 18, color: Color(0xFF515BD4)), onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => PartProfilePage(partNo: pn)))),
+                          TextButton(onPressed: () => _remove(pn), child: const Text("取消", style: TextStyle(color: Colors.red, fontSize: 12))),
+                        ]),
+                      ));
+                    })),
+    ]);
+  }
+}
+
+class _PnHit {
+  final String partNo, itemName;
+  const _PnHit(this.partNo, this.itemName);
 }

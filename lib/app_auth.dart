@@ -140,6 +140,16 @@ class AuthApi {
       _req("POST", "/api/agv/mode", body: {"mode": mode}, token: await AuthStore.token());
   static Future<Map> agvWmasConfig({required String host, required String account, required String pwd}) async =>
       _req("POST", "/api/agv/wmas-config", body: {"host": host, "account": account, "pwd": pwd}, token: await AuthStore.token());
+  // 零件档案：拉服务器全厂流水/出库单（B）+ 单框AGV链路（A补充）
+  static Future<Map> scanlogGet({int limit = 5000}) async => _req("GET", "/api/scanlog?limit=$limit", token: await AuthStore.token());
+  static Future<Map> outboundGet() async => _req("GET", "/api/outbound", token: await AuthStore.token());
+  static Future<Map> agvTaskOf(String code) async => _req("GET", "/api/agv/taskOf?c=${Uri.encodeComponent(code)}", token: await AuthStore.token());
+  // ⑮预约来料 + 地面排格数
+  static Future<Map> watchlistGet() async => _req("GET", "/api/watchlist", token: await AuthStore.token());
+  static Future<Map> watchlistSet(String partNo, bool on) async => _req("POST", "/api/watchlist", body: {"partNo": partNo, "on": on}, token: await AuthStore.token());
+  static Future<Map> groundSlotsGet() async => _req("GET", "/api/ground-slots", token: await AuthStore.token());
+  static Future<Map> groundSlotsSet(List entries) async => _req("POST", "/api/ground-slots", body: {"entries": entries}, token: await AuthStore.token());
+  static Future<Map> ttsModelInfo() async => _req("GET", "/api/tts/info", token: await AuthStore.token());
   static Future<Map> dashboard() async => _req("GET", "/api/dashboard", token: await AuthStore.token());
   static Future<Map> agvFunnel(int days) async => _req("GET", "/api/agv/funnel?days=$days", token: await AuthStore.token());
   static Future<Map> agvReport(int days) async => _req("GET", "/api/agv/report?days=$days", token: await AuthStore.token());

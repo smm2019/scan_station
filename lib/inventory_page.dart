@@ -37,9 +37,17 @@ String invShelfOf(String locCode) {
   final m = RegExp(r"^(.*)-\d+F$").firstMatch(locCode.trim());
   return m != null ? m.group(1)! : locCode.trim();
 }
+String invZoneOf(String locCode) {
+  final c = locCode.trim().toUpperCase();
+  if (c.startsWith('NB03-')) {
+    final seg = c.split('-');
+    if (seg.length >= 3) return seg.slice(0, 3).join('-');
+  }
+  return invShelfOf(c);
+}
 bool invLocInScope(String locCode, List<String> scope) {
   if (scope.isEmpty) return true;
-  return scope.contains(invShelfOf(locCode));
+  return scope.contains(invZoneOf(locCode)) || scope.contains(locCode.trim().toUpperCase()) || scope.contains(invShelfOf(locCode));
 }
 
 class InvDiffResult {
@@ -320,7 +328,8 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
   bool _blind = true;
   String _bookKey = "", _bookName = "", _locKey = "", _locName = "";
   String _bookInfo = "", _locInfo = "";
-  final Set<String> _scope = {}; //循环盘点：勾选的货架前缀，空=全盘
+  final Set<String> _scope = {};
+  String _scopeType = ""; //盘点类型 shelf=货架NB02 ground=地面NB03 空=混合/全盘
   int _step = 0;
   bool _useLive = false; // 基准来源：true=系统实时在库账本快照（免上传CSV），false=上传两份台账CSV
   String _liveInfo = ""; // 实时快照结果描述（零件数/货位行数）
@@ -492,26 +501,42 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                   future: _globalIsar.baselineLocs.filter().fileKeyEqualTo(_locKey).findAll(),
                   builder: (ctx, sn) {
                     if (!sn.hasData) return const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()));
-                    final shelves = sn.data!.map((e) => invShelfOf(e.locCode)).toSet().toList()..sort();
+                    final allLocs = sn.data!.map((e) => e.locCode).toSet().toList();
+                    final zones = allLocs.where((c) => _scopeType.isEmpty ? true : (_scopeType == 'shelf' ? c.toUpperCase().startsWith('NB02') : c.toUpperCase().startsWith('NB03'))).map(invZoneOf).toSet().toList()..sort();
                     return Card(
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          const Text("勾选本次要盘的货架（不勾=全盘）。循环盘点建议每次 1~3 个货架。", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                          const Text("第一步：选择盘点类型", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                           const SizedBox(height: 6),
-                          ...shelves.map((sh) => CheckboxListTile(
-                            dense: true, contentPadding: EdgeInsets.zero, controlAffinity: ListTileControlAffinity.leading,
-                            title: Text(sh, style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
-                            value: _scope.contains(sh),
-                            onChanged: (v) => setState(() { if (v == true) { _scope.add(sh); } else { _scope.remove(sh); } }),
-                          )),
+                          Wrap(spacing: 8, children: [
+                            ChoiceChip(label: const Text("AGV货架 NB02"), selected: _scopeType == 'shelf', onSelected: (_) => setState(() { _scopeType = 'shelf'; _scope.clear(); })),
+                            ChoiceChip(label: const Text("地面库位 NB03"), selected: _scopeType == 'ground', onSelected: (_) => setState(() { _scopeType = 'ground'; _scope.clear(); })),
+                            ChoiceChip(label: const Text("混合/全盘"), selected: _scopeType.isEmpty, onSelected: (_) => setState(() { _scopeType = ''; _scope.clear(); })),
+                          ]),
+                          if (_scopeType.isEmpty)
+                            const Padding(padding: EdgeInsets.only(top: 8), child: Text("未选类型：本次全盘（货架+地面全覆盖），无需勾区域。", style: TextStyle(fontSize: 12, color: Colors.grey)))
+                          else ...[
+                            const SizedBox(height: 10),
+                            Text("第二步：勾选要盘的${_scopeType == 'shelf' ? '货架（循环盘建议1~3个）' : '地面排（如 NB03-A-13）'}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                            const SizedBox(height: 4),
+                            if (zones.isEmpty)
+                              const Text("货位基准中没有该类型的库位数据", style: TextStyle(fontSize: 12, color: Colors.grey))
+                            else
+                              ConstrainedBox(constraints: const BoxConstraints(maxHeight: 300), child: SingleChildScrollView(child: Column(children: zones.map((z) => CheckboxListTile(
+                                dense: true, contentPadding: EdgeInsets.zero, controlAffinity: ListTileControlAffinity.leading,
+                                title: Text(z, style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
+                                value: _scope.contains(z),
+                                onChanged: (v) => setState(() { if (v == true) { _scope.add(z); } else { _scope.remove(z); } }),
+                              )).toList()))),
+                          ],
                         ]),
                       ),
                     );
                   },
                 ),
               const SizedBox(height: 8),
-              const Text("范围外货架的零件即使账面有数，也不会出现在差异报表里，不会造成假盘亏。", style: TextStyle(fontSize: 12, color: Colors.grey)),
+              const Text("范围外货架/排的零件即使账面有数，也不会出现在差异报表里，不会造成假盘亏。", style: TextStyle(fontSize: 12, color: Colors.grey)),
             ],
             if (_step == 3) ...[
               Card(
@@ -527,6 +552,8 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                       Text("账面基准：${_bookName.isEmpty ? "⚠️未选择（无法判定账外料）" : "$_bookName（$_bookInfo）"}"),
                       const SizedBox(height: 6),
                       Text("货位基准：${_locName.isEmpty ? "未选择（不做串位/超量判定）" : "$_locName（$_locInfo）"}"),
+                      const SizedBox(height: 6),
+                      Text("盘点类型：${_scopeType == 'shelf' ? "AGV货架" : _scopeType == 'ground' ? "地面库位" : "混合/全盘"}"),
                       const SizedBox(height: 6),
                       Text("盘点范围：${_scope.isEmpty ? "全盘" : "循环盘 · ${_scope.join("、")}"}"),
                       const SizedBox(height: 6),
@@ -558,6 +585,10 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
 
   /// 下一步：实时模式在离开基准步时生成快照（口径=库存页在库合计；空账本拦截防误盘）
   Future<void> _next() async {
+    if (_step == 2 && _scopeType.isNotEmpty && _scope.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已选盘点类型但未勾选任何区域：请至少勾一个，或改选「混合/全盘」"), backgroundColor: Colors.orange));
+      return;
+    }
     if (_step == 1 && _useLive && _liveInfo.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("正在生成实时账本快照（含与电脑账本合并）…"), backgroundColor: Colors.blueGrey));
       try {
@@ -1026,6 +1057,86 @@ class _InvDiffPageState extends State<_InvDiffPage> {
     super.initState();
     _future = computeInvDiff(widget.task);
   }
+  bool _applying = false; // 应用差异改账进行中
+
+  /// 应用盘点实扫到货位账本：以实物为准修正位置（改位/补登记），绝不自动删除任何记录
+  Future<void> _applyDiff() async {
+    final scans = (await _globalIsar.inventoryScans.filter().taskIdEqualTo(widget.task.batchId).findAll())
+      ..sort((a, b) => a.scanTime.compareTo(b.scanTime));
+    final valid = scans.where((s) => s.flag != 1 && s.flag != 2 && s.locCode.trim().isNotEmpty && s.goodsCode.trim().isNotEmpty).toList();
+    if (!mounted) return;
+    if (valid.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("没有可应用的实扫记录（重复码与MES无码已排除）"))); return; }
+    final latest = <String, InventoryScan>{};
+    for (final s in valid) { latest[s.goodsCode.trim().toUpperCase()] = s; }
+    final ledger = await _globalIsar.shelfPlacements.where().findAll();
+    final byCode = <String, ShelfPlacement>{};
+    for (final e in ledger) { byCode[e.goodsCode.trim().toUpperCase()] = e; }
+    final moves = <String, String>{}, adds = <String, String>{};
+    latest.forEach((code, s) {
+      final loc = s.locCode.trim().toUpperCase();
+      final cur = byCode[code];
+      if (cur == null) { adds[code] = loc; } else if (cur.loc.trim().toUpperCase() != loc) { moves[code] = loc; }
+    });
+    // 盘亏（账本在范围内但未扫到）仅统计提示，不自动删除：漏扫与真缺货无法区分
+    final scope = widget.task.invScope;
+    int miss = 0;
+    for (final e in ledger) {
+      final c = e.goodsCode.trim().toUpperCase();
+      if (latest.containsKey(c)) continue;
+      if (scope.isNotEmpty && !invLocInScope(e.loc, scope)) continue;
+      miss++;
+    }
+    if (moves.isEmpty && adds.isEmpty) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("货位账本与实盘已一致，无需修正"), backgroundColor: Colors.green)); return; }
+    final samples = moves.entries.take(6).map((e) => "${e.key}  ${byCode[e.key]?.loc ?? "?"} → ${e.value}").join("\n");
+    final yes = await showDialog<bool>(context: context, builder: (dctx) => AlertDialog(
+      title: const Text("应用货位差异到账本"),
+      content: SizedBox(width: 340, child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("以本次实盘为准修正货位账本：", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+        const SizedBox(height: 6),
+        Text("· 改位 ${moves.length} 码（串位/移位）", style: const TextStyle(fontSize: 13, color: Color(0xFFE65100))),
+        Text("· 补登记 ${adds.length} 码（账本无此框）", style: const TextStyle(fontSize: 13, color: Colors.green)),
+        Text("· 未扫到 $miss 码：只提示不删除（漏扫与缺货无法区分，缺货请走 MES 调整）", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        if (samples.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text("改位样例：\n$samples${moves.length > 6 ? "\n…共 ${moves.length} 条" : ""}", style: const TextStyle(fontSize: 11, fontFamily: "monospace", color: Colors.blueGrey)),
+        ],
+        const SizedBox(height: 8),
+        Text("修正后自动同步电脑服务器，其他 PDA 拉取即生效。操作写入审计日志。", style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
+      ]))),
+      actions: [TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text("取消")),
+        FilledButton(style: FilledButton.styleFrom(backgroundColor: const Color(0xFF2E7D32)), onPressed: () => Navigator.pop(dctx, true), child: const Text("确认修正"))],
+    ));
+    if (yes != true || !mounted) return;
+    setState(() => _applying = true);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final oper = Auth.user?.name ?? "盘点修正";
+    try {
+      await _globalIsar.writeTxn(() async {
+        for (final e in {...moves, ...adds}.entries) {
+          final olds = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(e.key).findAll();
+          await _globalIsar.shelfPlacements.deleteAll(olds.map((x) => x.id).toList());
+          await _globalIsar.shelfPlacements.put(ShelfPlacement()
+            ..goodsCode = e.key ..loc = e.value
+            ..container = byCode[e.key]?.container ?? ""
+            ..operator = oper ..assignedAt = now);
+        }
+      });
+      await ledgerUnmarkDeleted([...moves.keys, ...adds.keys]);
+      final r = await ledgerPushNow();
+      LocalLog.op('盘点改账', '${widget.task.batchId} 改位${moves.length} 补登记${adds.length}${r["ok"] == true ? " 已同步" : " 同步失败"}');
+      if (!mounted) return;
+      setState(() { _applying = false; _future = computeInvDiff(widget.task); });
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("已修正 ${moves.length + adds.length} 码（改位 ${moves.length} · 补登记 ${adds.length}）${r["ok"] == true ? "，已同步电脑" : "，同步失败：${r["msg"]}（本地已生效，可稍后手动同步）"}${miss > 0 ? "；未扫到 $miss 码请人工核实" : ""}"),
+        backgroundColor: r["ok"] == true ? Colors.green : Colors.orange, duration: const Duration(seconds: 6)));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _applying = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("修正失败：$e"), backgroundColor: Colors.red));
+    }
+  }
+
+
 
   Future<void> _export() async {
     try {
@@ -1123,6 +1234,23 @@ class _InvDiffPageState extends State<_InvDiffPage> {
                   label: const Text("导出差异报表 CSV（保存到 Download 目录）"),
                 ),
               ),
+              if (Auth.can("location_reg")) ...[
+                const SizedBox(height: 10),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2E7D32), foregroundColor: Colors.white, disabledBackgroundColor: Colors.grey.shade300),
+                    onPressed: _applying ? null : _applyDiff,
+                    icon: _applying
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.playlist_add_check),
+                    label: Text(_applying ? "正在修正…" : "应用货位差异到账本（以实盘为准 · 同步各PDA）"),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Padding(padding: EdgeInsets.fromLTRB(4, 0, 4, 0), child: Text("数量差异（盘盈/盘亏）请走 MES 调整流程，本按钮只改货位位置", style: TextStyle(fontSize: 11, color: Colors.grey))),
+              ],
               const SizedBox(height: 10),
             ],
           );

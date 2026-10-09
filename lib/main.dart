@@ -23,6 +23,10 @@ import 'package:pointycastle/export.dart' hide Padding, State;
 import 'package:pointycastle/asn1.dart';
 import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart'; // AGV实时调度大屏WebView
+import 'package:audioplayers/audioplayers.dart';
+import 'package:archive/archive.dart';
+import 'package:sherpa_onnx/sherpa_onnx.dart';
+import 'dart:ffi';
 
 part 'main.g.dart';
 part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传
@@ -43,6 +47,7 @@ part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 part 'agv_map_page.dart'; // ①2D实时地图
 part 'agv_report_page.dart'; // ⑦AGV效率报表
 part 'update_page.dart'; // ⑬APK自动更新
+part 'notify_service.dart'; // ⑭系统通知+语音播报
 
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
@@ -1161,6 +1166,7 @@ void main() async {
     ],
     directory: dir.path,
   );
+  await NotifyService.init(); // ⑭通知渠道+TTS预热
   await LocalLog.init(dir.path);
   LocalLog.pruneOld();
   LocalLog.op('启动', 'AGV货位采集器');
@@ -1287,6 +1293,7 @@ class _MainPageState extends State<MainPage>
       if (_showAgv) 'agv'
     ];
     _tabController = TabController(length: _tabKeys.length, vsync: this);
+    kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
     _startNotifPolling();
     _restoreWorkMode(); // ②按登录账号恢复上次工作模式（AGV站台/人工地面）
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
@@ -1304,6 +1311,15 @@ class _MainPageState extends State<MainPage>
     if (_palletMode) await _refreshPalletSummary();
   }
 
+  /// ⑭系统通知点击：跳到领料页签并累计未读
+  void _onNotifTap() {
+    final v = kNotifTap.value;
+    if (v.isEmpty || !mounted) return;
+    kUnreadMsgs.value++;
+    final i = _tabKeys.indexOf('req');
+    if (i >= 0) _tabController.animateTo(i);
+  }
+
   /// 领料通知轮询：每30秒拉一次，未读消息弹横幅，点击跳领料页
   void _startNotifPolling() {
     _notifTimer?.cancel();
@@ -1319,6 +1335,12 @@ class _MainPageState extends State<MainPage>
     if (list.isEmpty) return;
     final first = list.first;
     final text = first["text"]?.toString() ?? "领料单有新消息";
+    // ⑭系统通知（悬浮横幅/锁屏/息屏可达）：按类别开关，点击直达领料页
+    final kind = first["type"]?.toString() ?? "";
+    if (RemindPrefs.keyOf(kind) != null) {
+      final rid = first["reqId"]?.toString() ?? "";
+      unawaited(NotifyService.push(kind, "📦 领料提醒", text, payload: rid));
+    }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(list.length > 1 ? "$text（共 ${list.length} 条新消息）" : text,
           maxLines: 2, overflow: TextOverflow.ellipsis),
@@ -1337,6 +1359,7 @@ class _MainPageState extends State<MainPage>
 
   @override
   void dispose() {
+    kNotifTap.removeListener(_onNotifTap);
     _notifTimer?.cancel();
     _tabController.dispose();
     _goodsFocusNode.dispose(); //【新增】释放焦点资源
@@ -1659,14 +1682,21 @@ class _MainPageState extends State<MainPage>
     return true;
   }
 
-  Future<void> _scanSuccessAction() async {
+  Future<void> _scanSuccessAction({String mesPartNo = "", double qty = 0}) async {
     try {
       if (await AppSettings.getVibrationEnabled()) {
         if ((await Vibration.hasVibrator()) ?? false) {
           await Vibration.vibrate(duration: 80);
         }
       }
-      if (await AppSettings.getSoundEnabled()) {
+      // ⑭语音播报：零件号后四位+件数；开关关闭或无TTS引擎回退提示音
+      bool said = false;
+      if (await RemindPrefs.enabledByKey(RemindPrefs.kVoice) && mesPartNo.isNotEmpty) {
+        final tail = mesPartNo.length > 4 ? mesPartNo.substring(mesPartNo.length - 4) : mesPartNo;
+        final qs = qty == qty.roundToDouble() ? qty.toInt().toString() : qty.toStringAsFixed(1);
+        said = await NotifyService.speak("$tail，$qs件");
+      }
+      if (!said && await AppSettings.getSoundEnabled()) {
         await SystemSound.play(SystemSoundType.click);
       }
     } catch (_) {}
@@ -1881,7 +1911,7 @@ class _MainPageState extends State<MainPage>
         }
       });
       LocalLog.op('扫码保存', code);
-      await _scanSuccessAction();
+      await _scanSuccessAction(mesPartNo: rec.mesPartNo ?? "", qty: rec.mesQty ?? 0);
       _goodsInputCtrl.clear();
       setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
@@ -3914,6 +3944,8 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
 }
 
 // ===================== 设置菜单主页 =====================
+bool get _isWhRole => Auth.user?.role == 'warehouse' || Auth.user?.role == 'admin'; // 设置页系统配置类条目仅仓管/管理员可见
+
 class SettingsMenuPage extends StatelessWidget {
   const SettingsMenuPage({super.key});
 
@@ -3964,6 +3996,7 @@ class SettingsMenuPage extends StatelessWidget {
                         r["ok"] == true ? Colors.green : Colors.red));
               },
             ),
+          if (_isWhRole)
           _settingTile(
             context,
             icon: Icons.dns_outlined,
@@ -3973,6 +4006,7 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const MesSettingPage())),
           ),
+          if (_isWhRole)
           _settingTile(
             context,
             icon: Icons.local_shipping_outlined,
@@ -3982,6 +4016,7 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const WmasSettingPage())),
           ),
+          if (_isWhRole)
           _settingTile(
             context,
             icon: Icons.smart_toy_outlined,
@@ -3991,6 +4026,7 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AgvSettingPage())),
           ),
+          if (Auth.can("agv_monitor"))
           _settingTile(
             context,
             icon: Icons.insights_outlined,
@@ -4000,6 +4036,7 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(
                 context, MaterialPageRoute(builder: (_) => const DashPage())),
           ),
+          if (Auth.can("agv_monitor"))
           _settingTile(
             context,
             icon: Icons.speed_outlined,
@@ -4009,6 +4046,7 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AgvReportPage())),
           ),
+          if (Auth.can("agv_monitor"))
           _settingTile(
             context,
             icon: Icons.grid_view_outlined,
@@ -4018,6 +4056,7 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(
                 context, MaterialPageRoute(builder: (_) => const LocMapPage())),
           ),
+          if (_isWhRole)
           _settingTile(
             context,
             icon: Icons.monitor_heart_outlined,
@@ -4031,11 +4070,12 @@ class SettingsMenuPage extends StatelessWidget {
             context,
             icon: Icons.volume_up_outlined,
             color: Colors.teal,
-            title: "声音和震动设置",
-            subtitle: "扫码成功提示音与震动开关",
+            title: "通知与语音",
+            subtitle: "系统通知/悬浮横幅/自定义铃声/扫码语音播报(离线包可下载)",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const SoundVibrationPage())),
           ),
+          if (_isWhRole)
           _settingTile(
             context,
             icon: Icons.fact_check_outlined,
@@ -4045,6 +4085,7 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AuditLogPage())),
           ),
+          if (_isWhRole)
           _settingTile(
             context,
             icon: Icons.phone_android_outlined,
@@ -4064,25 +4105,6 @@ class SettingsMenuPage extends StatelessWidget {
             title: "检查更新",
             subtitle: "当前 v${AppUpdater.localVersion}+${AppUpdater.localBuild} · 手动查询服务器新版本",
             onTap: () => AppUpdater.checkAtLaunch(manual: true),
-          ),
-          _settingTile(
-            context,
-            icon: Icons.info_outline,
-            color: Colors.blueGrey,
-            title: "关于",
-            subtitle: "AGV货位采集器",
-            onTap: () => showDialog(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                      title: const Text("关于"),
-                      content: Text(
-                          "AGV货位采集器 v${AppUpdater.localVersion}+${AppUpdater.localBuild}\n适配工业PDA\n支持MES标签查询与整托合并采集"),
-                      actions: [
-                        TextButton(
-                            onPressed: () => Navigator.pop(ctx),
-                            child: const Text("关闭"))
-                      ],
-                    )),
           ),
         ],
       ),
@@ -4122,7 +4144,12 @@ class SoundVibrationPage extends StatefulWidget {
 class _SoundVibrationPageState extends State<SoundVibrationPage> {
   bool _sound = true;
   bool _vibration = true;
+  bool _voice = true;
+  bool _nNew = true, _nUrge = true, _nArrive = true, _nResult = true, _nWatch = true, _nStock = true;
+  double _rate = 0.55;
   bool _loaded = false;
+  bool _notifGranted = false;
+  bool? _ttsOk;
 
   @override
   void initState() {
@@ -4130,24 +4157,68 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
     _load();
   }
 
-  Future<void> _load() async {
-    final s = await AppSettings.getSoundEnabled();
-    final v = await AppSettings.getVibrationEnabled();
-    setState(() {
-      _sound = s;
-      _vibration = v;
-      _loaded = true;
-    });
+  final ValueNotifier<double> _vpProg = ValueNotifier<double>(-1);
+  @override void dispose() { _vpProg.dispose(); super.dispose(); }
+  Future<void> _voicePackAction() async {
+    final installed = await VoicePack.installed();
+    if (!mounted) return;
+    if (installed) {
+      final yes = await showDialog<bool>(context: context, builder: (c2) => AlertDialog(
+        title: const Text("离线语音包已安装"),
+        content: const Text("约64MB模型在本地，无系统TTS时自动启用。删除后回落数字拼播。"),
+        actions: [TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("关闭")),
+          TextButton(onPressed: () => Navigator.pop(c2, true), child: const Text("删除", style: TextStyle(color: Colors.red)))],
+      ));
+      if (yes == true) { await VoicePack.remove(); if (mounted) setState(() {}); }
+      return;
+    }
+    final yes = await showDialog<bool>(context: context, builder: (c2) => AlertDialog(
+      title: const Text("下载离线语音包？"),
+      content: const Text("从局域网服务器下载约64MB中文语音模型（仅一次，不耗外网流量）。下载中可继续使用，完成后无系统TTS的设备扫码播报自动升级为真人音色。"),
+      actions: [TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消")),
+        FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("下载"))],
+    ));
+    if (yes != true || !mounted) return;
+    _vpProg.value = 0;
+    final r = await VoicePack.download((p) => _vpProg.value = p);
+    _vpProg.value = -1;
+    if (!mounted) return;
+    setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r["ok"] == true ? '语音包已安装，点「试听语音播报」验证' : '下载失败：' + (r["msg"] ?? "").toString()), backgroundColor: r["ok"] == true ? Colors.green : Colors.red));
   }
 
-  Future<void> _preview() async {
-    if (_sound) await SystemSound.play(SystemSoundType.click);
-    if (_vibration) {
-      try {
-        if ((await Vibration.hasVibrator()) ?? false)
-          await Vibration.vibrate(duration: 120);
-      } catch (_) {}
-    }
+  Future<void> _load() async {
+    final sp = await SharedPreferences.getInstance();
+    setState(() {
+      _sound = sp.getBool(AppSettings.keySound) ?? true;
+      _vibration = sp.getBool(AppSettings.keyVibration) ?? true;
+      _voice = sp.getBool(RemindPrefs.kVoice) ?? true;
+      _nNew = sp.getBool(RemindPrefs.kNew) ?? true;
+      _nUrge = sp.getBool(RemindPrefs.kUrge) ?? true;
+      _nArrive = sp.getBool(RemindPrefs.kArrive) ?? true;
+      _nResult = sp.getBool(RemindPrefs.kResult) ?? true;
+      _nWatch = sp.getBool(RemindPrefs.kWatch) ?? true;
+      _nStock = sp.getBool(RemindPrefs.kStock) ?? true;
+      _rate = sp.getDouble('remind_speech_rate') ?? 0.55;
+      _loaded = true;
+    });
+    _notifGranted = await NotifyService.notificationsEnabled();
+    _ttsOk = await NotifyService.ttsAvailable();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _setKey(String key, bool v) async {
+    await RemindPrefs.setEnabled(key, v);
+    setState(() {});
+  }
+
+  Future<void> _askNotifPerm() async {
+    final ok = await NotifyService.ensurePermission();
+    if (!mounted) return;
+    setState(() => _notifGranted = ok);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(ok ? "通知权限已开启" : "未获得通知权限：请到系统设置→应用→通知里手动开启"),
+        backgroundColor: ok ? Colors.green : Colors.orange));
   }
 
   @override
@@ -4156,55 +4227,97 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     return Scaffold(
       appBar: AppBar(
-        title: const Text("声音和震动设置"),
+        title: const Text("通知与提醒"),
         backgroundColor: const Color(0xFF515BD4),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           Card(
+            color: _notifGranted ? null : const Color(0xFFFFF3E0),
+            child: ListTile(
+              leading: Icon(Icons.notifications_active, color: _notifGranted ? Colors.green : Colors.orange),
+              title: Text(_notifGranted ? "系统通知已开启" : "系统通知未开启", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              subtitle: Text(_notifGranted ? "待接单/催单/到站提醒将以悬浮横幅+锁屏通知送达，铃声为闹钟音量" : "息屏/后台收不到提醒，点此去授权", style: const TextStyle(fontSize: 12)),
+              trailing: _notifGranted ? null : const Icon(Icons.chevron_right),
+              onTap: _notifGranted ? null : _askNotifPerm,
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Padding(padding: EdgeInsets.fromLTRB(4, 8, 4, 6), child: Text("提醒类别（关闭后该类不再弹系统通知）", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.blueGrey))),
+          Card(child: SwitchListTile(value: _nNew, activeColor: const Color(0xFF515BD4), title: const Text("待接单提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("新领料单/超时放开/转派给你", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kNew, v))),
+          Card(child: SwitchListTile(value: _nUrge, activeColor: const Color(0xFF515BD4), title: const Text("催单提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("领料员催接单/催备料", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kUrge, v))),
+          Card(child: SwitchListTile(value: _nArrive, activeColor: const Color(0xFF515BD4), title: const Text("到站催扫提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("货架到站台超时未扫码发料", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kArrive, v))),
+          Card(child: SwitchListTile(value: _nResult, activeColor: const Color(0xFF515BD4), title: const Text("结果动态提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("接单/备齐/签收/驳回/取消", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kResult, v))),
+          Card(child: SwitchListTile(value: _nWatch, activeColor: const Color(0xFF515BD4), title: const Text("预约到料提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("关注的零件入库时通知（库存页·我的预约）", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kWatch, v))),
+          Card(child: SwitchListTile(value: _nStock, activeColor: const Color(0xFF515BD4), title: const Text("断料预警提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("零件在架清零时通知仓管与相关物料员", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kStock, v))),
+          const SizedBox(height: 8),
+          const Padding(padding: EdgeInsets.fromLTRB(4, 8, 4, 6), child: Text("扫码反馈", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.blueGrey))),
+          Card(
+            color: _ttsOk == false ? const Color(0xFFFFF3E0) : null,
             child: SwitchListTile(
-              title: const Text("扫码成功提示音", style: TextStyle(fontSize: 16)),
-              subtitle:
-                  const Text("每次采集保存成功后播放提示音", style: TextStyle(fontSize: 12)),
-              value: _sound,
-              activeColor: const Color(0xFF515BD4),
+              value: _voice,
+              activeColor: const Color(0xFF00897B),
+              title: const Text("语音播报（零件号后四位+件数）", style: TextStyle(fontSize: 15)),
+              subtitle: Text(_ttsOk == false ? "⚠️本机未检测到TTS引擎，将回退提示音" : "例：扫 6608453824 → 播报「3824，25件」", style: const TextStyle(fontSize: 12)),
               onChanged: (v) async {
-                await AppSettings.setSoundEnabled(v);
-                setState(() => _sound = v);
-                if (v) await SystemSound.play(SystemSoundType.click);
+                await _setKey(RemindPrefs.kVoice, v);
+                if (v) await NotifyService.speak("测试播报");
               },
             ),
           ),
           Card(
-            child: SwitchListTile(
-              title: const Text("扫码成功震动", style: TextStyle(fontSize: 16)),
-              subtitle:
-                  const Text("每次采集保存成功后震动反馈", style: TextStyle(fontSize: 12)),
-              value: _vibration,
-              activeColor: const Color(0xFF515BD4),
-              onChanged: (v) async {
-                await AppSettings.setVibrationEnabled(v);
-                setState(() => _vibration = v);
-                if (v) {
-                  try {
-                    if ((await Vibration.hasVibrator()) ?? false)
-                      await Vibration.vibrate(duration: 120);
-                  } catch (_) {}
-                }
-              },
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text("播报语速：${_rate < 0.45 ? "慢" : _rate > 0.65 ? "快" : "中"}", style: const TextStyle(fontSize: 14)),
+                Slider(
+                  value: _rate, min: 0.3, max: 0.9,
+                  activeColor: const Color(0xFF00897B),
+                  onChanged: (v) => setState(() => _rate = v),
+                  onChangeEnd: (v) async {
+                    await RemindPrefs.setRate(v);
+                    await NotifyService.speak("3824，25件");
+                  },
+                ),
+              ]),
             ),
           ),
+          Card(child: SwitchListTile(value: _sound, activeColor: const Color(0xFF515BD4), title: const Text("提示音（无语音时兜底）", style: TextStyle(fontSize: 15)), subtitle: const Text("语音播报关闭或不可用时，扫码成功播放", style: TextStyle(fontSize: 12)), onChanged: (v) async {
+            await AppSettings.setSoundEnabled(v);
+            setState(() => _sound = v);
+          })),
+          Card(child: SwitchListTile(value: _vibration, activeColor: const Color(0xFF515BD4), title: const Text("扫码成功震动", style: TextStyle(fontSize: 15)), onChanged: (v) async {
+            await AppSettings.setVibrationEnabled(v);
+            setState(() => _vibration = v);
+            if (v) { try { if ((await Vibration.hasVibrator()) ?? false) await Vibration.vibrate(duration: 120); } catch (_) {} }
+          })),
           const SizedBox(height: 16),
           ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.grey.shade200,
-                foregroundColor: Colors.black87,
-                minimumSize: const Size(double.infinity, 48)),
-            onPressed: _preview,
-            icon: const Icon(Icons.play_arrow),
-            label: const Text("试听测试（按当前开关反馈一次）"),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 48)),
+            onPressed: () async {
+              await NotifyService.test();
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已发测试通知：看横幅与听铃声（息屏测试请先锁屏再等30秒轮询）"), backgroundColor: Colors.green));
+            },
+            icon: const Icon(Icons.volume_up),
+            label: const Text("发送测试通知（验证铃声/横幅/锁屏）"),
           ),
+          const SizedBox(height: 10),
+          Card(child: ListTile(dense: true, leading: const Icon(Icons.cloud_download_outlined, color: Color(0xFF3949AB)),
+            title: const Text('离线语音包（无系统TTS设备可选）', style: TextStyle(fontSize: 14)),
+            subtitle: FutureBuilder<String>(future: NotifyService.engineLabel(), builder: (cc, ss) => Text(ss.hasData ? '当前播报引擎：' + ss.data! : '检测中…', style: const TextStyle(fontSize: 11.5))),
+            trailing: ValueListenableBuilder<double>(valueListenable: _vpProg, builder: (cc, v, __) => v >= 0 && v < 100 ? SizedBox(width: 60, child: LinearProgressIndicator(value: v / 100, minHeight: 6)) : const Icon(Icons.chevron_right)),
+            onTap: _voicePackAction)),
+          const SizedBox(height: 10),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.grey.shade200, foregroundColor: Colors.black87, minimumSize: const Size(double.infinity, 48)),
+            onPressed: () => NotifyService.speak("3824，25件"),
+            icon: const Icon(Icons.record_voice_over),
+            label: const Text("试听语音播报"),
+          ),
+          const SizedBox(height: 8),
+          const Text("提醒铃声：把任意 wav 命名为 reminder.wav 放到 APK 的 res/raw/reminder 即为自定义铃声（当前用占位音，可联系管理员替换）。", style: TextStyle(fontSize: 11, color: Colors.grey)),
         ],
       ),
     );

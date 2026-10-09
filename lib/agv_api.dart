@@ -812,11 +812,6 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                   child: CircularProgressIndicator(
                       strokeWidth: 2, color: Colors.cyan)),
             IconButton(
-                tooltip: "货架移库（AGV整架搬位）",
-                icon: const Icon(Icons.swap_horiz,
-                    color: Colors.cyanAccent, size: 22),
-                onPressed: _showTransfer),
-            IconButton(
                 icon:
                     const Icon(Icons.refresh, color: Colors.white70, size: 20),
                 onPressed: _loading ? null : () => _load()),
@@ -1468,99 +1463,6 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
     ]);
   }
 
-  /// 货架移库（货位→货位 / 货位→地面暂存）：表单 → 二次确认 → 服务器建CARRY任务
-  Future<void> _showTransfer() async {
-    final fromC = TextEditingController(),
-        toC = TextEditingController(),
-        palC = TextEditingController();
-    bool toGround = false, dry = false;
-    InputDecoration di(String hint) => InputDecoration(
-        isDense: true, border: const OutlineInputBorder(), hintText: hint);
-    final choice = await showDialog<String>(
-        context: context,
-        builder: (ctx) => StatefulBuilder(builder: (ctx2, setDlg) {
-              return AlertDialog(
-                title: const Text("🔄 货架移库"),
-                content: SingleChildScrollView(
-                    child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  TextField(
-                      controller: fromC,
-                      textCapitalization: TextCapitalization.characters,
-                      decoration: di("起点货位（如 NB02-A-08-2F）")),
-                  const SizedBox(height: 8),
-                  TextField(
-                      controller: toC,
-                      textCapitalization: TextCapitalization.characters,
-                      decoration: di("终点货位 / 地面暂存位")),
-                  const SizedBox(height: 8),
-                  TextField(
-                      controller: palC,
-                      textCapitalization: TextCapitalization.characters,
-                      decoration: di("货架类型（选填，留空按账本自动匹配）")),
-                  CheckboxListTile(
-                      value: toGround,
-                      onChanged: (v) => setDlg(() => toGround = v ?? false),
-                      title: const Text("终点是地面暂存位",
-                          style: TextStyle(fontSize: 13)),
-                      dense: true,
-                      controlAffinity: ListTileControlAffinity.leading),
-                  CheckboxListTile(
-                      value: dry,
-                      onChanged: (v) => setDlg(() => dry = v ?? false),
-                      title: const Text("仅演算不真下发（试参数）",
-                          style: TextStyle(fontSize: 13)),
-                      dense: true,
-                      controlAffinity: ListTileControlAffinity.leading),
-                ])),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(ctx2),
-                      child: const Text("取消")),
-                  FilledButton(
-                      onPressed: () => Navigator.pop(
-                          ctx2, dry ? "dry" : (toGround ? "goG" : "go")),
-                      child: const Text("下一步")),
-                ],
-              );
-            }));
-    if (choice == null || !mounted) return;
-    final from = fromC.text.trim().toUpperCase(),
-        to = toC.text.trim().toUpperCase();
-    if (from.isEmpty || to.isEmpty) {
-      _toast("❌ 起点/终点货位不能为空");
-      return;
-    }
-    if (choice != "dry") {
-      final ok = await showDialog<bool>(
-          context: context,
-          builder: (ctx) => AlertDialog(
-                title: const Text("⚠️ 确认移库",
-                    style: TextStyle(color: Colors.deepOrange)),
-                content: Text(
-                    "将呼叫AGV把 $from 上的货架整架移到 $to。\n\n请确认该货位确有此架、移库路径无人停留。到位后记得用「位置登记」更新账本。确认下发？"),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(ctx, false),
-                      child: const Text("取消")),
-                  FilledButton(
-                      style: FilledButton.styleFrom(
-                          backgroundColor: Colors.deepOrange),
-                      onPressed: () => Navigator.pop(ctx, true),
-                      child: const Text("确认下发"))
-                ],
-              ));
-      if (ok != true || !mounted) return;
-    }
-    final r = await AuthApi.agvTransfer(
-        from: from,
-        to: to,
-        kind: choice == "goG" ? "toGround" : "shelf2shelf",
-        palletType: palC.text.trim(),
-        dry: choice == "dry");
-    _toast(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ ${r["msg"]}");
-    if (r["ok"] == true) _load(silent: true);
-    LocalLog.op('移库', r["ok"] == true ? '$from→$to 已下发' : '$from→$to 失败');
-  }
 
   Future<void> _cancelTransfer(Map q) async {
     final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
@@ -1604,14 +1506,6 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
   Widget _portalView() {
     return Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      const Icon(Icons.map_outlined, size: 56, color: Color(0xFF00897B)),
-      const SizedBox(height: 10),
-      const Text("AGV 实时地图（车间2D视图）",
-          style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-      const SizedBox(height: 4),
-      const Text("车辆位置/货架占用/站台状态/交管堵点，10秒自动刷新",
-          style: TextStyle(fontSize: 11, color: Color(0xFF90A4AE))),
-      const SizedBox(height: 16),
       ElevatedButton.icon(
           icon: const Icon(Icons.phone_android),
           label: const Text("原厂PDA版（推荐）"),
@@ -1968,4 +1862,98 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
               style: TextStyle(fontSize: 11, color: Colors.blueGrey)),
         ]));
   }
+}
+
+/// 货架移库（货位→货位 / 货位→地面暂存）：表单 → 二次确认 → 服务器建CARRY任务
+Future<void> showTransferDialog(BuildContext context, {void Function()? onDone}) async {
+  final fromC = TextEditingController(),
+      toC = TextEditingController(),
+      palC = TextEditingController();
+  bool toGround = false, dry = false;
+  InputDecoration di(String hint) => InputDecoration(
+      isDense: true, border: const OutlineInputBorder(), hintText: hint);
+  final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx2, setDlg) {
+            return AlertDialog(
+              title: const Text("🔄 货架移库"),
+              content: SingleChildScrollView(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(
+                    controller: fromC,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: di("起点货位（如 NB02-A-08-2F）")),
+                const SizedBox(height: 8),
+                TextField(
+                    controller: toC,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: di("终点货位 / 地面暂存位")),
+                const SizedBox(height: 8),
+                TextField(
+                    controller: palC,
+                    textCapitalization: TextCapitalization.characters,
+                    decoration: di("货架类型（选填，留空按账本自动匹配）")),
+                CheckboxListTile(
+                    value: toGround,
+                    onChanged: (v) => setDlg(() => toGround = v ?? false),
+                    title: const Text("终点是地面暂存位",
+                        style: TextStyle(fontSize: 13)),
+                    dense: true,
+                    controlAffinity: ListTileControlAffinity.leading),
+                CheckboxListTile(
+                    value: dry,
+                    onChanged: (v) => setDlg(() => dry = v ?? false),
+                    title: const Text("仅演算不真下发（试参数）",
+                        style: TextStyle(fontSize: 13)),
+                    dense: true,
+                    controlAffinity: ListTileControlAffinity.leading),
+              ])),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx2),
+                    child: const Text("取消")),
+                FilledButton(
+                    onPressed: () => Navigator.pop(
+                        ctx2, dry ? "dry" : (toGround ? "goG" : "go")),
+                    child: const Text("下一步")),
+              ],
+            );
+          }));
+  if (choice == null || !context.mounted) return;
+  final from = fromC.text.trim().toUpperCase(),
+      to = toC.text.trim().toUpperCase();
+  if (from.isEmpty || to.isEmpty) {
+    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("❌ 起点/终点货位不能为空")));
+    return;
+  }
+  if (choice != "dry") {
+    final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text("⚠️ 确认移库",
+                  style: TextStyle(color: Colors.deepOrange)),
+              content: Text(
+                  "将呼叫AGV把 $from 上的货架整架移到 $to。\n\n请确认该货位确有此架、移库路径无人停留。到位后记得用「位置登记」更新账本。确认下发？"),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text("取消")),
+                FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: Colors.deepOrange),
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text("确认下发"))
+              ],
+            ));
+    if (ok != true || !context.mounted) return;
+  }
+  final r = await AuthApi.agvTransfer(
+      from: from,
+      to: to,
+      kind: choice == "goG" ? "toGround" : "shelf2shelf",
+      palletType: palC.text.trim(),
+      dry: choice == "dry");
+  if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ ${r["msg"]}")));
+  if (r["ok"] == true) onDone?.call();
+  LocalLog.op('移库', r["ok"] == true ? '$from→$to 已下发' : '$from→$to 失败');
 }

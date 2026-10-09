@@ -12,6 +12,7 @@ class _AgvMapPageState extends State<AgvMapPage> {
   String _err = "";
   Timer? _timer;
   double _zoom = 1.0, _ox = 0, _oy = 0;
+  double _zoomStart = 1.0; // 捏合手势起始倍率（d.scale是相对手势起点的累计值，必须乘基准而非逐帧累乘）
 
   @override
   void initState() {
@@ -51,8 +52,9 @@ class _AgvMapPageState extends State<AgvMapPage> {
           : (net["ready"] != true
             ? const Center(child: Text("路网构建中（服务器启动后约1分钟就绪）", style: TextStyle(color: Colors.white54)))
             : GestureDetector(
-                onScaleStart: (_) {},
-                onScaleUpdate: (d) { if (d.scale != 1.0) setState(() => _zoom = (_zoom * d.scale).clamp(0.5, 6.0)); if (d.focalPointDelta.distance > 0) setState(() { _ox += d.focalPointDelta.dx; _oy += d.focalPointDelta.dy; }); },
+                onScaleStart: (_) => _zoomStart = _zoom,
+                onScaleUpdate: (d) { if (d.scale != 1.0) setState(() => _zoom = (_zoomStart * d.scale).clamp(0.4, 10.0)); if (d.focalPointDelta.distance > 0) setState(() { _ox += d.focalPointDelta.dx; _oy += d.focalPointDelta.dy; }); },
+                onDoubleTap: () => setState(() { _zoom = 1.0; _ox = 0; _oy = 0; }),
                 child: CustomPaint(size: Size.infinite, painter: _MapPainter(net, snap, _zoom, _ox, _oy)),
               )),
     );
