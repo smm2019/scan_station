@@ -20,9 +20,8 @@ class NotifyService {
 
   static Future<void> init() async {
     try {
-      const android = AndroidInitializationSettings('@mipmap/ic_launcher');
       await _n.initialize(
-        const InitializationSettings(android: android),
+        const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')),
         onDidReceiveNotificationResponse: (r) {
           final p = r.payload ?? '';
           if (p.isNotEmpty) kNotifTap.value = '$p@${DateTime.now().millisecondsSinceEpoch}';
@@ -216,12 +215,12 @@ class VoicePack {
     if (_inited) return _tts != null;
     if (_broken || !await installed()) return false;
     try {
-      initBindings();
+      sherpa.initBindings();
       final d = await dirPath();
-      final tts = OfflineTts(
-        OfflineTtsConfig(
-          model: OfflineTtsModelConfig(
-            vits: OfflineTtsVitsModelConfig(model: '$d/model.onnx', tokens: '$d/tokens.txt', dataDir: '$d/espeak-ng-data'),
+      final tts = sherpa.OfflineTts(
+        sherpa.OfflineTtsConfig(
+          model: sherpa.OfflineTtsModelConfig(
+            vits: sherpa.OfflineTtsVitsModelConfig(model: '$d/model.onnx', tokens: '$d/tokens.txt', dataDir: '$d/espeak-ng-data'),
             numThreads: 2,
           ),
         ),
@@ -240,8 +239,8 @@ class VoicePack {
     if (_broken || !await _ensureEngine()) return false;
     try {
       final speed = (0.5 + (await RemindPrefs.rateVal()) * 1.1).clamp(0.6, 2.0);
-      final audio = _tts.generate(text: text, speed: speed) as GeneratedAudio;
-      final samples = audio.samples;
+      final audio = _tts.generate(text: text, speed: speed) as sherpa.GeneratedAudio;
+      final samples = (audio.samples as List).cast<double>();
       if (samples.isEmpty) return false;
       final dir = await getTemporaryDirectory();
       final wav = '${dir.path}/vp_${DateTime.now().millisecondsSinceEpoch}.wav';
@@ -267,7 +266,7 @@ class VoicePack {
   }
 
   /// Float32采样 → 16bit PCM WAV 字节
-  static List<int> _pcmToWav16(List<float> samples, int rate) {
+  static List<int> _pcmToWav16(List<double> samples, int rate) {
     final n = samples.length;
     final buf = ByteData(44 + n * 2);
     void wstr(int off, String s) {

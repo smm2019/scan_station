@@ -25,8 +25,9 @@ import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart'; // AGV实时调度大屏WebView
 import 'package:audioplayers/audioplayers.dart';
 import 'package:archive/archive.dart';
-import 'package:sherpa_onnx/sherpa_onnx.dart';
-import 'dart:ffi';
+import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
+import 'package:flutter_local_notifications/flutter_local_notifications.dart'; // ⑭系统通知
+import 'package:flutter_tts/flutter_tts.dart'; // ⑭系统TTS
 
 part 'main.g.dart';
 part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传
