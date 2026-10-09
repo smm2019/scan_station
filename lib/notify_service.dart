@@ -11,6 +11,7 @@ final ValueNotifier<String> kNotifTap = ValueNotifier<String>(''); // 通知点�
 class NotifyService {
   static final FlutterLocalNotificationsPlugin _n = FlutterLocalNotificationsPlugin();
   static final FlutterTts _tts = FlutterTts();
+  static AudioPlayer? _digPlayer; // 拼播复用单例
   static bool _ttsReady = false;
   static bool _ttsTried = false;
   static int _nid = 0;
@@ -142,36 +143,76 @@ class NotifyService {
     '5': 'voice/d5.wav', '6': 'voice/d6.wav', '7': 'voice/d7.wav', '8': 'voice/d8.wav', '9': 'voice/d9.wav',
     '零': 'voice/d0.wav', '一': 'voice/d1.wav', '二': 'voice/d2.wav', '三': 'voice/d3.wav', '四': 'voice/d4.wav',
     '五': 'voice/d5.wav', '六': 'voice/d6.wav', '七': 'voice/d7.wav', '八': 'voice/d8.wav', '九': 'voice/d9.wav',
-    '十': 'voice/d10.wav', '百': 'voice/d100.wav', '千': 'voice/d1000.wav', '件': 'voice/jian.wav',
+    '十': 'voice/d10.wav', '百': 'voice/d100.wav', '千': 'voice/d1000.wav', '件': 'voice/jian.wav', '点': 'voice/dot.wav',
   };
 
   static Future<bool> _speakDigits(String text) async {
     final clips = <String>[];
+    var skipped = '';
     for (final cu in text.runes) {
       final ch = String.fromCharCode(cu);
-      if (ch == '，' || ch == ',' || ch == '、' || ch == ' ') {
+      if (ch == '，' || ch == ',' || ch == '、' || ch == ' ' || ch == '.') {
         if (clips.isNotEmpty && clips.last != '#') clips.add('#');
-        continue;
+        continue; // 小数点按停顿处理（25.5→二五·五）
       }
       final f = _digMap[ch];
-      if (f == null) return false; // 有念不了的字：不半截播报
+      if (f == null) {
+        skipped += ch; // 字母等不可念字符：跳过不整体放弃
+        continue;
+      }
       clips.add(f);
     }
+    if (skipped.isNotEmpty) LocalLog.op('拼播跳字', '$text 跳过「$skipped」');
     if (clips.isEmpty) return false;
     try {
-      final p = AudioPlayer();
-      await p.setReleaseMode(ReleaseMode.stop);
+      // 一次性拼接成整段WAV播放：无逐段循环、无完成事件竞态（旧逐段法在短样本上卡死致只播一字/按钮无响应）
+      const rate = 22050;
+      final pcm = BytesBuilder();
       for (final c in clips) {
         if (c == '#') {
-          await Future.delayed(const Duration(milliseconds: 140));
+          pcm.add(List.filled((rate * 0.16) ~/ 1 * 2, 0)); // 停顿160ms静音
           continue;
         }
-        await p.play(AssetSource(c));
-        await p.onPlayerComplete.first.timeout(const Duration(seconds: 2), onTimeout: () {});
+        final byteData = await rootBundle.load(c);
+        final w = byteData.buffer.asByteData(byteData.offsetInBytes, byteData.lengthInBytes);
+        // 定位data块（跳过RIFF头与各fmt块）
+        int off = 12;
+        int len = 0;
+        while (off + 8 <= w.lengthInBytes) {
+          final id = String.fromCharCodes([w.getUint8(off), w.getUint8(off + 1), w.getUint8(off + 2), w.getUint8(off + 3)]);
+          final sz = w.getUint32(off + 4, Endian.little);
+          if (id == 'data') { off += 8; len = sz > w.lengthInBytes - off ? w.lengthInBytes - off : sz; break; }
+          off += 8 + sz + (sz & 1);
+        }
+        if (len == 0) return false;
+        pcm.add(w.buffer.asUint8List(w.offsetInBytes + off, len));
       }
-      await p.dispose();
-      return true;
-    } catch (_) {
+      final body = pcm.toBytes();
+      final head = ByteData(44);
+      void hs(int o, String t) { for (var i = 0; i < t.length; i++) head.setUint8(o + i, t.codeUnitAt(i)); }
+      hs(0, 'RIFF');
+      head.setUint32(4, 36 + body.length, Endian.little);
+      hs(8, 'WAVE');
+      hs(12, 'fmt ');
+      head.setUint32(16, 16, Endian.little);
+      head.setUint16(20, 1, Endian.little);
+      head.setUint16(22, 1, Endian.little);
+      head.setUint32(24, rate, Endian.little);
+      head.setUint32(28, rate * 2, Endian.little);
+      head.setUint16(32, 2, Endian.little);
+      head.setUint16(34, 16, Endian.little);
+      hs(36, 'data');
+      head.setUint32(40, body.length, Endian.little);
+      final dir = await getTemporaryDirectory();
+      final wav = '${dir.path}/sp_${DateTime.now().microsecondsSinceEpoch}.wav';
+      File(wav).writeAsBytesSync([...head.buffer.asUint8List(), ...body]);
+      final p = _digPlayer ??= AudioPlayer();
+      await p.stop();
+      await p.setReleaseMode(ReleaseMode.release);
+      unawaited(p.play(DeviceFileSource(wav)).catchError((_) {}) as Future<void>);
+      return true; // 即发即播：不await完成事件，UI按钮不再被卡
+    } catch (e) {
+      debugPrint('[拼播失败] $e');
       return false;
     }
   }
