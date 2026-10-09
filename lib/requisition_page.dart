@@ -1148,27 +1148,25 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             child: Text("📌 本单已指定 $aName 备料${Auth.user?.id == aId ? "（就是你，请尽快接单）" : "，超时未接将放开给全部仓管"}",
               style: TextStyle(fontSize: 12, color: Auth.user?.id == aId ? Colors.deepOrange : const Color(0xFF3949AB))),
           ),
-          Row(children: [
+          Wrap(spacing: 6, runSpacing: 6, children: [
             if (st == 'pending' && Auth.isAdmin) ...[
-              Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF3949AB)),
+              ConstrainedBox(constraints: const BoxConstraints(minWidth: 92), child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF3949AB)),
                 onPressed: _busy ? null : _reassign,
                 icon: const Icon(Icons.swap_horiz, size: 16), label: Text(aName.isEmpty ? "指定" : "转派"))),
-              const SizedBox(width: 8),
             ],
             if (st == 'pending' && isWh) ...[
-              Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+              ConstrainedBox(constraints: const BoxConstraints(minWidth: 92), child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
                 onPressed: (_busy || assignBlocked) ? null : () async {
                   final reason = await _askReason("拒单原因");
                   if (reason != null) await _act("reject", {"reason": reason});
                 }, icon: const Icon(Icons.block, size: 16), label: const Text("拒单"))),
-              const SizedBox(width: 8),
-              Expanded(flex: 2, child: ElevatedButton.icon(
+              ConstrainedBox(constraints: const BoxConstraints(minWidth: 150), child: ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, disabledBackgroundColor: Colors.grey.shade300),
                 onPressed: (_busy || assignBlocked) ? null : () => _act("accept"),
                 icon: const Icon(Icons.how_to_reg), label: Text(assignBlocked ? "已指定 $aName" : "接单备料"))),
             ],
             if ((st == 'pending' || st == 'accepted') && (isOwner || Auth.isAdmin))
-              Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.deepOrange),
+              ConstrainedBox(constraints: const BoxConstraints(minWidth: 92), child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.deepOrange),
                 onPressed: _busy ? null : () async {
                   final note = await _askReason(st == 'accepted' ? "催备料（可写哪个零件急用）" : "催接单（可补充说明）");
                   if (note == null) return;
@@ -1180,10 +1178,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                   if (res["ok"] == true && res["req"] is Map) setState(() => _r = Map.from(res["req"] as Map));
                 }, icon: const Icon(Icons.alarm, size: 16), label: Text(st == 'accepted' ? "催备料" : "催接单"))),
             if ((st == 'pending' || st == 'accepted') && (isOwner || Auth.isAdmin))
-              Expanded(child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+              ConstrainedBox(constraints: const BoxConstraints(minWidth: 92), child: OutlinedButton.icon(style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
                 onPressed: _busy ? null : () => _act("cancel"), icon: const Icon(Icons.close, size: 16), label: const Text("取消订单"))),
             if (st == 'ready' && (isOwner || Auth.can("receive_confirm")))
-              Expanded(flex: 2, child: ElevatedButton.icon(
+              ConstrainedBox(constraints: const BoxConstraints(minWidth: 150), child: ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                 onPressed: _busy ? null : () async {
                   final yes = await showDialog<bool>(context: context, builder: (dctx) => AlertDialog(
@@ -1192,7 +1190,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                       TextButton(onPressed: () => Navigator.pop(dctx, true), child: const Text("确认收到"))]));
                   if (yes == true) await _act("confirm");
                 }, icon: const Icon(Icons.done_all), label: const Text("确认收到货物"))),
-            Expanded(child: OutlinedButton(onPressed: () => Navigator.pop(context, st != _r["status"]), child: const Text("关闭"))),
+            ConstrainedBox(constraints: const BoxConstraints(minWidth: 92), child: OutlinedButton(onPressed: () => Navigator.pop(context, st != _r["status"]), child: const Text("关闭"))),
           ]),
         ]),
       ),

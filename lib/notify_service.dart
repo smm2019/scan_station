@@ -95,6 +95,7 @@ class NotifyService {
   /// 播报引擎状态文案：系统TTS / 离线引擎 / 数字拼播 / 无
   static Future<String> engineLabel() async {
     if (await ttsAvailable()) return "系统语音引擎";
+    if (await VoicePack.disabled()) return "离线引擎已停用（崩溃保护）· 数字拼播";
     if (await VoicePack.ready()) return "离线语音引擎";
     return "数字拼播（自带）";
   }
@@ -186,6 +187,38 @@ class NotifyService {
 /// ⑯离线语音包：模型放局域网服务器，PDA 下载一次解压即用（sherpa-onnx piper 中文）
 class VoicePack {
   static const _dirName = 'tts_model';
+  static const _flagKey = 'vp_disabled'; // 崩溃保护：持久禁用离线引擎
+  static const _sentFile = '.vp_trying'; // 哨兵：合成中崩溃则残留
+
+  static Future<String> _sentPath() async {
+    final b = await getApplicationDocumentsDirectory();
+    return '${b.path}/$_sentFile';
+  }
+
+  static Future<bool> disabled() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getBool(_flagKey) ?? false;
+  }
+
+  static Future<void> setDisabled(bool v) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool(_flagKey, v);
+    if (v) { _broken = true; _inited = false; _tts = null; }
+    else { _broken = false; _inited = false; _tts = null; }
+  }
+
+  /// 启动时调用：哨兵残留 = 上次进程在语音合成中异常退出（原生崩溃，Dart捕获不到）→ 本次起永久禁用离线引擎
+  static Future<void> crashGuard() async {
+    try {
+      final f = File(await _sentPath());
+      if (!f.existsSync()) return;
+      try { f.deleteSync(); } catch (_) {}
+      if (!await disabled()) {
+        await setDisabled(true);
+        LocalLog.op('语音包停用', '检测到上次在离线语音合成中异常退出，已自动降级为数字拼播（可在设置页重新启用）');
+      }
+    } catch (_) {}
+  }
   static dynamic _tts; // OfflineTts（避免未装包设备启动即崩，全部 try/catch 内使用）
   static bool _inited = false;
   static bool _broken = false;
@@ -207,14 +240,14 @@ class VoicePack {
   }
 
   static Future<bool> ready() async {
-    if (_broken) return false;
+    if (_broken || await disabled()) return false;
     return await installed();
   }
 
   /// 引擎懒加载；失败标记 _broken 不再重试（本次进程内）
   static Future<bool> _ensureEngine() async {
     if (_inited) return _tts != null;
-    if (_broken || !await installed()) return false;
+    if (_broken || await disabled() || !await installed()) return false;
     try {
       sherpa.initBindings();
       final d = await dirPath();
@@ -237,7 +270,13 @@ class VoicePack {
   }
 
   static Future<bool> speak(String text) async {
-    if (_broken || !await _ensureEngine()) return false;
+    if (_broken || await disabled() || !await _ensureEngine()) return false;
+    File? sent;
+    try {
+      sent = File(await _sentPath());
+      sent.writeAsStringSync(DateTime.now().toIso8601String()); // 哨兵：崩溃则残留，下次启动自动停用
+      LocalLog.op('语音合成', text);
+    } catch (_) {}
     try {
       final speed = (0.5 + (await RemindPrefs.rateVal()) * 1.1).clamp(0.6, 2.0);
       final audio = _tts.generate(text: text, speed: speed) as sherpa.GeneratedAudio;
@@ -250,12 +289,13 @@ class VoicePack {
       await _player.setReleaseMode(ReleaseMode.stop);
       await _player.play(DeviceFileSource(wav));
       await _player.onPlayerComplete.first.timeout(const Duration(seconds: 8), onTimeout: () {});
-      try {
-        File(wav).deleteSync();
-      } catch (_) {}
+      try { File(wav).deleteSync(); } catch (_) {}
+      try { sent?.deleteSync(); } catch (_) {} // 成功：撤哨兵
       return true;
     } catch (e) {
+      try { sent?.deleteSync(); } catch (_) {} // Dart异常可恢复：撤哨兵，不误判崩溃
       debugPrint('[voicepack] 合成失败：$e');
+      LocalLog.op('语音合成失败', '$e');
       return false;
     }
   }

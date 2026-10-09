@@ -1167,9 +1167,10 @@ void main() async {
     ],
     directory: dir.path,
   );
-  await NotifyService.init(); // ⑭通知渠道+TTS预热
-  await LocalLog.init(dir.path);
+  await LocalLog.init(dir.path); // 日志先行：否则后续初始化异常无处可记
   LocalLog.pruneOld();
+  await VoicePack.crashGuard(); // ⑯上次若崩在语音合成，本次自动禁用离线引擎
+  await NotifyService.init(); // ⑭通知渠道+TTS预热
   LocalLog.op('启动', 'AGV货位采集器');
   // ⑦全局异常兜底：未捕获异常写审计日志，App 不闪退
   FlutterError.onError = (d) {
@@ -4164,6 +4165,18 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
     final installed = await VoicePack.installed();
     if (!mounted) return;
     if (installed) {
+      final dis = await VoicePack.disabled();
+      if (!mounted) return;
+      if (dis) {
+        final yes = await showDialog<bool>(context: context, builder: (c2) => AlertDialog(
+          title: const Text("离线引擎已停用（崩溃保护）", style: TextStyle(color: Colors.orange)),
+          content: const Text("上次在语音合成时异常退出，已自动降级为数字拼播。\n\n如确认是偶发问题可重新启用；再次崩溃会再次自动停用。"),
+          actions: [TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("保持停用")),
+            FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("重新启用"))],
+        ));
+        if (yes == true) { await VoicePack.setDisabled(false); if (mounted) setState(() {}); }
+        return;
+      }
       final yes = await showDialog<bool>(context: context, builder: (c2) => AlertDialog(
         title: const Text("离线语音包已安装"),
         content: const Text("约64MB模型在本地，无系统TTS时自动启用。删除后回落数字拼播。"),

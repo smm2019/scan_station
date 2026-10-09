@@ -888,6 +888,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
       final cargo = _cargo[sp];
       final isCharge = rt["taskType"]?.toString() == "CHARGE" ||
           "${t["taskType"] ?? ""}" == "CHARGE";
+      // 调度号为UUID = 车辆自主导航任务（回待命点/去充电），非业务搬运；业务任务调度号是LL单号
+      final isNav = RegExp(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-").hasMatch(no);
       return Container(
           margin: const EdgeInsets.fromLTRB(10, 6, 10, 0),
           padding: const EdgeInsets.all(10),
@@ -919,14 +921,22 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                           const TextStyle(color: Colors.white, fontSize: 11))),
             ]),
             const SizedBox(height: 6),
-            Text("${rt["startPoint"] ?? "?"}  →  ${rt["endPoint"] ?? "?"}",
-                style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF1565C0))),
+            isNav
+                ? const Text("🧭 车辆自主导航（回待命点/去充电）· 非搬运任务",
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF26A69A)))
+                : Text("${rt["startPoint"] ?? "?"}  →  ${rt["endPoint"] ?? "?"}",
+                    style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF1565C0))),
             const SizedBox(height: 4),
             Text(
-                "车：${names[t["exeAgvId"]] ?? (t["exeAgvId"] == null ? "未分配" : "AGV${t["exeAgvId"]}")}　托盘：${rt["palletType"] ?? t["palletType"] ?? "-"}　类型：${rt["taskType"] ?? t["taskType"] ?? "-"}",
+                isNav
+                    ? "车：${names[t["exeAgvId"]] ?? (t["exeAgvId"] == null ? "未分配" : "AGV${t["exeAgvId"]}")}"
+                    : "车：${names[t["exeAgvId"]] ?? (t["exeAgvId"] == null ? "未分配" : "AGV${t["exeAgvId"]}")}　托盘：${rt["palletType"] ?? t["palletType"] ?? "-"}　类型：${rt["taskType"] ?? t["taskType"] ?? "-"}",
                 style: const TextStyle(fontSize: 11, color: Color(0xFF607D8B))),
             // 货物：AGV系统只知搬托盘，零件号/数量按起点货位反查本机货位账本（充电任务无货）
             if (isCharge)
@@ -960,7 +970,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                           color: Color(0xFF1565C0),
                           fontWeight: FontWeight.w600))),
             // 任务操作按钮（与调度大屏同款；仅 agv_control 权限可见；置顶/删除仅待执行，执行中删除会车停半路）
-            if (_canCtl && !isCharge)
+            if (_canCtl && !isCharge && !isNav)
               Padding(
                   padding: const EdgeInsets.only(top: 5),
                   child: Wrap(
@@ -1506,20 +1516,6 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
   Widget _portalView() {
     return Center(
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-      ElevatedButton.icon(
-          icon: const Icon(Icons.phone_android),
-          label: const Text("原厂PDA版（推荐）"),
-          style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00897B),
-              foregroundColor: Colors.white,
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 22, vertical: 12)),
-          onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                  builder: (_) =>
-                      const AgvWebViewPage(spaRoute: "/home-pda")))),
-      const SizedBox(height: 10),
       OutlinedButton.icon(
           icon: const Icon(Icons.map, size: 18, color: Color(0xFF00897B)),
           label: const Text("业务叠加地图（含站台占用/释放预测）",
