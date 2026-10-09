@@ -187,7 +187,8 @@ class NotifyService {
         if (len == 0) return false;
         pcm.add(w.buffer.asUint8List(w.offsetInBytes + off, len));
       }
-      final body = pcm.toBytes();
+      final speed = (0.5 + (await RemindPrefs.rateVal()) * 1.1).clamp(0.6, 2.0); // 语速滑杆→PCM重采样变速（不依赖播放器setRate，5.x兼容）
+      final body = _resamplePcm16(pcm.toBytes(), speed);
       final head = ByteData(44);
       void hs(int o, String t) { for (var i = 0; i < t.length; i++) head.setUint8(o + i, t.codeUnitAt(i)); }
       hs(0, 'RIFF');
@@ -207,7 +208,6 @@ class NotifyService {
       final wav = '${dir.path}/sp_${DateTime.now().microsecondsSinceEpoch}.wav';
       File(wav).writeAsBytesSync([...head.buffer.asUint8List(), ...body]);
       final p = _digPlayer ??= AudioPlayer();
-      try { await p.setRate((0.5 + (await RemindPrefs.rateVal()) * 1.1).clamp(0.6, 2.0)); } catch (_) {}
       await p.stop();
       await p.setReleaseMode(ReleaseMode.release);
       unawaited(p.play(DeviceFileSource(wav)).catchError((_) {}) as Future<void>);
@@ -216,6 +216,25 @@ class NotifyService {
       debugPrint('[拼播失败] $e');
       return false;
     }
+  }
+
+  /// 16bit PCM 线性插值重采样：speed>1 加速（样本变少），speed<1 减速
+  static Uint8List _resamplePcm16(Uint8List src, double speed) {
+    final n = src.length ~/ 2;
+    if (n < 2 || (speed - 1.0).abs() < 0.01) return src;
+    final outN = (n / speed).floor();
+    final outBuf = Uint8List(outN * 2);
+    final bd = ByteData.sublistView(outBuf);
+    final sd = ByteData.sublistView(src);
+    for (var i = 0; i < outN; i++) {
+      final pos = i * speed;
+      final i0 = pos.floor();
+      final i1 = (i0 + 1 < n) ? i0 + 1 : n - 1;
+      final f = pos - i0;
+      final v = sd.getInt16(i0 * 2, Endian.little) * (1 - f) + sd.getInt16(i1 * 2, Endian.little) * f;
+      bd.setInt16(i * 2, v.round().clamp(-32768, 32767), Endian.little);
+    }
+    return outBuf;
   }
 
   static Future<void> stopTts() async {
