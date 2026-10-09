@@ -24,7 +24,7 @@ dependencies:
   webview_flutter: 4.7.0 # AGV模块：哈工库讯实时调度大屏WebView
   flutter_local_notifications: 17.2.4 # ⑭系统通知：悬浮横幅/锁屏/息屏/自定义铃声
   flutter_tts: 4.0.2 # ⑭扫码语音播报：零件号后四位+件数
-  audioplayers: 6.1.0 # ⑭数字拼播/⑯离线合成播放
+  audioplayers: 5.2.1 # ⑭数字拼播/⑯离线合成播放（6.x要求SDK35，Flutter3.22配5.2.1）
   archive: 3.6.1 # ⑯离线语音包zip解压
   sherpa_onnx: 1.12.14 # ⑯离线TTS引擎（piper中文，模型包局域网下载）
 

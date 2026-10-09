@@ -18,7 +18,7 @@ pluginManagement {
 
 plugins {
     id "dev.flutter.flutter-plugin-loader" version "1.0.0"
-    id "com.android.application" version "7.3.0" apply false
+    id "com.android.application" version "7.4.2" apply false // ⑯修AGP7.3.0的desugar R8空指针(fallbackDependency转换崩溃)
     id "org.jetbrains.kotlin.android" version "1.9.22" apply false // ⑯sherpa_onnx带入stdlib1.9，旧1.7.10编译器读不了其元数据
 }
 
