@@ -56,6 +56,7 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
   @override
   bool get wantKeepAlive => true;
 
+  String _search = ""; // ⑰领料记录搜索：零件号/物料名/单号/人/日期
   @override
   void initState() {
     super.initState();
@@ -96,6 +97,18 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
     }
   }
 
+  List<Map> get _shown {
+    final k = _search.trim().toLowerCase();
+    if (k.isEmpty) return _reqs;
+    return _reqs.where((r) {
+      for (final e in List<Map>.from(r["items"] ?? [])) {
+        if ((e["partNo"]?.toString().toLowerCase().contains(k) ?? false) || (e["itemName"]?.toString().toLowerCase().contains(k) ?? false)) return true;
+      }
+      if ((r["no"]?.toString().toLowerCase().contains(k) ?? false) || (r["byName"]?.toString().toLowerCase().contains(k) ?? false) || (r["remark"]?.toString().toLowerCase().contains(k) ?? false)) return true;
+      return (r["createdAt"]?.toString().toLowerCase() ?? "").contains(k); // 支持 10-09 / 2026-10 等日期片段
+    }).toList();
+  }
+
   void _toast(String m, {bool err = true}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), backgroundColor: err ? Colors.red : Colors.green));
@@ -112,9 +125,20 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
     if (!mounted) return;
     final parts = agg.parts.values.where((p) => p.inStockQty > 0).toList()..sort((a, b) => a.partNo.compareTo(b.partNo));
     if (parts.isEmpty) { _toast("当前库存为空，无法下单"); return; }
+    // ⑰该零件最近领用记录（从可见领料单聚合，最新在前）
+    final hist = <String, List<String>>{};
+    for (final r in _reqs) {
+      final t = reqTimeLocal(r["createdAt"]);
+      for (final e in List<Map>.from(r["items"] ?? [])) {
+        final pn = e["partNo"]?.toString() ?? "";
+        if (pn.isEmpty) continue;
+        (hist[pn] ??= <String>[]).add("$t 领${e["qty"]}件 ${r["no"]}");
+      }
+    }
+    hist.forEach((k, v) => hist[k] = v.take(3).toList());
     final res = await showModalBottomSheet<Map<String, dynamic>>(
       context: context, isScrollControlled: true,
-      builder: (ctx) => _ReqCreateSheet(parts: parts));
+      builder: (ctx) => _ReqCreateSheet(parts: parts, hist: hist));
     if (res == null || !mounted) return;
     final r = await AuthApi.reqCreate(res["items"] as List<Map>, res["remark"]?.toString() ?? "",
         assigneeId: res["assigneeId"]?.toString() ?? "", rush: res["rush"] == true);
@@ -168,13 +192,18 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
           ? const Center(child: CircularProgressIndicator())
           : _err.isNotEmpty
               ? Center(child: Text(_err, style: const TextStyle(color: Colors.red)))
-              : _reqs.isEmpty
-                  ? const Center(child: Text("暂无领料单", style: TextStyle(color: Colors.grey)))
-                  : RefreshIndicator(onRefresh: _load, child: ListView.builder(
+              : _shown.isEmpty
+                  ? Center(child: Text(_reqs.isEmpty ? "暂无领料单" : "没有匹配「$_search」的领料记录", style: const TextStyle(color: Colors.grey)))
+                  : RefreshIndicator(onRefresh: _load, child: Column(children: [
+                      Padding(padding: const EdgeInsets.fromLTRB(10, 8, 10, 0), child: TextField(
+                        onChanged: (v) => setState(() => _search = v),
+                        decoration: InputDecoration(hintText: "搜零件号/物料名/单号/日期（如 10-09）", isDense: true, prefixIcon: const Icon(Icons.search, size: 20), suffixIcon: _search.isEmpty ? null : IconButton(icon: const Icon(Icons.clear, size: 18), onPressed: () => setState(() => _search = "")), border: const OutlineInputBorder()),
+                      )),
+                      Expanded(child: ListView.builder(
                       padding: const EdgeInsets.fromLTRB(10, 8, 10, 90),
-                      itemCount: _reqs.length,
+                      itemCount: _shown.length,
                       itemBuilder: (ctx, i) {
-                        final r = _reqs[i];
+                        final r = _shown[i];
                         final items = List<Map>.from(r["items"] ?? []);
                         final st = r["status"].toString();
                         final itemsText = items.map((e) => "${e["partNo"]}×${e["qty"]}").join("、");
@@ -196,7 +225,7 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
                           ),
                         );
                       },
-                    )),
+                    ))])),
     );
   }
 }
@@ -210,7 +239,8 @@ IconData _stIcon(String s) => switch (s) {
 // ---------- 新建领料单弹层：从库存选零件号+数量，可多行 ----------
 class _ReqCreateSheet extends StatefulWidget {
   final List<_StockPartRow> parts;
-  const _ReqCreateSheet({required this.parts});
+  final Map<String, List<String>> hist; // ⑰零件号→最近领用记录
+  const _ReqCreateSheet({required this.parts, this.hist = const {}});
   @override
   State<_ReqCreateSheet> createState() => _ReqCreateSheetState();
 }
@@ -295,7 +325,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
           ...list.map((p) => ListTile(
             dense: true,
             title: Text("${p.partNo}  ${p.itemName}", style: const TextStyle(fontSize: 13)),
-            subtitle: Text("在库 ${p.inBoxes} 框 · ${_fmtInvNum(p.inStockQty)}${p.perBoxQty > 0 ? " · ≈${_fmtInvNum(p.perBoxQty.roundToDouble())}件/框（按框领，填框数×约数）" : ""}", style: const TextStyle(fontSize: 11)),
+            subtitle: Text("在库 ${p.inBoxes} 框 · ${_fmtInvNum(p.inStockQty)}${p.perBoxQty > 0 ? " · ≈${_fmtInvNum(p.perBoxQty.roundToDouble())}件/框（按框领，填框数×约数）" : ""}${(widget.hist[p.partNo] ?? []).isNotEmpty ? "\n📋 上次领用：${widget.hist[p.partNo]!.join("；")}" : ""}", style: const TextStyle(fontSize: 11)),
             trailing: SizedBox(width: 90, child: TextField(
               controller: _qtyCtrl.putIfAbsent(p.partNo, () => TextEditingController()),
               keyboardType: TextInputType.number,

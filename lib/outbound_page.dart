@@ -67,6 +67,7 @@ class OutboundListPage extends StatefulWidget {
 
 class _OutboundListPageState extends State<OutboundListPage> {
   List<OutboundOrder> _orders = [];
+  List<Map> _remote = []; // ⑰其他设备同步到服务器的出库单（只读）
   bool _loading = true;
 
   @override
@@ -79,8 +80,37 @@ class _OutboundListPageState extends State<OutboundListPage> {
     // Isar 3.1 的 sortByXxx 不支持 desc 参数：取全量后内存按创建时间倒序
     final list = await _globalIsar.outboundOrders.where().findAll();
     list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    List<Map> remote = [];
+    try {
+      final r = await AuthApi.outboundGet().timeout(const Duration(seconds: 8));
+      if (r["ok"] == true) {
+        final have = list.map((e) => e.orderNo).toSet();
+        for (final o in List<Map>.from(r["items"] ?? [])) {
+          final no = o["orderNo"]?.toString() ?? "";
+          if (no.isEmpty || have.contains(no)) continue;
+          remote.add(o);
+        }
+        remote.sort((a, b) => ((b["createdAt"] as num?) ?? 0).compareTo((a["createdAt"] as num?) ?? 0));
+      }
+    } catch (_) {}
     if (!mounted) return;
-    setState(() { _orders = list; _loading = false; });
+    setState(() { _orders = list; _remote = remote; _loading = false; });
+  }
+
+  String _fmtMs(dynamic v) => _fmt((v as num?)?.toInt() ?? 0);
+
+  void _showRemote(Map ro) {
+    final items = List<Map>.from(ro["items"] ?? []);
+    showModalBottomSheet(context: context, isScrollControlled: true, builder: (mctx) => SafeArea(child: Column(mainAxisSize: MainAxisSize.min, children: [
+      Padding(padding: const EdgeInsets.all(12), child: Text("出库单 ${ro["orderNo"]}（其他设备·只读）", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+      Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Text("转入：${ro["toLoc"]} ｜ ${_fmtMs(ro["createdAt"])} ｜ ${ro["operator"]}", style: const TextStyle(fontSize: 12, color: Colors.grey))),
+      const SizedBox(height: 6),
+      Flexible(child: ListView(children: items.map((e) => ListTile(dense: true,
+        title: Text("${e["code"]}  ${e["name"]}", style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
+        subtitle: Text("数量 ${e["qty"]} · 标签 ${e["barcode"]}${(e["fromLoc"] ?? "").toString().isNotEmpty ? " · 原货位 ${e["fromLoc"]}" : ""}", style: const TextStyle(fontSize: 11)),
+      )).toList())),
+      TextButton(onPressed: () => Navigator.pop(mctx), child: const Text("关闭")),
+    ])));
   }
 
   String _fmt(int ms) {
@@ -102,14 +132,30 @@ class _OutboundListPageState extends State<OutboundListPage> {
       appBar: AppBar(title: const Text("出库台账"), centerTitle: true),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
-          : _orders.isEmpty
+          : _orders.isEmpty && _remote.isEmpty
               ? const Center(child: Text("暂无出库单\n直调提交成功后自动生成", textAlign: TextAlign.center, style: TextStyle(color: Colors.grey)))
               : RefreshIndicator(
                   onRefresh: _load,
                   child: ListView.builder(
                     padding: const EdgeInsets.all(10),
-                    itemCount: _orders.length,
+                    itemCount: _orders.length + _remote.length,
                     itemBuilder: (ctx, i) {
+                      if (i >= _orders.length) {
+                        final ro = _remote[i - _orders.length];
+                        final rItems = List<Map>.from(ro["items"] ?? []);
+                        final rQty = rItems.fold<double>(0, (s, e) => s + ((e["qty"] as num?)?.toDouble() ?? 0));
+                        return Card(
+                          margin: const EdgeInsets.symmetric(vertical: 5),
+                          child: ListTile(
+                            leading: CircleAvatar(backgroundColor: Colors.blueGrey.withOpacity(0.12), child: const Icon(Icons.inventory_2_outlined, color: Colors.blueGrey)),
+                            title: Text("${ro["orderNo"]}  ${_fmtMs(ro["createdAt"])}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                            subtitle: Text("${ro["toLoc"]}\n${rItems.length} 张 · 合计 $rQty ｜ ${ro["operator"]} ｜ 其他设备单据", style: const TextStyle(fontSize: 12)),
+                            isThreeLine: true,
+                            trailing: const Icon(Icons.chevron_right),
+                            onTap: () => _showRemote(ro),
+                          ),
+                        );
+                      }
                       final o = _orders[i];
                       final items = (jsonDecode(o.itemsJson) as List).cast<Map>();
                       final totalQty = items.fold<double>(0, (s, e) => s + ((e["qty"] as num?)?.toDouble() ?? 0));
@@ -217,6 +263,30 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _scanFocus.requestFocus(); });
   }
 
+  bool _checking = false;
+  final Map<int, String> _mesRes = {}; // ⑰标签→MES当前在库位置核对结果
+  Future<void> _checkMes() async {
+    if (_checking || _ob == null || _items.isEmpty) return;
+    setState(() { _checking = true; _mesRes.clear(); });
+    final to = _ob!.toLoc;
+    var okN = 0, badN = 0, missN = 0;
+    final idxs = [for (var i = 0; i < _items.length && i < 30; i++) i];
+    for (var s = 0; s < idxs.length; s += 5) {
+      await Future.wait(idxs.sublist(s, (s + 5) > idxs.length ? idxs.length : s + 5).map((i) async {
+        try {
+          final d = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {"barcode": _items[i]["barcode"].toString()});
+          if (d == null) { _mesRes[i] = "MES查无此标"; missN++; return; }
+          final loc = "${d["WAREHOUSE_NAME"] ?? ""}/${d["DISTRICT_NAME"] ?? ""}/${d["LOC_NAME"] ?? ""}";
+          if (loc == to) { _mesRes[i] = "✓ 已在线边仓"; okN++; }
+          else { _mesRes[i] = "⚠ 现在在 $loc"; badN++; }
+        } catch (_) { _mesRes[i] = "查询失败"; missN++; }
+      }));
+    }
+    if (!mounted) return;
+    setState(() => _checking = false);
+    _toast("去向核对：$okN 已在线边仓 ｜ $badN 位置不符 ｜ $missN 查不到${_items.length > 30 ? "（仅查前30张）" : ""}", err: badN > 0 || missN > 0);
+  }
+
   Future<void> _toggleRow(int i) async {
     setState(() => _items[i]["checked"] = !(_items[i]["checked"] == true));
     await _persist();
@@ -286,6 +356,7 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
       appBar: AppBar(
         title: Text("出库单 ${ob.orderNo}", style: const TextStyle(fontSize: 16)),
         actions: [
+          IconButton(icon: _checking ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.2)) : const Icon(Icons.warehouse_outlined), tooltip: "MES去向核对（标签现是否在线边仓）", onPressed: _checking ? null : _checkMes),
           IconButton(icon: const Icon(Icons.download), tooltip: "导出对照CSV", onPressed: () => _exportCsv()),
           IconButton(icon: const Icon(Icons.restart_alt), tooltip: "重置核对", onPressed: _resetAll),
         ],
@@ -331,7 +402,7 @@ class _OutboundDetailPageState extends State<OutboundDetailPage> {
                     dense: true, onTap: () => _toggleRow(i),
                     leading: Icon(ck ? Icons.check_circle : Icons.radio_button_unchecked, color: ck ? Colors.green : Colors.grey, size: 22),
                     title: Text(e["barcode"], style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
-                    subtitle: Text("数量 ${e["qty"]}${(e["fromLoc"] ?? "").toString().isNotEmpty ? " · 原货位 ${e["fromLoc"]}" : ""}${(e["move"] ?? "").toString().isNotEmpty ? " · ${e["move"] == "AGV" ? "🚗AGV叉来" : "🚶人工"}" : ""}", style: const TextStyle(fontSize: 11)),
+                    subtitle: Text("数量 ${e["qty"]}${(e["fromLoc"] ?? "").toString().isNotEmpty ? " · 原货位 ${e["fromLoc"]}" : ""}${(e["move"] ?? "").toString().isNotEmpty ? " · ${e["move"] == "AGV" ? "🚗AGV叉来" : "🚶人工"}" : ""}${_mesRes[i] != null ? "\n去向核对：${_mesRes[i]}" : ""}", style: const TextStyle(fontSize: 11)),
                   );
                 }).toList(),
               ),
