@@ -139,11 +139,11 @@ class NotifyService {
 
   /// 数字拼播：全部字符可映射为自带样本才播；含无法念的字返回false（交给上层）
   static final Map<String, String> _digMap = {
-    '0': 'voice/d0.wav', '1': 'voice/d1.wav', '2': 'voice/d2.wav', '3': 'voice/d3.wav', '4': 'voice/d4.wav',
-    '5': 'voice/d5.wav', '6': 'voice/d6.wav', '7': 'voice/d7.wav', '8': 'voice/d8.wav', '9': 'voice/d9.wav',
-    '零': 'voice/d0.wav', '一': 'voice/d1.wav', '二': 'voice/d2.wav', '三': 'voice/d3.wav', '四': 'voice/d4.wav',
-    '五': 'voice/d5.wav', '六': 'voice/d6.wav', '七': 'voice/d7.wav', '八': 'voice/d8.wav', '九': 'voice/d9.wav',
-    '十': 'voice/d10.wav', '百': 'voice/d100.wav', '千': 'voice/d1000.wav', '件': 'voice/jian.wav', '点': 'voice/dot.wav',
+    '0': 'assets/voice/d0.wav', '1': 'assets/voice/d1.wav', '2': 'assets/voice/d2.wav', '3': 'assets/voice/d3.wav', '4': 'assets/voice/d4.wav',
+    '5': 'assets/voice/d5.wav', '6': 'assets/voice/d6.wav', '7': 'assets/voice/d7.wav', '8': 'assets/voice/d8.wav', '9': 'assets/voice/d9.wav',
+    '零': 'assets/voice/d0.wav', '一': 'assets/voice/d1.wav', '二': 'assets/voice/d2.wav', '三': 'assets/voice/d3.wav', '四': 'assets/voice/d4.wav',
+    '五': 'assets/voice/d5.wav', '六': 'assets/voice/d6.wav', '七': 'assets/voice/d7.wav', '八': 'assets/voice/d8.wav', '九': 'assets/voice/d9.wav',
+    '十': 'assets/voice/d10.wav', '百': 'assets/voice/d100.wav', '千': 'assets/voice/d1000.wav', '件': 'assets/voice/jian.wav', '点': 'assets/voice/dot.wav',
   };
 
   static Future<bool> _speakDigits(String text) async {
