@@ -98,6 +98,37 @@ function backupDb() {
   } catch (e) { console.log('[backup] 失败：', e.message); }
 }
 setInterval(backupDb, 30 * 60 * 1000).unref();
+// ---- G3 数据归档：每日18:00把超期数据（默认180天）挪入 data/archive/YYYY-MM-*.json 再从主库移除；先写档成功才删，档案可回捞 ----
+let _archLast = '';
+function archiveOld() {
+  try {
+    const d = new Date();
+    if (d.getHours() < 18) return;
+    const day = d.toISOString().slice(0, 10);
+    if (_archLast === day) return; _archLast = day;
+    const days = Number(db.archiveAfterDays) || 180;
+    const cut = Date.now() - days * 86400000;
+    const dir = path.join(DATA_DIR, 'archive'); fs.mkdirSync(dir, { recursive: true });
+    const mon = day.slice(0, 7);
+    let moved = 0;
+    const move = (name, obj, tOf) => {
+      const keep = {}, out = {};
+      for (const k of Object.keys(obj || {})) { const t = tOf(obj[k]); if (Number.isFinite(t) && t > 0 && t < cut) out[k] = obj[k]; else keep[k] = obj[k]; }
+      const n = Object.keys(out).length; if (!n) return;
+      const f = path.join(dir, `${mon}-${name}.json`);
+      let all = {}; try { if (fs.existsSync(f)) all = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) {}
+      Object.assign(all, out);
+      fs.writeFileSync(f + '.tmp', JSON.stringify(all)); fs.renameSync(f + '.tmp', f); // 先落盘成功
+      obj === db.scanlog ? db.scanlog = keep : obj === db.outbound ? db.outbound = keep : db.issuedArchive = keep; // 再删主库
+      moved += n;
+    };
+    move('scanlog', db.scanlog, (v) => Number(v && v.t) || 0);
+    move('outbound', db.outbound, (v) => Date.parse(v && v.at || v && v.time || '') || 0);
+    if ((db.notifications || []).length > 2000) { const old = db.notifications.filter((x) => Date.parse(x.time) < cut); if (old.length) { db.notifications = db.notifications.filter((x) => Date.parse(x.time) >= cut); moved += old.length; } }
+    if (moved) { save(); console.log(`[archive] 归档 ${moved} 条超${days}天数据 → data/archive/${mon}-*（${day}）`); }
+  } catch (e) { console.log('[archive] 失败：', e.message); }
+}
+setInterval(archiveOld, 30 * 60 * 1000).unref();
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
 function newId(p) { return p + '_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex'); }
 function newToken() { return crypto.randomBytes(24).toString('hex'); }
@@ -694,6 +725,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, token, expiresAt: Date.now() + SESSION_TTL_MS, user: safeUser(u), features: db.features[u.role] || {} });
     }
 
+    // ---- G1 健康端点：无鉴权，供PDA失联检测/运维探测/网页健康分 ----
+    if (req.method === 'GET' && p === '/api/health') {
+      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length } });
+    }
+
     // ---- 以下均需登录 ----
     if (p.startsWith('/api/')) {
       const a = auth(req);
@@ -990,6 +1026,18 @@ const server = http.createServer(async (req, res) => {
       }
       if (req.method === 'GET' && p === '/api/watchlist') {
         return send(res, 200, { ok: true, list: (db.watchlist || []).filter((w) => w.userId === u.id) });
+      }
+      if (req.method === 'POST' && p === '/api/agv/alarm/ack') { // G2 告警认领：body={id} 处理人落库+广播，停止升级
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '无AGV操作权限' });
+        const aid = body && body.id;
+        const rec = (db.rcsCarAlarm || {})[aid];
+        if (!rec) return send(res, 400, { ok: false, msg: '该告警已恢复或不存在' });
+        rec.ackBy = u.name; rec.ackAt = Date.now();
+        const msg = `🙋 ${u.name} 已认领处理：AGV${String(aid).padStart(2, '0')}（${rec.fp}）`;
+        db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, ''));
+        if (db.carAlarms) db.carAlarms.push({ at: Date.now(), id: aid, name: 'AGV' + String(aid).padStart(2, '0'), kind: 'ack', msg });
+        save();
+        return send(res, 200, { ok: true });
       }
       if (req.method === 'POST' && p === '/api/watchlist') {
         const b = await readBody(req);
@@ -2072,13 +2120,18 @@ async function carAlarmWatch(tk, nowMs) {
     }
     if (!rec || rec.fp !== fp) { db.rcsCarAlarm[id] = { fp, since: nowMs, notified: false, severe: estop }; continue; } // 新告警/变化：重置计时
     const j = db.rcsCarAlarm[id];
-    if (j.notified) continue;
-    if (nowMs - j.since < (j.severe ? 0 : 90 * 1000)) continue; // 急停立即，其余宽限90s防瞬时抖动
-    j.notified = true;
-    const msg = `🚨 ${name} 车辆告警：${fp}${j.severe ? '（急停，请立即处理）' : ''}`;
-    db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, ''));
-    logAlarm(id, name, 'alarm', msg);
-    console.log('[car-alarm] ' + msg);
+    if (!j.notified) {
+      if (nowMs - j.since < (j.severe ? 0 : 90 * 1000)) continue; // 急停立即，其余宽限90s防瞬时抖动
+      j.notified = true; j.esc = 0;
+      const msg = `🚨 ${name} 车辆告警：${fp}${j.severe ? '（急停，请立即处理·可点认领）' : ''}`;
+      db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, ''));
+      logAlarm(id, name, 'alarm', msg);
+      console.log('[car-alarm] ' + msg);
+    } else if (j.severe && !j.ackBy) { // G2 急停类未认领升级
+      const mins = (nowMs - j.since) / 60000;
+      if (!j.esc && mins >= 10) { j.esc = 1; const m2 = `⏫ ${name} 急停告警10分钟无人认领，请管理员协调处理`; db.users.filter((x) => x.role === 'admin' && x.enabled).forEach((x) => notify(x.id, 'car_alarm', m2, '')); if (db.carAlarms) db.carAlarms.push({ at: nowMs, id, name, kind: 'escalate', msg: m2 }); console.log('[car-alarm-esc] ' + m2); }
+      else if (j.esc === 1 && mins >= 30) { j.esc = 2; const m3 = `🔴 ${name} 急停告警30分钟仍未处理，请现场核查！`; db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', m3, '')); if (db.carAlarms) db.carAlarms.push({ at: nowMs, id, name, kind: 'redflag', msg: m3 }); console.log('[car-alarm-red] ' + m3); }
+    }
   }
 }
 
@@ -2120,4 +2173,4 @@ function buildFunnel(days) {
   return { call: stat('call'), queue: stat('queue'), dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
 }
 
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); backupDb(); });
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); backupDb(); archiveOld(); });

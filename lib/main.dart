@@ -1330,10 +1330,22 @@ class _MainPageState extends State<MainPage>
         const Duration(seconds: 30), (_) => _pollNotifications());
   }
 
+  int _srvFails = 0; // G1 服务器失联计数：连续10次轮询失败(约5分钟)报警一次，恢复复位
+  bool _srvDownWarned = false;
   Future<void> _pollNotifications() async {
     if (Auth.user == null) return;
     final r = await AuthApi.notifications();
-    if (!mounted || r["ok"] != true) return;
+    if (!mounted || r["ok"] != true) {
+      _srvFails++;
+      if (_srvFails >= 10 && !_srvDownWarned) {
+        _srvDownWarned = true;
+        unawaited(NotifyService.speak("服务器连接中断，请检查网络"));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("⚠️ 服务器失联超过5分钟：同步与通知已暂停，请联系管理员检查服务器"), backgroundColor: Colors.redAccent, duration: Duration(seconds: 8)));
+      }
+      return;
+    }
+    if (_srvFails > 0) { _srvFails = 0; _srvDownWarned = false; }
+    if (!mounted) return;
     final list = List<Map>.from(r["notifications"] ?? []);
     if (list.isEmpty) return;
     final first = list.first;
