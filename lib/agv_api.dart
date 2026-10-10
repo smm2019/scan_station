@@ -55,7 +55,8 @@ class AgvApi {
       DateTime.now().microsecondsSinceEpoch.toRadixString(16);
 
   static Future<Map<String, dynamic>?> _raw(
-      String method, String path, String? body, String? token) async {
+      String method, String path, String? body, String? token,
+      {bool plain = false}) async {
     final cfg = await AgvConfig.get();
     HttpClient? client;
     try {
@@ -63,7 +64,10 @@ class AgvApi {
       final req =
           await client.openUrl(method, Uri.parse("http://${cfg["host"]}$path"));
       req.headers.set("Accept", "*/*");
-      if (body != null) req.headers.contentType = ContentType.json;
+      if (body != null) {
+        req.headers.contentType =
+            plain ? ContentType("text", "plain", charset: "utf-8") : ContentType.json;
+      }
       if (token != null) req.headers.set("token", token);
       if (body != null) req.write(body);
       final resp = await req.close().timeout(_timeout);
@@ -147,15 +151,15 @@ class AgvApi {
 
   /// AGV系统请求：自动带token，过期静默重登一次。返回 {ok,data} / {ok:false,msg}
   static Future<Map<String, dynamic>> req(String method, String path,
-      {Map? body, String? rawBody}) async {
+      {Map? body, String? rawBody, bool plain = false}) async {
     var t = await token();
     if (t == null) return {"ok": false, "msg": "AGV系统未登录：请到 设置→AGV调度系统 填写账号密码"};
     final b = rawBody ?? (body == null ? null : jsonEncode(body));
-    var r = await _raw(method, path, b, t);
+    var r = await _raw(method, path, b, t, plain: plain);
     if (_authFail(r)) {
       t = await login();
       if (t == null) return {"ok": false, "msg": "AGV系统登录失效且自动重登失败"};
-      r = await _raw(method, path, b, t);
+      r = await _raw(method, path, b, t, plain: plain);
     }
     if (r == null) return {"ok": false, "msg": "AGV系统无响应"};
     final j = r["json"];
@@ -253,12 +257,14 @@ class AgvApi {
       case "recoverPut":
         return req("GET", "/task/recoverTask?dispatchNo=$enc&detailId=1");
       case "top":
-        return req("POST", "/task/taskToTop", rawBody: '"$dispatchNo"');
+        // ㉑门户封装实证：V.delete(url,no)→axios{method:DELETE,data:no字符串原样直发}。
+        // 两处偏差致500：①置顶此前用POST（门户是DELETE）；②body带JSON引号→后端@RequestBody String拿到脏值查无任务。
+        // 现对齐门户：DELETE + 裸文本body，并附查询参数双保险（@RequestParam也能命中）。
+        return req("DELETE", "/task/taskToTop?dispatchNo=$enc", rawBody: dispatchNo, plain: true);
       case "cancelTop":
-        return req("POST", "/task/taskToCancelTop", rawBody: '"$dispatchNo"');
+        return req("DELETE", "/task/taskToCancelTop?dispatchNo=$enc", rawBody: dispatchNo, plain: true);
       case "delete":
-        return req("DELETE", "/task/deleteByDispatchNo",
-            rawBody: '"$dispatchNo"');
+        return req("DELETE", "/task/deleteByDispatchNo?dispatchNo=$enc", rawBody: dispatchNo, plain: true);
       default:
         return {"ok": false, "msg": "未知操作"};
     }
