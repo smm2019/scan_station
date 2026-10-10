@@ -192,14 +192,16 @@ class _RequisitionPageState extends State<RequisitionPage> with AutomaticKeepAli
           ? const Center(child: CircularProgressIndicator())
           : _err.isNotEmpty
               ? Center(child: Text(_err, style: const TextStyle(color: Colors.red)))
-              : _shown.isEmpty
-                  ? Center(child: Text(_reqs.isEmpty ? "暂无领料单" : "没有匹配「$_search」的领料记录", style: const TextStyle(color: Colors.grey)))
+              : _reqs.isEmpty
+                  ? const Center(child: Text("暂无领料单", style: TextStyle(color: Colors.grey)))
                   : RefreshIndicator(onRefresh: _load, child: Column(children: [
                       Padding(padding: const EdgeInsets.fromLTRB(10, 8, 10, 0), child: TextField(
                         onChanged: (v) => setState(() => _search = v),
                         decoration: InputDecoration(hintText: "搜零件号/物料名/单号/日期（如 10-09）", isDense: true, prefixIcon: const Icon(Icons.search, size: 20), suffixIcon: _search.isEmpty ? null : IconButton(icon: const Icon(Icons.clear, size: 18), onPressed: () => setState(() => _search = "")), border: const OutlineInputBorder()),
                       )),
-                      Expanded(child: ListView.builder(
+                      Expanded(child: _shown.isEmpty
+                          ? Center(child: Text("没有匹配「$_search」的领料记录，清空搜索可看全部", style: const TextStyle(color: Colors.grey)))
+                          : ListView.builder(
                       padding: const EdgeInsets.fromLTRB(10, 8, 10, 90),
                       itemCount: _shown.length,
                       itemBuilder: (ctx, i) {

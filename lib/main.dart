@@ -1215,6 +1215,7 @@ class _MainPageState extends State<MainPage>
   final TextEditingController _ledgerLocCtrl =
       TextEditingController(); //采集页顺手登记：货位账本编码（选填）
   Timer? _ledgerSyncTimer; //账本同步防抖：连扫攒一批再全量推
+  String _autoCallTip = ""; // ㉒自动叫车结果状态条（常驻，防SnackBar被"采集保存成功"顶掉）
 
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
@@ -2062,6 +2063,7 @@ class _MainPageState extends State<MainPage>
       // ⑳扫码自动入库：账本登记成功后触发；校验链与手动提交一致，失败不影响账本
       if (_workType == 0 && autoCallStation.isNotEmpty && loc.startsWith('NB02-') && ctype.isNotEmpty && await WmasConfig.autoCallEnabled()) {
         if (_palletMode) {
+          if (mounted) setState(() => _autoCallTip = "ℹ️ 整托模式：扫完本托请手动「提交任务」");
           if (mounted)
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text("整托模式不自动叫车：托上全部码扫完后请手动「提交任务」"),
@@ -3179,33 +3181,7 @@ class _MainPageState extends State<MainPage>
                           const SizedBox(height: 6),
                           if (_workType == 0) _buildStationPanel(),
                           if (_workType == 1) _buildGroundLocPanel(),
-                          _buildLedgerExtras(),
-                          const SizedBox(height: 8),
-                          Row(
-                            children: [
-                              const Text("货位账本登记",
-                                  style: TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w500)),
-                              const SizedBox(width: 6),
-                              Text("选填 · 填了才写账本",
-                                  style: TextStyle(
-                                      fontSize: 12, color: Colors.grey)),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          TextField(
-                            controller: _ledgerLocCtrl,
-                            textCapitalization: TextCapitalization.characters,
-                            enabled: !_palletMode || _currentPalletId != null,
-                            decoration: InputDecoration(
-                              hintText: _palletMode && _currentPalletId == null
-                                  ? "整托：先扫首件，再填此项（如 NB02-A-08-2F）"
-                                  : "完整货位编码（如 NB02-A-08-2F / NB03-B-13-07）",
-                              isDense: true,
-                              border: const OutlineInputBorder(),
-                            ),
-                          ),
+                          _buildLedgerExtras(), // ㉑旧重复登记块已删：标题+输入框+自动/选位/提交按钮统一在此
                         ],
                       ),
                     ),

@@ -126,6 +126,16 @@ extension CollectionLedgerExt on _MainPageState {
             ],
           ],
         ),
+        if (_autoCallTip.isNotEmpty)
+          Padding(padding: const EdgeInsets.only(top: 5), child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            decoration: BoxDecoration(
+                color: _autoCallTip.startsWith("🚗") ? const Color(0xFFE8F5E9) : (_autoCallTip.startsWith("⚠️") ? const Color(0xFFFFF3E0) : const Color(0xFFECEFF1)),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: _autoCallTip.startsWith("🚗") ? Colors.green.shade200 : (_autoCallTip.startsWith("⚠️") ? Colors.orange.shade200 : Colors.blueGrey.shade200))),
+            child: Text(_autoCallTip, style: TextStyle(fontSize: 11.5, color: _autoCallTip.startsWith("🚗") ? Colors.green.shade800 : (_autoCallTip.startsWith("⚠️") ? Colors.orange.shade900 : Colors.blueGrey))),
+          )),
       ],
     );
   }
@@ -287,9 +297,10 @@ extension CollectionLedgerExt on _MainPageState {
   /// ⑳扫码自动入库叫车：与手动「提交任务」同校验链（会话防重/容器主档反查）；失败只提示不动账本
   Future<void> _autoCallInbound(String st, String loc, String ctype) async {
     try {
-      if (_colCalled.contains(loc)) return; //本会话已叫过：静默跳过（同手动防重口径）
+      if (_colCalled.contains(loc)) { if (mounted) setState(() => _autoCallTip = "ℹ️ $loc 本会话已叫过车（防重复）"); return; }
       final cands = await WmasMaster.containerCodesOf(ctype);
       if (cands.isEmpty) {
+        if (mounted) setState(() => _autoCallTip = "⚠️ 自动叫车未发：主档无「$ctype」容器｜请手动「提交任务」");
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("自动叫车未发：主档无「$ctype」容器编码，请手动「提交任务」"), backgroundColor: Colors.orange));
         return;
       }
@@ -302,19 +313,22 @@ extension CollectionLedgerExt on _MainPageState {
           content: SizedBox(width: 300, height: (cands.length > 8 ? 8 : cands.length) * 44 + 30, child: ListView(children: cands.map((c) => RadioListTile<String>(dense: true, contentPadding: EdgeInsets.zero, title: Text(c, style: const TextStyle(fontSize: 13, fontFamily: "monospace")), value: c, groupValue: null, onChanged: (v) => Navigator.pop(dc, v))).toList())),
           actions: [TextButton(onPressed: () => Navigator.pop(dc), child: const Text("取消（稍后手动提交）"))],
         ));
-        if (picked == null) return;
+        if (picked == null) { if (mounted) setState(() => _autoCallTip = "ℹ️ 已取消容器选择，未叫车｜可手动「提交任务」"); return; }
         cn = picked;
       }
       final r = await WmasTask.createCarry(startPoint: st, endPoint: loc, containerNo: cn);
       if (r["ok"] == true) {
         _colCalled.add(loc);
         LocalLog.op('自动入库叫车', "$st→$loc 容器$cn");
+        if (mounted) setState(() => _autoCallTip = "🚗 自动叫车成功：$st → $loc（容器 $cn）");
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("🚗 自动叫车：${r["msg"]}"), backgroundColor: const Color(0xFF2E7D32), duration: const Duration(seconds: 3)));
       } else if (mounted) {
+        setState(() => _autoCallTip = "⚠️ 自动叫车失败：${r["msg"]}｜可手动「提交任务」");
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("自动叫车失败：${r["msg"]}（账本已登记，可手动「提交任务」）"), backgroundColor: Colors.orange, duration: const Duration(seconds: 5)));
       }
     } catch (e) {
       debugPrint('[auto-call] $e');
+      if (mounted) setState(() => _autoCallTip = "⚠️ 自动叫车异常：$e");
     }
   }
 
