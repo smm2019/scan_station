@@ -43,7 +43,7 @@ String reqTimeLocal(dynamic s) {
   if (str.isEmpty) return "";
   final dt = DateTime.tryParse(str);
   if (dt == null) return str.length >= 16 ? str.substring(5, 16).replaceFirst("T", " ") : str;
-  final lo = dt.toLocal();
+  final lo = DateTime.fromMillisecondsSinceEpoch(dt.toLocal().millisecondsSinceEpoch + kClockOffsetMs); // ㉒G11 按服务器时钟校正
   return "${lo.month.toString().padLeft(2, "0")}-${lo.day.toString().padLeft(2, "0")} ${lo.hour.toString().padLeft(2, "0")}:${lo.minute.toString().padLeft(2, "0")}";
 }
 

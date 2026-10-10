@@ -50,6 +50,7 @@ class _DiagPageState extends State<DiagPage> {
       } catch (e) { add("本机IP", "读取失败：$e"); }
       final server = await AuthStore.serverUrl();
       add("鉴权服务器", server.isEmpty ? "未配置" : server);
+      add("时钟偏移", "${(kClockOffsetMs / 1000).toStringAsFixed(0)} 秒（服务器-本机；超±120秒请校准设备时间）");
       if (server.isNotEmpty) {
         try {
           final t0 = DateTime.now();

@@ -3,6 +3,9 @@ part of 'main.dart';
 // 与 server/server.js 配套：登录发 token，/api/me 心跳，停用/过期强制回登录页。
 // 离线宽限：心跳遇网络错误时，凭 lastVerifiedAt 24 小时内可继续使用（缓存角色与功能开关）。
 
+/// ㉒G11 服务器时钟偏移（毫秒）：本机显示时间统一校正用；心跳/登录时更新
+int kClockOffsetMs = 0;
+
 class AuthUser {
   final String id, username, name, role;
   final bool mustChangePw;
@@ -230,6 +233,8 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     }
   }
   void _apply(Map r) {
+    final st = DateTime.tryParse(r["serverTime"]?.toString() ?? "");
+    if (st != null) kClockOffsetMs = st.toUtc().difference(DateTime.now().toUtc()).inMilliseconds; // ㉒G11 服务器-本机偏差
     Auth.user = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
     Auth.features = Map<String, bool>.from(r["features"] ?? {});
     AuthStore.markVerified();

@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>仓库管理控制台</title>
+<style>
+:root{--bg:#f4f6fa;--card:#fff;--ink:#1c2430;--sub:#6b7a8d;--pri:#515bd4;--ok:#2e7d32;--warn:#e65100;--bad:#c62828;--line:#e3e8f0;--r:10px}
+[data-theme=dark]{--bg:#101823;--card:#18222f;--ink:#e8eef5;--sub:#8fa1b3;--pri:#7c86e8;--line:#26313f}
+*{box-sizing:border-box;margin:0}body{font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink)}
+button{cursor:pointer;border:0;border-radius:8px;font:inherit}input,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px}
+.hide{display:none!important}
+#login{max-width:340px;margin:12vh auto;padding:28px}
+#login input{width:100%;margin-bottom:10px}
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--pri);color:#fff;position:sticky;top:0;z-index:5}
+header b{font-size:16px}header .sp{flex:1}
+nav{display:flex;gap:6px;padding:8px 12px;background:var(--card);border-bottom:1px solid var(--line);overflow-x:auto}
+nav button{padding:7px 14px;background:transparent;color:var(--sub);white-space:nowrap}
+nav button.on{background:var(--pri);color:#fff}
+main{padding:14px;max-width:1280px;margin:0 auto}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.kpi{padding:12px}.kpi .n{font-size:26px;font-weight:800;font-variant-numeric:tabular-nums}.kpi .t{color:var(--sub);font-size:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--sub);font-weight:600;position:sticky;top:0;background:var(--card)}
+.mono{font-family:Consolas,monospace}
+.tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px}
+.t-p{background:#fff3e0;color:#e65100}.t-a{background:#e3f2fd;color:#1565c0}.t-r{background:#e0f2f1;color:#00695c}.t-d{background:#e8f5e9;color:#2e7d32}.t-x{background:#eceff1;color:#78909c}
+.pill{padding:5px 12px;background:var(--pri);color:#fff}.pill.g{background:var(--ok)}.pill.o{background:var(--warn)}.pill.r{background:var(--bad)}.pill.q{background:#8a97a8}
+a{color:var(--pri)}
+#mask{position:fixed;inset:0;background:rgba(8,12,20,.45);display:flex;align-items:center;justify-content:center;z-index:9}
+.dlg{background:var(--card);border-radius:12px;padding:18px;width:min(440px,92vw);max-height:86vh;overflow:auto}
+.dlg h3{margin-bottom:10px}.dlg label{display:block;font-size:12px;color:var(--sub);margin:8px 0 3px}
+.dlg input,.dlg select{width:100%}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#26323e;color:#fff;padding:9px 18px;border-radius:8px;z-index:20;max-width:90vw}
+@media(max-width:640px){.grid{grid-template-columns:repeat(2,1fr)}main{padding:8px}header b{font-size:14px}}
+</style></head><body>
+<div id="login" class="card"><h2 style="margin-bottom:14px"> 仓库管理控制台</h2>
+<input id="lu" placeholder="账号" autocomplete="username"><input id="lp" type="password" placeholder="密码" autocomplete="current-password">
+<button class="pill" style="width:100%;padding:10px" onclick="doLogin()">登 录</button>
+<div id="le" style="color:var(--bad);font-size:12px;margin-top:8px"></div></div>
+<div id="app" class="hide">
+<header><b>🏭 仓库控制台</b><span class="sp"></span><span id="who" style="font-size:12px;opacity:.85"></span>
+<button style="background:rgba(255,255,255,.18);color:#fff;padding:5px 10px" onclick="location.reload()">⟳</button>
+<button style="background:rgba(255,255,255,.18);color:#fff;padding:5px 10px" onclick="th()"><span id="thb">🌙</span></button>
+<button style="background:rgba(255,255,255,.18);color:#fff;padding:5px 10px" onclick="out()">退出</button></header>
+<nav id="nav"></nav><main id="main"></main></div>
+<div id="mask" class="hide"><div class="dlg" id="dlg"></div></div>
+<script>
+const $=s=>document.querySelector(s),T=(m,g)=>{const e=document.createElement('div');e.className='toast';if(g)e.style.background='var(--ok)';e.textContent=m;document.body.appendChild(e);setTimeout(()=>e.remove(),3200)};
+let TK=localStorage.getItem('ck_tok')||'',U=JSON.parse(localStorage.getItem('ck_u')||'null'),TAB='dash',TM={};
+async function api(p,o={}){o.headers=Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+TK},o.headers||{});if(o.body&&typeof o.body!=='string')o.body=JSON.stringify(o.body);
+ const r=await fetch(p,o);if(r.status==401||r.status==403){out();throw 0}return r.json()}
+async function doLogin(){const u=$('#lu').value.trim(),p=$('#lp').value;$('#le').textContent='';
+ try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});const j=await r.json();
+ if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=j.user;localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));go('')}catch(e){$('#le').textContent='网络错误'}}
+function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
+function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':''}
+const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['ledger','📦 货位账本'],['fix','🛠 修正与返架'],['dict','🔤 字典']];
+function go(t){TAB=t||TAB;$('#nav').innerHTML=TABS.map(([k,n])=>`<button class="${k==TAB?'on':''}" onclick="go('${k}')">${n}</button>`).join('');({dash:pgDash,reqs:pgReqs,ledger:pgLedger,fix:pgFix,dict:pgDict})[TAB]()}
+const ST={'pending':['待接单','t-p'],'accepted':['已接单','t-a'],'ready':['待签收','t-r'],'done':['已签收','t-d'],'rejected':['已拒单','t-x'],'cancelled':['已取消','t-x']};
+async function pgDash(){$('#main').innerHTML='<div class="card">加载中…</div>';
+ const j=await api('/api/dashboard');const k=j.kpi||{},tr=j.trend||[];
+ const cell=(n,t,c)=>`<div class="card kpi"><div class="n" style="color:${c||'var(--ink)'}">${n}</div><div class="t">${t}</div></div>`;
+ const mx=Math.max(1,...tr.map(x=>Math.max(x.in,x.out)));
+ $('#main').innerHTML=`<div class="row"><span style="color:var(--sub)">数据时刻 ${new Date(j.at).toLocaleTimeString('zh-CN')} · 30 秒自动刷新</span></div>
+<div class="grid">${cell(k.inBoxes,'今日入库(标签)')}${cell(k.inQty,'今日入库件数','var(--ok)')}${cell(k.outToday,'今日出库拣下','var(--warn)')}${cell(k.agvToday,'今日AGV搬运','var(--pri)')}${cell(k.agvQueue,'队列中','var(--pri)')}${cell(k.stockBoxes,'在库框数')}${cell(k.stockLocs,'占用货位')}${cell(k.pending,'待接单',k.pending?'var(--warn)':'var(--ok)')}${cell(k.accepted,'备料中')}${cell(k.ready,'待签收')}${cell(k.stnBusy+'/'+k.stnTotal,'站台在用','var(--pri)')}</div>
+<div class="card" style="margin-top:12px"><b style="font-size:13px">近 7 日入库/出库（标签数）</b><div style="display:flex;gap:8px;align-items:flex-end;height:110px;margin-top:10px">
+${tr.map(x=>`<div style="flex:1;text-align:center"><div style="display:flex;gap:2px;align-items:flex-end;height:80px;justify-content:center">
+<div style="width:14px;background:var(--ok);height:${x.in/mx*78+2}px;border-radius:3px 3px 0 0" title="入 ${x.in}"></div>
+<div style="width:14px;background:var(--warn);height:${x.out/mx*78+2}px;border-radius:3px 3px 0 0" title="出 ${x.out}"></div></div>
+<div style="font-size:10px;color:var(--sub)">${x.d}</div></div>`).join('')}</div></div>`}
+async function pgReqs(){const q=TM.q||'';
+ $('#main').innerHTML=`<div class="card"><div class="row"><input id="rq" placeholder="搜单号/零件/人" value="${q}" style="flex:1;min-width:180px"><select id="rs"><option value="">全部状态</option>${Object.entries(ST).map(([k,v])=>`<option ${TM.s==k?'selected':''} value="${k}">${v[0]}</option>`).join('')}</select><button class="pill" onclick="TM.q=$('#rq').value;TM.s=$('#rs').value;pgReqs()">查询</button></div><div id="rlist">加载中…</div></div>`;
+ const j=await api('/api/requisitions');let rs=j.reqs||[];
+ if(TM.s)rs=rs.filter(r=>r.status==TM.s);
+ if(q){const k=q.toLowerCase();rs=rs.filter(r=>(r.no+' '+(r.byName||'')+(r.items||[]).map(i=>i.partNo+i.itemName).join(' ')).toLowerCase().includes(k))}
+ rs=rs.slice(0,120);
+ $('#rlist').innerHTML=`<div style="overflow:auto;max-height:70vh"><table><thead><tr><th>单号</th><th>下单人</th><th>状态</th><th>明细</th><th>时间</th><th></th></tr></thead><tbody>${rs.map(r=>`<tr><td class="mono">${r.rush?'🔥':''}${r.no}</td><td>${r.byName||''}</td><td><span class="tag ${(ST[r.status]||['?','t-x'])[1]}">${(ST[r.status]||['?'])[0]}</span></td><td style="max-width:340px">${(r.items||[]).map(i=>`${i.partNo}×${i.qty}`).join('、')}</td><td style="color:var(--sub);font-size:12px">${(r.createdAt||'').slice(5,16).replace('T',' ')}</td><td><a href="/print/requisition?id=${r.id}" target="_blank">打印</a></td></tr>`).join('')||'<tr><td colspan=6 style="color:var(--sub)">无匹配</td></tr>'}</tbody></table></div>`}
+async function pgLedger(){const q=TM.lq||'';
+ $('#main').innerHTML=`<div class="card"><div class="row"><input id="lq" placeholder="标签号/货位前缀（如 NB03-A-13）" value="${q}" style="flex:1;min-width:200px"><button class="pill" onclick="TM.lq=$('#lq').value;pgLedger()">查询</button><span id="lc" style="color:var(--sub);font-size:12px"></span></div><div id="llist">加载中…</div></div>`;
+ const j=await api('/api/ledger'+(q?'?c='+encodeURIComponent(q.split('-')[0]==q?encodeURIComponent(q):'')+(q.includes('-')?'&l='+encodeURIComponent(q):''):''));
+ const items=j.items||[];$('#lc').textContent=`共 ${items.length} 条 · 账本v${j.rev} ${j.by||''} ${(j.at||'').slice(5,16).replace('T',' ')}`;
+ $('#llist').innerHTML=`<div style="overflow:auto;max-height:70vh"><table><thead><tr><th>货位</th><th>标签号</th><th>零件号</th><th>物料</th><th>数量</th><th>批次</th><th>登记人/时间</th></tr></thead><tbody>${items.slice(0,500).map(x=>`<tr><td class="mono">${x.l}</td><td class="mono">${x.c}</td><td class="mono">${x.p||''}</td><td>${x.n||''}</td><td>${x.q||''}</td><td>${x.b||''}</td><td style="color:var(--sub);font-size:12px">${x.by||''} ${x.t?new Date(x.t).toLocaleString('zh-CN',{hour12:false}).slice(5,16):''}</td></tr>`).join('')||'<tr><td colspan=7 style="color:var(--sub)">无数据</td></tr>'}</tbody></table>${items.length>500?'<div style="color:var(--sub);font-size:12px;padding:6px">仅显示前500条，请缩小查询范围</div>':''}</div>`}
+function dlg(h){$('#dlg').innerHTML=h;$('#mask').classList.remove('hide')}
+$('#mask')&&$('#mask').addEventListener('click',e=>{if(e.target.id=='mask')$('#mask').classList.add('hide')});
+async function doFix(body,btn){btn.disabled=true;try{const j=await api('/api/ledger/fix',
+ {method:'POST',body});if(j.ok){T('✅ '+(j.msg||'已修正'),1);$('#mask').classList.add('hide');pgFix()}else T('❌ '+(j.msg||'失败'))}catch(e){T('请求失败')}btn.disabled=false}
+function fixDlg(act,code){const L={move:['改位','新货位（如 NB02-A-08-2F）'],add:['补登记','货位'],remove:['消位（拣下）','']}[act];
+ dlg(`<h3>货位修正 · ${L[0]}</h3><label>标签号 *</label><input id="fx_c" class="mono" value="${code||''}">${act!='remove'?`<label>${L[1]} *</label><input id="fx_l" class="mono" placeholder="NB02-A-08-2F / NB03-B-13-07">`:''}<label>原因 *（必填，进审计）</label><input id="fx_r" placeholder="如：现场核对实际在B-05，原登记笔误"><div class="row" style="margin-top:14px;justify-content:flex-end"><button class="pill q" onclick="document.getElementById('mask').classList.add('hide')">取消</button><button class="pill" onclick="doFix({action:'${act}',code:fx_c.value.trim().toUpperCase(),${act!='remove'?"loc:fx_l.value.trim().toUpperCase(),":''}reason:fx_r.value.trim()},this)">确认提交</button></div>`)}
+function retDlg(){dlg(`<h3>🔄 返架登记（已出库/错发的框回仓）</h3>
+<label>货物标签号 *</label><input id="rt_c" class="mono" oninput="rtLookup()"><div id="rt_ctx" style="font-size:12px;color:var(--sub);margin:6px 0;min-height:18px"></div>
+<label>回库货位 *（货架位或地面格位）</label><input id="rt_l" class="mono" placeholder="NB02-A-08-2F / NB03-B-13-07">
+<label>返架原因 *（如：线边多余退回 / 错发收回）</label><input id="rt_r">
+<div class="row" style="margin-top:14px;justify-content:flex-end"><button class="pill q" onclick="document.getElementById('mask').classList.add('hide')">取消</button><button class="pill g" onclick="retGo(this)">确认返架</button></div>`)}
+async function rtLookup(){const c=$('#rt_c').value.trim().toUpperCase();if(c.length<4){$('#rt_ctx').textContent='';return}
+ try{const j=await api('/api/outbound?c='+encodeURIComponent(c));const hit=(j.items||[]).flatMap(o=>(o.items||[]).filter(i=>(i.barcode||'').toUpperCase()==c).map(i=>o)).slice(0,2);
+ $('#rt_ctx').textContent=hit.length?'原出库单：'+hit.map(o=>`${o.orderNo}→${o.toLoc}`).join('；'):'未找到该标签的出库记录（可直接补登记）'}catch(e){}}
+async function retGo(btn){btn.disabled=true;try{const j=await api('/api/ledger/return',{method:'POST',body:{code:$('#rt_c').value.trim().toUpperCase(),loc:$('#rt_l').value.trim().toUpperCase(),reason:$('#rt_r').value.trim()}});
+ if(j.ok){T('✅ '+j.msg,1);$('#mask').classList.add('hide')}else T('❌ '+(j.msg||'失败'))}catch(e){T('请求失败')}btn.disabled=false}
+function pgFix(){const can=(U.features||{}).location_reg;
+ $('#main').innerHTML=`<div class="card"><h3 style="margin-bottom:6px">🛠 账本修正与返架</h3><p style="color:var(--sub);font-size:12.5px;margin-bottom:12px">办公室发现问题直接改，不必跑到车间拿 PDA。所有动作<b>原因必填</b>、服务器留痕（前后值可追溯）、各 PDA 下次拉取自动生效。</p>
+ ${can?`<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr))">
+<button class="pill" onclick="fixDlg('move')"> 改位</button><button class="pill" onclick="fixDlg('add')">➕ 补登记</button><button class="pill r" onclick="fixDlg('remove')">➖ 消位（拣下）</button><button class="pill g" onclick="retDlg()">🔄 返架登记</button></div>`:'<div style="color:var(--warn)">当前账号无「位置登记」权限，不能修正账本</div>'}
+<div id="fixlog" style="margin-top:14px">最近修正记录：<span id="fl">加载中…</span></div></div>`;
+ if(can)api('/api/ledger/fixes?limit=8').then(j=>{$('#fl').innerHTML=(j.list||[]).map(x=>`<div style="font-size:12px;color:var(--sub);border-bottom:1px dashed var(--line);padding:4px 0">${x.time} <b style="color:var(--ink)">${x.by}</b> ${x.act} ${x.code}${x.from?'（'+x.from+'→'+x.to+'）':''}：${x.reason}</div>`).join('')||'暂无'}).catch(()=>{})}
+async function pgDict(){
+ $('#main').innerHTML=`<div class="card"><div class="row"><input id="dq" placeholder="零件号/物料名" style="flex:1;min-width:200px"><button class="pill" onclick="dictGo()">查询</button></div><div id="dl" style="color:var(--sub);font-size:12.5px">字典由采集流水/出库单自动沉淀：零件号→物料名。用于导出与展示补全。</div></div>`;
+ dictGo()}
+async function dictGo(){const q=$('#dq')?$('#dq').value.trim():'';const j=await api('/api/dict?q='+encodeURIComponent(q));
+ $('#dl').innerHTML=`<div style="overflow:auto;max-height:65vh"><table><thead><tr><th>零件号</th><th>物料名称</th><th>来源</th></tr></thead><tbody>${(j.list||[]).map(x=>`<tr><td class="mono">${x.pn}</td><td>${x.nm||''}</td><td style="color:var(--sub);font-size:12px">${x.src||''}</td></tr>`).join('')||'<tr><td colspan=3 style="color:var(--sub)">无匹配</td></tr>'}</tbody></table></div>`}
+(async()=>{document.documentElement.dataset.theme=localStorage.getItem('ck_th')||'';$('#thb').textContent=document.documentElement.dataset.theme=='dark'?'☀️':'';
+ if(TK&&U){try{const j=await api('/api/me');if(j.ok){$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':'物料员'}）`;go();setInterval(()=>{if(TAB=='dash'&&!document.hidden)pgDash()},30000);return}}catch(e){}}
+ $('#login').classList.remove('hide')})());
+</script></body></html>

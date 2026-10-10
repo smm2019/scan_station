@@ -129,6 +129,20 @@ function archiveOld() {
   } catch (e) { console.log('[archive] 失败：', e.message); }
 }
 setInterval(archiveOld, 30 * 60 * 1000).unref();
+// ---- ㉒G7 物料字典：零件号→名称，由采集流水/出库单自动沉淀 ----
+function feedDict(pn, nm, src) {
+  try {
+    pn = String(pn || '').toUpperCase().trim(); nm = String(nm || '').trim();
+    if (!pn || !nm || pn.length > 40 || nm.length > 80) return;
+    db.itemDict = db.itemDict || {};
+    const old = db.itemDict[pn];
+    if (old && old.nm === nm) return;
+    db.itemDict[pn] = { nm, src: src || '', at: Date.now() };
+    const keys = Object.keys(db.itemDict);
+    if (keys.length > 5000) { keys.sort((a, b) => (db.itemDict[a].at || 0) - (db.itemDict[b].at || 0)).slice(0, keys.length - 5000).forEach((k) => delete db.itemDict[k]); }
+  } catch (_) {}
+}
+
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
 function newId(p) { return p + '_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex'); }
 function newToken() { return crypto.randomBytes(24).toString('hex'); }
@@ -654,6 +668,13 @@ const server = http.createServer(async (req, res) => {
     // ---- 健康检查 ----
     if (req.method === 'GET' && p === '/health') return send(res, 200, { ok: true, time: new Date().toISOString() });
 
+    // ---- ㉒仓库管理控制台（单页应用；HTML公开，数据接口全部要token）----
+    if (req.method === 'GET' && (p === '/console' || p === '/ui' || p === '/console/')) {
+      try { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(fs.readFileSync(path.join(__dirname, 'public', 'console.html'))); }
+      catch (_) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('console.html 缺失：请确认 server/public/ 目录随 server 一起部署'); }
+      return;
+    }
+
     // ---- 领料单打印页（局域网内公开，凭单号打开，浏览器 Ctrl+P 打印）----
     if (req.method === 'GET' && p === '/print/requisition') {
       const rid = (url.searchParams.get('id') || '').trim();
@@ -848,6 +869,7 @@ const server = http.createServer(async (req, res) => {
         }
         if (!Object.keys(snap).length) return send(res, 400, { ok: false, msg: '无有效条目（需 k 主键）' });
         db.scanlog = Object.assign(db.scanlog || {}, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
+        for (const s of Object.values(snap)) feedDict(s.pn, s.nm, '采集流水'); // ㉒G7 字典沉淀
         db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
         save();
         console.log(`[scanlog] ${u.name} 同步流水 +${Object.keys(snap).length} → 共 ${db.scanlogCount} 条`);
@@ -1044,6 +1066,78 @@ const server = http.createServer(async (req, res) => {
         if (db.carAlarms) db.carAlarms.push({ at: Date.now(), id: aid, name: 'AGV' + String(aid).padStart(2, '0'), kind: 'ack', msg });
         save();
         return send(res, 200, { ok: true });
+      }
+      // ===== ㉒G5 账本修正（网页控制台风扇：改位/补登记/消位；原因必填+diff留痕+服务器权威时间戳） =====
+      const locOk = (l) => /^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$/.test(l);
+      if (req.method === 'POST' && p === '/api/ledger/fix') {
+        if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
+        const b = await readBody(req);
+        const act = String(b.action || ''), code = String(b.code || '').trim().toUpperCase(), loc = String(b.loc || '').trim().toUpperCase(), reason = String(b.reason || '').trim();
+        if (!['move', 'add', 'remove'].includes(act)) return send(res, 400, { ok: false, msg: 'action 需为 move/add/remove' });
+        if (!/^[A-Z0-9\-]{4,40}$/.test(code)) return send(res, 400, { ok: false, msg: '标签号格式不对' });
+        if (!reason) return send(res, 400, { ok: false, msg: '原因必填（进审计）' });
+        if (act !== 'remove' && !locOk(loc)) return send(res, 400, { ok: false, msg: '货位编码格式不符（例 NB02-A-08-2F / NB03-B-13-07）' });
+        const cur = new Map(db.ledger.map((x) => [String(x.c).toUpperCase(), x]));
+        const old = cur.get(code);
+        if (act === 'remove') {
+          if (!old) return send(res, 400, { ok: false, msg: '该标签不在账本，无需消位' });
+          cur.delete(code); (db.ledgerTomb = db.ledgerTomb || []).push({ c: code, t: Date.now() });
+        } else {
+          if (act === 'move' && !old) return send(res, 400, { ok: false, msg: '该标签不在账本，请用「补登记」' });
+          if (act === 'add' && old) return send(res, 400, { ok: false, msg: '该标签已在 ' + old.l + '，改位置请用「改位」' });
+          if (old && String(old.l).toUpperCase() === loc) return send(res, 400, { ok: false, msg: '目标货位与当前一致，无需修改' });
+          const foreign = [...cur.values()].filter((x) => String(x.l).toUpperCase() === loc && String(x.c).toUpperCase() !== code);
+          if (foreign.length) return send(res, 400, { ok: false, msg: '货位 ' + loc + ' 已登记给 ' + foreign[0].c + '，请先处理占用' });
+          cur.set(code, { c: code, l: loc, f: (old && old.f) || '', t: Date.now(), p: (old && old.p) || '', n: (old && old.n) || '', q: (old && old.q) || 0, b: (old && old.b) || '', pid: (old && old.pid) || '', mv: '人工', src: '网页修正', by: u.name });
+          db.ledgerTomb = (db.ledgerTomb || []).filter((x) => String(x.c).toUpperCase() !== code); // 修正即复活，墓碑撤销
+        }
+        const fromL = old ? String(old.l).toUpperCase() : '';
+        const _pre = partBoxCounts();
+        db.ledger = [...cur.values()]; db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
+        db.ledgerFixes = db.ledgerFixes || [];
+        db.ledgerFixes.push({ time: new Date().toISOString(), by: u.name, act: { move: '改位', add: '补登记', remove: '消位' }[act], code, from: fromL, to: act !== 'remove' ? loc : '', reason });
+        if (db.ledgerFixes.length > 500) db.ledgerFixes = db.ledgerFixes.slice(-500);
+        save(); stockWatchScan(_pre, u.name + '(网页修正)');
+        console.log(`[ledger-fix] ${u.name} ${act} ${code} ${fromL}→${loc || '-'} 原因:${reason}`);
+        return send(res, 200, { ok: true, msg: '已修正，账本v' + db.ledgerRev });
+      }
+      // ===== ㉒G4 返架登记：已出库/错发的框回仓（关联原出库单，服务器权威时间戳） =====
+      if (req.method === 'POST' && p === '/api/ledger/return') {
+        if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
+        const b = await readBody(req);
+        const code = String(b.code || '').trim().toUpperCase(), loc = String(b.loc || '').trim().toUpperCase(), reason = String(b.reason || '').trim();
+        if (!/^[A-Z0-9\-]{4,40}$/.test(code)) return send(res, 400, { ok: false, msg: '标签号格式不对' });
+        if (!locOk(loc)) return send(res, 400, { ok: false, msg: '回库货位格式不符（例 NB02-A-08-2F / NB03-B-13-07）' });
+        if (!reason) return send(res, 400, { ok: false, msg: '返架原因必填' });
+        const cur = new Map(db.ledger.map((x) => [String(x.c).toUpperCase(), x]));
+        if (cur.has(code)) return send(res, 400, { ok: false, msg: '该标签仍在账本（' + cur.get(code).l + '），未出库或已登记——请用「改位」' });
+        // 物料信息：优先出库单明细，退回采集流水
+        let info = { p: '', n: '', q: 0, b: '', f: '', pid: '' }, obNo = '';
+        for (const o of Object.values(db.outbound || {})) { for (const it of (o.items || [])) { if (String(it.barcode || '').toUpperCase() === code) { info = { p: String(it.code || '').toUpperCase(), n: String(it.name || ''), q: Number(it.qty) || 0, b: '', f: '', pid: '' }; obNo = o.orderNo; } } }
+        if (!info.p) for (const s of Object.values(db.scanlog || {})) { if (String(s.code || '').toUpperCase() === code) { info = { p: String(s.pn || ''), n: String(s.nm || ''), q: Number(s.q) || 0, b: String(s.lot || ''), f: String(s.ct || ''), pid: String(s.pid || '') }; break; } }
+        const foreign = [...cur.values()].filter((x) => String(x.l).toUpperCase() === loc);
+        if (foreign.length) return send(res, 400, { ok: false, msg: '货位 ' + loc + ' 已登记给 ' + foreign[0].c + '，请换位或先处理' });
+        cur.set(code, { c: code, l: loc, f: info.f, t: Date.now(), p: info.p, n: info.n, q: info.q, b: info.b, pid: info.pid, mv: '人工', src: '返架' + (obNo ? '(' + obNo + ')' : ''), by: u.name });
+        db.ledgerTomb = (db.ledgerTomb || []).filter((x) => String(x.c).toUpperCase() !== code);
+        const _pre = partBoxCounts();
+        db.ledger = [...cur.values()]; db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
+        db.ledgerFixes = db.ledgerFixes || [];
+        db.ledgerFixes.push({ time: new Date().toISOString(), by: u.name, act: '返架', code, from: obNo || '出库', to: loc, reason });
+        if (db.ledgerFixes.length > 500) db.ledgerFixes = db.ledgerFixes.slice(-500);
+        save(); stockWatchScan(_pre, u.name + '(返架)');
+        console.log(`[return] ${u.name} 返架 ${code} →${loc} 原单${obNo || '?'} 原因:${reason}`);
+        return send(res, 200, { ok: true, msg: '已返架入账本 v' + db.ledgerRev + (obNo ? '（关联原单 ' + obNo + '）' : '') });
+      }
+      if (req.method === 'GET' && p === '/api/ledger/fixes') {
+        const lim = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '20') || 20));
+        return send(res, 200, { ok: true, list: (db.ledgerFixes || []).slice(-lim).reverse() });
+      }
+      if (req.method === 'GET' && p === '/api/dict') {
+        const q = (url.searchParams.get('q') || '').trim().toUpperCase();
+        let list = Object.entries(db.itemDict || {}).map(([pn, v]) => ({ pn, nm: v.nm, src: v.src }));
+        if (q) list = list.filter((x) => x.pn.includes(q) || x.nm.toUpperCase().includes(q));
+        list.sort((a, b) => a.pn.localeCompare(b.pn));
+        return send(res, 200, { ok: true, total: list.length, list: list.slice(0, 300) });
       }
       if (req.method === 'POST' && p === '/api/watchlist') {
         const b = await readBody(req);
@@ -1251,6 +1345,7 @@ const server = http.createServer(async (req, res) => {
         const no = String(b.orderNo || '').trim();
         if (!no) return send(res, 400, { ok: false, msg: '缺少 orderNo' });
         db.outbound[no] = { orderNo: no, createdAt: Number(b.createdAt) || 0, toLoc: String(b.toLoc || ''), operator: String(b.operator || ''), status: Number(b.status) || 0, linkReqNo: String(b.linkReqNo || ''), items: Array.isArray(b.items) ? b.items : [] };
+        for (const e of (db.outbound[no].items || [])) feedDict(e.code, e.name, '出库单'); // ㉒G7 字典沉淀
         db.outboundAt = new Date().toISOString(); db.outboundCount = Object.keys(db.outbound).length;
         save();
         console.log(`[outbound] ${u.name} 同步出库单 ${no}`);
