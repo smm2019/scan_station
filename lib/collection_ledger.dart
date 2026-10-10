@@ -284,6 +284,40 @@ extension CollectionLedgerExt on _MainPageState {
     return rows.first.loc.toUpperCase();
   }
 
+  /// ⑳扫码自动入库叫车：与手动「提交任务」同校验链（会话防重/容器主档反查）；失败只提示不动账本
+  Future<void> _autoCallInbound(String st, String loc, String ctype) async {
+    try {
+      if (_colCalled.contains(loc)) return; //本会话已叫过：静默跳过（同手动防重口径）
+      final cands = await WmasMaster.containerCodesOf(ctype);
+      if (cands.isEmpty) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("自动叫车未发：主档无「$ctype」容器编码，请手动「提交任务」"), backgroundColor: Colors.orange));
+        return;
+      }
+      String cn = cands.first;
+      if (cands.length > 1) {
+        //多候选不猜：弹轻选择（取消则留手动），避免自动模式拿错容器
+        if (!mounted) return;
+        final picked = await showDialog<String>(context: context, builder: (dc) => AlertDialog(
+          title: const Text("选择容器编码（自动叫车）"),
+          content: SizedBox(width: 300, height: (cands.length > 8 ? 8 : cands.length) * 44 + 30, child: ListView(children: cands.map((c) => RadioListTile<String>(dense: true, contentPadding: EdgeInsets.zero, title: Text(c, style: const TextStyle(fontSize: 13, fontFamily: "monospace")), value: c, groupValue: null, onChanged: (v) => Navigator.pop(dc, v))).toList())),
+          actions: [TextButton(onPressed: () => Navigator.pop(dc), child: const Text("取消（稍后手动提交）"))],
+        ));
+        if (picked == null) return;
+        cn = picked;
+      }
+      final r = await WmasTask.createCarry(startPoint: st, endPoint: loc, containerNo: cn);
+      if (r["ok"] == true) {
+        _colCalled.add(loc);
+        LocalLog.op('自动入库叫车', "$st→$loc 容器$cn");
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("🚗 自动叫车：${r["msg"]}"), backgroundColor: const Color(0xFF2E7D32), duration: const Duration(seconds: 3)));
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("自动叫车失败：${r["msg"]}（账本已登记，可手动「提交任务」）"), backgroundColor: Colors.orange, duration: const Duration(seconds: 5)));
+      }
+    } catch (e) {
+      debugPrint('[auto-call] $e');
+    }
+  }
+
   ///WMAS 任务卡：叫车前先强制校验"该货位已扫码入账"，从流程上杜绝"叫了车忘扫码"；本会话已叫过的货位禁止重复叫车
   Future<void> _showWmasCard() async {
     final st = _selectedStation ?? "";
@@ -447,6 +481,20 @@ Future<Map> ledgerPushNow() async {
     final del = await ledgerTombs();
     if (items.isEmpty && del.isEmpty) return {"ok": false, "msg": "账本为空"};
     final r = await AuthApi.ledgerSync(items, del: del);
+    // ⑲改位冲突提示：推送被他人更新数据压过的标签=本机登记未生效，弹窗提醒重新登记
+    final rej = r["rejected"];
+    if (r["ok"] == true && rej is List && rej.isNotEmpty) {
+      debugPrint('[ledger] 冲突标签: $rej');
+      final ctx = _globalNavigatorKey.currentContext;
+      if (ctx != null) {
+        unawaited(showDialog(context: ctx, builder: (dc) => AlertDialog(
+          icon: const Icon(Icons.sync_problem, color: Colors.orange, size: 34),
+          title: const Text("货位登记冲突"),
+          content: Text("${rej.length} 个标签的登记被其他设备更新的数据覆盖（你推送前它已被别台改过）：\n${rej.take(8).join("、")}${rej.length > 8 ? " …" : ""}\n\n请到「位置登记」重新登记这些框的实际货位，并和同事对齐现场。"),
+          actions: [FilledButton(onPressed: () => Navigator.pop(dc), child: const Text("知道了"))],
+        )));
+      }
+    }
     if (r["ok"] == true) await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
     return r;
   } catch (e) {

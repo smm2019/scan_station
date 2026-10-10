@@ -1925,12 +1925,13 @@ class _MainPageState extends State<MainPage>
           _selectedGroundLoc = null; // ✅人工模式，录入成功清空地面货位
         }
       });
+      final autoCallSt = _workType == 0 ? (_selectedStation ?? "") : ""; // ⑳清空前捕获站台，供自动入库叫车
       if (_workType == 0 && !_palletMode) {
         setState(() {
           _selectedStation = null;
         });
       }
-      await _ledgerRegisterOnSave(code); //顺手登记货位账本（选填，不影响采集主流程）
+      await _ledgerRegisterOnSave(code, autoCallStation: autoCallSt); //顺手登记货位账本（选填，不影响采集主流程）
       scheduleScanPush(); //采集流水定时同步电脑数据库
       await _refreshRecord();
       await _refreshBatchStat();
@@ -1959,7 +1960,7 @@ class _MainPageState extends State<MainPage>
 
   ///采集页顺手登记：保存成功时若填了「货位账本编码」，把本标签（整托含兄弟码）写入账本，并预约全量同步电脑。
   ///留空则不写账本，与改动前行为完全一致；编码格式不符或货位已被他人占用时只提示不写入。
-  Future<void> _ledgerRegisterOnSave(String code) async {
+  Future<void> _ledgerRegisterOnSave(String code, {String autoCallStation = ""}) async {
     try {
       if (_ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO') {
         //自动分配：先按零件号定货位并回填
@@ -2058,6 +2059,17 @@ class _MainPageState extends State<MainPage>
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text("账本已登记：$loc（${codes.length} 码）"),
             backgroundColor: const Color(0xFF2E7D32)));
+      // ⑳扫码自动入库：账本登记成功后触发；校验链与手动提交一致，失败不影响账本
+      if (_workType == 0 && autoCallStation.isNotEmpty && loc.startsWith('NB02-') && ctype.isNotEmpty && await WmasConfig.autoCallEnabled()) {
+        if (_palletMode) {
+          if (mounted)
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text("整托模式不自动叫车：托上全部码扫完后请手动「提交任务」"),
+                backgroundColor: Colors.blueGrey, duration: Duration(seconds: 3)));
+        } else {
+          await _autoCallInbound(autoCallStation, loc, ctype);
+        }
+      }
     } catch (e) {
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -3336,11 +3348,13 @@ class _MainPageState extends State<MainPage>
           if (_showAgv) const AgvMonitorPage()
         ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        items: const [
-          BottomNavigationBarItem(icon: SizedBox.shrink(), label: "采集"),
-          BottomNavigationBarItem(icon: SizedBox.shrink(), label: "导出"),
-          BottomNavigationBarItem(icon: SizedBox.shrink(), label: "设置"),
+      bottomNavigationBar: ValueListenableBuilder<int>(
+        valueListenable: kUnreadMsgs,
+        builder: (_, unread, __) => BottomNavigationBar(
+        items: [
+          const BottomNavigationBarItem(icon: SizedBox.shrink(), label: "采集"),
+          BottomNavigationBarItem(icon: const SizedBox.shrink(), label: unread > 0 ? "消息·$unread" : "消息"),
+          const BottomNavigationBarItem(icon: SizedBox.shrink(), label: "设置"),
         ],
         currentIndex: 0,
         type: BottomNavigationBarType.fixed,
@@ -3350,36 +3364,27 @@ class _MainPageState extends State<MainPage>
           if (idx == 0) {
             _tabController.animateTo(0);
           } else if (idx == 1) {
-            await showMenu(
-                context: context,
-                position: const RelativeRect.fromLTRB(100, 500, 100, 100),
-                items: [
-                  PopupMenuItem(value: "copy", child: Text("复制CSV内容")),
-                  PopupMenuItem(value: "export", child: Text("导出CSV文件")),
-                  PopupMenuItem(value: "wifi", child: Text("开启WiFi局域网服务")),
-                ]).then((val) async {
-              switch (val) {
-                case "copy":
-                  final csv = await _generateCsvText();
-                  await Clipboard.setData(ClipboardData(text: csv));
-                  break;
-                case "export":
-                  await _exportCsvFile();
-                  break;
-                case "wifi":
-                  await _toggleWifiServer();
-                  break;
-              }
-            });
+            // ㉑消息中枢：分组卡片流，点消息跳领料页
+            await Navigator.push(context, MaterialPageRoute(builder: (_) => MessageHubPage(
+              onOpenReq: () => _tabController.animateTo(_tabKeys.indexOf('req') >= 0 ? _tabKeys.indexOf('req') : 0),
+            )));
+            kUnreadMsgs.value = 0;
           } else if (idx == 2) {
-            //跳转设置菜单页（内含MES服务器设置、声音震动设置等）
+            //跳转设置菜单页（导出功能已并入此页顶部）
             Navigator.push(
               context,
-              MaterialPageRoute(builder: (context) => const SettingsMenuPage()),
+              MaterialPageRoute(builder: (context) => SettingsMenuPage(
+                onCopyCsv: () async {
+                  final csv = await _generateCsvText();
+                  await Clipboard.setData(ClipboardData(text: csv));
+                },
+                onExportCsv: _exportCsvFile,
+                onWifi: _toggleWifiServer,
+              )),
             );
           }
         },
-      ),
+      )),
     );
   }
 
@@ -3949,7 +3954,10 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
 bool get _isWhRole => Auth.user?.role == 'warehouse' || Auth.user?.role == 'admin'; // 设置页系统配置类条目仅仓管/管理员可见
 
 class SettingsMenuPage extends StatelessWidget {
-  const SettingsMenuPage({super.key});
+  final Future<void> Function()? onCopyCsv; // ㉑导出功能自底部栏迁入
+  final Future<void> Function()? onExportCsv;
+  final Future<void> Function()? onWifi;
+  const SettingsMenuPage({super.key, this.onCopyCsv, this.onExportCsv, this.onWifi});
 
   @override
   Widget build(BuildContext context) {
@@ -3961,6 +3969,17 @@ class SettingsMenuPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (onExportCsv != null) ...[
+            _settingTile(context, icon: Icons.file_download_outlined, color: const Color(0xFF00897B),
+              title: "导出CSV文件", subtitle: "当前批次采集数据 → Download 目录", onTap: () => onExportCsv!()),
+            if (onCopyCsv != null)
+              _settingTile(context, icon: Icons.content_copy_outlined, color: const Color(0xFF26A69A),
+                title: "复制CSV内容", subtitle: "当前批次数据进剪贴板，粘贴给电脑", onTap: () => onCopyCsv!()),
+            if (_isWhRole && onWifi != null)
+              _settingTile(context, icon: Icons.phone_android_outlined, color: Colors.deepOrange,
+                title: "WiFi局域网服务", subtitle: "开启后电脑浏览器下载采集CSV", onTap: () => onWifi!()),
+            const Divider(height: 24),
+          ],
           _settingTile(
             context,
             icon: Icons.cloud_outlined,
@@ -4087,19 +4106,7 @@ class SettingsMenuPage extends StatelessWidget {
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AuditLogPage())),
           ),
-          if (_isWhRole)
-          _settingTile(
-            context,
-            icon: Icons.phone_android_outlined,
-            color: Colors.deepOrange,
-            title: "WiFi局域网服务",
-            subtitle: "开启后电脑浏览器下载采集CSV",
-            onTap: () {
-              // 通过回调方式不可靠，直接提示用户到"导出"菜单开启
-              ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text("请在底部「导出」菜单中开启 WiFi 局域网服务")));
-            },
-          ),
+
           _settingTile(
             context,
             icon: Icons.system_update_alt,
@@ -4147,7 +4154,7 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
   bool _sound = true;
   bool _vibration = true;
   bool _voice = true;
-  bool _nNew = true, _nUrge = true, _nArrive = true, _nResult = true, _nWatch = true, _nStock = true;
+  bool _nNew = true, _nUrge = true, _nArrive = true, _nResult = true, _nWatch = true, _nStock = true, _nCar = true;
   double _rate = 0.55;
   bool _loaded = false;
   bool _notifGranted = false;
@@ -4213,6 +4220,7 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
       _nResult = sp.getBool(RemindPrefs.kResult) ?? true;
       _nWatch = sp.getBool(RemindPrefs.kWatch) ?? true;
       _nStock = sp.getBool(RemindPrefs.kStock) ?? true;
+      _nCar = sp.getBool(RemindPrefs.kCar) ?? true;
       _rate = sp.getDouble('remind_speech_rate') ?? 0.55;
       _loaded = true;
     });
@@ -4231,6 +4239,7 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
       else if (key == RemindPrefs.kResult) _nResult = v;
       else if (key == RemindPrefs.kWatch) _nWatch = v;
       else if (key == RemindPrefs.kStock) _nStock = v;
+      else if (key == RemindPrefs.kCar) _nCar = v;
       else if (key == RemindPrefs.kVoice) _voice = v;
     });
   }
@@ -4274,6 +4283,7 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
           Card(child: SwitchListTile(value: _nResult, activeColor: const Color(0xFF515BD4), title: const Text("结果动态提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("接单/备齐/签收/驳回/取消", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kResult, v))),
           Card(child: SwitchListTile(value: _nWatch, activeColor: const Color(0xFF515BD4), title: const Text("预约到料提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("关注的零件入库时通知（库存页·我的预约）", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kWatch, v))),
           Card(child: SwitchListTile(value: _nStock, activeColor: const Color(0xFF515BD4), title: const Text("断料预警提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("零件在架清零时通知仓管与相关物料员", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kStock, v))),
+          Card(child: SwitchListTile(value: _nCar, activeColor: const Color(0xFF515BD4), title: const Text("车辆告警提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("AGV急停/通讯断开/故障/低电时通知全体仓管，恢复时复位", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kCar, v))),
           const SizedBox(height: 8),
           const Padding(padding: EdgeInsets.fromLTRB(4, 8, 4, 6), child: Text("扫码反馈", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.blueGrey))),
           Card(
@@ -4343,6 +4353,123 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
           const Text("提醒铃声：把任意 wav 命名为 reminder.wav 放到 APK 的 res/raw/reminder 即为自定义铃声（当前用占位音，可联系管理员替换）。", style: TextStyle(fontSize: 11, color: Colors.grey)),
         ],
       ),
+    );
+  }
+}
+
+// ===================== ㉑ 消息中枢：分组卡片流（仿系统信息App会话列表） =====================
+class MessageHubPage extends StatefulWidget {
+  final VoidCallback onOpenReq;
+  const MessageHubPage({super.key, required this.onOpenReq});
+  @override
+  State<MessageHubPage> createState() => _MessageHubPageState();
+}
+
+class _MessageHubPageState extends State<MessageHubPage> {
+  List<Map> _msgs = [];
+  bool _loading = true;
+  String _err = "";
+
+  @override
+  void initState() { super.initState(); _load(); }
+
+  Future<void> _load() async {
+    setState(() { _loading = true; _err = ""; });
+    final r = await AuthApi.notificationsHistory(limit: 100);
+    if (!mounted) return;
+    if (r["ok"] == true) {
+      final list = List<Map>.from(r["notifications"] ?? []);
+      list.sort((a, b) => (b["time"] ?? "").toString().compareTo((a["time"] ?? "").toString()));
+      setState(() { _msgs = list; _loading = false; });
+    } else { setState(() { _loading = false; _err = (r["msg"] ?? "加载失败").toString(); }); }
+  }
+
+  static const _groups = [
+    {"name": "派单与超时", "types": ["req_new", "req_timeout", "req_reassign"], "icon": Icons.assignment_add, "color": Color(0xFF515BD4)},
+    {"name": "催单", "types": ["req_urge"], "icon": Icons.alarm, "color": Colors.deepOrange},
+    {"name": "接单与进度", "types": ["req_accept", "req_ready", "req_ready_wh", "req_done", "req_confirm"], "icon": Icons.local_shipping, "color": Colors.teal},
+    {"name": "到站催扫", "types": ["req_arrive"], "icon": Icons.inbox, "color": Colors.orange},
+    {"name": "车辆告警", "types": ["car_alarm"], "icon": Icons.error, "color": Colors.red},
+    {"name": "断料与预约", "types": ["stock_out", "watch_in"], "icon": Icons.inventory_2, "color": Colors.blueGrey},
+    {"name": "其他", "types": [], "icon": Icons.notifications_none, "color": Colors.grey},
+  ];
+
+  static const _known = {"req_new", "req_timeout", "req_reassign", "req_urge", "req_accept", "req_ready", "req_ready_wh", "req_done", "req_confirm", "req_arrive", "car_alarm", "stock_out", "watch_in"};
+
+  List<Map> _of(Map g) {
+    final ts = List<String>.from(g["types"] ?? []);
+    return _msgs.where((m) {
+      final tp = m["type"]?.toString() ?? "";
+      return ts.isEmpty ? !_known.contains(tp) : ts.contains(tp);
+    }).toList();
+  }
+
+  String _rel(String t) {
+    final d = DateTime.tryParse(t);
+    if (d == null) return "";
+    final diff = DateTime.now().difference(d);
+    if (diff.inMinutes < 1) return "刚刚";
+    if (diff.inMinutes < 60) return "${diff.inMinutes}分钟前";
+    if (diff.inHours < 24) return "${diff.inHours}小时前";
+    if (diff.inDays < 2) return "昨天";
+    if (diff.inDays < 8) return "${diff.inDays}天前";
+    return "${d.month}月${d.day}日";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7FA),
+      appBar: AppBar(title: const Text("消息", style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white,
+        actions: [IconButton(tooltip: "刷新", icon: const Icon(Icons.refresh), onPressed: _load)]),
+      body: _loading
+        ? const Center(child: CircularProgressIndicator())
+        : _err.isNotEmpty
+          ? Center(child: Text(_err, style: const TextStyle(color: Colors.red)))
+          : _msgs.isEmpty
+            ? const Center(child: Text("暂无消息", style: TextStyle(color: Colors.grey)))
+            : ListView(padding: const EdgeInsets.all(10), children: [
+                for (final g in _groups)
+                  if (_of(g).isNotEmpty)
+                    Builder(builder: (_) {
+                      final ms = _of(g);
+                      final latest = ms.first;
+                      final hasNew = (DateTime.tryParse(latest["time"]?.toString() ?? "") != null) && DateTime.now().difference(DateTime.parse(latest["time"].toString())).inHours < 24;
+                      final color = g["color"] as Color;
+                      return Card(
+                        margin: const EdgeInsets.symmetric(vertical: 5),
+                        child: Theme(
+                          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                          child: ExpansionTile(
+                            tilePadding: const EdgeInsets.symmetric(horizontal: 12),
+                            childrenPadding: const EdgeInsets.only(bottom: 6),
+                            leading: Row(mainAxisSize: MainAxisSize.min, children: [
+                              SizedBox(width: 8, child: hasNew ? Container(width: 8, height: 8, decoration: BoxDecoration(color: Colors.blue.shade400, shape: BoxShape.circle)) : const SizedBox.shrink()),
+                              const SizedBox(width: 6),
+                              CircleAvatar(backgroundColor: color.withOpacity(0.12), child: Icon(g["icon"] as IconData, size: 20, color: color)),
+                            ]),
+                            title: Text("${g["name"]} (${ms.length})", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                            subtitle: Text(ms.first["text"]?.toString() ?? "", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+                            trailing: Text(_rel(ms.first["time"]?.toString() ?? ""), style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                            children: ms.map((m) {
+                              final rid = m["reqId"]?.toString() ?? "";
+                              return ListTile(
+                                dense: true,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 1),
+                                title: Text(m["text"]?.toString() ?? "", style: const TextStyle(fontSize: 12.5)),
+                                subtitle: Text(_rel(m["time"]?.toString() ?? ""), style: const TextStyle(fontSize: 10.5, color: Colors.grey)),
+                                trailing: rid.isNotEmpty ? const Icon(Icons.chevron_right, size: 18, color: Colors.grey) : null,
+                                onTap: rid.isEmpty ? null : () { Navigator.pop(context); widget.onOpenReq(); },
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      );
+                    }),
+                const SizedBox(height: 8),
+                const Center(child: Text("点击带单号的消息可跳转领料页", style: TextStyle(fontSize: 11, color: Colors.grey))),
+              ]),
     );
   }
 }

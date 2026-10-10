@@ -480,6 +480,7 @@ class RemindPrefs {
   static const _kResult = 'remind_req_result'; // 结果动态（接单/备齐/签收/驳回/取消/转派）
   static const _kWatch = 'remind_watch_in'; // ⑮预约到料
   static const _kStock = 'remind_stock_out'; // ⑮断料预警
+  static const _kCar = 'remind_car_alarm'; // ⑱车辆告警
 
   /// 通知类型 → 开关键（未列出的类型默认不弹系统通知）
   static String? keyOf(String type) => switch (type) {
@@ -489,6 +490,7 @@ class RemindPrefs {
         'req_accept' || 'req_ready' || 'req_ready_wh' || 'req_done' || 'req_reject' || 'req_cancel' => _kResult,
         'watch_in' => _kWatch,
         'stock_out' => _kStock,
+        'car_alarm' => _kCar,
         _ => null,
       };
 
@@ -516,6 +518,7 @@ class RemindPrefs {
   static const kResult = _kResult;
   static const kWatch = _kWatch;
   static const kStock = _kStock;
+  static const kCar = _kCar;
 
   static Future<double> rateVal() async {
     final sp = await SharedPreferences.getInstance();

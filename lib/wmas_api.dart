@@ -11,6 +11,16 @@ class WmasConfig {
   static const keyAccount = "wmas_account";
   static const keyPwd = "wmas_pwd";
   static const keyToken = "wmas_token";
+  static const keyAutoCall = "wmas_auto_call"; // ⑳扫码自动入库叫车（本机开关，默认关）
+
+  static Future<bool> autoCallEnabled() async {
+    final sp = await SharedPreferences.getInstance();
+    return sp.getBool(keyAutoCall) ?? false;
+  }
+  static Future<void> setAutoCall(bool v) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setBool(keyAutoCall, v);
+  }
   static const keyTokenExp = "wmas_token_exp";
   static const defaultHost = "172.25.1.155:8080";
 
@@ -218,6 +228,7 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
   String _msg = "";
   bool _ok = false;
   bool _busy = false;
+  bool _autoCall = false; // ⑳扫码自动入库叫车
 
   @override
   void initState() {
@@ -229,6 +240,7 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
         _hostCtrl.text = cfg["host"] ?? WmasConfig.defaultHost;
         _accCtrl.text = cfg["account"] ?? "";
         _pwdCtrl.text = cfg["pwd"] ?? "";
+        _autoCall = await WmasConfig.autoCallEnabled();
       });
     });
   }
@@ -274,6 +286,14 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
           const SizedBox(width: 12),
           Expanded(child: OutlinedButton(onPressed: _busy ? null : _test, child: Text(_busy ? "登录中…" : "测试登录"))),
         ]),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          value: _autoCall,
+          activeColor: const Color(0xFF00897B),
+          title: const Text("扫码自动入库叫车", style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+          subtitle: const Text("开启后：扫码保存+账本登记成功即自动建搬运任务（站台→货架位），与手动「提交任务」同校验链；容器多候选弹选择；整托模式不自动（扫完手动提交）；失败只提示不影响账本", style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+          onChanged: (v) async { await WmasConfig.setAutoCall(v); setState(() => _autoCall = v); },
+        ),
         if (_msg.isNotEmpty) Padding(
           padding: const EdgeInsets.only(top: 12),
           child: Text(_msg, style: TextStyle(color: _ok ? Colors.green : Colors.red, fontWeight: FontWeight.w600)),

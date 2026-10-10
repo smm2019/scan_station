@@ -3,7 +3,7 @@ part of 'main.dart';
 // ===================== ⑬ APK 自动更新：版本检查 + 下载进度 + 调起系统安装 =====================
 class AppUpdater {
   static const localVersion = "1.0.0"; // 与 pubspec version 一致，发版同步改
-  static const localBuild = 22;         // 与 pubspec +N 一致，发版同步改
+  static const localBuild = 26;         // 与 pubspec +N 一致，发版同步改
   static const _ch = MethodChannel("app.installer");
   static bool _asked = false;
   static void _m(String m, {bool err = true}) { final c = nav.currentContext; if (c != null) _toast(c, m, err: err); }

@@ -693,9 +693,14 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
             ));
     if (ok != true || !mounted) return;
     final r = await AgvApi.taskAction(op, no);
-    _toast(r["ok"] == true
-        ? "✅ ${a["label"]}：已执行"
-        : "❌ ${a["label"]}失败：${r["msg"]}");
+    if (r["ok"] == true) {
+      _toast("✅ ${a["label"]}：已执行");
+    } else {
+      final m = r["msg"]?.toString() ?? "";
+      _toast(m.contains("服务器内部异常") || m.contains("500")
+          ? "❌ ${a["label"]}失败：任务可能已被调度器认领或车辆离线（当前0/4在线时常见），请先恢复车辆通讯再试，或到调度网页端处理"
+          : "❌ ${a["label"]}失败：$m");
+    }
     if (r["ok"] == true) _load(silent: true);
   }
 

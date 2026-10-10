@@ -1140,6 +1140,11 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                     Wrap(spacing: 6, runSpacing: 4, children: [
                       ...codes.map((c) { final isEm = List.from(item["issued"] ?? []).any((x) => x is Map && (x["c"]?.toString() ?? "") == c && x["e"] == 1); return Chip(label: Text("${isEm ? "⚠" : ""}${boxQs[c] != null && boxQs[c]! > 0 ? "$c·${_fmtInvNum(boxQs[c]!)}" : c}", style: const TextStyle(fontSize: 10, color: Colors.white)), backgroundColor: isEm ? Colors.deepOrange : (transferred ? Colors.green.shade700 : Colors.green), padding: EdgeInsets.zero, visualDensity: VisualDensity.compact); }),
                     ]),
+                    if (st == 'pending' && isOwner && List<Map>.from(_r["items"] ?? []).length > 1)
+                      Align(alignment: Alignment.centerRight, child: IconButton(visualDensity: VisualDensity.compact, icon: const Icon(Icons.delete_outline, size: 18, color: Colors.redAccent), tooltip: "删除本行", onPressed: _busy ? null : () async {
+                        final yes = await showDialog<bool>(context: context, builder: (dc) => AlertDialog(title: const Text("删除该行？"), content: Text("删除零件 ${item["partNo"]}×${item["qty"]}"), actions: [TextButton(onPressed: () => Navigator.pop(dc, false), child: const Text("取消")), TextButton(onPressed: () => Navigator.pop(dc, true), child: const Text("删除", style: TextStyle(color: Colors.red)))]));
+                        if (yes == true) await _act("delitem", {"partNo": item["partNo"]});
+                      })),
                     _buildSuggest(item, transferred || skipped),
                     if (st == 'accepted' && isWh && !transferred && !skipped) Padding(
                       padding: const EdgeInsets.only(top: 6),
@@ -1266,7 +1271,7 @@ class _MsgCenterPageState extends State<MsgCenterPage> {
     "req_new": Icons.assignment_add, "req_accept": Icons.how_to_reg, "req_reject": Icons.block,
     "req_ready": Icons.inventory_2, "req_ready_wh": Icons.inventory, "req_done": Icons.check_circle,
     "req_cancel": Icons.cancel, "req_timeout": Icons.hourglass_empty, "req_reassign": Icons.swap_horiz,
-    "req_arrive": Icons.local_shipping, "req_urge": Icons.alarm,
+    "req_arrive": Icons.local_shipping, "req_urge": Icons.alarm, "car_alarm": Icons.error,
   };
 
   @override

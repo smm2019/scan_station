@@ -132,6 +132,8 @@ function sweepAssignOpen() {
     notify(r.assigneeId, 'req_timeout', `领料单 ${r.no} 超时未接单，已放开给全部仓管`, r.id);
     db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== r.assigneeId).forEach(x =>
       notify(x.id, 'req_new', `领料单 ${r.no}（${r.byName}）已放开，可接单：${reqItemsSuggestText(r)}`, r.id));
+    db.users.filter(x => x.role === 'admin' && x.enabled).forEach(x =>
+      notify(x.id, 'req_timeout', `⏱ 领料单 ${r.no}（${r.byName}）指定 ${r.assigneeName || ''} 超时未接单已放开，请协调仓管尽快处理`, r.id)); // ⑲升级路径：管理员可见
     changed = true;
   }
   if (changed) save();
@@ -177,7 +179,7 @@ function stockWatchScan(pre, byName) {
       if (db.stockAlert[p] === day) continue;
       db.stockAlert[p] = day;
       db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'stock_out', `⚠️ 断料预警：零件 ${p} 在架已清零（${byName} 操作后），请安排补货`, ''));
-      (db.requisitions || []).forEach((r) => { if (!['pending', 'accepted'].includes(r.status)) return; if ((r.items || []).some((i) => String(i.partNo || '').toUpperCase() === p)) notify(r.by, 'stock_out', `⚠️ 断料预警：你的领料单 ${r.no} 所需零件 ${p} 在架已清零`, r.id); });
+      (db.requisitions || []).forEach((r) => { if (!['pending', 'accepted'].includes(r.status)) return; if ((r.items || []).some((i) => String(i.partNo || '').toUpperCase() === p)) { const tip = r.status === 'pending' ? '可删除该行或取消重下，或联系仓管协调' : '请联系仓管员协调补料安排'; notify(r.by, 'stock_out', `⚠️ 断料预警：你的领料单 ${r.no} 所需零件 ${p} 在架已清零，${tip}`, r.id); } });
       wl.filter((w) => String(w.partNo || '').toUpperCase() === p).forEach((w) => notify(w.userId, 'stock_out', `⚠️ 你预约的零件 ${p} 在架已清零（补货后会自动通知到料）`, ''));
       console.log('[stock-out] ' + p);
     }
@@ -742,13 +744,13 @@ const server = http.createServer(async (req, res) => {
         const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), Number(x.t) || 0]));
         const seenNew = new Set(); // 本次合并真正新增上账的标签（急货入库提醒用）
         const dels = Array.isArray(b.del) ? b.del : [];
-        let added = 0, updated = 0, skipped = 0, delApplied = 0, delSkipped = 0;
+        let added = 0, updated = 0, skipped = 0, delApplied = 0, delSkipped = 0; const rejected = []; // ⑲本机推送被更新的他人数据压过的标签（冲突提示用）
         for (const it of clean) {
           const key = it.c;
           const old = cur.get(key);
           const tombT = tomb.get(key) || 0;
           const base = Math.max(tombT, old ? (Number(old.t) || 0) : 0);
-          if (it.t > 0 && it.t < base) { skipped++; continue; } // 严格更旧才忽略：同时间允许刷新（补齐物料信息）
+          if (it.t > 0 && it.t < base) { skipped++; rejected.push(key); continue; } // 严格更旧才忽略：同时间允许刷新（补齐物料信息）
           if (old) updated++; else { added++; seenNew.add(key); }
           cur.set(key, { ...it, by: u.name });
           if (tombT) tomb.delete(key); // 比墓碑新=重新登记，复活
@@ -792,7 +794,7 @@ const server = http.createServer(async (req, res) => {
             }
           }
         } catch (e) { console.log('[urgent-in] 异常：', e.message); }
-        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, skipped, delApplied, delSkipped });
+        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, skipped, delApplied, delSkipped, rejected: rejected.slice(0, 50) });
       }
 
       // ================= 采集流水 / 出库单同步（PDA 全量推送，仓管/管理员） =================
@@ -1284,7 +1286,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush|urge)$/);
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush|urge|delitem)$/);
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
@@ -1323,6 +1325,7 @@ const server = http.createServer(async (req, res) => {
             r.status = 'accepted'; r.acceptedBy = u.name;
             hpush(`接单（${u.name}）${r.assigneeName && r.assigneeId !== u.id ? '，原指定 ' + r.assigneeName + ' 超时未接' : ''}`);
             notify(r.by, 'req_accept', `你的领料单 ${r.no} 已由 ${u.name} 接单备料`, r.id);
+            if (r.assigneeId && r.assigneeId !== u.id) { const aU = db.users.find((x) => x.id === r.assigneeId); if (aU && aU.enabled) notify(r.assigneeId, 'req_reassign', `📢 你被指定的领料单 ${r.no} 已由 ${u.name} 接单，请勿再备料`, r.id); } // ⑲防原指定人白备料
             // 接单即派：建议货架框自动入队（是否真实下发仍由演算/真实模式把关）
             const nAuto = autoEnqueueOnAccept(r, u.name, u.id);
             if (nAuto > 0) {
@@ -1440,6 +1443,16 @@ const server = http.createServer(async (req, res) => {
             const verb = r.status === 'accepted' ? '催备料' : '催接单';
             tg.forEach(x => notify(x.id, 'req_urge', `⏰ ${u.name} ${verb}：领料单 ${r.no}${note ? '（' + note + '）' : ''}`, r.id));
             hpush(`${verb}${note ? '：' + note : ''}（${u.name}，通知 ${tg.length} 人）`);
+          } else if (act === 'delitem') {
+            // ⑲物料员删行：仅本人pending单、行数>1（最后一行请取消整单）
+            if (r.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅下单人或管理员可删除行' });
+            if (r.status !== 'pending') return send(res, 400, { ok: false, msg: '已接单的订单不能删行，请联系仓管员' });
+            if (!Array.isArray(r.items) || r.items.length <= 1) return send(res, 400, { ok: false, msg: '仅剩一行，请取消整单' });
+            const delPn = String(b.partNo || '').trim().toUpperCase();
+            const di = (r.items || []).findIndex((i) => String(i.partNo || '').toUpperCase() === delPn);
+            if (di < 0) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
+            const removed = r.items.splice(di, 1)[0];
+            hpush(`删除行 ${removed.partNo}×${removed.qty}（${u.name}）`);
           } else if (act === 'transfer') {
             // 行级转MES回写：App 已把该行已扫箱真实转单成功，按实发件数记账（申请600只有500也可转500）
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可转单' });
@@ -1847,6 +1860,8 @@ async function rcsPoll() {
   } catch (_) {}
   agvDispatch(nowMs, runT).catch((e) => console.log('[agv-q] 调度异常', e.message)); // 排队调度：空闲站台→按队列下发
   lowBatWatch(tk, nowMs).catch(() => {}); // ④D 低电不归巢看门狗
+  carAlarmWatch(tk, nowMs).catch(() => {}); // ⑱ 车辆告警边沿检测→通知仓管
+  try { dispatchWatchdog(nowMs); } catch (_) {}
   save();
 }
 setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, 20 * 1000).unref();
@@ -1996,6 +2011,17 @@ async function agvDispatch(nowMs, runT) {
   }
 }
 
+// ===== ⑲ 出库任务超时兜底：已下发超40分钟仍未到站 → 判失败+通知全体仓管人工核查（对齐移库40分钟机制） =====
+function dispatchWatchdog(nowMs) {
+  const stale = (db.agvQueue || []).filter((q) => q.type !== 'transfer' && q.state === '已下发' && q.sentAt && nowMs - q.sentAt > 40 * 60 * 1000);
+  for (const q of stale) {
+    q.state = '失败'; q.err = '下发超40分钟未到站，请人工核查'; q.updAt = nowMs; clearQueueCall(q.reqId, q.code);
+    const msg = `⏰ AGV任务超时：框 ${q.code}（${q.fromLoc}→${q.station || '待分配'}）下发超40分钟未到站，请到RCS核查是否卡死`;
+    db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, q.reqId || ''));
+    console.log('[dispatch-timeout] ' + msg);
+  }
+}
+
 // ===== ④D 低电不归巢看门狗：电量≤25%、不在充电且空闲超20分钟 → 通知全体仓管 =====
 async function lowBatWatch(tk, nowMs) {
   if (!tk) return;
@@ -2018,6 +2044,42 @@ async function lowBatWatch(tk, nowMs) {
     }
   }
   for (const id of Object.keys(db.rcsLowBat)) { if (!seen[id]) delete db.rcsLowBat[id]; } // 已回充/有任务/离线→清记录
+}
+
+// ===== ⑱ AGV车辆告警：边沿检测（急停立即/其余宽限90s防抖），通知全体仓管+落库历史，恢复发复位 =====
+async function carAlarmWatch(tk, nowMs) {
+  if (!tk) return;
+  let cars = []; try { const cr = await rcsReq('/uds/car/getCarInfoList', 'GET', tk); cars = typeof cr.data === 'string' ? JSON.parse(cr.data) : (cr.data || []); } catch (_) { return; }
+  db.rcsCarAlarm = db.rcsCarAlarm || {};
+  db.carAlarms = db.carAlarms || []; // 告警历史落库（供追溯）
+  const logAlarm = (id, name, kind, msg) => { db.carAlarms.push({ at: nowMs, id, name, kind, msg }); if (db.carAlarms.length > 500) db.carAlarms = db.carAlarms.slice(-500); };
+  for (const c of cars) {
+    const id = c.agvId; if (id === undefined || id === null) continue;
+    const name = c.carName || ('AGV' + String(id).padStart(2, '0'));
+    const estop = c.emergencyButton === true || c.manualStop === true;
+    const parts = [];
+    if (c.emergencyButton === true) parts.push('急停按下');
+    else if (c.manualStop === true) parts.push('人工停止');
+    if (c.communicationBreak === true) parts.push('通讯断开');
+    if (c.lowPower === true) parts.push('低电量');
+    const err = (c.errorMessage || '').toString().trim(); if (err) parts.push('错误:' + err);
+    const fp = parts.join('|');
+    const rec = db.rcsCarAlarm[id];
+    if (!fp) {
+      if (rec && rec.notified) { const msg = `✅ ${name} 告警已恢复（原：${rec.fp}）`; db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, '')); logAlarm(id, name, 'recover', msg); console.log('[car-alarm-recover] ' + msg); }
+      delete db.rcsCarAlarm[id];
+      continue;
+    }
+    if (!rec || rec.fp !== fp) { db.rcsCarAlarm[id] = { fp, since: nowMs, notified: false, severe: estop }; continue; } // 新告警/变化：重置计时
+    const j = db.rcsCarAlarm[id];
+    if (j.notified) continue;
+    if (nowMs - j.since < (j.severe ? 0 : 90 * 1000)) continue; // 急停立即，其余宽限90s防瞬时抖动
+    j.notified = true;
+    const msg = `🚨 ${name} 车辆告警：${fp}${j.severe ? '（急停，请立即处理）' : ''}`;
+    db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, ''));
+    logAlarm(id, name, 'alarm', msg);
+    console.log('[car-alarm] ' + msg);
+  }
 }
 
 // ===== ④A 全链路交付漏斗：接单→叫车→排队→下发→叉出→到站→清台 分段平均耗时（起终点+时间窗关联） =====
