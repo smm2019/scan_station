@@ -670,7 +670,7 @@ const server = http.createServer(async (req, res) => {
 
     // ---- ㉒仓库管理控制台（单页应用；HTML公开，数据接口全部要token）----
     if (req.method === 'GET' && (p === '/console' || p === '/ui' || p === '/console/')) {
-      try { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' }); res.end(fs.readFileSync(path.join(__dirname, 'public', 'console.html'))); }
+      try { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(__dirname, 'public', 'console.html'))); }
       catch (_) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('console.html 缺失：请确认 server/public/ 目录随 server 一起部署'); }
       return;
     }

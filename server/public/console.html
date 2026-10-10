@@ -52,7 +52,8 @@ async function api(p,o={}){o.headers=Object.assign({'Content-Type':'application/
  const r=await fetch(p,o);if(r.status==401||r.status==403){out();throw 0}return r.json()}
 async function doLogin(){const u=$('#lu').value.trim(),p=$('#lp').value;$('#le').textContent='';
  try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});const j=await r.json();
- if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=j.user;localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));go('')}catch(e){$('#le').textContent='网络错误'}}
+ if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=j.user;localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));showApp();go('')}catch(e){$('#le').textContent='网络错误'}}
+function showApp(){$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':'物料员'}）`}
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':''}
 const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['ledger','📦 货位账本'],['fix','🛠 修正与返架'],['dict','🔤 字典']];
@@ -109,6 +110,6 @@ async function pgDict(){
 async function dictGo(){const q=$('#dq')?$('#dq').value.trim():'';const j=await api('/api/dict?q='+encodeURIComponent(q));
  $('#dl').innerHTML=`<div style="overflow:auto;max-height:65vh"><table><thead><tr><th>零件号</th><th>物料名称</th><th>来源</th></tr></thead><tbody>${(j.list||[]).map(x=>`<tr><td class="mono">${x.pn}</td><td>${x.nm||''}</td><td style="color:var(--sub);font-size:12px">${x.src||''}</td></tr>`).join('')||'<tr><td colspan=3 style="color:var(--sub)">无匹配</td></tr>'}</tbody></table></div>`}
 (async()=>{document.documentElement.dataset.theme=localStorage.getItem('ck_th')||'';$('#thb').textContent=document.documentElement.dataset.theme=='dark'?'☀️':'';
- if(TK&&U){try{const j=await api('/api/me');if(j.ok){$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':'物料员'}）`;go();setInterval(()=>{if(TAB=='dash'&&!document.hidden)pgDash()},30000);return}}catch(e){}}
- $('#login').classList.remove('hide')})());
+ if(TK&&U){try{const j=await api('/api/me');if(j.ok){showApp();go();setInterval(()=>{if(TAB=='dash'&&!document.hidden)pgDash()},30000);return}}catch(e){}}
+ $('#login').classList.remove('hide')})();
 </script></body></html>
