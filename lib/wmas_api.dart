@@ -235,12 +235,13 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final cfg = await WmasConfig.get();
+      final ac = await WmasConfig.autoCallEnabled(); // await须在setState外（回调lambda非async）
       if (!mounted) return;
       setState(() {
         _hostCtrl.text = cfg["host"] ?? WmasConfig.defaultHost;
         _accCtrl.text = cfg["account"] ?? "";
         _pwdCtrl.text = cfg["pwd"] ?? "";
-        _autoCall = await WmasConfig.autoCallEnabled();
+        _autoCall = ac;
       });
     });
   }

@@ -1,6 +1,6 @@
 name: agv_collector
 description: AGV站台&人工地面货位采集APP，适配工业PDA，增加局域网Web下载
-version: 1.0.0+27
+version: 1.0.0+29
 environment:
   sdk: '>=3.4.0 <3.5.0'
 
