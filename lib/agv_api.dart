@@ -987,17 +987,24 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                   child: Wrap(
                       spacing: 5,
                       runSpacing: 3,
+                      // ㉑严格按原厂分状态：待执行=置顶/取消置顶+删除；执行中=重置取货/重置卸货；已完成=恢复取货/恢复卸货
                       children: done
                           ? [
                               _taskOpBtn(t, "recoverPick"),
                               _taskOpBtn(t, "recoverPut")
                             ]
-                          : [
-                              if (st == 0) _taskOpBtn(t, "top"),
-                              if (st == 0) _taskOpBtn(t, "delete"),
-                              _taskOpBtn(t, "resetPick"),
-                              _taskOpBtn(t, "resetPut")
-                            ])),
+                          : st == 0
+                              ? [
+                                  _taskOpBtn(t,
+                                      (t["taskPriority"] as num?)?.toInt() == 11
+                                          ? "cancelTop"
+                                          : "top"),
+                                  _taskOpBtn(t, "delete"),
+                                ]
+                              : [
+                                  _taskOpBtn(t, "resetPick"),
+                                  _taskOpBtn(t, "resetPut")
+                                ])),
           ]));
     }
 
