@@ -490,6 +490,7 @@ class AgvMonitorPage extends StatefulWidget {
 class _AgvMonitorPageState extends State<AgvMonitorPage>
     with AutomaticKeepAliveClientMixin {
   List<Map> _tasks = [], _done = [], _cars = [];
+  List<Map> _alarms = []; // ㉑活动车辆告警（认领按钮数据源，服务器 /api/agv/alarms）
   Map _traffic = {};
   Map<String, String> _cargo = {}; // 任务起点货位 → 账本反查的货物描述（零件号×数量）
   List<Map> _stations = []; // 站台状态（服务器轮询RCS：有货/占用中/空闲）
@@ -539,7 +540,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         AgvApi.cars(),
         AgvApi.traffic(),
         AgvApi.tasksDone(),
-        AuthApi.rcsStations()
+        AuthApi.rcsStations(),
+        AuthApi.agvAlarms().catchError((_) => <String, dynamic>{}) // 告警列表失败不阻塞主刷新
       ]);
       if (!mounted) return;
       setState(() {
@@ -554,6 +556,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
             ? List<Map>.from(st["stations"] as List)
             : [];
         _stationsOn = st is Map && st["on"] == true;
+        final al = rs[5];
+        _alarms = al is Map && al["list"] is List ? List<Map>.from(al["list"] as List) : _alarms;
         if (st is Map && st["holdAvg"] is Map)
           _holdAvg = (st["holdAvg"] as Map)
               .map((k, v) => MapEntry(k.toString(), (v as num).toInt()));
@@ -627,6 +631,21 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
           if (c["agvId"] is int)
             c["agvId"] as int: (c["carName"]?.toString() ?? "AGV${c["agvId"]}")
       };
+
+  /// ㉑认领车辆告警：确认后调服务器 ack（落库处理人+停止升级+广播全体），失败提示
+  Future<void> _ackAlarm(dynamic aid, String fp) async {
+    final yes = await showDialog<bool>(context: context, builder: (dc) => AlertDialog(
+      title: Text("认领 AGV${aid.toString().padLeft(2, '0')} 告警？"),
+      content: Text("$fp\n\n认领后停止升级催办，并通知全体仓管你正在处理。", style: const TextStyle(fontSize: 13)),
+      actions: [TextButton(onPressed: () => Navigator.pop(dc, false), child: const Text("取消")),
+        FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.deepOrange), onPressed: () => Navigator.pop(dc, true), child: const Text("确认认领"))],
+    ));
+    if (yes != true || !mounted) return;
+    final r = await AuthApi.agvAlarmAck(aid.toString());
+    if (!mounted) return;
+    if (r["ok"] == true) { _toast("🙋 已认领，升级催办已停止"); _load(silent: true); }
+    else _toast("认领失败：${r["msg"]}");
+  }
 
   bool get _canCtl => Auth.can("agv_control"); // 车辆控制/清台：按角色功能开关（设置里可在线调整）
   void _toast(String s) {
@@ -1182,19 +1201,29 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                         if (err.isNotEmpty) err,
                       ];
                       if (warns.isEmpty) return const SizedBox.shrink();
+                      final aid = c["agvId"];
+                      final am = _alarms.where((a) => a["id"].toString() == aid.toString()).firstOrNull;
+                      final ackBy = (am?["ackBy"] ?? "").toString();
                       return Container(
                           margin: const EdgeInsets.only(top: 4),
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 3),
                           decoration: BoxDecoration(
-                              color: Colors.red.shade50,
+                              color: ackBy.isNotEmpty ? Colors.orange.shade50 : Colors.red.shade50,
                               borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: Colors.red.shade200)),
-                          child: Text("⚠ ${warns.join(" · ")}",
-                              style: const TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.red,
-                                  fontWeight: FontWeight.w600)));
+                              border: Border.all(color: ackBy.isNotEmpty ? Colors.orange.shade200 : Colors.red.shade200)),
+                          child: Row(children: [
+                            Expanded(child: Text("⚠ ${warns.join(" · ")}",
+                                style: TextStyle(fontSize: 11, color: ackBy.isNotEmpty ? Colors.deepOrange : Colors.red, fontWeight: FontWeight.w600))),
+                            if (_canCtl && am != null && ackBy.isEmpty)
+                              Padding(padding: const EdgeInsets.only(left: 4), child: ActionChip(
+                                visualDensity: VisualDensity.compact,
+                                backgroundColor: Colors.deepOrange,
+                                label: const Text("认领", style: TextStyle(fontSize: 10.5, color: Colors.white)),
+                                onPressed: () => _ackAlarm(aid, warns.join(" · ")))),
+                            if (ackBy.isNotEmpty)
+                              Padding(padding: const EdgeInsets.only(left: 4), child: Text("🙋$ackBy", style: const TextStyle(fontSize: 10.5, color: Colors.deepOrange, fontWeight: FontWeight.w600))),
+                          ]));
                     }),
                     if (_canCtl)
                       Padding(

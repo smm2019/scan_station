@@ -1027,9 +1027,15 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/watchlist') {
         return send(res, 200, { ok: true, list: (db.watchlist || []).filter((w) => w.userId === u.id) });
       }
+      if (req.method === 'GET' && p === '/api/agv/alarms') { // 当前活动告警（车辆页认领按钮数据源）
+        const list = Object.entries(db.rcsCarAlarm || {}).map(([id, r]) => ({ id: Number(id) || id, fp: r.fp, since: r.since, severe: !!r.severe, ackBy: r.ackBy || '', ackAt: r.ackAt || 0 }));
+        return send(res, 200, { ok: true, list });
+      }
       if (req.method === 'POST' && p === '/api/agv/alarm/ack') { // G2 告警认领：body={id} 处理人落库+广播，停止升级
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '无AGV操作权限' });
-        const aid = body && body.id;
+        const b = await readBody(req);
+        const aid = b && b.id !== undefined && b.id !== null ? String(b.id) : '';
+        if (!aid) return send(res, 400, { ok: false, msg: '缺少 id' });
         const rec = (db.rcsCarAlarm || {})[aid];
         if (!rec) return send(res, 400, { ok: false, msg: '该告警已恢复或不存在' });
         rec.ackBy = u.name; rec.ackAt = Date.now();
