@@ -407,12 +407,13 @@ function eventsMigrateFromAlarms() { // ㉖首次升级：把存量 carAlarms �
 
 function buildEvents() {
   // ㉖数据源升级：持久表 carEvents 为主（含恢复/解除等全部历史），运行时旧聚合兜底（迁移前数据）
-  const ev = (db.carEvents || []).map((e) => ({ ts: e.ts, kind: e.kind, who: e.who || '', msg: e.msg || '' }));
+  const arr = (x) => (Array.isArray(x) ? x : Object.values(x || {})); // 防御：历史字段万一被存成对象也不再崩
+  const ev = arr(db.carEvents).map((e) => ({ ts: e.ts, kind: e.kind, who: e.who || '', msg: e.msg || '' }));
   const seen = new Set(ev.map((e) => e.ts + '|' + e.kind + '|' + e.who));
   const addOld = (ts, kind, who, msg) => { const k = ts + '|' + kind + '|' + who; if (!seen.has(k)) ev.push({ ts, kind, who, msg }); };
-  const last = (db.carEvents || []).length ? (db.carEvents[0].ts || 0) : 0; // carEvents按ts递增追加，首条即最早
-  for (const a of db.carAlarms || []) { if (last && a.at < last) break; addOld(a.at, a.kind === 'recover' ? '恢复' : a.kind === 'ack' ? '已认领' : a.kind === 'escalate' ? '升级' : a.kind === 'redflag' ? '红牌' : '告警', a.name || '', a.msg || ''); }
-  for (const j of db.rcsJam || []) addOld(j.at || 0, '堵点', 'AGV' + String(j.id).padStart(2, '0'), '交管被卡：' + (j.zone || '') + '（' + (j.lands || '') + '）');
+  const last = ev.length ? Math.min.apply(null, ev.map((e) => e.ts || 0)) : 0;
+  for (const a of arr(db.carAlarms)) { if (last && a.at < last) break; addOld(a.at, a.kind === 'recover' ? '恢复' : a.kind === 'ack' ? '已认领' : a.kind === 'escalate' ? '升级' : a.kind === 'redflag' ? '红牌' : '告警', a.name || '', a.msg || ''); }
+  for (const [jid, j] of Object.entries(db.rcsJam || {})) addOld(j.at || 0, '堵点', 'AGV' + String(jid).padStart(2, '0'), '交管被卡：' + (j.zone || '') + '（' + (j.lands || '') + '）'); // ㉖修：rcsJam是对象非数组，此前for-of必抛异常致events接口500、异常中心恒0条
   for (const [id, v] of Object.entries(db.rcsLowBat || {})) { if (v && v.notified) addOld(v.at || 0, '低电', 'AGV' + String(id).padStart(2, '0'), '低电空闲未回充'); }
   ev.sort((a, b) => b.ts - a.ts);
   return ev.slice(0, 800);
