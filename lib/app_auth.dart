@@ -334,6 +334,15 @@ class AuthApi {
   static Future<Map> inspectReturn(String id, String note) async =>
       _req("POST", "/api/inspect/return",
           body: {"id": id, "note": note}, token: await AuthStore.token());
+  static Future<Map> inspectAssist(String id, {String station = ""}) async =>
+      _req("POST", "/api/inspect/assist",
+          body: {"id": id, if (station.isNotEmpty) "station": station},
+          token: await AuthStore.token());
+  static Future<Map> inspectVerdict(
+          String id, String verdict, String note) async =>
+      _req("POST", "/api/inspect/verdict",
+          body: {"id": id, "verdict": verdict, "note": note},
+          token: await AuthStore.token());
   static Future<Map> dashboard() async =>
       _req("GET", "/api/dashboard", token: await AuthStore.token());
   static Future<Map> agvFunnel(int days) async =>

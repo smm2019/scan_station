@@ -113,7 +113,8 @@ class _InspectPageState extends State<InspectPage>
     final firstTag = codes.isNotEmpty ? codes[0] : "";
     final more = codes.length > 1 ? " 等${codes.length}码" : "";
     final nmX = nm.isNotEmpty ? " · $nm" : "";
-    final stTip = station.isEmpty ? "自动分配空闲站台" : station;
+    final stTip = (station.isEmpty ? "自动分配空闲站台" : station) +
+        (_assist ? "" : "（提交后由仓管/管理员协助派车）");
     final yes = await showDialog<bool>(
         context: context,
         builder: (c2) => AlertDialog(
@@ -140,6 +141,56 @@ class _InspectPageState extends State<InspectPage>
       _toast("发起失败：${r["msg"] ?? "未知错误"}");
       _search(); // 状态可能已变化，刷新框列表
     }
+  }
+
+  bool get _assist => Auth.can("insp_assist") || Auth.user?.role == "admin";
+
+  Future<void> _assistAct(Map q) async {
+    final st = (q["state"] ?? "").toString();
+    String station = "";
+    if (st == "waitOut") {
+      final pick = await _pickStation();
+      if (pick == null) return; // 无空闲台或用户取消
+      station = pick;
+    } else {
+      final yes = await showDialog<bool>(
+          context: context,
+          builder: (c2) => AlertDialog(
+                  title: const Text("协助归位"),
+                  content: Text(
+                      "确认派 AGV 将 ${q["code"] ?? ""} 送回原货位 ${q["from"] ?? ""}？"),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(c2, false),
+                        child: const Text("取消")),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(c2, true),
+                        child: const Text("确定")),
+                  ]));
+      if (yes != true) return;
+    }
+    final r = await AuthApi.inspectAssist(q["id"].toString(), station: station);
+    if (!mounted) return;
+    _toast(r["ok"] == true
+        ? (st == "waitOut"
+            ? "✅ 已协助下架 → ${((r["rec"] as Map?)?["station"]) ?? "站台"}，到台后通知检验员"
+            : "✅ 已协助归位，AGV 送回原货位后自动完成")
+        : "失败：${r["msg"]}");
+    if (r["ok"] == true) _load();
+  }
+
+  Future<void> _verdict(Map q) async {
+    final vd = await _prompt("检验结论（通过 / 不合格 / 需复检）", "通过");
+    if (vd == null) return;
+    final v2 = ["通过", "不合格", "需复检"].contains(vd.trim()) ? vd.trim() : "通过";
+    final note = await _prompt("检验备注（可留空，记入工单留痕）", "");
+    if (note == null) return;
+    final r = await AuthApi.inspectVerdict(q["id"].toString(), v2, note.trim());
+    if (!mounted) return;
+    _toast(r["ok"] == true
+        ? "✅ 结论已记录[$v2]${r["wait"] == true ? '，已通知仓管协助归位' : ''}"
+        : "失败：${r["msg"]}");
+    if (r["ok"] == true) _load();
   }
 
   Future<void> _ret(Map q) async {
@@ -186,6 +237,8 @@ class _InspectPageState extends State<InspectPage>
   }
 
   String _stText(String s) => switch (s) {
+        "waitOut" => "🤝 待协助下架",
+        "waitBack" => "🤝 待协助归位",
         "toStation" => "🚚 下架途中",
         "atStation" => "📍 站台待检",
         "returning" => "🔙 归位途中",
@@ -320,7 +373,7 @@ class _InspectPageState extends State<InspectPage>
                 child: Text(
                     "${q["by"] ?? ""} · ${((q["at"] ?? 0) as num).toInt() > 0 ? DateTime.fromMillisecondsSinceEpoch((q["at"] as num).toInt()).toString().substring(5, 16) : ""}",
                     style: const TextStyle(fontSize: 11, color: Colors.grey))),
-            if (st == "atStation")
+            if (st == "atStation" && _assist)
               FilledButton.icon(
                   onPressed: () => _ret(q),
                   icon: const Icon(Icons.restore, size: 18),
@@ -328,6 +381,25 @@ class _InspectPageState extends State<InspectPage>
                   style: FilledButton.styleFrom(
                       backgroundColor: const Color(0xFF00897B),
                       padding: const EdgeInsets.symmetric(horizontal: 14))),
+            if (st == "atStation" && !_assist)
+              FilledButton.icon(
+                  onPressed: () => _verdict(q),
+                  icon: const Icon(Icons.fact_check_outlined, size: 18),
+                  label: const Text("填写检验结论"),
+                  style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF00897B),
+                      padding: const EdgeInsets.symmetric(horizontal: 14))),
+            if ((st == "waitOut" || st == "waitBack") && _assist)
+              FilledButton.icon(
+                  onPressed: () => _assistAct(q),
+                  icon: const Icon(Icons.local_shipping_outlined, size: 18),
+                  label: Text(st == "waitOut" ? "协助下架" : "协助归位"),
+                  style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF515BD4),
+                      padding: const EdgeInsets.symmetric(horizontal: 14))),
+            if ((st == "waitOut" || st == "waitBack") && !_assist)
+              Text(st == "waitOut" ? "等待仓管协助下架" : "等待仓管协助归位",
+                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
           ]),
         ]),
       ),

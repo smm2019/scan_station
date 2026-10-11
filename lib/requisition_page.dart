@@ -74,11 +74,37 @@ class _RequisitionPageState extends State<RequisitionPage>
     _load();
     _listTimer = Timer.periodic(
         const Duration(seconds: 30), (_) => _loadSilent()); // ⑪自动刷新
+    kReqJump.addListener(_onJump); // ㉖通知点击直达详情
+  }
+
+  bool _jumping = false;
+  void _onJump() {
+    final v = kReqJump.value;
+    if (v.isEmpty || _jumping) return;
+    kReqJump.value = "";
+    final id = v.split("@").first;
+    _jumping = true;
+    _load().then((_) {
+      _jumping = false;
+      if (!mounted) return;
+      Map? hit;
+      for (final r in _reqs) {
+        if (r["id"]?.toString() == id) {
+          hit = r;
+          break;
+        }
+      }
+      if (hit != null)
+        _detail(hit);
+      else
+        _toast("该单不在当前列表（可能已归档或无权限）");
+    });
   }
 
   @override
   void dispose() {
     _listTimer?.cancel();
+    kReqJump.removeListener(_onJump);
     super.dispose();
   }
 

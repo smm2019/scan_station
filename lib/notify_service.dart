@@ -6,10 +6,14 @@ part of 'main.dart';
 // 语音四级兜底：系统TTS → 离线引擎(sherpa-onnx+局域网语音包) → 预置数字拼播(APK自带) → 提示音。
 // 提醒开关按类别持久化在 SharedPreferences，关闭=不发系统通知（应用内横幅保留）。
 
-final ValueNotifier<String> kNotifTap = ValueNotifier<String>(''); // 通知点击 → 携带领料单id，主页监听跳页
+final ValueNotifier<String> kNotifTap =
+    ValueNotifier<String>(''); // 通知点击 → 携带 类型|单号，主页精准直达
+final ValueNotifier<String> kReqJump =
+    ValueNotifier<String>(''); // 领料单id → 领料页监听开详情
 
 class NotifyService {
-  static final FlutterLocalNotificationsPlugin _n = FlutterLocalNotificationsPlugin();
+  static final FlutterLocalNotificationsPlugin _n =
+      FlutterLocalNotificationsPlugin();
   static final FlutterTts _tts = FlutterTts();
   static AudioPlayer? _digPlayer; // 拼播复用单例
   static bool _ttsReady = false;
@@ -22,21 +26,30 @@ class NotifyService {
   static Future<void> init() async {
     try {
       await _n.initialize(
-        const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')),
+        const InitializationSettings(
+            android: AndroidInitializationSettings('@mipmap/ic_launcher')),
         onDidReceiveNotificationResponse: (r) {
           final p = r.payload ?? '';
-          if (p.isNotEmpty) kNotifTap.value = '$p@${DateTime.now().millisecondsSinceEpoch}';
+          if (p.isNotEmpty)
+            kNotifTap.value = '$p@${DateTime.now().millisecondsSinceEpoch}';
         },
       );
-      await (await _n.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>())?.createNotificationChannel(
-        const AndroidNotificationChannel(chId, chName, description: '待接单/催单/到站等领料提醒，悬浮横幅+锁屏+提示音', importance: Importance.max),
+      await (await _n.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>())
+          ?.createNotificationChannel(
+        const AndroidNotificationChannel(chId, chName,
+            description: '待接单/催单/到站等领料提醒，悬浮横幅+锁屏+提示音',
+            importance: Importance.max),
       );
     } catch (e) {
       debugPrint('[notify] 初始化失败：$e');
     }
   }
 
-  static AndroidNotificationDetails _android(String id, String name, String desc, {required bool playSound}) => AndroidNotificationDetails(
+  static AndroidNotificationDetails _android(
+          String id, String name, String desc,
+          {required bool playSound}) =>
+      AndroidNotificationDetails(
         id,
         name,
         channelDescription: desc,
@@ -45,7 +58,9 @@ class NotifyService {
         category: AndroidNotificationCategory.message,
         visibility: NotificationVisibility.public, // 锁屏显示内容
         playSound: playSound,
-        sound: playSound ? const RawResourceAndroidNotificationSound('reminder') : null,
+        sound: playSound
+            ? const RawResourceAndroidNotificationSound('reminder')
+            : null,
         enableVibration: true,
         audioAttributesUsage: AudioAttributesUsage.alarm, // 走闹钟音量通道，车间更听得见
         styleInformation: const BigTextStyleInformation(''),
@@ -54,7 +69,8 @@ class NotifyService {
   /// 申请 Android13+ 通知权限；返回是否已授权
   static Future<bool> ensurePermission() async {
     try {
-      final p = await _n.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      final p = await _n.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
       final granted = await p?.areNotificationsEnabled();
       if (granted == true) return true;
       final ok = await p?.requestNotificationsPermission();
@@ -66,7 +82,8 @@ class NotifyService {
 
   static Future<bool> notificationsEnabled() async {
     try {
-      final p = await _n.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      final p = await _n.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
       return await p?.areNotificationsEnabled() ?? false;
     } catch (_) {
       return false;
@@ -74,10 +91,17 @@ class NotifyService {
   }
 
   /// 发一条系统通知（按类别开关决定是否发声/是否发出）
-  static Future<void> push(String kind, String title, String body, {String payload = ''}) async {
+  static Future<void> push(String kind, String title, String body,
+      {String payload = ''}) async {
     if (!await RemindPrefs.enabled(kind)) return;
     try {
-      await _n.show(++_nid % 100000, title, body, NotificationDetails(android: _android(chId, chName, '领料提醒', playSound: true)), payload: payload);
+      await _n.show(
+          ++_nid % 100000,
+          title,
+          body,
+          NotificationDetails(
+              android: _android(chId, chName, '领料提醒', playSound: true)),
+          payload: payload);
     } catch (e) {
       debugPrint('[notify] 发送失败：$e');
     }
@@ -86,7 +110,12 @@ class NotifyService {
   /// 测试通知（设置页验证铃声与横幅效果）
   static Future<void> test() async {
     try {
-      await _n.show(99001, '🔔 提醒音测试', '收到这条说明通知与铃声正常。车间里能听见就OK。', NotificationDetails(android: _android(chId, chName, '领料提醒', playSound: true)));
+      await _n.show(
+          99001,
+          '🔔 提醒音测试',
+          '收到这条说明通知与铃声正常。车间里能听见就OK。',
+          NotificationDetails(
+              android: _android(chId, chName, '领料提醒', playSound: true)));
     } catch (e) {
       debugPrint('[notify] 测试失败：$e');
     }
@@ -139,11 +168,31 @@ class NotifyService {
 
   /// 数字拼播：全部字符可映射为自带样本才播；含无法念的字返回false（交给上层）
   static final Map<String, String> _digMap = {
-    '0': 'assets/voice/d0.wav', '1': 'assets/voice/d1.wav', '2': 'assets/voice/d2.wav', '3': 'assets/voice/d3.wav', '4': 'assets/voice/d4.wav',
-    '5': 'assets/voice/d5.wav', '6': 'assets/voice/d6.wav', '7': 'assets/voice/d7.wav', '8': 'assets/voice/d8.wav', '9': 'assets/voice/d9.wav',
-    '零': 'assets/voice/d0.wav', '一': 'assets/voice/d1.wav', '二': 'assets/voice/d2.wav', '三': 'assets/voice/d3.wav', '四': 'assets/voice/d4.wav',
-    '五': 'assets/voice/d5.wav', '六': 'assets/voice/d6.wav', '七': 'assets/voice/d7.wav', '八': 'assets/voice/d8.wav', '九': 'assets/voice/d9.wav',
-    '十': 'assets/voice/d10.wav', '百': 'assets/voice/d100.wav', '千': 'assets/voice/d1000.wav', '件': 'assets/voice/jian.wav', '点': 'assets/voice/dot.wav',
+    '0': 'assets/voice/d0.wav',
+    '1': 'assets/voice/d1.wav',
+    '2': 'assets/voice/d2.wav',
+    '3': 'assets/voice/d3.wav',
+    '4': 'assets/voice/d4.wav',
+    '5': 'assets/voice/d5.wav',
+    '6': 'assets/voice/d6.wav',
+    '7': 'assets/voice/d7.wav',
+    '8': 'assets/voice/d8.wav',
+    '9': 'assets/voice/d9.wav',
+    '零': 'assets/voice/d0.wav',
+    '一': 'assets/voice/d1.wav',
+    '二': 'assets/voice/d2.wav',
+    '三': 'assets/voice/d3.wav',
+    '四': 'assets/voice/d4.wav',
+    '五': 'assets/voice/d5.wav',
+    '六': 'assets/voice/d6.wav',
+    '七': 'assets/voice/d7.wav',
+    '八': 'assets/voice/d8.wav',
+    '九': 'assets/voice/d9.wav',
+    '十': 'assets/voice/d10.wav',
+    '百': 'assets/voice/d100.wav',
+    '千': 'assets/voice/d1000.wav',
+    '件': 'assets/voice/jian.wav',
+    '点': 'assets/voice/dot.wav',
   };
 
   static Future<bool> _speakDigits(String text) async {
@@ -174,23 +223,38 @@ class NotifyService {
           continue;
         }
         final byteData = await rootBundle.load(c);
-        final w = byteData.buffer.asByteData(byteData.offsetInBytes, byteData.lengthInBytes);
+        final w = byteData.buffer
+            .asByteData(byteData.offsetInBytes, byteData.lengthInBytes);
         // 定位data块（跳过RIFF头与各fmt块）
         int off = 12;
         int len = 0;
         while (off + 8 <= w.lengthInBytes) {
-          final id = String.fromCharCodes([w.getUint8(off), w.getUint8(off + 1), w.getUint8(off + 2), w.getUint8(off + 3)]);
+          final id = String.fromCharCodes([
+            w.getUint8(off),
+            w.getUint8(off + 1),
+            w.getUint8(off + 2),
+            w.getUint8(off + 3)
+          ]);
           final sz = w.getUint32(off + 4, Endian.little);
-          if (id == 'data') { off += 8; len = sz > w.lengthInBytes - off ? w.lengthInBytes - off : sz; break; }
+          if (id == 'data') {
+            off += 8;
+            len = sz > w.lengthInBytes - off ? w.lengthInBytes - off : sz;
+            break;
+          }
           off += 8 + sz + (sz & 1);
         }
         if (len == 0) return false;
         pcm.add(w.buffer.asUint8List(w.offsetInBytes + off, len));
       }
-      final speed = (0.5 + (await RemindPrefs.rateVal()) * 1.1).clamp(0.6, 2.0); // 语速滑杆→PCM重采样变速（不依赖播放器setRate，5.x兼容）
+      final speed = (0.5 + (await RemindPrefs.rateVal()) * 1.1)
+          .clamp(0.6, 2.0); // 语速滑杆→PCM重采样变速（不依赖播放器setRate，5.x兼容）
       final body = _resamplePcm16(pcm.toBytes(), speed);
       final head = ByteData(44);
-      void hs(int o, String t) { for (var i = 0; i < t.length; i++) head.setUint8(o + i, t.codeUnitAt(i)); }
+      void hs(int o, String t) {
+        for (var i = 0; i < t.length; i++)
+          head.setUint8(o + i, t.codeUnitAt(i));
+      }
+
       hs(0, 'RIFF');
       head.setUint32(4, 36 + body.length, Endian.little);
       hs(8, 'WAVE');
@@ -210,7 +274,8 @@ class NotifyService {
       final p = _digPlayer ??= AudioPlayer();
       await p.stop();
       await p.setReleaseMode(ReleaseMode.release);
-      unawaited(p.play(DeviceFileSource(wav)).catchError((_) {}) as Future<void>);
+      unawaited(
+          p.play(DeviceFileSource(wav)).catchError((_) {}) as Future<void>);
       return true; // 即发即播：不await完成事件，UI按钮不再被卡
     } catch (e) {
       debugPrint('[拼播失败] $e');
@@ -231,7 +296,8 @@ class NotifyService {
       final i0 = pos.floor();
       final i1 = (i0 + 1 < n) ? i0 + 1 : n - 1;
       final f = pos - i0;
-      final v = sd.getInt16(i0 * 2, Endian.little) * (1 - f) + sd.getInt16(i1 * 2, Endian.little) * f;
+      final v = sd.getInt16(i0 * 2, Endian.little) * (1 - f) +
+          sd.getInt16(i1 * 2, Endian.little) * f;
       bd.setInt16(i * 2, v.round().clamp(-32768, 32767), Endian.little);
     }
     return outBuf;
@@ -264,8 +330,15 @@ class VoicePack {
   static Future<void> setDisabled(bool v) async {
     final sp = await SharedPreferences.getInstance();
     await sp.setBool(_flagKey, v);
-    if (v) { _broken = true; _inited = false; _tts = null; }
-    else { _broken = false; _inited = false; _tts = null; }
+    if (v) {
+      _broken = true;
+      _inited = false;
+      _tts = null;
+    } else {
+      _broken = false;
+      _inited = false;
+      _tts = null;
+    }
   }
 
   /// 启动时调用：哨兵残留 = 上次进程在语音合成中异常退出（原生崩溃，Dart捕获不到）→ 本次起永久禁用离线引擎
@@ -273,13 +346,16 @@ class VoicePack {
     try {
       final f = File(await _sentPath());
       if (!f.existsSync()) return;
-      try { f.deleteSync(); } catch (_) {}
+      try {
+        f.deleteSync();
+      } catch (_) {}
       if (!await disabled()) {
         await setDisabled(true);
         LocalLog.op('语音包停用', '检测到上次在离线语音合成中异常退出，已自动降级为数字拼播（可在设置页重新启用）');
       }
     } catch (_) {}
   }
+
   static dynamic _tts; // OfflineTts（避免未装包设备启动即崩，全部 try/catch 内使用）
   static bool _inited = false;
   static bool _broken = false;
@@ -294,7 +370,8 @@ class VoicePack {
   static Future<bool> installed() async {
     try {
       final d = await dirPath();
-      return File('$d/model.onnx').existsSync() && File('$d/tokens.txt').existsSync();
+      return File('$d/model.onnx').existsSync() &&
+          File('$d/tokens.txt').existsSync();
     } catch (_) {
       return false;
     }
@@ -315,7 +392,10 @@ class VoicePack {
       final tts = sherpa.OfflineTts(
         sherpa.OfflineTtsConfig(
           model: sherpa.OfflineTtsModelConfig(
-            vits: sherpa.OfflineTtsVitsModelConfig(model: '$d/model.onnx', tokens: '$d/tokens.txt', dataDir: '$d/espeak-ng-data'),
+            vits: sherpa.OfflineTtsVitsModelConfig(
+                model: '$d/model.onnx',
+                tokens: '$d/tokens.txt',
+                dataDir: '$d/espeak-ng-data'),
             numThreads: 2,
           ),
         ),
@@ -335,30 +415,42 @@ class VoicePack {
     File? sent;
     try {
       sent = File(await _sentPath());
-      sent.writeAsStringSync(DateTime.now().toIso8601String()); // 哨兵先行：引擎加载阶段崩溃（低内存设备）也能被下次启动识别
+      sent.writeAsStringSync(
+          DateTime.now().toIso8601String()); // 哨兵先行：引擎加载阶段崩溃（低内存设备）也能被下次启动识别
       LocalLog.op('语音合成', text);
     } catch (_) {}
     if (!await _ensureEngine()) {
-      try { sent?.deleteSync(); } catch (_) {} // Dart层可恢复的加载失败：撤哨兵不误判
+      try {
+        sent?.deleteSync();
+      } catch (_) {} // Dart层可恢复的加载失败：撤哨兵不误判
       return false;
     }
     try {
       final speed = (0.5 + (await RemindPrefs.rateVal()) * 1.1).clamp(0.6, 2.0);
-      final audio = _tts.generate(text: text, speed: speed) as sherpa.GeneratedAudio;
+      final audio =
+          _tts.generate(text: text, speed: speed) as sherpa.GeneratedAudio;
       final samples = (audio.samples as List).cast<double>();
       if (samples.isEmpty) return false;
       final dir = await getTemporaryDirectory();
       final wav = '${dir.path}/vp_${DateTime.now().millisecondsSinceEpoch}.wav';
-      File(wav).writeAsBytesSync(_pcmToWav16(samples, (_tts.sampleRate as int)));
+      File(wav)
+          .writeAsBytesSync(_pcmToWav16(samples, (_tts.sampleRate as int)));
       await _player.stop();
       await _player.setReleaseMode(ReleaseMode.stop);
       await _player.play(DeviceFileSource(wav));
-      await _player.onPlayerComplete.first.timeout(const Duration(seconds: 8), onTimeout: () {});
-      try { File(wav).deleteSync(); } catch (_) {}
-      try { sent?.deleteSync(); } catch (_) {} // 成功：撤哨兵
+      await _player.onPlayerComplete.first
+          .timeout(const Duration(seconds: 8), onTimeout: () {});
+      try {
+        File(wav).deleteSync();
+      } catch (_) {}
+      try {
+        sent?.deleteSync();
+      } catch (_) {} // 成功：撤哨兵
       return true;
     } catch (e) {
-      try { sent?.deleteSync(); } catch (_) {} // Dart异常可恢复：撤哨兵，不误判崩溃
+      try {
+        sent?.deleteSync();
+      } catch (_) {} // Dart异常可恢复：撤哨兵，不误判崩溃
       debugPrint('[voicepack] 合成失败：$e');
       LocalLog.op('语音合成失败', '$e');
       return false;
@@ -380,6 +472,7 @@ class VoicePack {
         buf.setUint8(off + i, s.codeUnitAt(i));
       }
     }
+
     wstr(0, 'RIFF');
     buf.setUint32(4, 36 + n * 2, Endian.little);
     wstr(8, 'WAVE');
@@ -412,7 +505,8 @@ class VoicePack {
       if (info["ok"] != true) return {"ok": false, "msg": "服务器未放置语音包"};
       final total = (info["size"] as num?)?.toDouble() ?? 0;
       final client = http.Client();
-      final req = http.Request("GET", Uri.parse("$server/api/tts/model"))..headers["Authorization"] = "Bearer $tk";
+      final req = http.Request("GET", Uri.parse("$server/api/tts/model"))
+        ..headers["Authorization"] = "Bearer $tk";
       final resp = await client.send(req).timeout(const Duration(seconds: 30));
       if (resp.statusCode != 200) {
         client.close();
@@ -481,16 +575,24 @@ class RemindPrefs {
   static const _kWatch = 'remind_watch_in'; // ⑮预约到料
   static const _kStock = 'remind_stock_out'; // ⑮断料预警
   static const _kCar = 'remind_car_alarm'; // ⑱车辆告警
+  static const _kInsp = 'remind_inspect'; // ㉖检验协助
 
   /// 通知类型 → 开关键（未列出的类型默认不弹系统通知）
   static String? keyOf(String type) => switch (type) {
         'req_new' || 'req_timeout' || 'req_reassign' => _kNew,
         'req_urge' => _kUrge,
         'req_arrive' => _kArrive,
-        'req_accept' || 'req_ready' || 'req_ready_wh' || 'req_done' || 'req_reject' || 'req_cancel' => _kResult,
+        'req_accept' ||
+        'req_ready' ||
+        'req_ready_wh' ||
+        'req_done' ||
+        'req_reject' ||
+        'req_cancel' =>
+          _kResult,
         'watch_in' => _kWatch,
         'stock_out' => _kStock,
         'car_alarm' => _kCar,
+        'inspect' => _kInsp,
         _ => null,
       };
 
@@ -519,6 +621,7 @@ class RemindPrefs {
   static const kWatch = _kWatch;
   static const kStock = _kStock;
   static const kCar = _kCar;
+  static const kInsp = _kInsp;
 
   static Future<double> rateVal() async {
     final sp = await SharedPreferences.getInstance();

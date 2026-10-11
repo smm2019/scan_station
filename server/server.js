@@ -16,17 +16,19 @@ const SESSION_TTL_MS = 12 * 3600 * 1000; // 12 小时滑动过期
 const LOGIN_FAIL_LIMIT = 5; // 同一账号 1 分钟内最多失败 5 次
 const LOGIN_FAIL_WINDOW_MS = 60 * 1000;
 
-const ROLES = ['material', 'warehouse', 'admin']; // 物料员 / 仓管员 / 管理员
-const ROLE_NAMES = { material: '物料员', warehouse: '仓管员', admin: '管理员' };
+const ROLES = ['material', 'warehouse', 'inspector', 'admin']; // 物料员 / 仓管员 / 检验员 / 管理员
+const ROLE_NAMES = { material: '物料员', warehouse: '仓管员', inspector: '检验员', admin: '管理员' };
 // 按角色功能开关（管理员可在线改；App 登录与心跳时拉取）
 const DEFAULT_FEATURES = {
   material: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: true, receive_confirm: true, location_reg: false, agv_monitor: false, agv_control: false, admin_panel: false, inspect_mode: false },
+  inspector: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: false, receive_confirm: false, location_reg: false, agv_monitor: false, agv_control: false, admin_panel: false, inspect_mode: true },
   warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: false, inspect_mode: true },
-  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: true, inspect_mode: true },
+  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: true, inspect_mode: true, insp_assist: true },
+  warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: false, inspect_mode: true, insp_assist: true },
 };
 // 功能开关判定：管理员在线关掉某角色开关后，服务器端同步拒绝（全局生效，不只UI隐藏）
 function canFeature(u, key) { return !!(db.features && db.features[u.role] && db.features[u.role][key] === true); }
-const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', location_reg: '位置登记', agv_monitor: 'AGV监控', agv_control: 'AGV车辆控制', admin_panel: '管理后台', inspect_mode: '检验模式' };
+const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', location_reg: '位置登记', agv_monitor: 'AGV监控', agv_control: 'AGV车辆控制', admin_panel: '管理后台', inspect_mode: '检验模式', insp_assist: '检验协助控制' };
 
 // ---------------- 存储 ----------------
 function defaultDb() {
@@ -431,7 +433,7 @@ function labelStatus(codeRaw) {
   const inOutbound = []; for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) if (String(i.code || '').toUpperCase() === code || String(i.barcode || '').toUpperCase() === code) inOutbound.push(o.orderNo);
   const inIssued = []; for (const r of db.requisitions || []) for (const it of (r.items || [])) for (const e of (it.issued || [])) if (String(typeof e === 'string' ? e : (e.c || '')).toUpperCase() === code) inIssued.push(r.no);
   const inQueue = (db.agvQueue || []).filter((q) => String(q.code || '').toUpperCase() === code && ['排队', '下发中', '已下发', '到站'].includes(q.state));
-  const inInspect = (db.inspects || []).filter((q) => String(q.code || '').toUpperCase() === code && ['toStation', 'atStation', 'returning'].includes(q.state));
+  const inInspect = (db.inspects || []).filter((q) => String(q.code || '').toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state));
   const everOut = !!(db.seenOut || {})[code];
   const everIn = !!(db.seenIn || {})[code]; // ㉖ 历史录过（当前不在架也可能曾在上游批次）
   return { code, inLedger, inScanlog, inOutbound, inIssued, inQueue, inInspect, everOut, everIn, inMeta: (db.seenIn || {})[code] || null };
@@ -493,7 +495,7 @@ function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { cons
 
 // ---- ㉕T1 通知治理：同类5分钟静默聚合（并入原条"等N条"）/ 每人每分钟超5条跨类型强制聚合 / 夜间22-6点非急停类按人缓冲，早6点各自一条汇总 ----
 const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
-const URGENT_TYPES = new Set(['car_alarm']);   // 车辆告警（含急停）永不静默
+const URGENT_TYPES = new Set(['car_alarm', 'inspect']);   // 车辆告警（含急停）永不静默
 const NTYPE = { req_new: 'req_new', req_timeout: 'req_new', req_reassign: 'req_new', req_urge: 'req_urge', req_arrive: 'req_arrive', req_accept: 'req_flow', req_ready: 'req_flow', req_ready_wh: 'req_flow', req_done: 'req_flow', req_reject: 'req_flow', req_cancel: 'req_flow', watch_in: 'watch_in', stock_out: 'stock_out' }; // ㉕F5 订阅粒度（car_alarm不在表内=强制必达）
 function notify(toUserId, type, text, reqId) {
   try {
@@ -1498,7 +1500,7 @@ const server = http.createServer(async (req, res) => {
           if (!code || !fromLoc) continue;
           if (_confTrf.some(function (x) { return String(x.from).toUpperCase() === fromLoc || String(x.to).toUpperCase() === fromLoc; })) { conflict++; continue; } // 该货位有进行中移库
           if (db.agvQueue.some((q) => q.code === code && !['完成', '取消', '失败'].includes(q.state))) { dup++; continue; } // 同框已在队列
-          if ((db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['toStation', 'atStation', 'returning'].includes(q.state))) { conflict++; continue; } // ㉖②④ 检验中禁止出库叫车
+          if ((db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state))) { conflict++; continue; } // ㉖②④ 检验中禁止出库叫车
           db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', rush: !!(rq && rq.rush), station: '', at: Date.now(), updAt: Date.now() });
           const ti = rq && (rq.items || []).find((i) => i.partNo === it.partNo); // 登记叫车标记：建议区变🚗排队，单框叫车自动跳过
           if (ti) { ti.agvCalled = (ti.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code); ti.agvCalled.push({ c: code, s: '', q: 1, by: u.id, t: new Date().toISOString() }); }
@@ -2030,15 +2032,21 @@ const server = http.createServer(async (req, res) => {
         const srcBox = (db.ledger || []).find((x) => String(x.l).toUpperCase() === from);
         if (!srcBox) return send(res, 400, { ok: false, msg: '该货位当前无货（货位账本查不到在库框）' });
         const code = String(srcBox.c || '').toUpperCase();
-        if ((db.inspects || []).some((q) => (q.from === from || String(q.code).toUpperCase() === code) && ['toStation', 'atStation', 'returning'].includes(q.state))) return send(res, 400, { ok: false, msg: '该货位已有进行中的检验任务' });
+        if ((db.inspects || []).some((q) => (q.from === from || String(q.code).toUpperCase() === code) && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state))) return send(res, 400, { ok: false, msg: '该货位已有进行中的检验任务' });
         if ((db.agvQueue || []).some((x) => x.type !== 'transfer' && String(x.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(x.state))) return send(res, 400, { ok: false, msg: '该货位已在出库任务中，不能同时检验下架' });
         // ㉖ 指定站台优先：可用性与自动找同一判据；未指定则自动找空闲（优先 CK-05 起）
         const want = String(b.station || '').trim().toUpperCase(); let to = '';
         if (want) { if (!AGV_STNS.includes(want)) return send(res, 400, { ok: false, msg: '站台编码不在 8 个出库站台范围（NB02-CK-05~12）' }); if (!inspStationFree(want, Date.now())) return send(res, 400, { ok: false, msg: '站台 ' + want + ' 当前被占用（有货/队列/检验中），请改选或稍后再试' }); to = want; }
         else { for (const st of AGV_STNS) { if (!inspStationFree(st, Date.now())) continue; to = st; break; } }
         if (!to) return send(res, 400, { ok: false, msg: '暂无空闲站台放下架框，请稍后再试' });
-        const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
         const rec = { id: newId('insp'), code, from, station: to, palletType: String(srcBox.f || '').toUpperCase(), part: String(srcBox.p || ''), nm: String(srcBox.n || ''), uid: u.id, by: u.name, note: String(b.note || '').slice(0, 120), state: 'toStation', at: Date.now(), updAt: Date.now(), taskNo: '' };
+        if (!canFeature(u, 'insp_assist')) { // 检验员发单 → 待协助下架，等仓管/管理员点协助
+          rec.state = 'waitOut'; db.inspects = db.inspects || []; db.inspects.push(rec); save();
+          pushOps(u, '检验发单', code, from + (to ? ' 期望台' + to : ''));
+          db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && canFeature(x, 'insp_assist')).forEach((x) => notify(x.id, 'inspect', '🤝 检验协助请求：' + u.name + ' 申请下架 ' + code + '（' + (rec.nm || rec.part) + '）于 ' + from + (to ? '，期望站台 ' + to : '') + '，请协助', ''));
+          return send(res, 200, { ok: true, rec, wait: true });
+        }
+        const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
         db.inspects = db.inspects || []; db.inspects.push(rec);
         const r = await wmasDispatchOne({ fromLoc: from, palletType: rec.palletType }, tk, { from: from, to: to, pallet: rec.palletType, ref: 'JC-' + code });
         if (!r.ok) { db.inspects = db.inspects.filter((x) => x !== rec); save(); return send(res, 400, { ok: false, msg: '下架任务下发失败：' + r.msg }); }
@@ -2052,12 +2060,64 @@ const server = http.createServer(async (req, res) => {
         const rec = (db.inspects || []).find((x) => x.id === String(b.id || ''));
         if (!rec) return send(res, 400, { ok: false, msg: '检验工单不存在' });
         if (rec.state !== 'atStation') return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']不可归位（需已到站台）' });
+        if (!canFeature(u, 'insp_assist')) { // 检验员点归位 = 填结论 + 请求协助
+          const vd = ['通过', '不合格', '需复检'].includes(String(b.verdict || '')) ? String(b.verdict) : '通过';
+          rec.verdict = vd; rec.note2 = String(b.note || '').slice(0, 200); rec.verdictBy = u.name; rec.verdictAt = Date.now(); rec.state = 'waitBack'; rec.updAt = Date.now();
+          if (rec.note2) rec.note = (rec.note ? rec.note + ' | ' : '') + '检验结论：' + vd + '·' + rec.note2;
+          save(); pushOps(u, '检验结论', rec.code, vd + (rec.note2 ? '：' + rec.note2 : ''));
+          db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && canFeature(x, 'insp_assist')).forEach((x) => notify(x.id, 'inspect', '🤝 检验协助请求：' + rec.code + ' 已出结论[' + vd + ']，请协助归位回 ' + rec.from, ''));
+          return send(res, 200, { ok: true, rec, wait: true });
+        }
         const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
         const r = await wmasDispatchOne({ fromLoc: rec.station, palletType: rec.palletType }, tk, { from: rec.station, to: rec.from, pallet: rec.palletType, ref: 'JCG-' + rec.code });
         if (!r.ok) return send(res, 400, { ok: false, msg: '归位任务下发失败：' + r.msg });
         rec.note2 = String(b.note || '').slice(0, 200); rec.state = 'returning'; rec.taskNo2 = r.taskNo || ''; rec.retAt = Date.now(); rec.updAt = Date.now();
         save(); pushOps(u, '检验归位', rec.code, '→归位 ' + rec.from + (rec.note2 ? ' 备注:' + rec.note2 : ''));
         if (rec.note2) { rec.note = (rec.note ? rec.note + ' | ' : '') + '检验备注：' + rec.note2; save(); }
+        return send(res, 200, { ok: true, rec });
+      }
+      if (req.method === 'POST' && p === '/api/inspect/assist') { // ㉖ 仓管/管理员协助控制AGV：waitOut→下架 / waitBack→归位
+        if (!canFeature(u, 'insp_assist')) return send(res, 403, { ok: false, msg: '当前角色未开通「检验协助控制」权限' });
+        const b = await readBody(req);
+        const rec = (db.inspects || []).find((x) => x.id === String(b.id || ''));
+        if (!rec) return send(res, 400, { ok: false, msg: '检验工单不存在' });
+        const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
+        if (rec.state === 'waitOut') {
+          let to = String(b.station || '').trim().toUpperCase() || rec.station;
+          if (!to) { for (const st of AGV_STNS) { if (inspStationFree(st, Date.now())) { to = st; break; } } }
+          else if (!AGV_STNS.includes(to) || !inspStationFree(to, Date.now())) return send(res, 400, { ok: false, msg: '站台不可用（范围外或被占用），请改选' });
+          if (!to) return send(res, 400, { ok: false, msg: '暂无空闲站台，请稍后再试' });
+          const r = await wmasDispatchOne({ fromLoc: rec.from, palletType: rec.palletType }, tk, { from: rec.from, to, pallet: rec.palletType, ref: 'JC-' + rec.code });
+          if (!r.ok) return send(res, 400, { ok: false, msg: '下架任务下发失败：' + r.msg });
+          rec.station = to; rec.state = 'toStation'; rec.taskNo = r.taskNo || ''; rec.at = Date.now(); rec.updAt = Date.now(); rec.assistBy = u.name;
+          save(); pushOps(u, '检验协助下架', rec.code, rec.from + '→' + to);
+          notify(rec.uid, 'inspect', '🤝 ' + u.name + ' 已协助下架 ' + rec.code + '，正送往 ' + to, '');
+          return send(res, 200, { ok: true, rec });
+        }
+        if (rec.state === 'waitBack') {
+          const r = await wmasDispatchOne({ fromLoc: rec.station, palletType: rec.palletType }, tk, { from: rec.station, to: rec.from, pallet: rec.palletType, ref: 'JCG-' + rec.code });
+          if (!r.ok) return send(res, 400, { ok: false, msg: '归位任务下发失败：' + r.msg });
+          rec.state = 'returning'; rec.taskNo2 = r.taskNo || ''; rec.retAt = Date.now(); rec.updAt = Date.now(); rec.assistBy2 = u.name;
+          save(); pushOps(u, '检验协助归位', rec.code, '→归位 ' + rec.from);
+          notify(rec.uid, 'inspect', '🤝 ' + u.name + ' 已协助归位 ' + rec.code + '，正在返回 ' + rec.from, '');
+          return send(res, 200, { ok: true, rec });
+        }
+        return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']无需协助（仅待协助下架/待协助归位可操作）' });
+      }
+      // ㉖ 检验员填结论（通过/不合格/需复检）：atStation→waitBack 请协助归位；stuck 也可补结论
+      if (req.method === 'POST' && p === '/api/inspect/verdict') {
+        if (!canFeature(u, 'inspect_mode')) return send(res, 403, { ok: false, msg: '当前角色未开通「检验模式」权限' });
+        const b = await readBody(req);
+        const rec = (db.inspects || []).find((x) => x.id === String(b.id || ''));
+        if (!rec) return send(res, 400, { ok: false, msg: '检验工单不存在' });
+        if (!['atStation', 'stuck'].includes(rec.state)) return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']不可填写结论' });
+        const vd = ['通过', '不合格', '需复检'].includes(String(b.verdict || '')) ? String(b.verdict) : '通过';
+        rec.verdict = vd; rec.note2 = String(b.note || '').slice(0, 200); rec.verdictBy = u.name; rec.verdictAt = Date.now(); rec.updAt = Date.now();
+        if (rec.note2) rec.note = (rec.note ? rec.note + ' | ' : '') + '检验结论：' + vd + '·' + rec.note2;
+        if (rec.state === 'atStation') rec.state = 'waitBack';
+        save(); pushOps(u, '检验结论', rec.code, vd + (rec.note2 ? '：' + rec.note2 : ''));
+        if (vd !== '通过') db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'inspect', '⚠ 检验不合格：' + rec.code + '（' + (rec.nm || rec.part) + '）' + vd + (rec.note2 ? '·' + rec.note2 : '') + '，请关注处置', ''));
+        db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && canFeature(x, 'insp_assist')).forEach((x) => notify(x.id, 'inspect', '🤝 检验协助请求：' + rec.code + ' 已出结论[' + vd + ']，请协助归位回 ' + rec.from, ''));
         return send(res, 200, { ok: true, rec });
       }
       if (req.method === 'POST' && p === '/api/agv/mode') { // 调度模式：dry演算 / live真下发
@@ -2088,7 +2148,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/counts') {
         let archScan = 0, archOut = 0; try { for (const f of fs.readdirSync(path.join(DATA_DIR, 'archive'))) { if (/scanlog/.test(f)) archScan += Object.keys(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', f), 'utf8'))).length; else if (/outbound/.test(f)) archOut += Object.keys(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', f), 'utf8'))).length; } } catch (_) {}
         const live = Object.values(db.scanlog || {}).filter((x) => !x.cx).length;
-        return send(res, 200, { ok: true, at: new Date().toISOString(), ledger: (db.ledger || []).length, scanlogLive: live, scanlogTotal: Object.keys(db.scanlog || {}).length, archScan, outbound: Object.keys(db.outbound || {}).length, archOut, reqs: (db.requisitions || []).length, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).length, queueTotal: (db.agvQueue || []).length, tasks: Object.keys(db.agvTasks || {}).length, events: (db.carEvents || []).length, ops: opsLoadDays(30).length, inspects: (db.inspects || []).length, inspectActive: (db.inspects || []).filter((q) => ['toStation', 'atStation', 'returning'].includes(q.state)).length, seenIn: Object.keys(db.seenIn || {}).length, seenOut: Object.keys(db.seenOut || {}).length, dict: Object.keys(db.itemDict || {}).length, ledRev: db.ledgerRev || 0, ledAt: db.ledgerAt || '', backup: fs.existsSync(path.join(DATA_DIR, 'backups')) ? fs.readdirSync(path.join(DATA_DIR, 'backups')).filter((f) => /^db-.*\.json$/.test(f)).length : 0 });
+        return send(res, 200, { ok: true, at: new Date().toISOString(), ledger: (db.ledger || []).length, scanlogLive: live, scanlogTotal: Object.keys(db.scanlog || {}).length, archScan, outbound: Object.keys(db.outbound || {}).length, archOut, reqs: (db.requisitions || []).length, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).length, queueTotal: (db.agvQueue || []).length, tasks: Object.keys(db.agvTasks || {}).length, events: (db.carEvents || []).length, ops: opsLoadDays(30).length, inspects: (db.inspects || []).length, inspectActive: (db.inspects || []).filter((q) => ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state)).length, seenIn: Object.keys(db.seenIn || {}).length, seenOut: Object.keys(db.seenOut || {}).length, dict: Object.keys(db.itemDict || {}).length, ledRev: db.ledgerRev || 0, ledAt: db.ledgerAt || '', backup: fs.existsSync(path.join(DATA_DIR, 'backups')) ? fs.readdirSync(path.join(DATA_DIR, 'backups')).filter((f) => /^db-.*\.json$/.test(f)).length : 0 });
       }
       // ---- ㉖ 系统连接状态：RCS(哈工库讯) / WMAS(AGV下发) 配置与最近成功时刻（MES 凭据在 PDA 本地，由 App 自查）----
       if (req.method === "GET" && p === "/api/sysstatus") {
@@ -2224,9 +2284,10 @@ const server = http.createServer(async (req, res) => {
         const stnBusy = Object.values(db.rcsStations || {}).filter((s) => s.state === '有货' || s.state === '占用中').length;
         let stnTotal = Object.keys(NetMap.locLand || {}).filter((loc) => /-CK-/.test(loc)).length; if (!stnTotal) stnTotal = 12; // 分母=地图全量CK站台，路网未就绪时兜底
         const queueNow = (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length;
+        const inspWait = (db.inspects || []).filter((q) => ['waitOut', 'waitBack'].includes(q.state)).length;
         return send(res, 200, { ok: true, at: new Date().toISOString(),
           kpi: { inBoxes, inQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday, agvQueue: queueNow,
-            stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal },
+            stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal, inspWait },
           trend: Array.from({ length: 7 }, (_, i) => ({ d: dstr(todayStart + i * dayMs), in: trendIn[i], out: trendOut[i] })) });
       }
       // ================= ⑦ AGV效率报表（只读聚合 db.agvTasks，登录可看；days=1~30） =================
@@ -2917,7 +2978,10 @@ function seenInBackfill() { // ㉖ 首次升级：现存账本+采集流水的�
 function updateInspects(nowMs) {
   try {
     let dirty = false; const stn = db.rcsStations || {}; const led = db.ledger || [];
+    const assist = () => db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && canFeature(x, 'insp_assist'));
     for (const q of db.inspects || []) {
+      if (q.state === 'waitOut' && !q.notified && nowMs - (q.at || 0) > 10 * 60000) { q.notified = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🤝 检验协助催办：' + q.code + '（' + (q.nm || q.part) + '）等待下架已超10分钟，请协助', '')); }
+      else if (q.state === 'waitBack' && !q.notified2 && nowMs - (q.verdictAt || q.at || 0) > 10 * 60000) { q.notified2 = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🤝 检验协助催办：' + q.code + ' 检验已出结论，等待归位超10分钟，请协助归位', '')); }
       if (q.state === 'toStation') {
         const s = stn[q.station];
         if (s && s.state === '有货' && (s.codes || []).map((c) => String(c).toUpperCase()).includes(String(q.code).toUpperCase())) { q.state = 'atStation'; q.arriveAt = nowMs; dirty = true; db.users.filter((x) => (x.id === q.uid || x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', '🔎 检验框已到站台 ' + q.station + '（' + q.code + '），请核对并归位', '')); }
@@ -3185,14 +3249,14 @@ function inspStationFree(stn, nowMs) { // 检验可用站台：无有货/占用�
   const st = (db.rcsStations || {})[stn];
   if (st && st.state && st.state !== '空闲') return false;
   if ((db.agvQueue || []).some((q) => q.station === stn && ['排队', '下发中', '已下发'].includes(q.state))) return false;
-  if ((db.inspects || []).some((q) => q.station === stn && ['toStation', 'atStation', 'returning'].includes(q.state))) return false;
+  if ((db.inspects || []).some((q) => q.station === stn && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state))) return false;
   return true;
 }
 function inspBoxState(x) { // 检验框可下架性：AGV货架位(非CK站台) + 无进行中检验 + 无在途出库
   const from = String(x.l || '').toUpperCase();
   const code = String(x.c || '').toUpperCase();
   const isShelf = /^NB02-/.test(from) && !/-CK-/.test(from);
-  const busyInsp = (db.inspects || []).some((q) => (String(q.from).toUpperCase() === from || String(q.code).toUpperCase() === code) && ['toStation', 'atStation', 'returning'].includes(q.state));
+  const busyInsp = (db.inspects || []).some((q) => (String(q.from).toUpperCase() === from || String(q.code).toUpperCase() === code) && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state));
   const busyOut = (db.agvQueue || []).some((q) => q.type !== 'transfer' && String(q.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(q.state));
   return { isShelf, ok: isShelf && !busyInsp && !busyOut, why: busyInsp ? '检验中' : busyOut ? '出库在途' : isShelf ? '' : '非AGV货架位（地面框人工搬运）' };
 }

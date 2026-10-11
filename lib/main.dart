@@ -1332,13 +1332,46 @@ class _MainPageState extends State<MainPage>
     if (_palletMode) await _refreshPalletSummary();
   }
 
-  /// ⑭系统通知点击：跳到领料页签并累计未读
+  /// ㉖系统通知点击：按类型精准直达（领料详情/AGV/库存/检验/消息中心）
   void _onNotifTap() {
     final v = kNotifTap.value;
     if (v.isEmpty || !mounted) return;
+    kNotifTap.value = "";
     _recountUnread();
-    final i = _tabKeys.indexOf('req');
-    if (i >= 0) _tabController.animateTo(i);
+    final head = v.split("@").first;
+    final kind = head.contains("|") ? head.split("|").first : head;
+    final rid = head.contains("|") ? head.split("|").last : "";
+    String tab = "req";
+    if (kind == "car_alarm" || kind == "transfer_done")
+      tab = "agv";
+    else if (kind == "watch_in" || kind == "stock_out")
+      tab = "inv";
+    else if (kind == "inspect")
+      tab = "insp";
+    else if (kind.isEmpty) {
+      _openHub();
+      return;
+    }
+    final i = _tabKeys.indexOf(tab);
+    if (i >= 0) {
+      _tabController.animateTo(i);
+    } else if (_tabKeys.indexOf("req") >= 0)
+      _tabController.animateTo(_tabKeys.indexOf("req"));
+    if (rid.isNotEmpty && kind.startsWith("req"))
+      kReqJump.value = "${rid}@${DateTime.now().millisecondsSinceEpoch}";
+  }
+
+  Future<void> _openHub() async {
+    await Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => MessageHubPage(
+                  onOpenReq: () => _tabController.animateTo(
+                      _tabKeys.indexOf("req") >= 0
+                          ? _tabKeys.indexOf("req")
+                          : 0),
+                )));
+    _recountUnread();
   }
 
   /// ㉖ 重算未读：拉一次未读接口（服务器会标read）→ 按分类已读时间戳算展示级未读
@@ -1398,8 +1431,9 @@ class _MainPageState extends State<MainPage>
     final text = first["text"]?.toString() ?? "领料单有新消息";
     // ⑭系统通知（悬浮横幅/锁屏/息屏可达）：按类别开关，点击直达领料页
     final kind = first["type"]?.toString() ?? "";
-    if (RemindPrefs.keyOf(kind) != null) {
+    if (RemindPrefs.keyOf(kind) != null || kind == "inspect") {
       final rid = first["reqId"]?.toString() ?? "";
+      final pno = first["partNo"]?.toString() ?? "";
       const _nt = {
         "req_new": "📥 新领料单",
         "req_timeout": "⏱ 领料超时",
@@ -1420,8 +1454,8 @@ class _MainPageState extends State<MainPage>
         "transfer_done": "🛒 移库完成",
         "night_digest": "🌙 夜间汇总"
       };
-      unawaited(
-          NotifyService.push(kind, _nt[kind] ?? "📦 领料提醒", text, payload: rid));
+      unawaited(NotifyService.push(kind, _nt[kind] ?? "📦 领料提醒", text,
+          payload: rid.isEmpty ? kind : (kind + "|" + rid)));
     }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(list.length > 1 ? "$text（共 ${list.length} 条新消息）" : text,
@@ -4345,7 +4379,8 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
       _nResult = true,
       _nWatch = true,
       _nStock = true,
-      _nCar = true;
+      _nCar = true,
+      _nInsp = true;
   double _rate = 0.55;
   bool _loaded = false;
   bool _notifGranted = false;
@@ -4457,6 +4492,7 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
       _nWatch = sp.getBool(RemindPrefs.kWatch) ?? true;
       _nStock = sp.getBool(RemindPrefs.kStock) ?? true;
       _nCar = sp.getBool(RemindPrefs.kCar) ?? true;
+      _nInsp = sp.getBool(RemindPrefs.kInsp) ?? true;
       _rate = sp.getDouble('remind_speech_rate') ?? 0.55;
       _loaded = true;
     });
@@ -4484,6 +4520,8 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
         _nStock = v;
       else if (key == RemindPrefs.kCar)
         _nCar = v;
+      else if (key == RemindPrefs.kInsp)
+        _nInsp = v;
       else if (key == RemindPrefs.kVoice) _voice = v;
     });
   }
@@ -4590,6 +4628,14 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
                   subtitle: const Text("AGV急停/通讯断开/故障/低电时通知全体仓管，恢复时复位",
                       style: TextStyle(fontSize: 12)),
                   onChanged: (v) => _setKey(RemindPrefs.kCar, v))),
+          Card(
+              child: SwitchListTile(
+                  value: _nInsp,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("检验协助提醒", style: TextStyle(fontSize: 15)),
+                  subtitle: const Text("检验员发单/出结论请求协助、超时催办时通知仓管与管理员",
+                      style: TextStyle(fontSize: 12)),
+                  onChanged: (v) => _setKey(RemindPrefs.kInsp, v))),
           const SizedBox(height: 8),
           const Padding(
               padding: EdgeInsets.fromLTRB(4, 8, 4, 6),
@@ -4771,6 +4817,13 @@ const _kHubGroups = <Map<String, dynamic>>[
     "types": ["car_alarm"],
     "icon": Icons.error,
     "color": Color(0xFFD32F2F)
+  },
+  {
+    "key": "insp",
+    "name": "检验协助",
+    "types": ["inspect"],
+    "icon": Icons.fact_check_outlined,
+    "color": Color(0xFF7B1FA2)
   },
   {
     "key": "stock",
