@@ -65,8 +65,9 @@ class AgvApi {
           await client.openUrl(method, Uri.parse("http://${cfg["host"]}$path"));
       req.headers.set("Accept", "*/*");
       if (body != null) {
-        req.headers.contentType =
-            plain ? ContentType("text", "plain", charset: "utf-8") : ContentType.json;
+        req.headers.contentType = plain
+            ? ContentType("text", "plain", charset: "utf-8")
+            : ContentType.json;
       }
       if (token != null) req.headers.set("token", token);
       if (body != null) req.write(body);
@@ -260,11 +261,14 @@ class AgvApi {
         // ㉑门户封装实证：V.delete(url,no)→axios{method:DELETE,data:no字符串原样直发}。
         // 两处偏差致500：①置顶此前用POST（门户是DELETE）；②body带JSON引号→后端@RequestBody String拿到脏值查无任务。
         // 现对齐门户：DELETE + 裸文本body，并附查询参数双保险（@RequestParam也能命中）。
-        return req("DELETE", "/task/taskToTop?dispatchNo=$enc", rawBody: dispatchNo, plain: true);
+        return req("DELETE", "/task/taskToTop?dispatchNo=$enc",
+            rawBody: dispatchNo, plain: true);
       case "cancelTop":
-        return req("DELETE", "/task/taskToCancelTop?dispatchNo=$enc", rawBody: dispatchNo, plain: true);
+        return req("DELETE", "/task/taskToCancelTop?dispatchNo=$enc",
+            rawBody: dispatchNo, plain: true);
       case "delete":
-        return req("DELETE", "/task/deleteByDispatchNo?dispatchNo=$enc", rawBody: dispatchNo, plain: true);
+        return req("DELETE", "/task/deleteByDispatchNo?dispatchNo=$enc",
+            rawBody: dispatchNo, plain: true);
       default:
         return {"ok": false, "msg": "未知操作"};
     }
@@ -498,6 +502,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
   Map<String, int> _holdAvg = {}; // 站台历史平均占用分钟数（释放预测）
   List<Map> _transfer = []; // 移库任务（服务器队列中 type=transfer 项）
   bool _loading = false, _showDone = false, _loaded = false;
+  int _doneN = 30; // ㉖最近历史展开条数：默认30，可"加载更多"每次+50
   String _err = "";
   Timer? _timer;
 
@@ -541,7 +546,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         AgvApi.traffic(),
         AgvApi.tasksDone(),
         AuthApi.rcsStations(),
-        AuthApi.agvAlarms().catchError((_) => <String, dynamic>{}) // 告警列表失败不阻塞主刷新
+        AuthApi.agvAlarms()
+            .catchError((_) => <String, dynamic>{}) // 告警列表失败不阻塞主刷新
       ]);
       if (!mounted) return;
       setState(() {
@@ -557,12 +563,17 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
             : [];
         _stationsOn = st is Map && st["on"] == true;
         final al = rs[5];
-        _alarms = al is Map && al["list"] is List ? List<Map>.from(al["list"] as List) : _alarms;
+        _alarms = al is Map && al["list"] is List
+            ? List<Map>.from(al["list"] as List)
+            : _alarms;
         if (st is Map && st["holdAvg"] is Map)
           _holdAvg = (st["holdAvg"] as Map)
               .map((k, v) => MapEntry(k.toString(), (v as num).toInt()));
         _transfer = st is Map && st["queue"] is List
-            ? (st["queue"] as List).whereType<Map>().where((q) => q["type"] == "transfer").toList()
+            ? (st["queue"] as List)
+                .whereType<Map>()
+                .where((q) => q["type"] == "transfer")
+                .toList()
             : [];
         _err = "";
       });
@@ -634,17 +645,31 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
 
   /// ㉑认领车辆告警：确认后调服务器 ack（落库处理人+停止升级+广播全体），失败提示
   Future<void> _ackAlarm(dynamic aid, String fp) async {
-    final yes = await showDialog<bool>(context: context, builder: (dc) => AlertDialog(
-      title: Text("认领 AGV${aid.toString().padLeft(2, '0')} 告警？"),
-      content: Text("$fp\n\n认领后停止升级催办，并通知全体仓管你正在处理。", style: const TextStyle(fontSize: 13)),
-      actions: [TextButton(onPressed: () => Navigator.pop(dc, false), child: const Text("取消")),
-        FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.deepOrange), onPressed: () => Navigator.pop(dc, true), child: const Text("确认认领"))],
-    ));
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (dc) => AlertDialog(
+              title: Text("认领 AGV${aid.toString().padLeft(2, '0')} 告警？"),
+              content: Text("$fp\n\n认领后停止升级催办，并通知全体仓管你正在处理。",
+                  style: const TextStyle(fontSize: 13)),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dc, false),
+                    child: const Text("取消")),
+                FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: Colors.deepOrange),
+                    onPressed: () => Navigator.pop(dc, true),
+                    child: const Text("确认认领"))
+              ],
+            ));
     if (yes != true || !mounted) return;
     final r = await AuthApi.agvAlarmAck(aid.toString());
     if (!mounted) return;
-    if (r["ok"] == true) { _toast("🙋 已认领，升级催办已停止"); _load(silent: true); }
-    else _toast("认领失败：${r["msg"]}");
+    if (r["ok"] == true) {
+      _toast("🙋 已认领，升级催办已停止");
+      _load(silent: true);
+    } else
+      _toast("认领失败：${r["msg"]}");
   }
 
   bool get _canCtl => Auth.can("agv_control"); // 车辆控制/清台：按角色功能开关（设置里可在线调整）
@@ -957,7 +982,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
                         color: Color(0xFF26A69A)))
-                : Text("${rt["startPoint"] ?? "?"}  →  ${rt["endPoint"] ?? "?"}",
+                : Text(
+                    "${rt["startPoint"] ?? "?"}  →  ${rt["endPoint"] ?? "?"}",
                     style: const TextStyle(
                         fontSize: 15,
                         fontWeight: FontWeight.w600,
@@ -1014,7 +1040,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                             ]
                           : st == 0
                               ? [
-                                  _taskOpBtn(t,
+                                  _taskOpBtn(
+                                      t,
                                       (t["taskPriority"] as num?)?.toInt() == 11
                                           ? "cancelTop"
                                           : "top"),
@@ -1032,15 +1059,43 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         .toList();
     return ListView(padding: const EdgeInsets.only(bottom: 16), children: [
       if (_transfer.isNotEmpty) ...[
-        Padding(padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-            child: Text("移库任务（${_transfer.length}）", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.deepOrange))),
-        ..._transfer.map((q) => Padding(padding: const EdgeInsets.fromLTRB(12, 4, 12, 0), child: Container(padding: const EdgeInsets.all(10), decoration: BoxDecoration(color: Colors.deepOrange.shade50, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.deepOrange.shade200)), child: Row(children: [
-          const Icon(Icons.swap_horiz, size: 18, color: Colors.deepOrange),
-          const SizedBox(width: 8),
-          Expanded(child: Text("${(q["from"] ?? "?")} → ${(q["to"] ?? "?")}${(q["code"] ?? "").toString().isNotEmpty ? "  ${q["code"]}" : ""}", style: const TextStyle(fontSize: 13, fontFamily: "monospace", fontWeight: FontWeight.w600))),
-          Text("${q["state"] ?? ""}", style: const TextStyle(fontSize: 12, color: Colors.deepOrange, fontWeight: FontWeight.bold)),
-          if (q["state"] == "已下发" || q["state"] == "排队") IconButton(icon: const Icon(Icons.close, size: 18, color: Colors.red), onPressed: () => _cancelTransfer(q)),
-        ])))),
+        Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+            child: Text("移库任务（${_transfer.length}）",
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                    color: Colors.deepOrange))),
+        ..._transfer.map((q) => Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+            child: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                    color: Colors.deepOrange.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.deepOrange.shade200)),
+                child: Row(children: [
+                  const Icon(Icons.swap_horiz,
+                      size: 18, color: Colors.deepOrange),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: Text(
+                          "${(q["from"] ?? "?")} → ${(q["to"] ?? "?")}${(q["code"] ?? "").toString().isNotEmpty ? "  ${q["code"]}" : ""}",
+                          style: const TextStyle(
+                              fontSize: 13,
+                              fontFamily: "monospace",
+                              fontWeight: FontWeight.w600))),
+                  Text("${q["state"] ?? ""}",
+                      style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.deepOrange,
+                          fontWeight: FontWeight.bold)),
+                  if (q["state"] == "已下发" || q["state"] == "排队")
+                    IconButton(
+                        icon: const Icon(Icons.close,
+                            size: 18, color: Colors.red),
+                        onPressed: () => _cancelTransfer(q)),
+                ])))),
       ],
       Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
@@ -1060,9 +1115,16 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
               style:
                   const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
       TextButton(
-          onPressed: () => setState(() => _showDone = !_showDone),
-          child: Text(_showDone ? "收起" : "展开最近10条")),
-      if (_showDone) ..._done.take(10).map((t) => card(t, done: true)),
+          onPressed: () => setState(() {
+                _showDone = !_showDone;
+                if (_showDone) _doneN = 30;
+              }),
+          child: Text(_showDone ? "收起" : "展开最近$_doneN条")),
+      if (_showDone) ..._done.take(_doneN).map((t) => card(t, done: true)),
+      if (_showDone && _doneN < _done.length)
+        TextButton(
+            onPressed: () => setState(() => _doneN += 50),
+            child: Text("加载更多（已显示 $_doneN / ${_done.length}）")),
     ]);
   }
 
@@ -1202,27 +1264,52 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                       ];
                       if (warns.isEmpty) return const SizedBox.shrink();
                       final aid = c["agvId"];
-                      final am = _alarms.where((a) => a["id"].toString() == aid.toString()).firstOrNull;
+                      final am = _alarms
+                          .where((a) => a["id"].toString() == aid.toString())
+                          .firstOrNull;
                       final ackBy = (am?["ackBy"] ?? "").toString();
                       return Container(
                           margin: const EdgeInsets.only(top: 4),
                           padding: const EdgeInsets.symmetric(
                               horizontal: 6, vertical: 3),
                           decoration: BoxDecoration(
-                              color: ackBy.isNotEmpty ? Colors.orange.shade50 : Colors.red.shade50,
+                              color: ackBy.isNotEmpty
+                                  ? Colors.orange.shade50
+                                  : Colors.red.shade50,
                               borderRadius: BorderRadius.circular(4),
-                              border: Border.all(color: ackBy.isNotEmpty ? Colors.orange.shade200 : Colors.red.shade200)),
+                              border: Border.all(
+                                  color: ackBy.isNotEmpty
+                                      ? Colors.orange.shade200
+                                      : Colors.red.shade200)),
                           child: Row(children: [
-                            Expanded(child: Text("⚠ ${warns.join(" · ")}",
-                                style: TextStyle(fontSize: 11, color: ackBy.isNotEmpty ? Colors.deepOrange : Colors.red, fontWeight: FontWeight.w600))),
+                            Expanded(
+                                child: Text("⚠ ${warns.join(" · ")}",
+                                    style: TextStyle(
+                                        fontSize: 11,
+                                        color: ackBy.isNotEmpty
+                                            ? Colors.deepOrange
+                                            : Colors.red,
+                                        fontWeight: FontWeight.w600))),
                             if (_canCtl && am != null && ackBy.isEmpty)
-                              Padding(padding: const EdgeInsets.only(left: 4), child: ActionChip(
-                                visualDensity: VisualDensity.compact,
-                                backgroundColor: Colors.deepOrange,
-                                label: const Text("认领", style: TextStyle(fontSize: 10.5, color: Colors.white)),
-                                onPressed: () => _ackAlarm(aid, warns.join(" · ")))),
+                              Padding(
+                                  padding: const EdgeInsets.only(left: 4),
+                                  child: ActionChip(
+                                      visualDensity: VisualDensity.compact,
+                                      backgroundColor: Colors.deepOrange,
+                                      label: const Text("认领",
+                                          style: TextStyle(
+                                              fontSize: 10.5,
+                                              color: Colors.white)),
+                                      onPressed: () =>
+                                          _ackAlarm(aid, warns.join(" · ")))),
                             if (ackBy.isNotEmpty)
-                              Padding(padding: const EdgeInsets.only(left: 4), child: Text("🙋$ackBy", style: const TextStyle(fontSize: 10.5, color: Colors.deepOrange, fontWeight: FontWeight.w600))),
+                              Padding(
+                                  padding: const EdgeInsets.only(left: 4),
+                                  child: Text("🙋$ackBy",
+                                      style: const TextStyle(
+                                          fontSize: 10.5,
+                                          color: Colors.deepOrange,
+                                          fontWeight: FontWeight.w600))),
                           ]));
                     }),
                     if (_canCtl)
@@ -1520,14 +1607,23 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
     ]);
   }
 
-
   Future<void> _cancelTransfer(Map q) async {
-    final yes = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(
-      title: const Text("取消移库", style: TextStyle(color: Colors.red)),
-      content: Text("取消移库 ${(q["from"] ?? "?")} → ${(q["to"] ?? "?")}？\n\n若AGV已叉出货架则无法撤回，需人工归位。"),
-      actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("再想想")),
-        FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(ctx, true), child: const Text("确认取消"))],
-    ));
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text("取消移库", style: TextStyle(color: Colors.red)),
+              content: Text(
+                  "取消移库 ${(q["from"] ?? "?")} → ${(q["to"] ?? "?")}？\n\n若AGV已叉出货架则无法撤回，需人工归位。"),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, false),
+                    child: const Text("再想想")),
+                FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: Colors.red),
+                    onPressed: () => Navigator.pop(ctx, true),
+                    child: const Text("确认取消"))
+              ],
+            ));
     if (yes != true || !mounted) return;
     final r = await AuthApi.agvTransferCancel((q["at"] ?? "").toString());
     _toast(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ ${r["msg"]}");
@@ -1908,7 +2004,8 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
 }
 
 /// 货架移库（货位→货位 / 货位→地面暂存）：表单 → 二次确认 → 服务器建CARRY任务
-Future<void> showTransferDialog(BuildContext context, {void Function()? onDone}) async {
+Future<void> showTransferDialog(BuildContext context,
+    {void Function()? onDone}) async {
   final fromC = TextEditingController(),
       toC = TextEditingController(),
       palC = TextEditingController();
@@ -1939,8 +2036,8 @@ Future<void> showTransferDialog(BuildContext context, {void Function()? onDone})
                 CheckboxListTile(
                     value: toGround,
                     onChanged: (v) => setDlg(() => toGround = v ?? false),
-                    title: const Text("终点是地面暂存位",
-                        style: TextStyle(fontSize: 13)),
+                    title:
+                        const Text("终点是地面暂存位", style: TextStyle(fontSize: 13)),
                     dense: true,
                     controlAffinity: ListTileControlAffinity.leading),
                 CheckboxListTile(
@@ -1966,7 +2063,9 @@ Future<void> showTransferDialog(BuildContext context, {void Function()? onDone})
   final from = fromC.text.trim().toUpperCase(),
       to = toC.text.trim().toUpperCase();
   if (from.isEmpty || to.isEmpty) {
-    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("❌ 起点/终点货位不能为空")));
+    if (context.mounted)
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("❌ 起点/终点货位不能为空")));
     return;
   }
   if (choice != "dry") {
@@ -1996,7 +2095,9 @@ Future<void> showTransferDialog(BuildContext context, {void Function()? onDone})
       kind: choice == "goG" ? "toGround" : "shelf2shelf",
       palletType: palC.text.trim(),
       dry: choice == "dry");
-  if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ ${r["msg"]}")));
+  if (context.mounted)
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ ${r["msg"]}")));
   if (r["ok"] == true) onDone?.call();
   LocalLog.op('移库', r["ok"] == true ? '$from→$to 已下发' : '$from→$to 失败');
 }
