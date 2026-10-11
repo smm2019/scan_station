@@ -84,6 +84,7 @@ function loadDb() {
   if (typeof d.outbound !== 'object' || d.outbound === null || Array.isArray(d.outbound)) { d.outbound = {}; added = true; }
   if (!Array.isArray(d.watchlist)) { d.watchlist = []; added = true; }
   if (!d.params || typeof d.params !== 'object' || Array.isArray(d.params)) { d.params = {}; added = true; }
+  if (!Array.isArray(d.carEvents)) { d.carEvents = []; added = true; } // ㉖异常事件持久表（180天滚动，恢复即归档不删除）
   if (typeof d.groundSlots !== 'object' || d.groundSlots === null || Array.isArray(d.groundSlots)) { d.groundSlots = {}; added = true; }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
@@ -145,6 +146,9 @@ function archiveOld() {
       obj === db.scanlog ? db.scanlog = keep : obj === db.outbound ? db.outbound = keep : db.issuedArchive = keep; // 再删主库
       moved += n;
     };
+    // ㉖carEvents 超期滚动归档（数组型）
+    try { const oldEv = (db.carEvents || []).filter((e) => (e.ts || 0) < cut); const keepEv = (db.carEvents || []).filter((e) => (e.ts || 0) >= cut); if (oldEv.length) { const f = path.join(dir, `${mon}-carEvents.json`); let all = []; try { if (fs.existsSync(f)) all = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) {} all = all.concat(oldEv); fs.writeFileSync(f + '.tmp', JSON.stringify(all)); fs.renameSync(f + '.tmp', f); db.carEvents = keepEv; moved += oldEv.length; } } catch (_) {}
+    opsDigestTick(); // ㉖每日断链摘要+ops文件清理
     move('scanlog', db.scanlog, (v) => Number(v && v.t) || 0);
     move('outbound', db.outbound, (v) => Date.parse(v && v.at || v && v.time || '') || 0);
     if ((db.notifications || []).length > 2000) { const old = db.notifications.filter((x) => Date.parse(x.time) < cut); if (old.length) { db.notifications = db.notifications.filter((x) => Date.parse(x.time) >= cut); moved += old.length; } }
@@ -172,7 +176,7 @@ const EXP_CAL = {
   '盘点结果': [['差异类型', '盘亏=实少于账面；盘盈=实多于账面；账外=扫入基准外标签'], ['口径', '零件级按数量合计、货位级按货位×零件组合；双基准矛盾行标记warn'], ['范围', '按盘点上收时间筛选；数据来自PDA结束盘点时自动上收']],
   '库位表': [['货位', '完整库位编码：NB02-区-架-层F / NB03-区-排-格'], ['标签号', '一框可贴多码；同托号多码=同一框'], ['登记时间', '采集设备时钟（展示用）；多机冲突仲裁=内容指纹+服务器到达时刻：真改动才生效，未变重推/旧副本不覆盖他人，删除按墓碑拦截'], ['来源', '采集入账/手工登记/网页修正/返架/移库']],
   '领料台账': [['处理分钟', '接单到签收/拒单/取消的分钟数（服务器时钟）'], ['范围', '按下单时间筛选；全量台账按月导出对账']],
-  '活动流审计': [['动作', '登录/账本合并/改位/返架/配置/模式/导出/账号/告警认领等关键写操作'], ['范围', '滚动最近5000条（含本条导出自身之前的记录）；密码等凭据不入审计流'], ['详情', '对象与变更摘要，前后值见账本修正审计(ledgerFixes)']],
+  '活动流审计': [['动作', '登录/账本合并/合并diff/改位/返架/配置/模式/导出/账号/告警认领等关键写操作'], ['范围', '按天JSONL持久留痕近180天（data/ops/，每日摘要哈希断链防篡改）；密码等凭据不入审计流'], ['详情', '账本合并含字段级前值→后值diff（l=货位 p=零件 q=数量 b=批次 f=料框 mv=搬运方式，∅=原无值）；单次合并最多样例40条+总数'], ['断链', 'digest-日期.json 记录 前日链值→当日全行sha256；改任一行历史即校验不通过']],
   '库存汇总': [['在架框数', '按"框=托"去重：同托号多标签计1框；无托号按同货位+同零件号合并'], ['在架数量', '每框取框内标签数量最大值后按框求和（与PDA库存页同口径）'], ['占用货位数', '该零件涉及的货位格数（去重）'], ['货位分布(TOP5)', '按该零件占用格数排序前5货位（NB区简写×框数）'], ['最近入库/最近出库', '采集流水/出库单最大时刻（主库窗口内）']],
   '入库流水': [['初始货位', 'AGV模式=起始站台；地面模式=地面格位'], ['状态', '已作废记录保留导出并标记，供审计回溯'], ['备注', '采集时填写的自定义备注（120字内）']],
   '出库流水': [['转入去向', 'MES转单目标（线边仓/工位）'], ['关联领料单', '领料发料转单生成的出库单带LL号；直调为空'], ['搬运方式', 'AGV=叫车叉至站台；人工=自提']],
@@ -296,7 +300,7 @@ function buildExport(ds, fRaw) {
     return { label: '工作量报表', parts, rows: parts[0].rows, total: parts[0].rows.length + parts[1].rows.length + parts[2].rows.length, f: { from: wdstr(F), to: wdstr(T) } };
   }
   if (ds === 'D8') { const ST = { pending: '待接单', accepted: '备料中', ready: '待签收', done: '已签收', rejected: '已拒单', cancelled: '已取消' }; const rows = (db.requisitions || []).filter((r) => { const t = Date.parse(r.createdAt) || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map((r) => { const acc = (r.history || []).find((h) => /接单/.test(h.text || '')); const fin = (r.history || []).filter((h) => /签收|拒单|取消/.test(h.text || '')).pop(); const mins = acc && fin ? Math.round((Date.parse(fin.time) - Date.parse(acc.time)) / 60000) : ''; return [r.no, expTs(Date.parse(r.createdAt) || 0), r.byName || r.by || '', (r.items || []).length, (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), ST[r.status] || r.status, r.acceptedBy || '', r.confirmedBy || '', expTs(Date.parse(r.confirmedAt) || 0), acc ? expTs(Date.parse(acc.time) || 0) : '', mins === '' ? '' : mins, (r.remark || '').slice(0, 60)]; }); return mk('领料台账', ['单号', '下单时间', '下单人', '行数', '件数合计', '状态', '接单人', '签收人', '签收时间', '接单时间', '处理分钟', '备注'], ['S', 'S', 'S', 'N', 'N', 'S', 'S', 'S', 'S', 'S', 'N', 'S'], rows, '领料单全量（含节点时刻，处理分钟=接单到终结）'); }
-  if (ds === 'D9') { const rows = (db.ops || []).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', o.role || '', o.act || '', o.obj || '', o.det || '']); return mk('活动流审计', ['时间', '操作人', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流）'); }
+  if (ds === 'D9') { const rows = opsLoadDays(OPS_KEEP_DAYS).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', o.role || '', o.act || '', o.obj || '', o.det || '']); return mk('活动流审计', ['时间', '操作人', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流）'); }
   if (ds === 'D10') { const inv = Object.values(db.inventories || {}).filter((r) => { const t = r.at || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => b.at - a.at); const bid = String((fRaw && fRaw.batchId) || '').trim(); const sel = bid ? inv.filter((r) => r.batchId === bid) : inv; const one = sel[0] || {};
     const parts = [
       { label: '盘点总览', headers: ['批次', '备注', '模式', '盘点人', '结束时间', '总扫次', '有效扫次', 'MES失败', '重复', '账外', '已应用改账', '零件行数', '零件差异行'], types: ['S', 'S', 'S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S', 'N', 'N'], rows: sel.map((r) => [r.batchId, r.remark || '', r.blind ? '盲盘' : '监督', r.by || '', expTs(r.at), r.totalScans || 0, r.validScans || 0, r.mesFail || 0, r.dup || 0, r.outside || 0, r.applied ? ('是·' + expTs(r.applyTime)) : '否', (r.parts || []).length, (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length]), src: 'PDA盘点上收汇总', caliber: EXP_CAL['盘点结果'] },
@@ -383,15 +387,30 @@ function dailyExport() {
 setInterval(dailyExport, 30 * 60 * 1000).unref();
 
 // ---- ㉔AGV异常事件统一聚合（车辆告警/堵点/低电/出库超时/改位冲突/认领） ----
+// ---- ㉖异常事件统一持久表 db.carEvents：告警/恢复/认领/升级/红牌/堵点/堵点解除/低电/低电恢复/出库超时/改位冲突/FIFO违反（180天滚动归档，恢复不丢历史）----
+function pushEvent(kind, who, msg, ts) { try { db.carEvents = db.carEvents || []; db.carEvents.push({ ts: ts || Date.now(), kind, who: String(who || '').slice(0, 30), msg: String(msg || '').slice(0, 160) }); if (db.carEvents.length > 20000) db.carEvents = db.carEvents.slice(-20000); } catch (_) {} }
+
+function eventsMigrateFromAlarms() { // ㉖首次升级：把存量 carAlarms 历史灌进 carEvents（seen 去重防双计）
+  try {
+    if (db.carEventsMigrated) return;
+    db.carEvents = db.carEvents || [];
+    for (const a of db.carAlarms || []) { const kind = a.kind === 'recover' ? '恢复' : a.kind === 'ack' ? '已认领' : a.kind === 'escalate' ? '升级' : a.kind === 'redflag' ? '红牌' : '告警'; if (!db.carEvents.some((e) => e.ts === a.at && e.kind === kind && e.who === a.name)) db.carEvents.push({ ts: a.at, kind, who: String(a.name || '').slice(0, 30), msg: String(a.msg || '').slice(0, 160) }); }
+    db.carEvents.sort((x, y) => (x.ts || 0) - (y.ts || 0)); db.carEventsMigrated = 1;
+    console.log('[carEvents] 存量告警 ' + (db.carAlarms || []).length + ' 条已迁入持久表');
+  } catch (_) {}
+}
+
 function buildEvents() {
-  const ev = [];
-  for (const a of db.carAlarms || []) ev.push({ ts: a.at, kind: a.kind === 'recover' ? '恢复' : a.kind === 'ack' ? '已认领' : a.kind === 'escalate' ? '升级' : a.kind === 'redflag' ? '红牌' : '告警', who: a.name || '', msg: a.msg || '' });
-  for (const j of db.rcsJam || []) ev.push({ ts: j.at || 0, kind: '堵点', who: 'AGV' + String(j.id).padStart(2, '0'), msg: '交管被卡：' + (j.zone || '') + '（' + (j.lands || '') + '）' });
-  for (const [id, v] of Object.entries(db.rcsLowBat || {})) { if (v && v.notified) ev.push({ ts: v.at || 0, kind: '低电', who: 'AGV' + String(id).padStart(2, '0'), msg: '低电空闲未回充' }); }
-  for (const q of db.agvQueue || []) { if (q.state === '失败' && q.err && /超40分钟/.test(q.err)) ev.push({ ts: q.updAt || 0, kind: '出库超时', who: q.code || '', msg: q.err }); }
-  for (const f of db.ledgerFixes || []) { if (/冲突/.test(String(f.reason || ''))) ev.push({ ts: Date.parse(f.time) || 0, kind: '改位冲突', who: f.by || '', msg: f.code + ' ' + f.reason }); }
+  // ㉖数据源升级：持久表 carEvents 为主（含恢复/解除等全部历史），运行时旧聚合兜底（迁移前数据）
+  const ev = (db.carEvents || []).map((e) => ({ ts: e.ts, kind: e.kind, who: e.who || '', msg: e.msg || '' }));
+  const seen = new Set(ev.map((e) => e.ts + '|' + e.kind + '|' + e.who));
+  const addOld = (ts, kind, who, msg) => { const k = ts + '|' + kind + '|' + who; if (!seen.has(k)) ev.push({ ts, kind, who, msg }); };
+  const last = (db.carEvents || []).length ? (db.carEvents[0].ts || 0) : 0; // carEvents按ts递增追加，首条即最早
+  for (const a of db.carAlarms || []) { if (last && a.at < last) break; addOld(a.at, a.kind === 'recover' ? '恢复' : a.kind === 'ack' ? '已认领' : a.kind === 'escalate' ? '升级' : a.kind === 'redflag' ? '红牌' : '告警', a.name || '', a.msg || ''); }
+  for (const j of db.rcsJam || []) addOld(j.at || 0, '堵点', 'AGV' + String(j.id).padStart(2, '0'), '交管被卡：' + (j.zone || '') + '（' + (j.lands || '') + '）');
+  for (const [id, v] of Object.entries(db.rcsLowBat || {})) { if (v && v.notified) addOld(v.at || 0, '低电', 'AGV' + String(id).padStart(2, '0'), '低电空闲未回充'); }
   ev.sort((a, b) => b.ts - a.ts);
-  return ev.slice(0, 400);
+  return ev.slice(0, 800);
 }
 
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
@@ -983,7 +1002,50 @@ function ledgerPut(cur, code, row, prev) { const hist = ((prev && prev.hist) || 
 // ---- ㉕A1 导出角色门禁（方案6.6）：D9活动流=仅管理员；D8领料台账/D10盘点=仓管+管理员；其余登录即可 ----
 function expRoleOk(u, label) { label = String(label || ''); if (label === '活动流审计') return u.role === 'admin'; if (label === '领料台账' || label.indexOf('盘点结果') === 0) return u.role === 'warehouse' || u.role === 'admin'; return true; }
 // ---- ㉕B1 ops活动流：关键操作全景留痕（谁/何时/动作/对象/详情），滚动5000条，供控制后台与D9审计导出 ----
-function pushOps(u, act, obj, det) { try { db.ops = db.ops || []; db.ops.push({ t: Date.now(), by: u ? String(u.name || '-') : '-', role: u ? (u.role || '') : '', act, obj: String(obj || '').slice(0, 80), det: String(det || '').slice(0, 200) }); if (db.ops.length > 5000) db.ops = db.ops.slice(-5000); } catch (_) {} }
+function pushOps(u, act, obj, det) { try { db.ops = db.ops || []; const o = { t: Date.now(), by: u ? String(u.name || '-') : '-', role: u ? (u.role || '') : '', act, obj: String(obj || '').slice(0, 80), det: String(det || '').slice(0, 600) }; db.ops.push(o); if (db.ops.length > 5000) db.ops = db.ops.slice(-5000); opsAppendFile(o); } catch (_) {} }
+// ---- ㉖活动流按天 JSONL（data/ops/ops-YYYY-MM-DD.jsonl，权威持久层；db.ops 仅内存滚窗加速）+ 每日摘要哈希断链防篡改 ----
+const OPS_KEEP_DAYS = 180;
+function opsDay(t) { const d = new Date(t == null ? Date.now() : t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function opsDir() { const p = path.join(DATA_DIR, 'ops'); try { fs.mkdirSync(p, { recursive: true }); } catch (_) {} return p; }
+function opsFileOf(day) { return path.join(opsDir(), 'ops-' + day + '.jsonl'); }
+function opsAppendFile(o) { try { fs.appendFileSync(opsFileOf(opsDay(o.t)), JSON.stringify(o) + '\n'); } catch (_) {} }
+function opsLoadDays(n) { // 读近 n 天文件 + 内存，按 t|act|obj|by 去重
+  const out = [], seen = new Set();
+  for (let i = 0; i < n; i++) { const day = opsDay(Date.now() - i * 864e5); let txt = ''; try { txt = fs.readFileSync(opsFileOf(day), 'utf8'); } catch (_) {}
+    for (const l of txt.split('\n')) { if (!l.trim()) continue; let o; try { o = JSON.parse(l); } catch (_) { continue; } const k = o.t + '|' + o.act + '|' + o.obj + '|' + o.by; if (!seen.has(k)) { seen.add(k); out.push(o); } } }
+  for (const o of (db.ops || [])) { const k = o.t + '|' + o.act + '|' + o.obj + '|' + o.by; if (!seen.has(k)) { seen.add(k); out.push(o); } }
+  return out;
+}
+function opsDigest(day) { // 当日断链摘要：prev链值+当日全部行 → sha256
+  try {
+    const dfp = path.join(opsDir(), 'digest-' + day + '.json');
+    const rows = opsLoadDays(1).filter((o) => opsDay(o.t) === day);
+    let prev = '';
+    const pd = opsDay(Date.parse(day + 'T00:00:00') - 864e5);
+    try { prev = String(JSON.parse(fs.readFileSync(path.join(opsDir(), 'digest-' + pd + '.json'), 'utf8')).sha || ''); } catch (_) {}
+    const sha = crypto.createHash('sha256').update(prev + rows.map((o) => JSON.stringify(o)).join('\n'), 'utf8').digest('hex');
+    const cur = { day, rows: rows.length, sha, prev };
+    fs.writeFileSync(dfp + '.tmp', JSON.stringify(cur)); fs.renameSync(dfp + '.tmp', dfp);
+    return cur;
+  } catch (_) { return null; }
+}
+let _opsDigestDone = '';
+function opsDigestTick() { // 每日常规：为昨天出摘要；顺带清理超180天的 ops/digest 文件
+  try {
+    const y = opsDay(Date.now() - 864e5);
+    if (_opsDigestDone !== y) { _opsDigestDone = y; opsDigest(y);
+      const cut = Date.now() - OPS_KEEP_DAYS * 864e5;
+      for (const f of fs.readdirSync(opsDir())) { const m = /^(?:ops|digest)-(\d{4}-\d{2}-\d{2})/.exec(f); if (m && Date.parse(m[1] + 'T23:59:59') < cut) fs.unlinkSync(path.join(opsDir(), f)); }
+    }
+  } catch (_) {}
+}
+function opsMigrateToFiles() { // 首次升级：内存历史5000条落按天文件（幂等标记）
+  try {
+    if (db.opsMigrated || !(db.ops || []).length) return;
+    for (const o of db.ops) opsAppendFile(o);
+    db.opsMigrated = 1; console.log('[ops] 内存历史 ' + db.ops.length + ' 条已落按天文件');
+  } catch (_) {}
+}
 
 // 登录失败限速
 const failMap = new Map(); // username -> [ts,...]
@@ -1186,7 +1248,7 @@ const server = http.createServer(async (req, res) => {
         // 增量合并：按标签号 upsert + 墓碑删除，多PDA互不覆盖
         // ㉔S1 时间戳双轨（F2加固）：指纹=登记时刻+内容（含t）；"无新到达"=与本机上次推送一致(含已删行的旧副本)
         // 或与服务器现值完全一致(首拉旧副本重放)——一律不动服务器；真改动(内容/t变)按到达时刻rec裁决，墓碑按t拦截早于它的重登
-        const rec0 = Date.now();
+        const rec0 = Date.now(); const _diffs = []; // ㉖方案4.2：服务器diff自动留痕（谁把X从A改到B，字段级前值→后值）
         const _preCounts = partBoxCounts(); // ⑮合并前在架快照（断料检测基线）
         const cur = new Map(db.ledger.map(x => [String(x.c).toUpperCase(), x]));
         const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), { t: Number(x.t) || 0, rec: Number(x.rec) || 0 }]));
@@ -1208,7 +1270,7 @@ const server = http.createServer(async (req, res) => {
           if (tombT && it.t > 0 && it.t < tombT) { skipped++; rejected.push(key); continue; } // 早于墓碑的真改动重登：作废（不记指纹，持续提示冲突待拉取）
           if (!_fpOld[key] && !Object.keys(_fpOld).length && old && it.t > 0 && Number(old.t) > it.t) { skipped++; rejected.push(key); continue; } // 设备首推无指纹档案：保守回退旧规则（t更旧者拒），防服务重启窗口倒退
           _fpNew[key] = h; // 本轮该设备视图留档
-          if (old) updated++; else { added++; seenNew.add(key); }
+          if (old) { updated++; const fl = []; for (const k of ['l', 'p', 'q', 'b', 'f', 'mv']) { const av = String(old[k] == null ? '' : old[k]), bv = String(it[k] == null ? '' : it[k]); if (av !== bv) fl.push(k + ':' + (av || '∅') + '→' + (bv || '∅')); } if (fl.length) _diffs.push(it.c + ' ' + fl.join(' ')); if (String(old.l) !== String(it.l)) _diffs.length === 0 && _diffs.push(it.c + ' l:' + old.l + '→' + it.l); } else { added++; seenNew.add(key); _diffs.push(it.c + ' 入账@' + it.l + (it.p ? '(' + it.p + ')' : '')); }
           ledgerPut(cur, key, { ...it, by: u.name, rec: rec0 }, old);
           if (tombT) tomb.delete(key); // 新到达=重新登记，复活
         }
@@ -1222,7 +1284,7 @@ const server = http.createServer(async (req, res) => {
           const hist = histAll[c];
           if (hist && hist.t === t && old && (Number(old.rec) || 0) >= hist.rec && (Number(old.t) || 0) >= t) { delSkipped++; continue; } // 删除后又被别机重登：旧墓碑重放不二次删除
           const base = Math.max(tm ? tm.t : 0, old ? (Number(old.rec) || Number(old.t) || 0) : 0);
-          if (!tm && (!old || t > base)) { cur.delete(c); tomb.set(c, { t, rec: rec0 }); if (!hist || hist.t !== t) histAll[c] = { t, rec: rec0 }; delApplied++; } else if (!tm) delSkipped++; // 别台后续又登记→删除作废
+          if (!tm && (!old || t > base)) { cur.delete(c); tomb.set(c, { t, rec: rec0 }); if (!hist || hist.t !== t) histAll[c] = { t, rec: rec0 }; delApplied++; _diffs.push(c + ' 消位' + (old ? '(原' + old.l + ')' : '')); } else if (!tm) delSkipped++; // 别台后续又登记→删除作废
           else { tomb.set(c, { t: tm.t, rec: tm.rec }); delSkipped++; }
         }
         if (!cur.size && !tomb.size && !dels.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
@@ -1257,6 +1319,8 @@ const server = http.createServer(async (req, res) => {
             }
           }
         } catch (e) { console.log('[urgent-in] 异常：', e.message); }
+        // ㉖diff 汇总进活动流：单次合并一条（样例40条+计数，防刷爆滚窗）
+        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${rejected.length ? ' 拒墓碑' + rejected.length : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
         return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, rejected: rejected.slice(0, 50) });
       }
 
@@ -1572,7 +1636,7 @@ const server = http.createServer(async (req, res) => {
         rec.ackBy = u.name; rec.ackAt = Date.now(); pushOps(u, '告警认领', 'AGV' + aid, rec.msg || ('车辆 ' + aid));
         const msg = `🙋 ${u.name} 已认领处理：AGV${String(aid).padStart(2, '0')}（${rec.fp}）`;
         db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, ''));
-        if (db.carAlarms) db.carAlarms.push({ at: Date.now(), id: aid, name: 'AGV' + String(aid).padStart(2, '0'), kind: 'ack', msg });
+        if (db.carAlarms) db.carAlarms.push({ at: Date.now(), id: aid, name: 'AGV' + String(aid).padStart(2, '0'), kind: 'ack', msg }); pushEvent('已认领', 'AGV' + String(aid).padStart(2, '0'), msg);
         save();
         return send(res, 200, { ok: true });
       }
@@ -1592,7 +1656,7 @@ const server = http.createServer(async (req, res) => {
         if (b.baseLoc !== undefined) {
           const _bl = String(b.baseLoc || '').toUpperCase();
           const _now = old ? String(old.l).toUpperCase() : '';
-          if (_bl !== _now) return send(res, 409, { ok: false, code: 'conflict', rev: db.ledgerRev || 0, cur: _now || '不在库', msg: `标签 ${code} 期间已被他人变更（你看到的是${_bl || '不在库'}，现在${_now || '不在库'}），请核对后再操作` });
+          if (_bl !== _now) { pushEvent('改位冲突', u.name, `标签 ${code}：${_bl || '不在库'} → ${_now || '不在库'}（并发覆盖被拦）`); save(); return send(res, 409, { ok: false, code: 'conflict', rev: db.ledgerRev || 0, cur: _now || '不在库', msg: `标签 ${code} 期间已被他人变更（你看到的是${_bl || '不在库'}，现在${_now || '不在库'}），请核对后再操作` }); }
         }
         if (act === 'remove') {
           if (!old) return send(res, 400, { ok: false, msg: '该标签不在账本，无需消位' });
@@ -2246,7 +2310,8 @@ const server = http.createServer(async (req, res) => {
             target.issued.push(Object.assign({ c: code, q, l: String(b.fromLoc || '').trim().toUpperCase() }, em ? { e: 1, by: u.name, why: String(b.why || '').trim() } : {}));
             const got = issuedQty(target);
             hpush(`${em ? '⚠️应急发料' : '发料'} ${b.partNo} 标签 ${code}（${q}件，累计 ${got}/${target.qty}）${em ? ' · MES不可用改人工录入（' + u.name + (String(b.why || '').trim() ? '：' + String(b.why || '').trim() : '') + '）' : ''}`);
-            const ff = b.fifo; if (ff && ff.ok) hpush(`🟡FIFO违反 ${b.partNo} 标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);
+            const ff = b.fifo; if (ff && ff.ok) pushEvent('FIFO违反', String(b.partNo || ''), `标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);
+            const ff2 = b.fifo; if (ff2 && ff2.ok) hpush(`🟡FIFO违反 ${b.partNo} 标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);
             // 不再自动置 ready：ready 由每行 transfer/skip 到终态后 finalize 决定
           } else if (act === 'agv') {
             // 叫AGV登记：仓管从货架叫车叉框后记账，建议区该框标"已叫AGV"防重复叫车/漏叫
@@ -2516,10 +2581,27 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/admin/ops') {
         const by = String(url.searchParams.get('by') || '').trim();
         const lim = Math.min(1000, Math.max(1, parseInt(url.searchParams.get('limit') || '200') || 200));
-        let list = (db.ops || []).slice().reverse();
+        let list = opsLoadDays(OPS_KEEP_DAYS).sort((a, b) => (b.t || 0) - (a.t || 0)); // ㉖近180天全量（文件为主，内存兜底去重）
         if (by) list = list.filter((x) => String(x.by) === by);
-        const persons = [...new Set((db.ops || []).map((x) => x.by))];
-        return send(res, 200, { ok: true, total: (db.ops || []).length, persons, list: list.slice(0, lim) });
+        const persons = [...new Set(list.map((x) => x.by))];
+        return send(res, 200, { ok: true, total: list.length, persons, list: list.slice(0, lim) });
+      }
+      // ---- ㉖断链自校验：重算指定日 ops 文件摘要与 digest 存档比对（手改/删行即不符）----
+      if (req.method === 'GET' && p === '/api/admin/ops/integrity') {
+        const day = String(url.searchParams.get('day') || '') || opsDay(Date.now() - 864e5);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return send(res, 400, { ok: false, msg: 'day需YYYY-MM-DD' });
+        const dp = path.join(opsDir(), 'digest-' + day + '.json');
+        if (!fs.existsSync(dp)) return send(res, 404, { ok: false, msg: day + ' 无摘要存档（每日摘要在次日生成，当日可先校验昨日）' });
+        const saved = JSON.parse(fs.readFileSync(dp, 'utf8'));
+        let txt = ''; try { txt = fs.readFileSync(opsFileOf(day), 'utf8'); } catch (_) {}
+        const rows = txt.split('\n').filter((x) => x.trim()).map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean).filter((o) => opsDay(o.t) === day);
+        let prev = '';
+        const pdp = path.join(opsDir(), 'digest-' + opsDay(Date.parse(day + 'T00:00:00') - 864e5) + '.json');
+        try { prev = String(JSON.parse(fs.readFileSync(pdp, 'utf8')).sha || ''); } catch (_) {}
+        const re = crypto.createHash('sha256').update(prev + rows.map((o) => JSON.stringify(o)).join('\n'), 'utf8').digest('hex');
+        const okc = re === saved.sha && rows.length === saved.rows;
+        pushOps(u, '断链校验', day, okc ? '通过' : `不符！存档${saved.rows}行 现${rows.length}行`);
+        return send(res, 200, { ok: true, day, pass: okc, savedRows: saved.rows, nowRows: rows.length, shaHead: String(saved.sha || '').slice(0, 12), reHead: re.slice(0, 12) });
       }
       // ---- ㉕B4 系统健康分0-100：uptime/内存/备份新鲜/路网/队列/账本同步 ----
       if (req.method === 'GET' && p === '/api/admin/healthscore') {
@@ -2826,13 +2908,13 @@ async function rcsPoll() {
       if (!db.rcsJam[id]) { db.rcsJam[id] = { at: nowMs, notified: false, ...info }; continue; }
       const j = db.rcsJam[id];
       if (!j.notified && nowMs - j.at > P().jamMin * 60 * 1000) {
-        j.notified = true;
+        j.notified = true; pushEvent('堵点', carName(id), '被卡超' + P().jamMin + '分钟：' + info.zone + ' 占行:' + (info.lockLand || '未知'), nowMs);
         const msg = `🚧 交管堵点：${carName(id)} 在 ${info.zone}${info.lands ? '（点位' + info.lands + '）' : ''} 被卡超${P().jamMin}分钟，占行车辆：${info.lockLand || '未知'}`;
         db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, ''));
         console.log('[jam] ' + msg);
       }
     }
-    for (const id of Object.keys(db.rcsJam)) { if (!blockedNow[id]) delete db.rcsJam[id]; } // 已通行→清记录
+    for (const id of Object.keys(db.rcsJam)) { if (!blockedNow[id]) { const j0 = db.rcsJam[id]; if (j0 && j0.notified) pushEvent('堵点解除', carName(id), '交管放行，被卡约' + Math.round((nowMs - j0.at) / 60000) + '分钟', nowMs); delete db.rcsJam[id]; } } // 已通行→清记录（先落历史）
   } catch (_) {}
   agvDispatch(nowMs, runT).catch((e) => console.log('[agv-q] 调度异常', e.message)); // 排队调度：空闲站台→按队列下发
   lowBatWatch(tk, nowMs).catch(() => {}); // ④D 低电不归巢看门狗
@@ -2994,8 +3076,8 @@ async function agvDispatch(nowMs, runT) {
 function dispatchWatchdog(nowMs) {
   const stale = (db.agvQueue || []).filter((q) => q.type !== 'transfer' && q.state === '已下发' && q.sentAt && nowMs - q.sentAt > P().staleMin * 60 * 1000);
   for (const q of stale) {
-    q.state = '失败'; q.err = '下发超40分钟未到站，请人工核查'; q.updAt = nowMs; clearQueueCall(q.reqId, q.code);
-    const msg = `⏰ AGV任务超时：框 ${q.code}（${q.fromLoc}→${q.station || '待分配'}）下发超40分钟未到站，请到RCS核查是否卡死`;
+    q.state = '失败'; q.err = '下发超' + P().staleMin + '分钟未到站，请人工核查'; q.updAt = nowMs; clearQueueCall(q.reqId, q.code); pushEvent('出库超时', q.code || '', (q.fromLoc || '') + '→' + (q.station || '待分配') + ' 下发超' + P().staleMin + '分钟未到站', nowMs);
+    const msg = `⏰ AGV任务超时：框 ${q.code}（${q.fromLoc}→${q.station || '待分配'}）下发超${P().staleMin}分钟未到站，请到RCS核查是否卡死`;
     db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, q.reqId || ''));
     console.log('[dispatch-timeout] ' + msg);
   }
@@ -3015,14 +3097,14 @@ async function lowBatWatch(tk, nowMs) {
       if (!db.rcsLowBat[id]) { db.rcsLowBat[id] = { at: nowMs, notified: false }; continue; }
       const j = db.rcsLowBat[id];
       if (!j.notified && nowMs - j.at > P().lowBatMin * 60 * 1000) {
-        j.notified = true;
+        j.notified = true; pushEvent('低电', carName(id), '电量' + pw + '% 空闲' + Math.round((nowMs - j.at) / 60000) + '分钟未回充', nowMs);
         const msg = `🔋 低电提醒：AGV${String(id).padStart(2, '0')} 电量 ${pw}% 已空闲 ${Math.round((nowMs - j.at) / 60000)} 分钟未回充，请安排充电或手动回桩`;
         db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, ''));
         console.log('[lowbat] ' + msg);
       }
     }
   }
-  for (const id of Object.keys(db.rcsLowBat)) { if (!seen[id]) delete db.rcsLowBat[id]; } // 已回充/有任务/离线→清记录
+  for (const id of Object.keys(db.rcsLowBat)) { if (!seen[id]) { const v0 = db.rcsLowBat[id]; if (v0 && v0.notified) pushEvent('低电恢复', carName(id), '已回充/接任务/离线', nowMs); delete db.rcsLowBat[id]; } } // 清记录前先落历史
 }
 
 // ===== ⑱ AGV车辆告警：边沿检测（急停立即/其余宽限90s防抖），通知全体仓管+落库历史，恢复发复位 =====
@@ -3031,7 +3113,7 @@ async function carAlarmWatch(tk, nowMs) {
   let cars = []; try { const cr = await rcsReq('/uds/car/getCarInfoList', 'GET', tk); cars = typeof cr.data === 'string' ? JSON.parse(cr.data) : (cr.data || []); } catch (_) { return; }
   db.rcsCarAlarm = db.rcsCarAlarm || {};
   db.carAlarms = db.carAlarms || []; // 告警历史落库（供追溯）
-  const logAlarm = (id, name, kind, msg) => { db.carAlarms.push({ at: nowMs, id, name, kind, msg }); if (db.carAlarms.length > 500) db.carAlarms = db.carAlarms.slice(-500); };
+  const logAlarm = (id, name, kind, msg) => { db.carAlarms.push({ at: nowMs, id, name, kind, msg }); if (db.carAlarms.length > 500) db.carAlarms = db.carAlarms.slice(-500); pushEvent(kind === 'recover' ? '恢复' : kind === 'ack' ? '已认领' : kind === 'escalate' ? '升级' : kind === 'redflag' ? '红牌' : '告警', name, msg, nowMs); };
   for (const c of cars) {
     const id = c.agvId; if (id === undefined || id === null) continue;
     const name = c.carName || ('AGV' + String(id).padStart(2, '0'));
@@ -3060,8 +3142,8 @@ async function carAlarmWatch(tk, nowMs) {
       console.log('[car-alarm] ' + msg);
     } else if (j.severe && !j.ackBy) { // G2 急停类未认领升级
       const mins = (nowMs - j.since) / 60000;
-      if (!j.esc && mins >= 10) { j.esc = 1; const m2 = `⏫ ${name} 急停告警10分钟无人认领，请管理员协调处理`; db.users.filter((x) => x.role === 'admin' && x.enabled).forEach((x) => notify(x.id, 'car_alarm', m2, '')); if (db.carAlarms) db.carAlarms.push({ at: nowMs, id, name, kind: 'escalate', msg: m2 }); console.log('[car-alarm-esc] ' + m2); }
-      else if (j.esc === 1 && mins >= 30) { j.esc = 2; const m3 = `🔴 ${name} 急停告警30分钟仍未处理，请现场核查！`; db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', m3, '')); if (db.carAlarms) db.carAlarms.push({ at: nowMs, id, name, kind: 'redflag', msg: m3 }); console.log('[car-alarm-red] ' + m3); }
+      if (!j.esc && mins >= 10) { j.esc = 1; const m2 = `⏫ ${name} 急停告警10分钟无人认领，请管理员协调处理`; db.users.filter((x) => x.role === 'admin' && x.enabled).forEach((x) => notify(x.id, 'car_alarm', m2, '')); if (db.carAlarms) db.carAlarms.push({ at: nowMs, id, name, kind: 'escalate', msg: m2 }); pushEvent('升级', name, m2, nowMs); console.log('[car-alarm-esc] ' + m2); }
+      else if (j.esc === 1 && mins >= 30) { j.esc = 2; const m3 = `🔴 ${name} 急停告警30分钟仍未处理，请现场核查！`; db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', m3, '')); if (db.carAlarms) db.carAlarms.push({ at: nowMs, id, name, kind: 'redflag', msg: m3 }); pushEvent('红牌', name, m3, nowMs); console.log('[car-alarm-red] ' + m3); }
     }
   }
 }
@@ -3104,4 +3186,4 @@ function buildFunnel(days) {
   return { call: stat('call'), queue: stat('queue'), dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
 }
 
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); backupDb(); archiveOld(); });
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); opsDigestTick(); } catch (_) {} backupDb(); archiveOld(); });
