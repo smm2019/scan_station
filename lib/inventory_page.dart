@@ -1056,6 +1056,26 @@ class _InvDiffPageState extends State<_InvDiffPage> {
   void initState() {
     super.initState();
     _future = computeInvDiff(widget.task);
+    if (widget.task.isArchived == true) _invUpload(); // ㉕T2 已结束任务：打开报表即上收（幂等覆盖同批次）
+  }
+
+  /// ㉕T2 盘点结果上收电脑服务器（网页盘点页与D10导出数据源）；失败静默，本地不受影响
+  Future<void> _invUpload({bool applied = false}) async {
+    try {
+      final d = await computeInvDiff(widget.task);
+      final t = widget.task;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      await AuthApi.invReport({
+        "batchId": t.batchId, "remark": t.batchRemark, "scope": (t.invScope ?? []).join(","),
+        "blind": t.blindMode, "bookKey": t.invBookKey, "locKey": t.invLocKey,
+        "at": nowMs, "totalScans": d.totalScans, "validScans": d.validScans,
+        "mesFail": d.mesFail.length, "dup": d.dup.length, "outside": d.outsideScope.length,
+        "applied": applied, "applyTime": applied ? nowMs : 0,
+        "parts": d.parts.map((p) => {"pn": p.partNo, "nm": p.itemName, "book": p.bookQty, "real": p.realQty, "boxes": p.realBoxes, "out": p.outsideBoxes, "warn": p.warnFlag}).toList(),
+        "locs": d.locs.map((l) => {"loc": l.locCode, "pn": l.partNo, "book": l.bookQty, "real": l.realQty, "boxes": l.realBoxes}).toList(),
+      });
+      LocalLog.op('盘点上收', '${t.batchId}${applied ? "（已改账版）" : ""}');
+    } catch (_) {}
   }
   bool _applying = false; // 应用差异改账进行中
 
@@ -1124,6 +1144,7 @@ class _InvDiffPageState extends State<_InvDiffPage> {
       await ledgerUnmarkDeleted([...moves.keys, ...adds.keys]);
       final r = await ledgerPushNow();
       LocalLog.op('盘点改账', '${widget.task.batchId} 改位${moves.length} 补登记${adds.length}${r["ok"] == true ? " 已同步" : " 同步失败"}');
+      _invUpload(applied: true); // ㉕T2 改账后上收带已应用标记版
       if (!mounted) return;
       setState(() { _applying = false; _future = computeInvDiff(widget.task); });
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(

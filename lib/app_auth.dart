@@ -154,6 +154,9 @@ class AuthApi {
   static Future<Map> groundSlotsSet(List entries) async => _req("POST", "/api/ground-slots", body: {"entries": entries}, token: await AuthStore.token());
   static Future<Map> agvAlarms() async => _req("GET", "/api/agv/alarms", token: await AuthStore.token()); // 活动告警列表
   static Future<Map> agvAlarmAck(String id) async => _req("POST", "/api/agv/alarm/ack", body: {"id": id}, token: await AuthStore.token()); // 认领
+  // ㉕T2 盘点结果上收（服务器落库供网页查看与D10导出）
+  static Future<Map> invReport(Map payload) async =>
+      _req("POST", "/api/inventory/report", body: payload, token: await AuthStore.token());
   static Future<Map> ttsModelInfo() async => _req("GET", "/api/tts/info", token: await AuthStore.token());
   static Future<Map> dashboard() async => _req("GET", "/api/dashboard", token: await AuthStore.token());
   static Future<Map> agvFunnel(int days) async => _req("GET", "/api/agv/funnel?days=$days", token: await AuthStore.token());

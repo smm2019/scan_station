@@ -10,7 +10,7 @@ const crypto = require('crypto');
 
 const PORT = parseInt(process.env.PORT || '8099', 10);
 const HOST = process.env.HOST || '0.0.0.0';
-const DATA_DIR = path.join(__dirname, 'data');
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const SESSION_TTL_MS = 12 * 3600 * 1000; // 12 小时滑动过期
 const LOGIN_FAIL_LIMIT = 5; // 同一账号 1 分钟内最多失败 5 次
@@ -49,8 +49,19 @@ function defaultDb() {
     watchlist: [], // ⑮预约来料 [{userId,partNo,at}]
     groundSlots: {}, // ⑮地面排格数覆盖 {"NB03-A-11":13}，缺省12
     stockAlert: {}, // ⑮断料告警去重 {零件号: 最近告警日}
+    prefs: {}, // ㉕F5 个人偏好 {userId:{key:{v,at}}}（后写覆盖=方案"到达序新者胜"）
+    prefTemplates: [], // ㉕F5 管理员配置模板 [{name,prefs,by,at}]
   };
 }
+// ---- ㉕F6 凭据静态加密（AES-256-GCM，密钥 data/secret.key 不进git）+ ㉕F5 偏好/㉕F9 归档工具 ----
+const KEY_FILE = path.join(DATA_DIR, 'secret.key');
+function secretKey() { try { if (fs.existsSync(KEY_FILE)) return Buffer.from(fs.readFileSync(KEY_FILE, 'utf8').trim(), 'hex'); } catch (_) {} const k = crypto.randomBytes(32); try { fs.writeFileSync(KEY_FILE, k.toString('hex')); } catch (_) {} return k; }
+function encSec(s) { if (!s || String(s).indexOf('enc1:') === 0) return s; try { const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', secretKey(), iv); const e = Buffer.concat([c.update(String(s), 'utf8'), c.final()]); return 'enc1:' + iv.toString('base64') + ':' + c.getAuthTag().toString('base64') + ':' + e.toString('base64'); } catch (_) { return s; } }
+function decSec(s) { if (!s || String(s).indexOf('enc1:') !== 0) return s; try { const q = String(s).split(':'); const d = crypto.createDecipheriv('aes-256-gcm', secretKey(), Buffer.from(q[1], 'base64')); d.setAuthTag(Buffer.from(q[2], 'base64')); return Buffer.concat([d.update(Buffer.from(q[3], 'base64')), d.final()]).toString('utf8'); } catch (_) { console.log('[sec] secret.key 与 db.json 不匹配：RCS/WMAS 密码需在设置页重录一次'); return ''; } }
+function walkSec(o, fn) { for (const k of ['rcsConfig', 'wmasConfig']) { const c = o[k]; if (c && c.pwd) fn(c, 'pwd'); } if (o.rcsToken) fn(o, 'rcsToken'); }
+function clientFp(req) { let ip = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, ''); const seg = ip.indexOf(':') >= 0 ? ip.split(':').slice(0, 2).join(':') : ip.split('.').slice(0, 2).join('.'); return crypto.createHash('sha1').update(seg + '|' + String(req.headers['user-agent'] || '')).digest('hex').slice(0, 12); }
+function prefsFor(uid) { const o = (db.prefs && db.prefs[uid]) || {}; const r = {}; for (const k in o) { if (k === 'notes') r[k] = o[k].v; else if (k === 'kpi') r[k] = Array.isArray(o[k].v) ? o[k].v : []; else r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); } return r; }
+function archLoad(kind) { const out = {}; try { const dir = path.join(DATA_DIR, 'archive'); for (const f of fs.readdirSync(dir)) { if (f.indexOf('-' + kind + '.json') < 0) continue; try { Object.assign(out, JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))); } catch (_) {} } } catch (_) {} return out; }
 function loadDb() {
   if (!fs.existsSync(DB_FILE)) { const d = defaultDb(); saveDb(d); console.log('[init] 已创建初始账号 admin / admin123（首次登录需改密）'); return d; }
   const d = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
@@ -74,13 +85,18 @@ function loadDb() {
   if (!Array.isArray(d.watchlist)) { d.watchlist = []; added = true; }
   if (typeof d.groundSlots !== 'object' || d.groundSlots === null || Array.isArray(d.groundSlots)) { d.groundSlots = {}; added = true; }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
+  if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
+  if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
+  try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
   return d;
 }
 function saveDb(db) { // 原子写：临时文件 + rename
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const tmp = DB_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf8');
+  const _sv = []; // ㉕F6 落盘加密：同步暂换→序列化→还原（单线程无并发观察，免整库深拷贝）
+  try { walkSec(db, (o, k) => { const e = encSec(o[k]); if (e !== o[k]) { _sv.push([o, k, o[k]]); o[k] = e; } }); } catch (_) {}
+  try { fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf8'); } finally { for (const it of _sv) it[0][it[1]] = it[2]; }
   fs.renameSync(tmp, DB_FILE);
 }
 // ---- 数据自动备份：启动一次 + 每30分钟快照，保留最近72份（约36小时）；误删/损坏可从 data/backups 恢复 ----
@@ -92,7 +108,13 @@ function backupDb() {
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
     const p = path.join(dir, `db-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.json`);
-    fs.copyFileSync(DB_FILE, p);
+    // ㉔S4 备份脱敏：剥离口令散列/外部系统凭据/会话token（防泄漏面×72）；业务数据完整，恢复备份后需重填 RCS/WMAS 凭据并全员重登
+    const _bk = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    (_bk.users || []).forEach((x) => { delete x.salt; delete x.passHash; });
+    if (_bk.rcsConfig) delete _bk.rcsConfig.pwd;
+    if (_bk.wmasConfig) delete _bk.wmasConfig.pwd;
+    delete _bk.rcsToken; delete _bk.rcsTokenExp; delete _bk.sessions;
+    fs.writeFileSync(p + '.tmp', JSON.stringify(_bk)); fs.renameSync(p + '.tmp', p);
     const all = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).sort();
     while (all.length > 72) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
   } catch (e) { console.log('[backup] 失败：', e.message); }
@@ -143,6 +165,234 @@ function feedDict(pn, nm, src) {
   } catch (_) {}
 }
 
+// ---- ㉓导出中心：快照登记（谁/何时/数据集/条件/行数/SHA1），CSV带血缘注释头、XLS带口径sheet（SpreadsheetML零依赖） ----
+const EXP_LABELS = { D1: '库位表', D2: '库存汇总', D3: '入库流水', D4: '出库流水', D5: 'AGV任务', D6: 'AGV异常事件', D7: '工作量报表', D8: '领料台账', D9: '活动流审计', D10: '盘点结果', PACK: '月度对账包' };
+const EXP_CAL = {
+  '盘点结果': [['差异类型', '盘亏=实少于账面；盘盈=实多于账面；账外=扫入基准外标签'], ['口径', '零件级按数量合计、货位级按货位×零件组合；双基准矛盾行标记warn'], ['范围', '按盘点上收时间筛选；数据来自PDA结束盘点时自动上收']],
+  '库位表': [['货位', '完整库位编码：NB02-区-架-层F / NB03-区-排-格'], ['标签号', '一框可贴多码；同托号多码=同一框'], ['登记时间', '采集设备时钟（展示用）；多机冲突仲裁=内容指纹+服务器到达时刻：真改动才生效，未变重推/旧副本不覆盖他人，删除按墓碑拦截'], ['来源', '采集入账/手工登记/网页修正/返架/移库']],
+  '领料台账': [['处理分钟', '接单到签收/拒单/取消的分钟数（服务器时钟）'], ['范围', '按下单时间筛选；全量台账按月导出对账']],
+  '活动流审计': [['动作', '登录/账本合并/改位/返架/配置/模式/导出/账号/告警认领等关键写操作'], ['范围', '滚动最近5000条（含本条导出自身之前的记录）；密码等凭据不入审计流'], ['详情', '对象与变更摘要，前后值见账本修正审计(ledgerFixes)']],
+  '库存汇总': [['在架框数', '按"框=托"去重：同托号多标签计1框；无托号按同货位+同零件号合并'], ['在架数量', '每框取框内标签数量最大值后按框求和（与PDA库存页同口径）'], ['占用货位数', '该零件涉及的货位格数（去重）'], ['货位分布(TOP5)', '按该零件占用格数排序前5货位（NB区简写×框数）'], ['最近入库/最近出库', '采集流水/出库单最大时刻（主库窗口内）']],
+  '入库流水': [['初始货位', 'AGV模式=起始站台；地面模式=地面格位'], ['状态', '已作废记录保留导出并标记，供审计回溯'], ['备注', '采集时填写的自定义备注（120字内）']],
+  '出库流水': [['转入去向', 'MES转单目标（线边仓/工位）'], ['关联领料单', '领料发料转单生成的出库单带LL号；直调为空'], ['搬运方式', 'AGV=叫车叉至站台；人工=自提']],
+  'AGV任务': [['方向', '出库=货架→站台；入库=站台→货架'], ['接令/叉出/到站', 'RCS任务节点完成时刻；空=未发生'], ['时长秒', '接令到完成执行秒数；在途未完成=至今已耗时'], ['状态', '完成（RCS沉淀）/排队/下发中/已下发/到站/失败（在途队列并入）'], ['关联单', '按RCS任务号配对领料单号；配不到=空'], ['范围', 'RCS任务沉淀近30天+当前在途队列（WMAS对执行结果无感知，本表为权威）']],
+  'AGV异常事件': [['类型', '告警/恢复/已认领/升级/红牌/堵点/低电/出库超时/改位冲突'], ['范围', '车辆告警近500条+堵点/低电/超时/冲突实时聚合'], ['时间', '事件发生时刻（服务器时钟）'], ['持续时长(分)', '告警→同车下一条恢复的分钟数；未恢复=至今'], ['是否恢复', '已恢复/未恢复/仍在告警；低电=未回充/已回充']],
+  '工作量报表': [['入库框', '采集流水按托号去重（同托多码计1框），框数记入首次入库日'], ['出库框/件', '出库单标签去重与件数合计，按出库单创建日'], ['接单', '领料单历史"接单"事件；平均接单=下单到接单分钟'], ['修正/返架', '改位+补登记+消位计修正，返架单列（人工动作，不含系统自动）'], ['范围', '默认近14天；日期归属用服务器时钟本地日']],
+  '月度对账包': [['包含', '库位表+库存汇总+入库流水+出库流水 四工作表+口径说明'], ['用途', '与SAP/供应商对账的标准包；文件内口径说明即对账依据']],
+};
+function expTs(ms) { return ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false }) : ''; }
+function expX(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function expCsvCell(v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+function expCsv(d, meta) { const L = meta.map((m) => '#' + m); L.push(d.headers.map(expCsvCell).join(',')); for (const r of d.rows) L.push(r.map(expCsvCell).join(',')); return '\uFEFF' + L.join('\r\n') + '\r\n'; }
+function expXls(d) {
+  const parts = d.parts || [d];
+  let x = '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n';
+  for (const p of parts) {
+    x += `<Worksheet ss:Name="${expX(p.label).slice(0, 28)}"><Table><Row>` + p.headers.map((h) => `<Cell><Data ss:Type="String">${expX(h)}</Data></Cell>`).join('') + '</Row>\n';
+    for (const r of p.rows) x += '<Row>' + r.map((c, i) => { const t = p.types && p.types[i] === 'N' && c !== '' && c != null && Number.isFinite(Number(c)); return `<Cell><Data ss:Type="${t ? 'Number' : 'String'}">${expX(t ? Number(c) : (c == null ? '' : c))}</Data></Cell>`; }).join('') + '</Row>\n';
+    x += '</Table></Worksheet>\n';
+  }
+  const cal = [['口径版本', 'v1'], ['数据集', d.label], ['数据源', parts.map((p) => p.src).join('；')], ['筛选条件', JSON.stringify(d.f || {})], ['导出行数', String(d.total != null ? d.total : (d.rows || []).length)], ['生成时间', new Date().toLocaleString('zh-CN', { hour12: false })]].concat(parts.flatMap((p) => (p.caliber || []).map((c) => [p.label + '·' + c[0], c[1]])));
+  x += '<Worksheet ss:Name="口径说明"><Table><Row><Cell><Data ss:Type="String">项目</Data></Cell><Cell><Data ss:Type="String">说明</Data></Cell></Row>\n';
+  for (const c of cal) x += `<Row><Cell><Data ss:Type="String">${expX(c[0])}</Data></Cell><Cell><Data ss:Type="String">${expX(c[1])}</Data></Cell></Row>\n`;
+  return x + '</Table></Worksheet></Workbook>';
+}
+// ---- ㉓G12 工作量报表聚合：入库(框=托去重)/出库/修正/返架按人按日 + 领料时效 + AGV按车 ----
+function wdstr(ms) { const d = new Date(ms); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function wdName(s) { return String(s || '').trim().replace(/[（(][^）)]*[）)]$/, '').trim() || '未知'; } // MES回写常带(账号)后缀，统计归一
+function buildWork(from, to) {
+  const persons = {}, days = {};
+  const P = (name, day) => { name = wdName(name); const p = (persons[name] = persons[name] || { name, inB: 0, outB: 0, outQ: 0, fix: 0, ret: 0, acc: 0, finMin: 0, finN: 0, days: {} }); const d = (p.days[day] = p.days[day] || { inB: 0, outB: 0, acc: 0 }); return p; };
+  const D = (day) => (days[day] = days[day] || { inB: 0, outB: 0, outQ: 0, fix: 0, ret: 0, acc: 0, done: 0, rej: 0, agv: 0 });
+  // 入库：采集流水按托/框去重，记入首次入库日（作废的不计，操作人记s.op）
+  const boxSeen = {};
+  for (const s of Object.values(db.scanlog || {})) {
+    if (s.cx) continue; const t = s.t || 0; if (t < from || t > to) continue;
+    const k = String(s.pid || '').toUpperCase() || String(s.code || '').toUpperCase();
+    if (boxSeen[k]) continue; boxSeen[k] = 1;
+    const day = wdstr(t), who = String(s.op || '').trim() || '未知';
+    P(who, day).inB++; P(who, day).days[day].inB++; D(day).inB++;
+  }
+  // 出库：出库单标签去重计框、件数合计；操作人记o.operator
+  for (const o of Object.values(db.outbound || {})) {
+    const t = Number(o.createdAt) || 0; if (t < from || t > to) continue;
+    const day = wdstr(t), who = String(o.operator || '').trim() || '未知';
+    const codes = new Set(); let qty = 0;
+    for (const i of (o.items || [])) { const c = String(i.barcode || '').toUpperCase(); if (c && !codes.has(c)) { codes.add(c); qty += Number(i.qty) || 0; } }
+    if (!codes.size) continue;
+    const p = P(who, day); p.outB += codes.size; p.outQ += qty; p.days[day].outB += codes.size; D(day).outB += codes.size; D(day).outQ += qty;
+  }
+  // 修正/返架：审计流水（改位+补登记+消位=修正，返架单列）
+  for (const f of db.ledgerFixes || []) {
+    const t = Date.parse(f.time) || 0; if (t < from || t > to) continue;
+    const day = wdstr(t), who = String(f.by || '').trim() || '未知';
+    const p = P(who, day); if (f.act === '返架') { p.ret++; D(day).ret++; } else { p.fix++; D(day).fix++; }
+  }
+  // 领料：接单量/处理时效（下单→接单、接单→签收）按单据最终归属日；拒单计日不计人
+  const mins = (a, b) => (a && b ? Math.max(0, (b - a) / 60000) : 0);
+  for (const r of db.requisitions || []) {
+    const accEv = (r.history || []).find((h) => /^接单/.test(h.text)); const finEv = (r.history || []).find((h) => /^签收/.test(h.text));
+    const cAt = Date.parse(r.createdAt) || 0, aAt = accEv ? Date.parse(accEv.time) : 0, fAt = finEv ? Date.parse(finEv.time) : (r.status === 'done' ? 0 : 0);
+    if (accEv && aAt >= from && aAt <= to) { const day = wdstr(aAt), who = String(accEv.by || '').trim() || '未知'; const p = P(who, day); p.acc++; p.days[day].acc++; p.finMin += mins(cAt, aAt); p.finN++; D(day).acc++; }
+    if (r.status === 'done' && fAt >= from && fAt <= to) D(wdstr(fAt)).done++;
+    if (r.status === 'rejected') { const rv = (r.history || []).find((h) => /^拒单/.test(h.text)); const t = rv ? Date.parse(rv.time) : 0; if (t >= from && t <= to) D(wdstr(t)).rej++; }
+  }
+  // AGV：按车统计完成任务（方向+时长），车辆不算"人"单列
+  const cars = {};
+  for (const [no, t] of Object.entries(db.agvTasks || {})) {
+    if ((t.fin || 0) < from || (t.fin || 0) > to) continue;
+    const key = 'AGV' + String(t.car || 0).padStart(2, '0'); const c = (cars[key] = cars[key] || { out: 0, in: 0, other: 0, dur: 0, n: 0 });
+    c[t.ck === 'out' ? 'out' : t.ck === 'in' ? 'in' : 'other']++; c.n++; c.dur += t.dur || 0;
+    D(wdstr(t.fin)).agv++;
+  }
+  return { persons, days, cars };
+}
+function buildExport(ds, fRaw) {
+  const f = { from: String((fRaw && fRaw.from) || '').slice(0, 10), to: String((fRaw && fRaw.to) || '').slice(0, 10) };
+  const _arch = !!(fRaw && (fRaw.arch === '1' || fRaw.arch === true)); // ㉕F9 含归档：主库∪data/archive
+  const from = f.from ? Date.parse(f.from + 'T00:00:00') : 0;
+  const to = f.to ? Date.parse(f.to + 'T23:59:59') : Infinity;
+  const CAP = 20000;
+  const mk = (label, headers, types, rows, src) => ({ label, headers, types, rows: rows.slice(0, CAP), total: rows.length, src, f, caliber: EXP_CAL[label] || [] });
+  if (ds === 'D1') return mk('库位表', ['货位', '标签号', '零件号', '物料名称', '数量', '批次', '料框', '登记人', '登记时间', '搬运方式', '来源'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], db.ledger.map((x) => [x.l, x.c, x.p || '', x.n || '', x.q || 0, x.b || '', x.f || '', x.by || '', expTs(x.t), x.mv || '', x.src || '']).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), '货位账本（服务器合并快照）');
+  if (ds === 'D2') { const m = {}; for (const x of db.ledger) { const pn = String(x.p || '').toUpperCase() || '(无零件号)'; const k = boxKeyOf(x); const e = (m[pn] = m[pn] || { b: {}, locs: {}, nm: '' }); e.b[k] = Math.max(e.b[k] || 0, Number(x.q) || 0); e.locs[String(x.l).toUpperCase()] = (e.locs[String(x.l).toUpperCase()] || 0) + 1; if (!e.nm && x.n) e.nm = x.n; }
+    // ㉕B12 最近出入动向：入库=采集流水最大t；出库=出库单明细最大createdAt
+    const lastIn = {}, lastOut = {};
+    for (const s of Object.values(db.scanlog || {})) { if (s.cx) continue; const pn = String(s.pn || '').toUpperCase(); if (!pn) continue; lastIn[pn] = Math.max(lastIn[pn] || 0, s.t || 0); }
+    for (const o of Object.values(db.outbound || {})) { const t = Number(o.createdAt) || 0; for (const i of (o.items || [])) { const pn = String(i.code || '').toUpperCase(); if (pn) lastOut[pn] = Math.max(lastOut[pn] || 0, t); } }
+    const mkRow = (pn, e) => { const bs = Object.values(e.b); const locs = Object.entries(e.locs).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l, n]) => l.split('-').slice(1).join('-') + '×' + n).join('、') + (Object.keys(e.locs).length > 5 ? '…' : ''); return [pn, (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || e.nm, bs.length, bs.reduce((s2, v) => s2 + v, 0), Object.keys(e.locs).length, locs, expTs(lastIn[pn] || 0), expTs(lastOut[pn] || 0)]; };
+    let rows = Object.entries(m).map(([pn, e]) => mkRow(pn, e));
+    if (fRaw && (fRaw.zero === '1' || fRaw.zero === true)) { for (const pn of new Set([...Object.keys(lastIn), ...Object.keys(lastOut), ...Object.keys(db.itemDict || {})])) if (!m[pn]) rows.push([pn, (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || '', 0, 0, 0, '', expTs(lastIn[pn] || 0), expTs(lastOut[pn] || 0)]); } // 零库存：有过流水但当前无在架
+    rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    return mk('库存汇总', ['零件号', '物料名称', '在架框数', '在架数量', '占用货位数', '货位分布(TOP5)', '最近入库', '最近出库'], ['S', 'S', 'N', 'N', 'N', 'S', 'S', 'S'], rows, '货位账本按框聚合（动向取自主库窗口，含归档勾选不影响本表）'); }
+  if (ds === 'D3') { const _sl = _arch ? Object.assign(archLoad('scanlog'), db.scanlog || {}) : (db.scanlog || {}); const rows = Object.values(_sl).filter((s) => (s.t || 0) >= (from || 0) && (s.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((s) => [expTs(s.t), s.code, s.pn || '', s.nm || '', s.q || 0, s.lot || '', (s.wt === 0 ? s.st : s.gl) || '', s.ct || '', s.pid || '', s.op || '', s.cx ? '已作废' : '', s.rm || '']); return mk('入库流水', ['时间', '标签号', '零件号', '物料名', '数量', '批次', '初始货位', '容器类型', '托号', '操作人', '状态', '备注'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '采集流水（全厂合并）'); }
+  if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), i.code || '', i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', o.operator || '']); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '零件号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调）'); }
+  if (ds === 'D5') { const reqOfTask = {}; for (const q of db.agvQueue || []) { const tn = String(q.taskNo || ''); if (tn && q.reqNo && !reqOfTask[tn]) reqOfTask[tn] = q.reqNo; } // 关联单=按RCS任务号配对（完成项队列留存可回溯）
+    const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', 'AGV' + String(t.car || 0).padStart(2, '0'), expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', reqOfTask[no] || '']);
+    // ㉕B10 未完成在途并入同表（状态=排队/下发中/已下发/到站/失败），补"状态/关联单"两列
+    for (const q of db.agvQueue || []) { if (['完成', '取消'].includes(q.state)) continue; const at = Number(q.at) || 0; if ((from && at < from) || at > to) continue; rows.push([q.taskNo || '未生成', q.type === 'transfer' ? '移库' : '出库', q.fromLoc || q.from || '', q.station || q.to || '', '', '', expTs(q.sentAt || 0) || '', expTs(q.dockAt || 0) || '', Math.round((Date.now() - at) / 1000), q.state, q.reqNo || '']); }
+    return mk('AGV任务', ['任务号', '方向', '起点', '终点', '车辆', '接令', '叉出', '到站', '时长秒', '状态', '关联单'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S'], rows, 'RCS任务沉淀（近30天六节点）+未完成在途队列（时长秒=已耗时）'); }
+  if (ds === 'D6') { // ㉕B11 补持续时长/是否恢复：同车事件流内配对（告警→该车其后首条恢复；无配对=至今未恢复）
+    const evs = buildEvents(); const pend = {};
+    for (let i = evs.length - 1; i >= 0; i--) { const e = evs[i]; const w = String(e.who || ''); if (e.kind === '告警' || e.kind === '红牌' || e.kind === '升级') { pend[w] = e; } else if (e.kind === '恢复' && pend[w] && e.ts >= pend[w].ts) { pend[w]._rt = e.ts; pend[w] = null; } }
+    const rows = evs.map((e) => {
+      let dur = '', recd = '';
+      if (e.kind === '告警' || e.kind === '红牌' || e.kind === '升级') { if (e._rt) { dur = Math.max(1, Math.round((e._rt - e.ts) / 60000)); recd = '已恢复'; } else { dur = Math.max(1, Math.round((Date.now() - e.ts) / 60000)); recd = '未恢复'; } }
+      else if (e.kind === '恢复') recd = '已恢复';
+      else if (e.kind === '低电') recd = (db.rcsLowBat || {})[String(e.who).replace(/\D/g, '')] ? '未回充' : '已回充';
+      return [expTs(e.ts), e.kind, e.who || '', dur, recd, e.msg || ''];
+    });
+    return mk('AGV异常事件', ['时间', '类型', '对象', '持续时长(分)', '是否恢复', '内容'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '车辆告警+堵点+低电+出库超时+改位冲突统一聚合；持续时长=告警到恢复分钟（未恢复=至今）'); }
+  if (ds === 'D7') {
+    const F = from || Date.now() - 14 * 864e5, T = Number.isFinite(to) ? to : Date.now();
+    const w = buildWork(F, T);
+    const ps = Object.values(w.persons).sort((a, b) => (b.inB + b.outB + b.outQ / 20 + b.acc + b.fix + b.ret) - (a.inB + a.outB + a.outQ / 20 + a.acc + a.fix + a.ret));
+    const parts = [
+      { label: '按人汇总', headers: ['姓名', '入库框', '出库框', '出库件', '接单', '修正', '返架', '平均接单(分)'], types: ['S', 'N', 'N', 'N', 'N', 'N', 'N', 'N'], rows: ps.map((p) => [p.name, p.inB, p.outB, p.outQ, p.acc, p.fix, p.ret, p.finN ? Math.round(p.finMin / p.finN) : '']), src: '采集流水+出库单+修正审计+领料历史', caliber: EXP_CAL['工作量报表'] },
+      { label: '按日汇总', headers: ['日期', '入库框', '出库框', '出库件', '接单', '签收', '拒单', '修正', '返架', 'AGV任务'], types: ['S', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N', 'N'], rows: Object.keys(w.days).sort().map((k) => { const d = w.days[k]; return [k, d.inB, d.outB, d.outQ, d.acc, d.done, d.rej, d.fix, d.ret, d.agv]; }), src: '同上（按服务器本地日归属）', caliber: [] },
+      { label: 'AGV按车', headers: ['车辆', '出库任务', '入库任务', '其他', '总任务', '平均时长秒'], types: ['S', 'N', 'N', 'N', 'N', 'N'], rows: Object.keys(w.cars).sort().map((k) => { const c = w.cars[k]; return [k, c.out, c.in, c.other, c.n, c.n ? Math.round(c.dur / c.n) : 0]; }), src: 'RCS任务沉淀（近30天）', caliber: [] },
+    ];
+    return { label: '工作量报表', parts, rows: parts[0].rows, total: parts[0].rows.length + parts[1].rows.length + parts[2].rows.length, f: { from: wdstr(F), to: wdstr(T) } };
+  }
+  if (ds === 'D8') { const ST = { pending: '待接单', accepted: '备料中', ready: '待签收', done: '已签收', rejected: '已拒单', cancelled: '已取消' }; const rows = (db.requisitions || []).filter((r) => { const t = Date.parse(r.createdAt) || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map((r) => { const acc = (r.history || []).find((h) => /接单/.test(h.text || '')); const fin = (r.history || []).filter((h) => /签收|拒单|取消/.test(h.text || '')).pop(); const mins = acc && fin ? Math.round((Date.parse(fin.time) - Date.parse(acc.time)) / 60000) : ''; return [r.no, expTs(Date.parse(r.createdAt) || 0), r.byName || r.by || '', (r.items || []).length, (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), ST[r.status] || r.status, r.acceptedBy || '', r.confirmedBy || '', expTs(Date.parse(r.confirmedAt) || 0), acc ? expTs(Date.parse(acc.time) || 0) : '', mins === '' ? '' : mins, (r.remark || '').slice(0, 60)]; }); return mk('领料台账', ['单号', '下单时间', '下单人', '行数', '件数合计', '状态', '接单人', '签收人', '签收时间', '接单时间', '处理分钟', '备注'], ['S', 'S', 'S', 'N', 'N', 'S', 'S', 'S', 'S', 'S', 'N', 'S'], rows, '领料单全量（含节点时刻，处理分钟=接单到终结）'); }
+  if (ds === 'D9') { const rows = (db.ops || []).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', o.role || '', o.act || '', o.obj || '', o.det || '']); return mk('活动流审计', ['时间', '操作人', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流）'); }
+  if (ds === 'D10') { const inv = Object.values(db.inventories || {}).filter((r) => { const t = r.at || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => b.at - a.at); const bid = String((fRaw && fRaw.batchId) || '').trim(); const sel = bid ? inv.filter((r) => r.batchId === bid) : inv; const one = sel[0] || {};
+    const parts = [
+      { label: '盘点总览', headers: ['批次', '备注', '模式', '盘点人', '结束时间', '总扫次', '有效扫次', 'MES失败', '重复', '账外', '已应用改账', '零件行数', '零件差异行'], types: ['S', 'S', 'S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S', 'N', 'N'], rows: sel.map((r) => [r.batchId, r.remark || '', r.blind ? '盲盘' : '监督', r.by || '', expTs(r.at), r.totalScans || 0, r.validScans || 0, r.mesFail || 0, r.dup || 0, r.outside || 0, r.applied ? ('是·' + expTs(r.applyTime)) : '否', (r.parts || []).length, (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length]), src: 'PDA盘点上收汇总', caliber: EXP_CAL['盘点结果'] },
+      { label: '零件级差异', headers: ['批次', '零件号', '物料名称', '账面数量', '实盘数量', '差异', '实盘框数', '账外框', '双基准矛盾'], types: ['S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S'], rows: sel.flatMap((r) => (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6 || p.out > 0 || p.warn === 7).map((p) => [r.batchId, p.pn, p.nm || '', p.book, p.real, Math.round((p.real - p.book) * 100) / 100, p.boxes, p.out, p.warn === 7 ? '⚠矛盾' : ''])), src: '零件级差异（含账外/矛盾）', caliber: [] },
+      { label: '货位级差异', headers: ['批次', '货位', '零件号', '台账数量', '实盘数量', '差异', '实盘框数'], types: ['S', 'S', 'S', 'N', 'N', 'N', 'N'], rows: sel.flatMap((r) => (r.locs || []).filter((l) => Math.abs(l.real - l.book) > 1e-6).map((l) => [r.batchId, l.loc, l.pn, l.book, l.real, Math.round((l.real - l.book) * 100) / 100, l.boxes])), src: '货位×零件级差异', caliber: [] },
+    ];
+    return { label: '盘点结果' + (bid ? '_' + bid : ''), parts, rows: parts[1].rows, total: parts.reduce((s, p) => s + p.rows.length, 0), f: { from: f.from, to: f.to, batchId: bid || '全部' } };
+  }
+  if (ds === 'PACK') { const parts = ['D1', 'D2', 'D3', 'D4'].map((x) => buildExport(x, fRaw));
+    // ㉕丙7 差异说明页：近7日净流入（主库口径，历史月需「含归档」单导）
+    const d7 = Date.now() - 7 * 864e5; const mv = {};
+    for (const s of Object.values(db.scanlog || {})) { if ((s.t || 0) < d7) continue; const pn = String(s.pn || '').toUpperCase() || '(无零件号)'; (mv[pn] = mv[pn] || { i: 0, o: 0 }).i += Number(s.q) || 0; }
+    for (const o of Object.values(db.outbound || {})) { if ((Number(o.createdAt) || 0) < d7) continue; for (const i of (o.items || [])) { const pn = String(i.code || '').toUpperCase() || '(无零件号)'; (mv[pn] = mv[pn] || { i: 0, o: 0 }).o += Number(i.qty) || 0; } }
+    const diffRows = Object.entries(mv).filter(([, v]) => v.i !== v.o).sort((a, b) => Math.abs(b[1].i - b[1].o) - Math.abs(a[1].i - a[1].o)).slice(0, 300).map(([pn, v]) => [pn, v.i, v.o, v.i - v.o]);
+    parts.push({ label: '差异说明', headers: ['零件号', '近7日入库(件)', '近7日出库(件)', '净流入'], types: ['S', 'N', 'N', 'N'], rows: diffRows, src: '主库近7日流水/出库（更早数据在data/archive）', caliber: [['用途', '对账前先看哪些零件近7日仍在大幅进出；净流入=入-出，为负即净消耗'], ['局限', '主库窗口外历史在归档目录；全月口径用导出中心「含归档」单导D3/D4'], ['注意', '本页不是账实差异——账实差异以盘点结果(D10)为准']] });
+    const total = parts.reduce((s, p) => s + p.rows.length, 0); return { label: '月度对账包', parts, rows: [], total, f: parts[0].f }; }
+  return null;
+}
+
+// ---- ㉔SSE实时推送：订阅者注册/广播/断线清理 ----
+const sseSet = new Set();
+function sseSend(d) { for (const rs of sseSet) { try { rs.write('data: ' + JSON.stringify(d) + '\n\n'); } catch (_) {} } }
+function sseClose(rs) { try { rs.end(); } catch (_) {} sseSet.delete(rs); }
+
+// ---- ㉔回放轨迹采样（近24h滚动）+ 站台状态变化（甘特数据）+ 轮询后广播 ----
+function sseTick(nowMs) {
+  try {
+    sseSend({ t: 'snap', at: db.rcsAt || new Date().toISOString(), run: (db.rcsRun || []).length, queue: (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length, on: !!(db.rcsConfig && db.rcsConfig.host), sc: db.scanlogAt || '' }); // ㉕F10 健康灯字段
+    const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : null;
+    if (!tk) return;
+    rcsReq('/uds/car/getCarInfoList', 'GET', tk).then((cr) => {
+      try {
+        const cars = cr && cr.data ? (typeof cr.data === 'string' ? JSON.parse(cr.data) : cr.data) : [];
+        db.trail = db.trail || [];
+        for (const c of cars) { if (c && c.agvId !== undefined && Number.isFinite(c.x) && Number.isFinite(c.y)) db.trail.push({ ts: nowMs, id: c.agvId, x: Math.round(c.x * 10) / 10, y: Math.round(c.y * 10) / 10, yaw: Math.round((Number(c.yaw) || 0) * 100) / 100 }); }
+        const cut = nowMs - 24 * 3600 * 1000;
+        db.trail = db.trail.filter((p) => p.ts >= cut);
+        if (db.trail.length > 20000) db.trail = db.trail.slice(-20000);
+      } catch (_) {}
+    }).catch(() => {});
+    db.stnTl = db.stnTl || {};
+    const st = db.rcsStations || {};
+    for (const k of Object.keys(st)) { const want = st[k].state === '有货' ? '有货' : st[k].state === '占用中' ? '占用' : '空闲'; const a = db.stnTl[k] || (db.stnTl[k] = []); const last = a[a.length - 1]; if (!last || last.s !== want) a.push({ s: want, t: nowMs }); if (a.length > 300) db.stnTl[k] = a.slice(-300); }
+    for (const k of Object.keys(db.stnTl)) { if (!st[k]) delete db.stnTl[k]; }
+  } catch (_) {}
+}
+
+// ---- ㉔每日账本快照（18:10，留90天）："昨天的库存什么样"可回放 ----
+function snapDay(d) { return d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0'); }
+function dailySnap() {
+  try {
+    const d = new Date();
+    if (d.getHours() < 18) return;
+    const key = snapDay(d);
+    const dir = path.join(DATA_DIR, 'snapshots'); fs.mkdirSync(dir, { recursive: true });
+    const f = path.join(dir, 'ledger-' + key + '.json');
+    if (fs.existsSync(f)) return;
+    fs.writeFileSync(f + '.tmp', JSON.stringify({ at: d.toISOString(), items: db.ledger })); fs.renameSync(f + '.tmp', f);
+    const all = fs.readdirSync(dir).filter((x) => /^ledger-\d{8}\.json$/.test(x)).sort();
+    while (all.length > 90) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
+    console.log('[snap] 每日账本快照 ' + key + '（' + db.ledger.length + ' 条）');
+  } catch (e) { console.log('[snap] 失败：', e.message); }
+}
+setInterval(dailySnap, 30 * 60 * 1000).unref();
+// ---- ㉔每日自动导出：18点后落 D1库位表+D2库存汇总 到 data/exports/daily（留90天，对账免手工）----
+let _expLast = '';
+function dailyExport() {
+  try {
+    const d = new Date();
+    if (d.getHours() < 18) return;
+    const key = snapDay(d);
+    if (_expLast === key) return;
+    const dir = path.join(DATA_DIR, 'exports', 'daily'); fs.mkdirSync(dir, { recursive: true });
+    const f1 = path.join(dir, '库位表-' + key + '.xls'), f2 = path.join(dir, '库存汇总-' + key + '.xls');
+    if (fs.existsSync(f1) && fs.existsSync(f2)) { _expLast = key; return; }
+    if (!fs.existsSync(f1)) { const b = expXls(buildExport('D1', {})); fs.writeFileSync(f1 + '.tmp', b); fs.renameSync(f1 + '.tmp', f1); }
+    if (!fs.existsSync(f2)) { const b = expXls(buildExport('D2', {})); fs.writeFileSync(f2 + '.tmp', b); fs.renameSync(f2 + '.tmp', f2); }
+    _expLast = key;
+    const all = fs.readdirSync(dir).filter((x) => /-\d{8}\.xls$/.test(x)).sort();
+    while (all.length > 180) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
+    console.log('[export-daily] ' + key + ' 库位表+库存汇总 已归档');
+  } catch (e) { console.log('[export-daily] 失败：', e.message); }
+}
+setInterval(dailyExport, 30 * 60 * 1000).unref();
+
+// ---- ㉔AGV异常事件统一聚合（车辆告警/堵点/低电/出库超时/改位冲突/认领） ----
+function buildEvents() {
+  const ev = [];
+  for (const a of db.carAlarms || []) ev.push({ ts: a.at, kind: a.kind === 'recover' ? '恢复' : a.kind === 'ack' ? '已认领' : a.kind === 'escalate' ? '升级' : a.kind === 'redflag' ? '红牌' : '告警', who: a.name || '', msg: a.msg || '' });
+  for (const j of db.rcsJam || []) ev.push({ ts: j.at || 0, kind: '堵点', who: 'AGV' + String(j.id).padStart(2, '0'), msg: '交管被卡：' + (j.zone || '') + '（' + (j.lands || '') + '）' });
+  for (const [id, v] of Object.entries(db.rcsLowBat || {})) { if (v && v.notified) ev.push({ ts: v.at || 0, kind: '低电', who: 'AGV' + String(id).padStart(2, '0'), msg: '低电空闲未回充' }); }
+  for (const q of db.agvQueue || []) { if (q.state === '失败' && q.err && /超40分钟/.test(q.err)) ev.push({ ts: q.updAt || 0, kind: '出库超时', who: q.code || '', msg: q.err }); }
+  for (const f of db.ledgerFixes || []) { if (/冲突/.test(String(f.reason || ''))) ev.push({ ts: Date.parse(f.time) || 0, kind: '改位冲突', who: f.by || '', msg: f.code + ' ' + f.reason }); }
+  ev.sort((a, b) => b.ts - a.ts);
+  return ev.slice(0, 400);
+}
+
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
 function newId(p) { return p + '_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex'); }
 function newToken() { return crypto.randomBytes(24).toString('hex'); }
@@ -160,10 +410,77 @@ function reqItemsSuggestText(r) {
     return `${i.partNo}×${i.qty}→${sg.inStock ? '待补齐' : '无货'}`;
   }).join('、');
 }
+// ---- ㉕T1 通知治理：同类5分钟静默聚合（并入原条"等N条"）/ 每人每分钟超5条跨类型强制聚合 / 夜间22-6点非急停类按人缓冲，早6点各自一条汇总 ----
+const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
+const URGENT_TYPES = new Set(['car_alarm']);   // 车辆告警（含急停）永不静默
+const NTYPE = { req_new: 'req_new', req_timeout: 'req_new', req_reassign: 'req_new', req_urge: 'req_urge', req_arrive: 'req_arrive', req_accept: 'req_flow', req_ready: 'req_flow', req_ready_wh: 'req_flow', req_done: 'req_flow', req_reject: 'req_flow', req_cancel: 'req_flow', watch_in: 'watch_in', stock_out: 'stock_out' }; // ㉕F5 订阅粒度（car_alarm不在表内=强制必达）
 function notify(toUserId, type, text, reqId) {
-  db.notifications.push({ id: newId('n'), to: toUserId, type, text, reqId: reqId || '', time: new Date().toISOString(), read: false });
-  if (db.notifications.length > 500) db.notifications = db.notifications.slice(-500); // 只留最近500条防膨胀
+  try {
+    const now = Date.now(), hr = new Date(now).getHours();
+    if ((hr >= 22 || hr < 6) && !URGENT_TYPES.has(type)) { // 夜间非急停：按人进缓冲，早6点各自汇总
+      db.nightBuf = db.nightBuf || {};
+      const arr = (db.nightBuf[toUserId] = db.nightBuf[toUserId] || []);
+      if (arr.length < 40) arr.push({ type, text: String(text).slice(0, 60), reqId: reqId || '', at: new Date(now).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) });
+      return;
+    }
+    { const np = db.prefs && db.prefs[toUserId] && db.prefs[toUserId].notes; if (np && np.v && type !== 'car_alarm' && np.v[NTYPE[type] || type] === false) return; } // ㉕F5 个人退订生效
+    const key = toUserId + '|' + type;
+    const rk = _nrate.get(toUserId) || [Math.floor(now / 60000), 0];
+    if (rk[0] !== Math.floor(now / 60000)) { rk[0] = Math.floor(now / 60000); rk[1] = 0; }
+    rk[1]++; _nrate.set(toUserId, rk);
+    const last = _nq.get(key);
+    // 同类型5分钟聚合；或该人本分钟已超5条→跨类型也合并到其最近一条（限流消费，防风暴刷屏）
+    if (last && now - last.at < 5 * 60000) {
+      const idx = db.notifications.findIndex((x) => x.id === last.id);
+      if (idx >= 0) {
+        const n = (last.n || 1) + 1; last.n = n; last.at2 = now;
+        const base = db.notifications[idx].text.replace(/（等 \d+ 条，已合并）$/, '');
+        db.notifications[idx].text = base + '（等 ' + n + ' 条，已合并）';
+        db.notifications[idx].time = new Date(now).toISOString(); db.notifications[idx].read = false;
+        try { const uu = db.users.find((x) => x.id === toUserId); sseSend({ t: 'notif', to: toUserId, who: uu ? uu.name : toUserId, type, text: db.notifications[idx].text, reqId: reqId || '' }); } catch (_) {}
+        return;
+      }
+    }
+    if (rk[1] > 5) {
+      let newest = null, nIdx = -1;
+      for (let i = db.notifications.length - 1; i >= 0 && i >= db.notifications.length - 60; i--) { const x = db.notifications[i]; if (x.to === toUserId && !/已合并/.test(x.text) && now - Date.parse(x.time) < 5 * 60000) { newest = x; nIdx = i; break; } }
+      if (newest) {
+        const n = (newest._mn || 1) + 1; newest._mn = n;
+        const base = newest.text.replace(/（等 \d+ 条，已合并）$/, '');
+        newest.text = base + '（等 ' + n + ' 条，已合并）'; newest.time = new Date(now).toISOString(); newest.read = false;
+        try { const uu = db.users.find((x) => x.id === toUserId); sseSend({ t: 'notif', to: toUserId, who: uu ? uu.name : toUserId, type, text: newest.text, reqId: reqId || '' }); } catch (_) {}
+        return;
+      }
+    }
+    const id = newId('n');
+    db.notifications.push({ id, to: toUserId, type, text, reqId: reqId || '', time: new Date().toISOString(), read: false });
+    _nq.set(key, { id, at: now, at2: now, n: 0 });
+    if (db.notifications.length > 500) db.notifications = db.notifications.slice(-500); // 只留最近500条防膨胀
+    try { const uu = db.users.find((x) => x.id === toUserId); sseSend({ t: 'notif', to: toUserId, who: uu ? uu.name : toUserId, type, text, reqId: reqId || '' }); } catch (_) {}
+  } catch (_) {}
 }
+// 夜间缓冲日出汇总：每人一条（只含本人昨夜通知，带原reqId可跳转；night_digest不在PDA白名单=不弹系统通知，站内/网页可见，不破坏旧APK）
+function nightDigest() {
+  try {
+    const hr = new Date().getHours(); if (hr < 6 || hr >= 22) return;
+    if (Array.isArray(db.nightBuf)) db.nightBuf = {}; // ㉕兼容：旧全局数组缓冲已废弃，按人分桶重来
+    const day = new Date().getFullYear() + '-' + (new Date().getMonth() + 1) + '-' + new Date().getDate() + 'H6';
+    if (_nightFlushed === day) return;
+    _nightFlushed = day;
+    const buf = db.nightBuf || {}; db.nightBuf = {}; save();
+    let n = 0;
+    for (const [uid, arr] of Object.entries(buf)) {
+      if (!arr || !arr.length) continue;
+      const uu = db.users.find((x) => x.id === uid); if (!uu || !uu.enabled) continue;
+      const line = '🌙 夜间静默汇总（' + arr.length + ' 条）：' + arr.slice(0, 15).map((b) => b.at + ' ' + b.text).join('；');
+      db.notifications.push({ id: newId('n'), to: uid, type: 'night_digest', text: line.slice(0, 300), reqId: arr[0].reqId || '', time: new Date().toISOString(), read: false });
+      if (db.notifications.length > 500) db.notifications = db.notifications.slice(-500);
+      n++;
+    }
+    if (n) { save(); console.log('[notify] 夜间汇总按人下发 ' + n + ' 份'); }
+  } catch (_) {}
+}
+setInterval(nightDigest, 5 * 60 * 1000).unref();
 function findReq(id) { return db.requisitions.find(r => r.id === id); }
 // 指定超时清扫：pending 且超过 assignOpenAt → 解除指定锁定，广播给全部仓管可接单
 function sweepAssignOpen() {
@@ -556,7 +873,8 @@ function sw(k){['scan','ob','inv'].forEach(function(t){var K=t[0].toUpperCase()+
 function jg(u){return fetch(u).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})}
 function loadAll(){
   document.getElementById('meta').textContent='加载中…';
-  Promise.all([jg('/api/scanlog?limit=5000'),jg('/api/outbound'),jg('/api/ledger?l=')]).then(function(a){
+  Promise.all([jg('/api/scanlog?limit=20000')
+,jg('/api/outbound'),jg('/api/ledger?l=')]).then(function(a){
     var s=a[0],o=a[1],l=a[2];scans=s.items||[];obs=o.items||[];led=l.items||[];
     document.getElementById('badges').innerHTML=
       '<div class="b"><b>'+(s.total||0)+'</b>采集流水<br>最后同步 '+esc(iso2s(s.at))+'</div>'+
@@ -628,12 +946,21 @@ function auth(req) {
   if (!token) return { err: 401, msg: '缺少登录凭证' };
   const s = touchSession(token);
   if (!s) return { err: 401, msg: '登录已过期，请重新登录' };
+  if (s.fp && s.fp !== clientFp(req)) return { err: 401, msg: '登录环境已变化（设备或IP段），请重新登录' }; // ㉕F6 升级前旧会话无fp不受限
   const u = db.users.find(x => x.id === s.userId);
   if (!u) return { err: 401, msg: '账号不存在' };
   if (!u.enabled) { delete db.sessions[token]; save(); return { err: 403, code: 'disabled', msg: '账号已被管理员停用，请联系管理员' }; }
   return { token, user: u };
 }
 function requireAdmin(authed) { return authed.user.role === 'admin' ? null : { err: 403, msg: '需要管理员权限' }; }
+// ㉔S1 账本行内容哈希（登记时刻+业务字段）：同步合并与网页修正共用
+function ledgerHash(x) { return crypto.createHash('sha1').update([Number(x && x.t) || 0, (x && x.l) || '', (x && x.f) || '', (x && x.p) || '', (x && x.n) || '', Number(x && x.q) || 0, (x && x.b) || '', (x && x.mv) || '', (x && x.src) || '', (x && x.pid) || ''].join('\u0001'), 'utf8').digest('hex').slice(0, 32); }
+// 写行时滚动保留最近3个历史( t,h )：未拉取设备的旧快照回填=命中历史→判无新到达，防覆盖他人/网页修正结果
+function ledgerPut(cur, code, row, prev) { const hist = ((prev && prev.hist) || []).concat(prev ? [{ t: Number(prev.t) || 0, h: ledgerHash(prev) }] : []).slice(-3); cur.set(code, Object.assign({}, row, { hist })); }
+// ---- ㉕A1 导出角色门禁（方案6.6）：D9活动流=仅管理员；D8领料台账/D10盘点=仓管+管理员；其余登录即可 ----
+function expRoleOk(u, label) { label = String(label || ''); if (label === '活动流审计') return u.role === 'admin'; if (label === '领料台账' || label.indexOf('盘点结果') === 0) return u.role === 'warehouse' || u.role === 'admin'; return true; }
+// ---- ㉕B1 ops活动流：关键操作全景留痕（谁/何时/动作/对象/详情），滚动5000条，供控制后台与D9审计导出 ----
+function pushOps(u, act, obj, det) { try { db.ops = db.ops || []; db.ops.push({ t: Date.now(), by: u ? String(u.name || '-') : '-', role: u ? (u.role || '') : '', act, obj: String(obj || '').slice(0, 80), det: String(det || '').slice(0, 200) }); if (db.ops.length > 5000) db.ops = db.ops.slice(-5000); } catch (_) {} }
 
 // 登录失败限速
 const failMap = new Map(); // username -> [ts,...]
@@ -646,10 +973,20 @@ function failCheck(username) {
 function failRecord(username) { const arr = failMap.get(username) || []; arr.push(Date.now()); failMap.set(username, arr); }
 
 // ---------------- HTTP ----------------
-function send(res, code, obj) {
+function send(res, code, obj, extra) {
   const body = JSON.stringify(obj);
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS' });
+  const hs = { 'Content-Type': 'application/json; charset=utf-8', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization', 'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS' };
+  if (extra) Object.assign(hs, extra);
+  res.writeHead(code, hs);
   res.end(body);
+}
+// ㉔S3 页面鉴权：cookie（登录种）或 ?t=<会话token>；db.pageAuth=true 启用（默认关=PDA门户iframe兼容，出APK后开启）
+function pageAuthOk(req, url) {
+  if (db.pageAuth !== true) return true;
+  const ck = String(req.headers.cookie || '').match(/(?:^|;\s*)hst_tok=([^;]+)/);
+  const tok = ck ? decodeURIComponent(ck[1]) : String(url.searchParams.get('t') || '');
+  const s = tok ? touchSession(tok) : null;
+  return !!s;
 }
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -675,8 +1012,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // ---- 领料单打印页（局域网内公开，凭单号打开，浏览器 Ctrl+P 打印）----
+    // ---- 领料单打印页（局域网内公开，凭单号打开，浏览器 Ctrl+P 打印；㉔S3 pageAuth 开启后需登录态）----
     if (req.method === 'GET' && p === '/print/requisition') {
+      if (!pageAuthOk(req, url)) { const tk = String(url.searchParams.get('t') || ''); res.writeHead(302, { Location: '/console' + (tk ? '?t=' + encodeURIComponent(tk) : '') }); res.end(); return; }
       const rid = (url.searchParams.get('id') || '').trim();
       const r = findReq(rid);
       if (!r) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('领料单不存在'); return; }
@@ -700,16 +1038,19 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true, at: db.outboundAt, total: db.outboundCount, count: arr.length, items: arr.slice(0, 500) });
     }
     if (req.method === 'GET' && p === '/board/data') {
+      if (!pageAuthOk(req, url)) { const tk = String(url.searchParams.get('t') || ''); res.writeHead(302, { Location: '/console' + (tk ? '?t=' + encodeURIComponent(tk) : '') }); res.end(); return; }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(renderDataBoard());
       return;
     }
 
-    // ---- 货位账本：公开查询（局域网任意设备；?c=标签 / ?l=货位 前缀过滤，无参数=全量+概要）----
+    // ---- 货位账本：公开查询（局域网任意设备；?c=标签 / ?l=货位 前缀过滤 / ?fz=标签·货位·零件号·物料 任一模糊，无参数=全量+概要）----
     if (req.method === 'GET' && p === '/api/ledger') {
       const fc = (url.searchParams.get('c') || '').trim().toUpperCase();
       const fl = (url.searchParams.get('l') || '').trim().toUpperCase();
+      const fz = (url.searchParams.get('fz') || '').trim().toUpperCase();
       let list = db.ledger;
+      if (fz) list = list.filter(x => String(x.c).toUpperCase().includes(fz) || String(x.l).toUpperCase().includes(fz) || String(x.p || '').toUpperCase().includes(fz) || String(x.n || '').toUpperCase().includes(fz));
       if (fc) list = list.filter(x => String(x.c).toUpperCase().startsWith(fc));
       if (fl) list = list.filter(x => String(x.l).toUpperCase().startsWith(fl));
       return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, items: list, tomb: db.ledgerTomb || [] });
@@ -717,6 +1058,7 @@ const server = http.createServer(async (req, res) => {
 
     // ---- 货位账本：电脑查询页（表格地图式：按货位排序，同位多标签并排显示）----
     if (req.method === 'GET' && (p === '/board/ledger' || p === '/ledger')) {
+      if (!pageAuthOk(req, url)) { const tk = String(url.searchParams.get('t') || ''); res.writeHead(302, { Location: '/console' + (tk ? '?t=' + encodeURIComponent(tk) : '') }); res.end(); return; }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(renderLedgerBoard());
       return;
@@ -724,6 +1066,7 @@ const server = http.createServer(async (req, res) => {
 
     // ---- 领料工作台（电脑端公开：待办列表 + 逐张/批量打印）----
     if (req.method === 'GET' && (p === '/board/requisitions' || p === '/board')) {
+      if (!pageAuthOk(req, url)) { const tk = String(url.searchParams.get('t') || ''); res.writeHead(302, { Location: '/console' + (tk ? '?t=' + encodeURIComponent(tk) : '') }); res.end(); return; }
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(renderReqBoard());
       return;
@@ -740,15 +1083,30 @@ const server = http.createServer(async (req, res) => {
       if (!u || hashPw(password, u.salt) !== u.passHash) { failRecord(username); return send(res, 401, { ok: false, msg: '账号或密码错误' }); }
       if (!u.enabled) return send(res, 403, { ok: false, code: 'disabled', msg: '账号已被停用，请联系管理员' });
       const token = newToken();
-      db.sessions[token] = { userId: u.id, createdAt: Date.now(), lastSeen: Date.now() };
+      db.sessions[token] = { userId: u.id, createdAt: Date.now(), lastSeen: Date.now(), fp: clientFp(req) }; // ㉕F6 token绑设备指纹(IP前两段+UA)
       save();
       console.log(`[login] ${u.username}(${ROLE_NAMES[u.role]}) 登录成功`);
-      return send(res, 200, { ok: true, token, expiresAt: Date.now() + SESSION_TTL_MS, user: safeUser(u), features: db.features[u.role] || {} });
+      pushOps(u,'登录','',u.username);
+      return send(res, 200, { ok: true, token, expiresAt: Date.now() + SESSION_TTL_MS, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id) }, { 'Set-Cookie': `hst_tok=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}` });
     }
 
     // ---- G1 健康端点：无鉴权，供PDA失联检测/运维探测/网页健康分 ----
     if (req.method === 'GET' && p === '/api/health') {
-      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length } });
+      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), netmap: { lands: Object.keys(NetMap.lands).length, edges: Object.keys(NetMap.adj).length, ready: NetMap.ready(), builtAgo: NetMap.builtAt ? Math.round((Date.now() - NetMap.builtAt) / 1000) : -1 }, counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length } });
+    }
+
+    // ---- ㉔SSE实时流（EventSource无法带header：token走query，会话校验后长挂） ----
+    if (req.method === 'GET' && p === '/api/sse') {
+      const qTok = String(url.searchParams.get('token') || '');
+      const ss = db.sessions[qTok];
+      if (!ss || Date.now() - ss.lastSeen > SESSION_TTL_MS) return send(res, 401, { ok: false, msg: '未登录或会话过期' });
+      if (ss.fp && ss.fp !== clientFp(req)) return send(res, 401, { ok: false, msg: '登录环境已变化，请重新登录' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'Access-Control-Allow-Origin': '*' });
+      res.write('retry: 5000\n\n');
+      res.write('data: ' + JSON.stringify({ t: 'hello', at: new Date().toISOString() }) + '\n\n');
+      sseSet.add(res);
+      req.on('close', () => sseSet.delete(res));
+      return;
     }
 
     // ---- 以下均需登录 ----
@@ -757,11 +1115,11 @@ const server = http.createServer(async (req, res) => {
       if (a.err) return send(res, a.err, { ok: false, code: a.code, msg: a.msg });
       const u = a.user;
 
-      if (req.method === 'POST' && p === '/api/logout') { delete db.sessions[a.token]; save(); return send(res, 200, { ok: true }); }
+      if (req.method === 'POST' && p === '/api/logout') { delete db.sessions[a.token]; save(); return send(res, 200, { ok: true }, { 'Set-Cookie': 'hst_tok=; Max-Age=0; HttpOnly; SameSite=Lax; Path=/' }); }
 
       // 心跳/取当前身份+功能开关（App 前台恢复与定时轮询调用；停用即时生效靠它）
       if (req.method === 'GET' && p === '/api/me') {
-        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, serverTime: new Date().toISOString() });
+        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), serverTime: new Date().toISOString() });
       }
 
       // 修改自己的密码
@@ -772,6 +1130,7 @@ const server = http.createServer(async (req, res) => {
         u.salt = crypto.randomBytes(16).toString('hex');
         u.passHash = hashPw(b.newPassword, u.salt);
         u.mustChangePw = false;
+        pushOps(u, '改自己密码', u.username, '');
         save(); return send(res, 200, { ok: true, msg: '密码已修改' });
       }
 
@@ -791,43 +1150,61 @@ const server = http.createServer(async (req, res) => {
           if (seen.has(c)) continue; // 标签重复取首行，与 PDA 账本唯一索引一致
           seen.add(c);
           clean.push({ c, l, f: String((it && it.f) || '').slice(0, 40), t: Number(it && it.t) || 0,
-            p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').slice(0, 80),
+            p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').replace(/\uFFFD/g, '').slice(0, 80), // ㉓乱码清洗
             q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40), pid: String((it && it.pid) || '').slice(0, 40),
             mv: String((it && it.mv) || '').slice(0, 10), src: String((it && it.src) || '').slice(0, 40) });
         }
-        // 增量合并：按标签号 upsert（登记时间新者胜）+ 墓碑删除，多PDA互不覆盖
+        // 增量合并：按标签号 upsert + 墓碑删除，多PDA互不覆盖
+        // ㉔S1 时间戳双轨（F2加固）：指纹=登记时刻+内容（含t）；"无新到达"=与本机上次推送一致(含已删行的旧副本)
+        // 或与服务器现值完全一致(首拉旧副本重放)——一律不动服务器；真改动(内容/t变)按到达时刻rec裁决，墓碑按t拦截早于它的重登
+        const rec0 = Date.now();
         const _preCounts = partBoxCounts(); // ⑮合并前在架快照（断料检测基线）
         const cur = new Map(db.ledger.map(x => [String(x.c).toUpperCase(), x]));
-        const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), Number(x.t) || 0]));
+        const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), { t: Number(x.t) || 0, rec: Number(x.rec) || 0 }]));
+        const histAll = (db.tombHist = db.tombHist || {});
         const seenNew = new Set(); // 本次合并真正新增上账的标签（急货入库提醒用）
         const dels = Array.isArray(b.del) ? b.del : [];
-        let added = 0, updated = 0, skipped = 0, delApplied = 0, delSkipped = 0; const rejected = []; // ⑲本机推送被更新的他人数据压过的标签（冲突提示用）
+        const _fpAll = (db.syncFp = db.syncFp || {}); const _fpOld = _fpAll[u.id] || {}; const _fpNew = {};
+        const _hash = ledgerHash;
+        let added = 0, updated = 0, skipped = 0, kept = 0, delApplied = 0, delSkipped = 0; const rejected = []; // ⑲被更新的服务器数据压回的标签（冲突提示用）
         for (const it of clean) {
           const key = it.c;
           const old = cur.get(key);
-          const tombT = tomb.get(key) || 0;
-          const base = Math.max(tombT, old ? (Number(old.t) || 0) : 0);
-          if (it.t > 0 && it.t < base) { skipped++; rejected.push(key); continue; } // 严格更旧才忽略：同时间允许刷新（补齐物料信息）
+          const tm = tomb.get(key);
+          const tombT = tm ? tm.t : 0;
+          const h = _hash(it);
+          // 无新到达闸：①与本机上次视图一致（未来时钟的旧副本重放也在这挡死）②与服务器现值逐字段一致（首拉后原样重放）
+          // ③命中该行服务器历史值（本机从未推过该行的旧快照回填——PDA真改动必更新t，旧( t,h )组合只可能是过期副本）
+          if (_fpOld[key] === h || (old && _hash(old) === h) || (old && (old.hist || []).some((e) => e.t === (Number(it.t) || 0) && e.h === h))) { _fpNew[key] = h; kept++; continue; }
+          if (tombT && it.t > 0 && it.t < tombT) { skipped++; rejected.push(key); continue; } // 早于墓碑的真改动重登：作废（不记指纹，持续提示冲突待拉取）
+          if (!_fpOld[key] && !Object.keys(_fpOld).length && old && it.t > 0 && Number(old.t) > it.t) { skipped++; rejected.push(key); continue; } // 设备首推无指纹档案：保守回退旧规则（t更旧者拒），防服务重启窗口倒退
+          _fpNew[key] = h; // 本轮该设备视图留档
           if (old) updated++; else { added++; seenNew.add(key); }
-          cur.set(key, { ...it, by: u.name });
-          if (tombT) tomb.delete(key); // 比墓碑新=重新登记，复活
+          ledgerPut(cur, key, { ...it, by: u.name, rec: rec0 }, old);
+          if (tombT) tomb.delete(key); // 新到达=重新登记，复活
         }
+        db.syncFp[u.id] = Object.assign({}, _fpOld, _fpNew); // 合并保留：部分推送不清掉未含行的指纹
         for (const d of dels) {
           const c = String((d && d.c) || '').trim().toUpperCase();
           const t = Number(d && d.t) || 0;
           if (!c || !t) continue;
           const old = cur.get(c);
-          const base = Math.max(tomb.get(c) || 0, old ? (Number(old.t) || 0) : 0);
-          if (t > base) { cur.delete(c); tomb.set(c, t); delApplied++; } else delSkipped++; // 别台后续又登记→删除作废
+          const tm = tomb.get(c);
+          const hist = histAll[c];
+          if (hist && hist.t === t && old && (Number(old.rec) || 0) >= hist.rec && (Number(old.t) || 0) >= t) { delSkipped++; continue; } // 删除后又被别机重登：旧墓碑重放不二次删除
+          const base = Math.max(tm ? tm.t : 0, old ? (Number(old.rec) || Number(old.t) || 0) : 0);
+          if (!tm && (!old || t > base)) { cur.delete(c); tomb.set(c, { t, rec: rec0 }); if (!hist || hist.t !== t) histAll[c] = { t, rec: rec0 }; delApplied++; } else if (!tm) delSkipped++; // 别台后续又登记→删除作废
+          else { tomb.set(c, { t: tm.t, rec: tm.rec }); delSkipped++; }
         }
         if (!cur.size && !tomb.size && !dels.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
         db.ledger = [...cur.values()];
-        db.ledgerTomb = [...tomb.entries()].map(([c, t]) => ({ c, t })).sort((a, b2) => b2.t - a.t).slice(0, 20000);
+        db.ledgerTomb = [...tomb.entries()].map(([c, v]) => ({ c, t: v.t, rec: v.rec })).sort((a, b2) => b2.t - a.t).slice(0, 20000);
         db.ledgerRev = (db.ledgerRev || 0) + 1;
         db.ledgerAt = new Date().toISOString();
         db.ledgerBy = u.name;
         save();
-        console.log(`[ledger] ${u.name} 合并：+${added} 改${updated} 删${delApplied} 忽略${skipped + delSkipped} → v${db.ledgerRev}（共 ${db.ledger.length} 条）`);
+        console.log(`[ledger] ${u.name} 合并：+${added} 改${updated} 删${delApplied} 未变${kept} 忽略${skipped + delSkipped} → v${db.ledgerRev}（共 ${db.ledger.length} 条）`);
+        pushOps(u,'账本合并','v'+db.ledgerRev,'+'+added+' 改'+updated+' 删'+delApplied+' 挡回'+(kept+skipped+delSkipped));
         stockWatchScan(_preCounts, u.name); // ⑮预约到料+断料预警
         // ===== ③ 急货入库提醒：本次新上账零件命中待处理领料单 → 通知下单人与全体仓管 =====
         try {
@@ -851,7 +1228,7 @@ const server = http.createServer(async (req, res) => {
             }
           }
         } catch (e) { console.log('[urgent-in] 异常：', e.message); }
-        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, skipped, delApplied, delSkipped, rejected: rejected.slice(0, 50) });
+        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, rejected: rejected.slice(0, 50) });
       }
 
       // ================= 采集流水 / 出库单同步（PDA 全量推送，仓管/管理员） =================
@@ -865,7 +1242,7 @@ const server = http.createServer(async (req, res) => {
         for (const it of raw) {
           const k = String((it && it.k) || '').slice(0, 120);
           if (!k) continue;
-          snap[k] = { code: String(it.code || '').toUpperCase(), wt: Number(it.wt) || 0, st: String(it.st || ''), gl: String(it.gl || ''), ct: String(it.ct || ''), rm: String(it.rm || '').slice(0, 120), batch: String(it.batch || ''), cx: !!it.cx, t: Number(it.t) || 0, pn: String(it.pn || ''), q: Number(it.q) || 0, mk: String(it.mk || ''), op: String(it.op || '').slice(0, 40), nm: String(it.nm || '').slice(0, 80), lot: String(it.lot || '').slice(0, 40), pid: String(it.pid || '') };
+          snap[k] = { code: String(it.code || '').toUpperCase(), wt: Number(it.wt) || 0, st: String(it.st || ''), gl: String(it.gl || ''), ct: String(it.ct || ''), rm: String(it.rm || '').slice(0, 120), batch: String(it.batch || ''), cx: !!it.cx, t: Number(it.t) || 0, pn: String(it.pn || ''), q: Number(it.q) || 0, mk: String(it.mk || ''), op: String(it.op || '').slice(0, 40), nm: String(it.nm || '').replace(/\uFFFD/g, '').slice(0, 80), lot: String(it.lot || '').slice(0, 40), pid: String(it.pid || '') }; // ㉓乱码清洗
         }
         if (!Object.keys(snap).length) return send(res, 400, { ok: false, msg: '无有效条目（需 k 主键）' });
         db.scanlog = Object.assign(db.scanlog || {}, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
@@ -918,24 +1295,30 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true });
       }
       // ================= RCS(哈工库讯AGV) 配置同步 + 站台状态（服务器60秒轮询RCS） =================
+      // ---- ㉔G13 配置乐观锁：客户端带 baseRev=读取时看到的 cfgRev，他人已改则409；不带=兼容旧PDA ----
+      const cfgGuard = (b) => { if (b.baseRev === undefined || b.baseRev === null || b.baseRev === '') return null; if (Number(b.baseRev) !== (db.cfgRev || 0)) return { err: 409, cur: db.cfgRev || 0, msg: '配置已被他人变更（你看到的是 v' + b.baseRev + '，现在 v' + (db.cfgRev || 0) + '），请刷新后重填' }; return null; };
+      const cfgBump = () => { db.cfgRev = (db.cfgRev || 0) + 1; return db.cfgRev; };
       if (req.method === 'POST' && p === '/api/rcs/config') {
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
+        const _cg = cfgGuard(b); if (_cg) return send(res, 409, { ok: false, code: 'conflict', cfgRev: _cg.cur, msg: _cg.msg });
         const host = String(b.host || '').trim(), account = String(b.account || '').trim(), pwd = String(b.pwd || '');
         if (!host || !account || !pwd) return send(res, 400, { ok: false, msg: 'host/account/pwd 不能为空' });
         db.rcsConfig = { host, account, pwd }; db.rcsToken = ''; db.rcsTokenExp = 0;
+        pushOps(u,'改RCS配置', host, '账号:'+account+'（密码不记）');
+        const _cr = cfgBump();
         save();
         rcsPoll(); // 立即拉一次，让站台面板/催扫马上生效
-        return send(res, 200, { ok: true, msg: 'RCS配置已保存，服务器开始轮询' });
+        return send(res, 200, { ok: true, cfgRev: _cr, msg: 'RCS配置已保存，服务器开始轮询' });
       }
       if (req.method === 'GET' && p === '/api/rcs/stations') {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station));
         const holdAvg = {}; for (const [k, v] of Object.entries(db.rcsHoldStat || {})) holdAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
-        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry', holdAvg });
+        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry', holdAvg, cfgRev: db.cfgRev || 0 });
       }
       // ===== ① 2D实时地图快照：路网(缓存)+车辆(实时)+货架占用(账本)+站台(判定)+交管锁点 =====
       if (req.method === 'GET' && p === '/api/rcs/net') {
-        const lands = {}; for (const [k, v] of Object.entries(NetMap.lands)) lands[k] = { x: v.x, y: v.y };
+        const lands = {}; for (const [k, v] of Object.entries(NetMap.lands)) lands[k] = { x: v.x, y: v.y, r: v.r, t: v.t };
         const edges = []; for (const [a, list] of Object.entries(NetMap.adj)) for (const [b] of list) if (a < b || NetMap.adj[b] === undefined || !NetMap.adj[b].some((e2) => e2[0] === a)) edges.push([a, b]);
         return send(res, 200, { ok: true, ready: NetMap.ready(), lands, edges });
       }
@@ -950,7 +1333,12 @@ const server = http.createServer(async (req, res) => {
         const shelf = [];
         for (const [loc, codes] of Object.entries(byLoc)) { const lc = NetMap.landOf(loc); if (lc && NetMap.lands[lc]) shelf.push({ land: lc, loc, n: codes.length }); }
         const stn = [];
-        for (const [code, s] of Object.entries(db.rcsStations || {})) { const lc = NetMap.landOf(code); if (lc && NetMap.lands[lc]) stn.push({ land: lc, code, state: s.state }); }
+        for (const [loc, lc] of Object.entries(NetMap.locLand)) { // 全量站台：从路网映射取所有CK货位，状态缺省空闲
+          if (!/-CK-/.test(loc) || !NetMap.lands[lc]) continue;
+          const s = (db.rcsStations || {})[loc];
+          stn.push({ land: lc, code: loc, state: s ? s.state : '空闲' });
+        }
+        stn.sort((a, b) => a.code.localeCompare(b.code));
         const tl = (() => { try { return typeof db.rcsTraffic === 'string' ? JSON.parse(db.rcsTraffic) : (db.rcsTraffic || {}); } catch (_) { return {}; } })();
         const owners = (tl.landmarkLocks && tl.landmarkLocks.landmarkOwners) || {};
         return send(res, 200, {
@@ -1046,8 +1434,44 @@ const server = http.createServer(async (req, res) => {
         save();
         return send(res, 200, { ok: true, cancelled: n });
       }
+      if (req.method === 'POST' && p === '/api/agv/queue/prio') { // ㉔队列置顶：给排队项打 prio 标记，调度出队优先
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
+        const b = await readBody(req);
+        const code = String(b.code || '').trim().toUpperCase();
+        const q = (db.agvQueue || []).find((x) => String(x.code).toUpperCase() === code && (x.state === '排队' || x.state === '失败'));
+        if (!q) return send(res, 400, { ok: false, msg: '该框不在排队中（已下发/完成/取消无法置顶）' });
+        if (b.off) { delete q.prio; save(); pushOps(u, '队列取消置顶', code, '框 ' + code); return send(res, 200, { ok: true, msg: '已取消置顶' }); }
+        q.prio = Date.now(); pushOps(u, '队列置顶', code, '框 ' + code); save();
+        console.log(`[agv-q] ${u.name} 置顶排队框 ${code}`);
+        return send(res, 200, { ok: true, msg: '已置顶，下一轮调度优先下发' });
+      }
       if (req.method === 'GET' && p === '/api/watchlist') {
         return send(res, 200, { ok: true, list: (db.watchlist || []).filter((w) => w.userId === u.id) });
+      }
+      // ===== ㉕N5 任务六段流水线：排队→AGV接单→叉取→载货在途→到站→清台（队列+RCS在途节点+站台状态聚合，只读） =====
+      if (req.method === 'GET' && p === '/api/agv/pipeline') {
+        const nowMs = Date.now();
+        const stn = db.rcsStations || {};
+        const runBy = {}; for (const r of db.rcsRun || []) runBy[String(r.no)] = r;
+        const stageOfCode = {}; // 框在某站台状态表里 → 5(到站有货待清) / 4(载货在途占位)
+        for (const [k, v] of Object.entries(stn)) { for (const c of (v.codes || [])) { const C = String(c).toUpperCase(); if (!stageOfCode[C] || v.state === '有货') stageOfCode[C] = v.state === '有货' ? 5 : 4; } }
+        const stages = [[], [], [], [], [], []];
+        for (const q of db.agvQueue || []) {
+          if (['完成', '取消', '失败'].includes(q.state)) continue;
+          const code = String(q.code || '').toUpperCase();
+          const rr = runBy[String(q.taskNo || '')] || null;
+          let stage;
+          if (q.state === '排队') stage = 1;
+          else if (stageOfCode[code]) stage = stageOfCode[code];
+          else if (rr && rr.pickAt) stage = 4;                          // RCS已叉出货架、还没落进站台状态
+          else if (q.state === '下发中' || q.state === '已下发') stage = rr ? 3 : 2; // 任务在RCS=叉取中；未同步到=AGV已接单
+          else stage = 2;
+          stages[stage - 1].push({ code, from: q.fromLoc || q.from || '', to: q.station || (rr ? (rr.ep || '') : ''), car: rr ? 'AGV' + String(rr.car || '').padStart(2, '0') : '', waitMs: Math.max(0, nowMs - (q.at || nowMs)), reqNo: q.reqNo || '', state: q.state, rush: !!q.rush });
+        }
+        let bn = 0; stages.forEach((s, i) => { if (s.length > stages[bn].length) bn = i; });
+        const names = ['排队待派', 'AGV已接单', '在架叉取中', '载货在途', '到站待清台', '压站滞留'];
+        const bottleneck = stages[bn].length >= 3 ? { stage: bn + 1, name: names[bn], n: stages[bn].length } : null;
+        return send(res, 200, { ok: true, at: new Date().toISOString(), names, stages, bottleneck, total: stages.reduce((s, a) => s + a.length, 0) });
       }
       if (req.method === 'GET' && p === '/api/agv/alarms') { // 当前活动告警（车辆页认领按钮数据源）
         const list = Object.entries(db.rcsCarAlarm || {}).map(([id, r]) => ({ id: Number(id) || id, fp: r.fp, since: r.since, severe: !!r.severe, ackBy: r.ackBy || '', ackAt: r.ackAt || 0 }));
@@ -1060,7 +1484,7 @@ const server = http.createServer(async (req, res) => {
         if (!aid) return send(res, 400, { ok: false, msg: '缺少 id' });
         const rec = (db.rcsCarAlarm || {})[aid];
         if (!rec) return send(res, 400, { ok: false, msg: '该告警已恢复或不存在' });
-        rec.ackBy = u.name; rec.ackAt = Date.now();
+        rec.ackBy = u.name; rec.ackAt = Date.now(); pushOps(u, '告警认领', 'AGV' + aid, rec.msg || ('车辆 ' + aid));
         const msg = `🙋 ${u.name} 已认领处理：AGV${String(aid).padStart(2, '0')}（${rec.fp}）`;
         db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, ''));
         if (db.carAlarms) db.carAlarms.push({ at: Date.now(), id: aid, name: 'AGV' + String(aid).padStart(2, '0'), kind: 'ack', msg });
@@ -1079,16 +1503,22 @@ const server = http.createServer(async (req, res) => {
         if (act !== 'remove' && !locOk(loc)) return send(res, 400, { ok: false, msg: '货位编码格式不符（例 NB02-A-08-2F / NB03-B-13-07）' });
         const cur = new Map(db.ledger.map((x) => [String(x.c).toUpperCase(), x]));
         const old = cur.get(code);
+        // ㉓G13 行级基线：客户端声明"我以为这标签在哪"，与实况不符说明期间被人改过，拒写防覆盖
+        if (b.baseLoc !== undefined) {
+          const _bl = String(b.baseLoc || '').toUpperCase();
+          const _now = old ? String(old.l).toUpperCase() : '';
+          if (_bl !== _now) return send(res, 409, { ok: false, code: 'conflict', rev: db.ledgerRev || 0, cur: _now || '不在库', msg: `标签 ${code} 期间已被他人变更（你看到的是${_bl || '不在库'}，现在${_now || '不在库'}），请核对后再操作` });
+        }
         if (act === 'remove') {
           if (!old) return send(res, 400, { ok: false, msg: '该标签不在账本，无需消位' });
-          cur.delete(code); (db.ledgerTomb = db.ledgerTomb || []).push({ c: code, t: Date.now() });
+          const _nt = Date.now(); cur.delete(code); (db.ledgerTomb = db.ledgerTomb || []).push({ c: code, t: _nt, rec: _nt });
         } else {
           if (act === 'move' && !old) return send(res, 400, { ok: false, msg: '该标签不在账本，请用「补登记」' });
           if (act === 'add' && old) return send(res, 400, { ok: false, msg: '该标签已在 ' + old.l + '，改位置请用「改位」' });
           if (old && String(old.l).toUpperCase() === loc) return send(res, 400, { ok: false, msg: '目标货位与当前一致，无需修改' });
           const foreign = [...cur.values()].filter((x) => String(x.l).toUpperCase() === loc && String(x.c).toUpperCase() !== code);
           if (foreign.length) return send(res, 400, { ok: false, msg: '货位 ' + loc + ' 已登记给 ' + foreign[0].c + '，请先处理占用' });
-          cur.set(code, { c: code, l: loc, f: (old && old.f) || '', t: Date.now(), p: (old && old.p) || '', n: (old && old.n) || '', q: (old && old.q) || 0, b: (old && old.b) || '', pid: (old && old.pid) || '', mv: '人工', src: '网页修正', by: u.name });
+          ledgerPut(cur, code, { c: code, l: loc, f: (old && old.f) || '', t: Date.now(), p: (old && old.p) || '', n: (old && old.n) || '', q: (old && old.q) || 0, b: (old && old.b) || '', pid: (old && old.pid) || '', mv: '人工', src: '网页修正', by: u.name, rec: Date.now() }, old);
           db.ledgerTomb = (db.ledgerTomb || []).filter((x) => String(x.c).toUpperCase() !== code); // 修正即复活，墓碑撤销
         }
         const fromL = old ? String(old.l).toUpperCase() : '';
@@ -1096,6 +1526,7 @@ const server = http.createServer(async (req, res) => {
         db.ledger = [...cur.values()]; db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
         db.ledgerFixes = db.ledgerFixes || [];
         db.ledgerFixes.push({ time: new Date().toISOString(), by: u.name, act: { move: '改位', add: '补登记', remove: '消位' }[act], code, from: fromL, to: act !== 'remove' ? loc : '', reason });
+        pushOps(u,'账本'+{move:'改位',add:'补登记',remove:'消位'}[act], code, (fromL||'无')+'→'+(act!=='remove'?loc:'出库')+' 原因:'+reason);
         if (db.ledgerFixes.length > 500) db.ledgerFixes = db.ledgerFixes.slice(-500);
         save(); stockWatchScan(_pre, u.name + '(网页修正)');
         console.log(`[ledger-fix] ${u.name} ${act} ${code} ${fromL}→${loc || '-'} 原因:${reason}`);
@@ -1117,12 +1548,13 @@ const server = http.createServer(async (req, res) => {
         if (!info.p) for (const s of Object.values(db.scanlog || {})) { if (String(s.code || '').toUpperCase() === code) { info = { p: String(s.pn || ''), n: String(s.nm || ''), q: Number(s.q) || 0, b: String(s.lot || ''), f: String(s.ct || ''), pid: String(s.pid || '') }; break; } }
         const foreign = [...cur.values()].filter((x) => String(x.l).toUpperCase() === loc);
         if (foreign.length) return send(res, 400, { ok: false, msg: '货位 ' + loc + ' 已登记给 ' + foreign[0].c + '，请换位或先处理' });
-        cur.set(code, { c: code, l: loc, f: info.f, t: Date.now(), p: info.p, n: info.n, q: info.q, b: info.b, pid: info.pid, mv: '人工', src: '返架' + (obNo ? '(' + obNo + ')' : ''), by: u.name });
+        ledgerPut(cur, code, { c: code, l: loc, f: info.f, t: Date.now(), p: info.p, n: info.n, q: info.q, b: info.b, pid: info.pid, mv: '人工', src: '返架' + (obNo ? '(' + obNo + ')' : ''), by: u.name, rec: Date.now() }, cur.get(code));
         db.ledgerTomb = (db.ledgerTomb || []).filter((x) => String(x.c).toUpperCase() !== code);
         const _pre = partBoxCounts();
         db.ledger = [...cur.values()]; db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
         db.ledgerFixes = db.ledgerFixes || [];
         db.ledgerFixes.push({ time: new Date().toISOString(), by: u.name, act: '返架', code, from: obNo || '出库', to: loc, reason });
+        pushOps(u,'返架', code, '原单'+(obNo||'?')+'→'+loc+' 原因:'+reason);
         if (db.ledgerFixes.length > 500) db.ledgerFixes = db.ledgerFixes.slice(-500);
         save(); stockWatchScan(_pre, u.name + '(返架)');
         console.log(`[return] ${u.name} 返架 ${code} →${loc} 原单${obNo || '?'} 原因:${reason}`);
@@ -1132,12 +1564,135 @@ const server = http.createServer(async (req, res) => {
         const lim = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '20') || 20));
         return send(res, 200, { ok: true, list: (db.ledgerFixes || []).slice(-lim).reverse() });
       }
+      // ===== ㉕T2 盘点结果上收（方案6.4数据缺口①）：PDA 结束盘点后推送差异汇总，服务器落库供网页查看与D10导出 =====
+      if (req.method === 'POST' && p === '/api/inventory/report') {
+        if (!canFeature(u, 'inventory')) return send(res, 403, { ok: false, msg: '当前角色未开通盘点权限' });
+        const b = await readBody(req);
+        const batchId = String(b.batchId || '').trim().slice(0, 60);
+        if (!batchId) return send(res, 400, { ok: false, msg: '缺少 batchId' });
+        const num = (v) => Number(v) || 0;
+        const parts = (Array.isArray(b.parts) ? b.parts : []).slice(0, 3000).map((x) => ({ pn: String(x.pn || '').toUpperCase().slice(0, 40), nm: String(x.nm || '').replace(/\uFFFD/g, '').slice(0, 80), book: num(x.book), real: num(x.real), boxes: num(x.boxes), out: num(x.out), warn: num(x.warn) }));
+        const locs = (Array.isArray(b.locs) ? b.locs : []).slice(0, 5000).map((x) => ({ loc: String(x.loc || '').toUpperCase().slice(0, 40), pn: String(x.pn || '').toUpperCase().slice(0, 40), book: num(x.book), real: num(x.real), boxes: num(x.boxes) }));
+        const rec = { batchId, remark: String(b.remark || '').slice(0, 80), scope: String(b.scope || '').slice(0, 120), blind: !!b.blind, bookKey: String(b.bookKey || '').slice(0, 60), locKey: String(b.locKey || '').slice(0, 60), by: u.name, at: num(b.at) || Date.now(), totalScans: num(b.totalScans), validScans: num(b.validScans), mesFail: num(b.mesFail), dup: num(b.dup), outside: num(b.outside), applied: !!b.applied, applyTime: num(b.applyTime), parts, locs };
+        db.inventories = db.inventories || {};
+        db.inventories[batchId] = rec; save();
+        pushOps(u, '盘点上收', batchId, `零件${parts.length}行 货位${locs.length}行 实扫${rec.validScans}/${rec.totalScans}`);
+        console.log(`[inv] ${u.name} 上收盘点 ${batchId}：零件${parts.length} 货位${locs.length} 盈亏异常${parts.filter((p) => Math.abs(p.real - p.book) > 1e-6).length}`);
+        return send(res, 200, { ok: true, msg: '盘点结果已上收' });
+      }
+      if (req.method === 'GET' && p === '/api/inventory/list') {
+        const lim = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '20') || 20));
+        const list = Object.values(db.inventories || {}).sort((a, b) => b.at - a.at).slice(0, lim).map((r) => ({ batchId: r.batchId, remark: r.remark, by: r.by, at: r.at, blind: r.blind, totalScans: r.totalScans, validScans: r.validScans, partN: (r.parts || []).length, diffN: (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length, locN: (r.locs || []).length, locDiffN: (r.locs || []).filter((l) => Math.abs(l.real - l.book) > 1e-6).length, applied: r.applied }));
+        return send(res, 200, { ok: true, list });
+      }
+      if (req.method === 'GET' && p === '/api/inventory/get') {
+        const id = String(url.searchParams.get('batchId') || '').trim();
+        const r = (db.inventories || {})[id];
+        if (!r) return send(res, 404, { ok: false, msg: '无此盘点记录' });
+        return send(res, 200, { ok: true, rec: r });
+      }
+      // ===== ㉓导出中心：GET /api/export?ds=..&fmt=..&from=&to=[&preview=1] ㉔快照落盘可重下 =====
+      if (req.method === 'GET' && p === '/api/export') {
+        const ds = String(url.searchParams.get('ds') || '').toUpperCase();
+        if (ds === 'D9' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '活动流审计仅管理员可导出' }); // ㉕A1 角色门禁（方案6.6）
+        if ((ds === 'D8' || ds === 'D10') && u.role === 'material') return send(res, 403, { ok: false, msg: '该数据集需仓管员/管理员权限' });
+        const fmt = ['xls', 'json'].includes(url.searchParams.get('fmt')) ? url.searchParams.get('fmt') : 'csv';
+        const fRaw = { from: url.searchParams.get('from') || '', to: url.searchParams.get('to') || '', batchId: url.searchParams.get('batchId') || '', arch: url.searchParams.get('arch') || '', zero: url.searchParams.get('zero') || '' };
+        let d;
+        try { d = buildExport(ds, fRaw); } catch (e) { return send(res, 500, { ok: false, msg: '导出构建失败：' + e.message }); }
+        if (!d) return send(res, 400, { ok: false, msg: 'ds 需为 D1库位表/D2库存汇总/D3入库/D4出库/D5AGV任务/D6异常/D7工作量/D8领料/PACK对账包' });
+        if (url.searchParams.get('preview') === '1') { // ㉔铁律4：先预览后导出（前20行+总行数，不落盘不登记）
+          const cols = (d.headers || []).length;
+          const cells = d.rows.slice(0, 20).map((r) => r.map((v) => String(v === undefined || v === null ? '' : v).slice(0, 40)));
+          const flat = d.rows.reduce((s, r) => s + r.reduce((a, v) => a + String(v === undefined || v === null ? '' : v).length + 1, 0), 0);
+          return send(res, 200, { ok: true, label: d.label, total: d.total, cols, head: d.headers, sample: cells, estBytes: flat });
+        }
+        if (fmt === 'json') { // ㉕F8 JSON导出（SAP/BI对接：血缘+数据双段，同样登记快照可重下）
+          const jp = d.parts || [d]; const jo = { lineage: { ds: d.label, src: jp.map((p) => p.src).join('；'), filter: d.f, by: u.name, at: new Date().toISOString(), caliber: (EXP_CAL[d.label] || []).concat(jp.flatMap((p) => p.caliber || [])) }, sheets: jp.map((p) => ({ name: p.label, headers: p.headers || [], rows: p.rows || [] })) };
+          const _bx = JSON.stringify(jo, null, 1); const _sj = crypto.createHash('sha1').update(_bx, 'utf8').digest('hex').slice(0, 12);
+          db.exports = db.exports || []; const expId = 'exp' + (db.exports.length + 1);
+          db.exports.push({ id: expId, at: Date.now(), by: u.name, ds: d.label, fmt: 'json', f: d.f, rows: d.total, sha: _sj }); save();
+          try { const _ed = path.join(DATA_DIR, 'exports'); fs.mkdirSync(_ed, { recursive: true }); fs.writeFileSync(path.join(_ed, expId + '.json'), _bx); } catch (_) {}
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Disposition': `attachment; filename="${ds}_${expId}.json"; filename*=UTF-8''${encodeURIComponent(d.label + '_' + expId + '.json')}`, 'Content-Length': Buffer.byteLength(_bx) });
+          res.end(_bx); pushOps(u, '数据导出', d.label, 'json ' + d.total + '行'); console.log(`[export] ${u.name} 导出 ${d.label} json ${d.total}行 ${expId}`); return;
+        }
+        const crypto2 = require('crypto');
+        let body, mime, ext;
+        if (fmt === 'xls' || ds === 'PACK' || ds === 'D7' || ds === 'D10') { body = expXls(d); mime = 'application/vnd.ms-excel'; ext = 'xls'; }
+        else { body = expCsv(d, ['expId=待分配', 'ds=' + d.label, 'by=' + u.name, 'at=' + new Date().toISOString(), 'filter=' + JSON.stringify(d.f)]); mime = 'text/csv'; ext = 'csv'; }
+        const sha = crypto2.createHash('sha1').update(body, 'utf8').digest('hex').slice(0, 12);
+        db.exports = db.exports || [];
+        const expId = 'exp' + (db.exports.length + 1);
+        db.exports.push({ id: expId, at: Date.now(), by: u.name, ds: d.label, fmt: ext, f: d.f, rows: d.total, sha });
+        pushOps(u,'数据导出', d.label, ext+' '+d.total+'行 条件:'+JSON.stringify(d.f));
+        if (db.exports.length > 2000) db.exports = db.exports.slice(-2000);
+        save();
+        if (ext === 'csv') { body = body.replace('#expId=待分配', '#expId=' + expId); } // 血缘回填（哈希与内容不再对应，仅登记用）
+        const cn = encodeURIComponent(`${d.label}_${fRaw.from || ''}${fRaw.to ? '~' + fRaw.to : ''}_${expId}.${ext}`);
+        try { // ㉔快照落盘：重下同一份字节；90天轮删
+          const _ed = path.join(DATA_DIR, 'exports'); fs.mkdirSync(_ed, { recursive: true });
+          fs.writeFileSync(path.join(_ed, expId + '.' + ext), body);
+          const _fl = fs.readdirSync(_ed).filter((x) => /^exp\d+\./.test(x)).map((x) => [x, fs.statSync(path.join(_ed, x)).mtimeMs]).sort((a, b) => a[1] - b[1]);
+          while (_fl.length && Date.now() - _fl[0][1] > 90 * 86400000) { try { fs.unlinkSync(path.join(_ed, _fl.shift()[0])); } catch (_) { break; } }
+        } catch (e) { console.log('[export] 快照落盘失败（不影响本次下载）：', e.message); }
+        res.writeHead(200, { 'Content-Type': mime + '; charset=utf-8', 'Content-Disposition': `attachment; filename="${ds}_${expId}.${ext}"; filename*=UTF-8''${cn}`, 'Content-Length': Buffer.byteLength(body) });
+        res.end(body);
+        console.log(`[export] ${u.name} 导出 ${d.label} ${ext} ${d.total}行 ${expId} sha=${sha}`);
+        return;
+      }
+      // ===== ㉔导出重下：凭历史ID取落盘快照（同一份字节） =====
+      if (req.method === 'GET' && p === '/api/export/get') {
+        const eid = String(url.searchParams.get('id') || '');
+        if (!/^exp\d{1,8}$/.test(eid)) return send(res, 400, { ok: false, msg: 'id 格式不对' });
+        const rec = (db.exports || []).find((x) => x.id === eid);
+        if (!rec) return send(res, 404, { ok: false, msg: '无此导出记录' });
+        if (!expRoleOk(u, rec.ds)) return send(res, 403, { ok: false, msg: '该数据集需更高权限' }); // ㉕A1 重下同门禁
+        const fp = path.join(DATA_DIR, 'exports', eid + '.' + rec.fmt);
+        if (!fs.existsSync(fp)) return send(res, 404, { ok: false, msg: '快照文件已过期清理（保留90天），请重新导出' });
+        const buf = fs.readFileSync(fp);
+        res.writeHead(200, { 'Content-Type': (rec.fmt === 'xls' ? 'application/vnd.ms-excel' : rec.fmt === 'json' ? 'application/json' : 'text/csv') + '; charset=utf-8', 'Content-Disposition': `attachment; filename="${eid}.${rec.fmt}"; filename*=UTF-8''${encodeURIComponent(rec.ds + '_重下_' + eid + '.' + rec.fmt)}`, 'Content-Length': buf.length });
+        res.end(buf);
+        console.log(`[export] ${u.name} 重下 ${eid}（${rec.ds}）`);
+        return;
+      }
+      if (req.method === 'GET' && p === '/api/exports') {
+        const lim = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50') || 50));
+        const vis = (db.exports || []).filter((e) => expRoleOk(u, e.ds)); // ㉕A1 无权重数据集不出现在历史列表
+        return send(res, 200, { ok: true, list: vis.slice(-lim).reverse().map((e) => ({ ...e, at: expTs(e.at) })) });
+      }
+      if (req.method === 'GET' && p === '/api/agv/events') {
+        return send(res, 200, { ok: true, list: buildEvents() });
+      }
+      if (req.method === 'GET' && p === '/api/agv/stntl') { // ㉔站台状态时间线（甘特数据源，近8h）
+        const cut = Date.now() - 8 * 3600 * 1000;
+        const out = {}; for (const [k, a] of Object.entries(db.stnTl || {})) { const seg = a.filter((x) => x.t >= cut); if (seg.length) out[k] = seg; }
+        return send(res, 200, { ok: true, tl: out });
+      }
+      if (req.method === 'GET' && p === '/api/agv/trail') {
+        const mins = Math.min(1440, Math.max(5, parseInt(url.searchParams.get('mins') || '360') || 360));
+        const cut = Date.now() - mins * 60000;
+        return send(res, 200, { ok: true, points: (db.trail || []).filter((p) => p.ts >= cut) });
+      }
       if (req.method === 'GET' && p === '/api/dict') {
         const q = (url.searchParams.get('q') || '').trim().toUpperCase();
         let list = Object.entries(db.itemDict || {}).map(([pn, v]) => ({ pn, nm: v.nm, src: v.src }));
         if (q) list = list.filter((x) => x.pn.includes(q) || x.nm.toUpperCase().includes(q));
         list.sort((a, b) => a.pn.localeCompare(b.pn));
         return send(res, 200, { ok: true, total: list.length, list: list.slice(0, 300) });
+      }
+      // ===== ㉓G12 在线工作量报表：?from=YYYY-MM-DD&to=YYYY-MM-DD（缺省近14天），管理员/仓管可见 =====
+      if (req.method === 'GET' && p === '/api/report/work') {
+        if (u.role !== 'admin' && u.role !== 'warehouse') return send(res, 403, { ok: false, msg: '工作量报表仅管理员/仓管员可见' });
+        const fr = String(url.searchParams.get('from') || ''), tt = String(url.searchParams.get('to') || '');
+        const F = fr ? Date.parse(fr + 'T00:00:00') : Date.now() - 14 * 864e5;
+        const T = tt ? Date.parse(tt + 'T23:59:59') : Date.now();
+        if (!Number.isFinite(F) || !Number.isFinite(T) || F > T) return send(res, 400, { ok: false, msg: '日期范围不对' });
+        const w = buildWork(F, T);
+        const ps = Object.values(w.persons).sort((a, b) => (b.inB + b.outB + b.outQ / 20 + b.acc + b.fix + b.ret) - (a.inB + a.outB + a.outQ / 20 + a.acc + a.fix + a.ret))
+          .map((p) => ({ ...p, avgAccMin: p.finN ? Math.round(p.finMin / p.finN) : null, days: undefined }));
+        const ds = Object.keys(w.days).sort().map((k) => ({ day: k, ...w.days[k] }));
+        const cs = Object.keys(w.cars).sort().map((k) => ({ car: k, ...w.cars[k], avgDur: w.cars[k].n ? Math.round(w.cars[k].dur / w.cars[k].n) : 0, dur: undefined }));
+        return send(res, 200, { ok: true, from: wdstr(F), to: wdstr(T), persons: ps, days: ds, cars: cs });
       }
       if (req.method === 'POST' && p === '/api/watchlist') {
         const b = await readBody(req);
@@ -1158,6 +1713,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/ground-slots') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
         const b = await readBody(req);
+        const _cg = cfgGuard(b); if (_cg) return send(res, 409, { ok: false, code: 'conflict', cfgRev: _cg.cur, msg: _cg.msg });
         const entries = Array.isArray(b.entries) ? b.entries : [];
         db.groundSlots = db.groundSlots || {};
         for (const e of entries) {
@@ -1167,8 +1723,10 @@ const server = http.createServer(async (req, res) => {
           if (v < 1 || v > 60) { delete db.groundSlots[k]; continue; } // 1~60之外=恢复默认12
           db.groundSlots[k] = v;
         }
+        const _cr = cfgBump();
         save();
-        return send(res, 200, { ok: true, slots: db.groundSlots });
+        pushOps(u,'改格数配置','','地面排格数已更新');
+        return send(res, 200, { ok: true, cfgRev: _cr, slots: db.groundSlots });
       }
       if (req.method === 'POST' && p === '/api/agv/transfer') {
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
@@ -1209,21 +1767,83 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/agv/mode') { // 调度模式：dry演算 / live真下发
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
+        const _cg = cfgGuard(b); if (_cg) return send(res, 409, { ok: false, code: 'conflict', cfgRev: _cg.cur, msg: _cg.msg });
         const m = String(b.mode || '') === 'live' ? 'live' : 'dry';
-        db.agvDispatchMode = m; save();
+        db.agvDispatchMode = m; const _cr = cfgBump(); save();
+        pushOps(u,'切调度模式', m, '');
         console.log(`[agv-q] ${u.name} 切换调度模式 → ${m}`);
-        return send(res, 200, { ok: true, mode: m });
+        return send(res, 200, { ok: true, mode: m, cfgRev: _cr });
       }
       if (req.method === 'POST' && p === '/api/agv/wmas-config') { // WMAS账号同步（调度器下发通道）
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
+        const _cg = cfgGuard(b); if (_cg) return send(res, 409, { ok: false, code: 'conflict', cfgRev: _cg.cur, msg: _cg.msg });
         const host = String(b.host || '').trim(), account = String(b.account || '').trim(), pwd = String(b.pwd || '');
         if (!host || !account || !pwd) return send(res, 400, { ok: false, msg: 'host/account/pwd 不能为空' });
         db.wmasConfig = { host, account, pwd }; _wmasTk = ''; _wmasLoc = null;
+        pushOps(u,'改WMAS配置', host, '账号:'+account+'（密码不记）');
+        const _cr = cfgBump();
         save();
-        return send(res, 200, { ok: true, msg: 'WMAS配置已保存' });
+        return send(res, 200, { ok: true, cfgRev: _cr, msg: 'WMAS配置已保存' });
       }
       // ================= 数据驾驶舱（只读聚合，登录即可看） =================
+      // ---- ㉕F5 个人偏好 prefs（落地页/通知订阅/概览卡自选）+ 管理员模板 ----
+      if (req.method === 'GET' && p === '/api/prefs') {
+        return send(res, 200, { ok: true, prefs: prefsFor(u.id), templates: (db.prefTemplates || []).map((t) => ({ name: t.name, by: t.by })) });
+      }
+      if (req.method === 'POST' && p === '/api/prefs') {
+        const b = await readBody(req); const mine = (db.prefs[u.id] = db.prefs[u.id] || {});
+        if (b.landing !== undefined) mine.landing = { v: String(b.landing || '').slice(0, 20), at: Date.now() };
+        if (b.theme !== undefined) mine.theme = { v: b.theme === 'dark' ? 'dark' : '', at: Date.now() }; // ㉕丙6 主题上云（空=浅色）
+        if (Array.isArray(b.kpi)) mine.kpi = { v: b.kpi.slice(0, 30).map((x) => String(x).slice(0, 14)), at: Date.now() };
+        if (b.notes && typeof b.notes === 'object') { const nn = {}; for (const t2 of ['req_new', 'req_urge', 'req_arrive', 'req_flow', 'watch_in', 'stock_out']) nn[t2] = b.notes[t2] !== false; mine.notes = { v: nn, at: Date.now() }; }
+        save(); return send(res, 200, { ok: true, prefs: prefsFor(u.id) });
+      }
+      if (req.method === 'POST' && p === '/api/prefs/apply') {
+        const b = await readBody(req); const t = (db.prefTemplates || []).find((x) => x.name === String(b.name || '').slice(0, 40));
+        if (!t) return send(res, 404, { ok: false, msg: '模板不存在' });
+        db.prefs[u.id] = db.prefs[u.id] || {}; const nowMs = Date.now();
+        for (const k of ['landing', 'theme', 'kpi', 'notes']) if (t.prefs[k] !== undefined) db.prefs[u.id][k] = { v: JSON.parse(JSON.stringify(t.prefs[k])), at: nowMs };
+        save(); pushOps(u, '套用偏好模板', String(b.name || ''), ''); return send(res, 200, { ok: true, prefs: prefsFor(u.id) });
+      }
+      if (req.method === 'POST' && p === '/api/admin/prefs/template') {
+        if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可存模板' });
+        const b = await readBody(req); const name = String(b.name || '').trim().slice(0, 40); if (!name) return send(res, 400, { ok: false, msg: '缺模板名' });
+        const src = b.prefs || {}; const clean = {}; for (const k of ['landing', 'theme', 'kpi', 'notes']) if (src[k] !== undefined) clean[k] = k === 'kpi' ? (Array.isArray(src[k]) ? src[k].slice(0, 30) : []) : src[k];
+        db.prefTemplates = db.prefTemplates || []; const ex = db.prefTemplates.find((x) => x.name === name);
+        if (ex) { ex.prefs = clean; ex.by = u.name; ex.at = Date.now(); } else db.prefTemplates.push({ name, prefs: clean, by: u.name, at: Date.now() });
+        if (db.prefTemplates.length > 20) db.prefTemplates = db.prefTemplates.slice(-20);
+        save(); pushOps(u, '存偏好模板', name, ''); return send(res, 200, { ok: true });
+      }
+      // ---- ㉕丁1 账本自对账：相邻两份每日快照差异（幽灵框/蒸发框/改位/改量），无需MES ----
+      if (req.method === 'GET' && p === '/api/reconcile') {
+        const dir = path.join(DATA_DIR, 'snapshots'); let fsn = [];
+        try { fsn = fs.readdirSync(dir).filter((x) => /^ledger-\d{8}\.json$/.test(x)).sort(); } catch (_) { return send(res, 200, { ok: true, days: [], msg: '暂无快照（服务运行满一天后自动生成）' }); }
+        const pick = (f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (_) { return null; } };
+        const two = fsn.slice(-2); if (two.length < 2) return send(res, 200, { ok: true, days: two, msg: '快照不足两份，无法对比' });
+        const A = pick(two[0]), B = pick(two[1]); if (!A || !B) return send(res, 500, { ok: false, msg: '快照读取失败' });
+        const ma = {}, mb = {}; for (const x of A.items || []) ma[String(x.c).toUpperCase()] = x; for (const x of B.items || []) mb[String(x.c).toUpperCase()] = x;
+        const ghosts = [], evap = [], moved = [], qtyCh = [];
+        for (const [c, x] of Object.entries(mb)) { if (!ma[c]) { const pn = String(x.p || '').toUpperCase(); ghosts.push({ c, loc: x.l, pn, nm: x.n || (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || '', q: x.q || 0, by: x.by || '', at: x.t ? new Date(x.t).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) : '' }); } }
+        for (const [c, x] of Object.entries(ma)) { if (!mb[c]) { const t = x.t ? new Date(x.t).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) : ''; evap.push({ c, loc: x.l, p: x.p || '', q: x.q || 0, reg: t }); } else { const y = mb[c]; if (String(y.l).toUpperCase() !== String(x.l).toUpperCase()) moved.push({ c, from: x.l, to: y.l, by: y.by || '' }); if ((Number(y.q) || 0) !== (Number(x.q) || 0)) qtyCh.push({ c, loc: y.l, a: x.q || 0, b: y.q || 0 }); } }
+        return send(res, 200, { ok: true, days: [two[0].slice(7, 15), two[1].slice(7, 15)], ghosts, evap, moved, qtyCh, noteA: '幽灵框=后份快照新出现（未采集直接上账），建议补采', noteB: '蒸发框=前份有后份无且无出库流水佐证，优先人工核实' });
+      }
+      // ---- ㉕F7 交接日报：今日按人聚合（接单/发框/件数/AGV趟/认领/修正） ----
+      if (req.method === 'GET' && p === '/api/report/shift') {
+        const y = new Date(); const day0 = new Date(y.getFullYear(), y.getMonth(), y.getDate()).getTime();
+        const per = {}; const G = (n) => (per[n] = per[n] || { name: n, orders: 0, boxes: 0, qty: 0, agv: 0, ack: 0, fix: 0 });
+        for (const r of db.requisitions || []) {
+          if (r.acceptedBy && (r.history || []).some((h) => /^接单/.test(h.text || '') && Date.parse(h.time) >= day0)) G(String(r.acceptedBy)).orders++;
+          const cAt = Date.parse(r.createdAt) || 0, fAt = Date.parse(r.confirmedAt || '0') || 0;
+          if (r.acceptedBy && (cAt >= day0 || fAt >= day0)) for (const it of r.items || []) for (const e of (it.issued || [])) { const o = typeof e === 'string' ? { c: e, q: 0 } : e; if (!o.c) continue; const p = G(String(r.acceptedBy)); p.boxes++; p.qty += Number(o.q) || 0; }
+          for (const it of r.items || []) for (const a of (it.agvCalled || [])) if ((Date.parse(a.t || '') || 0) >= day0) { const uu = db.users.find((x) => x.id === a.by); if (uu) G(uu.name).agv++; }
+        }
+        for (const o of db.ops || []) { if ((o.t || 0) < day0) continue; if (o.act === '告警认领' && o.by) G(String(o.by)).ack++; }
+        for (const f of db.ledgerFixes || []) if ((Date.parse(f.time) || 0) >= day0 && f.by) G(String(f.by)).fix++;
+        const rows = Object.values(per).sort((a, b) => (b.orders * 2 + b.boxes) - (a.orders * 2 + a.boxes));
+        const sum = (k) => rows.reduce((s, r) => s + (r[k] || 0), 0);
+        return send(res, 200, { ok: true, today: { day: y.getFullYear() + '-' + (y.getMonth() + 1) + '-' + y.getDate(), rows, orders: sum('orders'), boxes: sum('boxes'), qty: sum('qty'), agv: sum('agv'), ack: sum('ack'), fix: sum('fix') } });
+      }
       if (req.method === 'GET' && p === '/api/dashboard') {
         const dayMs = 86400000;
         const now = new Date();
@@ -1260,10 +1880,11 @@ const server = http.createServer(async (req, res) => {
         // 在库与站台
         const locs = new Set(db.ledger.map((x) => String(x.l).toUpperCase()));
         const stnBusy = Object.values(db.rcsStations || {}).filter((s) => s.state === '有货' || s.state === '占用中').length;
+        let stnTotal = Object.keys(NetMap.locLand || {}).filter((loc) => /-CK-/.test(loc)).length; if (!stnTotal) stnTotal = 12; // 分母=地图全量CK站台，路网未就绪时兜底
         const queueNow = (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length;
         return send(res, 200, { ok: true, at: new Date().toISOString(),
           kpi: { inBoxes, inQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday, agvQueue: queueNow,
-            stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal: 8 },
+            stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal },
           trend: Array.from({ length: 7 }, (_, i) => ({ d: dstr(todayStart + i * dayMs), in: trendIn[i], out: trendOut[i] })) });
       }
       // ================= ⑦ AGV效率报表（只读聚合 db.agvTasks，登录可看；days=1~30） =================
@@ -1677,6 +2298,18 @@ const server = http.createServer(async (req, res) => {
       const ae = requireAdmin(a);
       if (ae) return send(res, ae.err, { ok: false, msg: ae.msg });
 
+      // ---- 管理员：看板页鉴权开关（db.pageAuth，默认关=PDA门户iframe兼容；出APK后开启锁board/print页）----
+      if (req.method === 'GET' && p === '/api/admin/pageauth') {
+        return send(res, 200, { ok: true, on: db.pageAuth === true });
+      }
+      if (req.method === 'POST' && p === '/api/admin/pageauth') {
+        const b = await readBody(req);
+        db.pageAuth = !!b.on; save();
+        pushOps(u,'看板门禁'+(db.pageAuth?'开':'关'), '', '');
+        console.log(`[admin] ${u.name} 看板页鉴权 → ${db.pageAuth ? '开' : '关'}`);
+        return send(res, 200, { ok: true, on: db.pageAuth });
+      }
+
       // ---- 管理员：用户管理 ----
       if (req.method === 'GET' && p === '/api/users') {
         return send(res, 200, { ok: true, users: db.users.map(x => ({ ...safeUser(x), createdAt: x.createdAt })) });
@@ -1691,6 +2324,7 @@ const server = http.createServer(async (req, res) => {
         const salt = crypto.randomBytes(16).toString('hex');
         const nu = { id: newId('u'), username, name: String(b.name || username), role: b.role, enabled: true, salt, passHash: hashPw(b.password, salt), createdAt: new Date().toISOString(), mustChangePw: true };
         db.users.push(nu); save();
+        pushOps(u,'建账号', username, ROLE_NAMES[b.role]);
         console.log(`[users] 创建 ${username}(${ROLE_NAMES[b.role]})`);
         return send(res, 200, { ok: true, user: safeUser(nu) });
       }
@@ -1712,6 +2346,8 @@ const server = http.createServer(async (req, res) => {
           if (String(b.password).length < 6) return send(res, 400, { ok: false, msg: '密码至少6位' });
           t.salt = crypto.randomBytes(16).toString('hex'); t.passHash = hashPw(b.password, t.salt); t.mustChangePw = true;
         }
+        const _ch = []; if (typeof b.enabled === 'boolean') _ch.push(b.enabled ? '启用' : '停用并吊销会话'); if (b.role) _ch.push('改角色→' + ROLE_NAMES[b.role]); if (b.name) _ch.push('改名→' + b.name); if (b.password) _ch.push('重置密码(首登需改)');
+        pushOps(u, '改账号', t.username, _ch.join('、'));
         save(); return send(res, 200, { ok: true, user: safeUser(t) });
       }
       if (req.method === 'DELETE' && mUser) {
@@ -1719,6 +2355,7 @@ const server = http.createServer(async (req, res) => {
         if (!t) return send(res, 404, { ok: false, msg: '用户不存在' });
         if (t.id === u.id) return send(res, 400, { ok: false, msg: '不能删除自己' });
         db.users = db.users.filter(x => x.id !== t.id);
+        pushOps(u,'删账号', t.username, '');
         Object.keys(db.sessions).forEach(tk => { if (db.sessions[tk].userId === t.id) delete db.sessions[tk]; });
         save(); return send(res, 200, { ok: true });
       }
@@ -1732,9 +2369,58 @@ const server = http.createServer(async (req, res) => {
         if (b.features && typeof b.features === 'object') {
           for (const role of ROLES) if (b.features[role]) db.features[role] = { ...db.features[role], ...b.features[role] };
           save(); console.log('[config] 功能开关已更新');
+          pushOps(u,'改权限开关', '', '角色功能矩阵已更新');
         }
         if (typeof b.autoDispatch === 'boolean') { db.autoDispatch = b.autoDispatch; save(); console.log(`[config] 接单即派=${b.autoDispatch}`); }
         return send(res, 200, { ok: true, features: db.features, autoDispatch: db.autoDispatch !== false });
+      }
+      // ---- ㉕B1 活动流审计：GET /api/admin/ops?by=&limit= 倒序 ----
+      if (req.method === 'GET' && p === '/api/admin/ops') {
+        const by = String(url.searchParams.get('by') || '').trim();
+        const lim = Math.min(1000, Math.max(1, parseInt(url.searchParams.get('limit') || '200') || 200));
+        let list = (db.ops || []).slice().reverse();
+        if (by) list = list.filter((x) => String(x.by) === by);
+        const persons = [...new Set((db.ops || []).map((x) => x.by))];
+        return send(res, 200, { ok: true, total: (db.ops || []).length, persons, list: list.slice(0, lim) });
+      }
+      // ---- ㉕B4 系统健康分0-100：uptime/内存/备份新鲜/路网/队列/账本同步 ----
+      if (req.method === 'GET' && p === '/api/admin/healthscore') {
+        const nowMs = Date.now();
+        let bkAge = -1; try { const dir = path.join(DATA_DIR, 'backups'); if (fs.existsSync(dir)) { const fs2 = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).map((f) => fs.statSync(path.join(dir, f)).mtimeMs).sort((a, b) => b - a); if (fs2.length) bkAge = Math.round((nowMs - fs2[0]) / 1000); } } catch (_) {}
+        const queueWait = (db.agvQueue || []).filter((q) => q.state === '排队').length;
+        const ledAge = db.ledgerAt ? Math.round((nowMs - Date.parse(db.ledgerAt)) / 1000) : -1;
+        const netReady = NetMap.ready();
+        const upMin = Math.round(process.uptime() / 60), mem = Math.round(process.memoryUsage().rss / 1048576);
+        let score = 100, items = [];
+        const cut = (pt, name, val, pass) => { if (!pass) score -= pt; items.push({ name, val, ok: pass }); };
+        cut(15, '服务在线', upMin + '分钟', upMin > 0);
+        cut(15, '内存占用', mem + 'MB', mem < 400);
+        cut(20, '备份新鲜度', bkAge < 0 ? '无备份' : Math.round(bkAge / 60) + '分钟前', bkAge >= 0 && bkAge < 45 * 60);
+        cut(15, '路网就绪', netReady ? '已建' : '未建', netReady);
+        cut(20, '队列积压', queueWait + '框待下发', queueWait < 30);
+        cut(15, '账本同步', ledAge < 0 ? '从未' : Math.round(ledAge / 60) + '分钟前', ledAge >= 0 && ledAge < 6 * 3600);
+        return send(res, 200, { ok: true, score, items, uptimeMin: upMin, memMB: mem, bkAgeSec: bkAge, queueWait, ledAgeSec: ledAge, netReady, sessions: Object.keys(db.sessions || {}).length });
+      }
+      // ---- ㉕B5 发布台：POST /api/apk/upload?version=&build= 流式收APK（绕开8MB体上限，仅admin）----
+      if (req.method === 'POST' && p === '/api/apk/upload') {
+        const version = String(url.searchParams.get('version') || '').trim();
+        const build = parseInt(url.searchParams.get('build') || '0', 10);
+        if (!/^\d+\.\d+\.\d+$/.test(version) || !(build >= 1)) { req.resume(); return send(res, 400, { ok: false, msg: 'version需x.y.z且build≥1' }); }
+        const dir = path.join(DATA_DIR, 'app'); fs.mkdirSync(dir, { recursive: true });
+        const tmp = path.join(dir, 'upload.tmp'), fin = path.join(dir, 'app-release.apk');
+        const ws = fs.createWriteStream(tmp); let size = 0, aborted = false;
+        req.on('data', (c) => { size += c.length; if (size > 60 * 1048576) { aborted = true; ws.close(); try { fs.unlinkSync(tmp); } catch (_) {} req.destroy(); } });
+        req.pipe(ws);
+        ws.on('finish', () => {
+          if (aborted || size < 1000) { try { fs.unlinkSync(tmp); } catch (_) {} return send(res, 400, { ok: false, msg: aborted ? '超过60MB上限' : '空文件' }); }
+          try { fs.renameSync(tmp, fin); fs.writeFileSync(path.join(dir, 'version.json'), JSON.stringify({ version, build, size, at: new Date().toISOString() }, null, 2)); }
+          catch (e) { return send(res, 500, { ok: false, msg: '落盘失败:' + e.message }); }
+          pushOps(u, '发布APK', 'v' + version + '+' + build, (size / 1048576).toFixed(1) + 'MB');
+          console.log(`[publish] ${u.name} 发布 v${version}+${build} ${(size / 1048576).toFixed(1)}MB`);
+          return send(res, 200, { ok: true, msg: `已发布 v${version}+${build}（${(size / 1048576).toFixed(1)}MB）`, version, build, size });
+        });
+        ws.on('error', (e) => { try { fs.unlinkSync(tmp); } catch (_) {} return send(res, 500, { ok: false, msg: '写入失败:' + e.message }); });
+        return;
       }
     }
     return send(res, 404, { ok: false, msg: '接口不存在' });
@@ -1805,7 +2491,7 @@ const NetMap = {
       for (const l of parse(lm && lm.data)) {
         const code = String(l.landCode || '');
         if (!code) continue;
-        lands[code] = { x: Number(l.landX) || 0, y: Number(l.landY) || 0, name: String(l.landName || code) };
+        lands[code] = { x: Number(l.landX) || 0, y: Number(l.landY) || 0, name: String(l.landName || code), r: l.regionId === undefined ? -1 : Number(l.regionId), t: l.landType === undefined ? -1 : Number(l.landType) };
       }
       const adj = {};
       for (const s of parse(seg && seg.data)) {
@@ -1821,6 +2507,7 @@ const NetMap = {
       }
       for (const [loc, lc] of Object.entries(locLand)) { if (lands[lc]) landLoc[lc] = loc; }
       if (Object.keys(lands).length > 100) { this.lands = lands; this.adj = adj; this.locLand = locLand; this.landLoc = landLoc; this.builtAt = Date.now(); console.log(`[netmap] 路网构建：地标${Object.keys(lands).length} 边${Object.keys(adj).length} 货位映射${Object.keys(locLand).length}`); }
+      else console.log(`[netmap] 未达阈值不建网：地标${Object.keys(lands).length} 边${Object.keys(adj).length}（需>100）`);
     } catch (e) { console.log('[netmap] 构建失败：', e.message); }
   },
   // 任务学习：从任务起终点编码↔途经点首末landCode 积累映射（rack表不含站台，靠这个学）
@@ -1854,12 +2541,14 @@ const NetMap = {
     return -1;
   },
 };
-setInterval(() => {
+function netmapRefresh() {
   if (!db.rcsConfig || !db.rcsConfig.host) return;
   const fresh = Date.now() - NetMap.builtAt < 24 * 3600 * 1000;
   if (fresh && NetMap.ready()) return;
   (async () => { const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin(); if (tk) await NetMap.build((p) => rcsReq(p, 'GET', tk)); })();
-}, 10 * 60 * 1000).unref();
+}
+setTimeout(netmapRefresh, 4000).unref(); // 启动后4秒即建网，不等10分钟首tick
+setInterval(netmapRefresh, 10 * 60 * 1000).unref();
 
 async function rcsPoll() {
   if (!db.rcsConfig || !db.rcsConfig.host) return;
@@ -1941,7 +2630,7 @@ async function rcsPoll() {
   // 占用中记录每轮重建：在途任务的接令/叉出时间戳实时刷新（旧逻辑只写一次会冻结），任务取消则记录自动消失
   for (const [k, v] of Object.entries(db.rcsStations)) { if (v.state === '占用中') delete db.rcsStations[k]; }
   for (const v of Object.values(stations)) { if (!db.rcsStations[v.station]) db.rcsStations[v.station] = v; }
-  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, ...parsePts(t), ...nodeTimes(t) }));
+  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, car: t.exeAgvId ?? 0, start: t.executeTaskNo ? 1 : 0, ...parsePts(t), ...nodeTimes(t) }));
   db.rcsAt = new Date().toISOString();
   // ===== ⑦ AGV效率报表底仓：已完成任务摘要增量落库（RCS只留最近199条，本地攒30天） =====
   db.agvTasks = db.agvTasks || {};
@@ -2012,6 +2701,7 @@ async function rcsPoll() {
   carAlarmWatch(tk, nowMs).catch(() => {}); // ⑱ 车辆告警边沿检测→通知仓管
   try { dispatchWatchdog(nowMs); } catch (_) {}
   save();
+  try { sseTick(nowMs); } catch (_) {} // ㉔SSE广播+轨迹/甘特采样
 }
 setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, 20 * 1000).unref();
 
@@ -2129,9 +2819,9 @@ async function agvDispatch(nowMs, runT) {
   const _trf = (db.agvQueue || []).filter(function (x) { return x.type === 'transfer' && !x.dry && ['下发中', '已下发'].includes(x.state) && x.taskNo; });
   if (_trf.length) { const _ttk = await wmasToken(); if (_ttk) { for (const _t of _trf) { try { const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_t.taskNo), _ttk); const _rec = (_lr && _lr.data && _lr.data.records || []).find(function (z) { return String(z.taskNo) === String(_t.taskNo); }); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { /* 仍在途 */ } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { _t.state = '取消'; _t.updAt = nowMs; } else { _t.state = '完成'; _t.updAt = nowMs; const moved = applyTransferLedger(_t); if (!moved) { _t.err = '已到达但账本未自动更新，请用位置登记核对'; } } } else { _t.state = '完成'; _t.updAt = nowMs; _t.err = 'WMAS任务记录已不可查，未自动改账，请核对货位'; } if (nowMs - (_t.sentAt || _t.at) > 40 * 60000) { _t.state = '失败'; _t.err = '超时未完成'; _t.updAt = nowMs; } } catch (_) {} } } }
   if (!waiting.length) return;
-  // 急料优先插队；普通项等待超10分钟自动升级（aging防饿死）；同级保持FIFO
+  // 置顶最高优先（网页队列控制台）；急料插队；普通项等待超10分钟自动升级（aging防饿死）；同级保持FIFO
   const effRush = (q) => !!q.rush || (nowMs - (q.at || 0) > 10 * 60 * 1000);
-  waiting.sort((a, b) => (effRush(b) ? 1 : 0) - (effRush(a) ? 1 : 0) || (a.at || 0) - (b.at || 0));
+  waiting.sort((a, b) => ((b.prio || 0) - (a.prio || 0)) || (effRush(b) ? 1 : 0) - (effRush(a) ? 1 : 0) || (a.at || 0) - (b.at || 0));
   const live = (db.agvDispatchMode || 'dry') === 'live';
   const assigned = [];
   for (const q of waiting) {

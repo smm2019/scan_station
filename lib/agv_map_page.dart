@@ -110,6 +110,17 @@ class _MapPainter extends CustomPainter {
       final l = lands[j["land"]] as Map?; if (l == null) continue;
       canvas.drawCircle(w2c(l["x"], l["y"]), 6, pJam);
     }
+    // 充电桩（landType=6：黄芯红圈；旧服务器无t字段时按实测地标号兜底）
+    for (final e in lands.entries) {
+      final l = e.value as Map;
+      final t = l["t"];
+      final isChg = t != null ? t == 6 : (e.key == "1729" || e.key == "1730");
+      if (!isChg) continue;
+      final c = w2c(l["x"], l["y"]);
+      canvas.drawCircle(c, 5, Paint()..color = const Color(0xFFFFD600));
+      canvas.drawCircle(c, 7.5, Paint()..color = const Color(0xFFD50000)..style = PaintingStyle.stroke..strokeWidth = 2);
+      _txt(canvas, c + const Offset(9, 3), "充电", 8, const Color(0xFFFFD600));
+    }
     // 车辆（三角朝向=航向）
     for (final c in List<Map>.from(snap["cars"] ?? [])) {
       final x = (c["x"] as num?)?.toDouble(), y = (c["y"] as num?)?.toDouble();
@@ -132,7 +143,7 @@ class _MapPainter extends CustomPainter {
     }
     canvas.restore();
     // 图例
-    _txt(canvas, const Offset(12, 12), "● 货架有货(橙)  ● 站台: 绿空/蓝占用/橙有货  ▲ 车辆  ◎ 交管锁点(红)", 10, const Color(0xFFB0BEC5));
+    _txt(canvas, const Offset(12, 12), "● 货架有货(橙)  ● 站台: 绿空/蓝占用/橙有货  ▲ 车辆  ◎ 交管锁点(红)  ⚡充电桩(黄芯红圈)", 10, const Color(0xFFB0BEC5));
   }
 
   void _txt(Canvas canvas, Offset at, String s, double sz, Color color) {

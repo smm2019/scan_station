@@ -162,12 +162,13 @@ class _LocationRegPageState extends State<LocationRegPage> {
     if (_backfilling) return;
     final all = await _globalIsar.shelfPlacements.where().findAll();
     if (all.isEmpty) { _toast("账本为空，先导入或登记库位"); return; }
-    final cached = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode};
-    final todo = all.map((p) => p.goodsCode).where((c) => !cached.contains(c)).toList();
+    final cached = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode: e};
+    // 无缓存 或 缓存物料名含乱码(U+FFFD) → 都重查MES（㉓存量乱码修复通道）
+    final todo = all.map((p) => p.goodsCode).where((c) { final e = cached[c]; if (e == null) return true; return e.itemName.contains("\uFFFD"); }).toList();
     if (todo.isEmpty) { _toast("物料信息已全部补齐（${all.length} 条均有缓存）", err: false); return; }
     final yes = await showDialog<bool>(context: context, builder: (dctx) => AlertDialog(
       title: const Text("批量补齐物料信息"),
-      content: Text("账本 ${all.length} 个标签中，有 ${todo.length} 个本地没有物料记录。\n将逐个向 MES 查询（约每个 0.5~2 秒，期间请保持本页打开、别切走）。\n\n需 MES 已登录。开始？"),
+      content: Text("账本 ${all.length} 个标签中，${todo.length} 个需补齐或修复（无记录/物料名乱码）。\n将逐个向 MES 查询（约每个 0.5~2 秒，期间请保持本页打开、别切走）。\n\n需 MES 已登录。开始？"),
       actions: [TextButton(onPressed: () => Navigator.pop(dctx, false), child: const Text("取消")),
         TextButton(onPressed: () => Navigator.pop(dctx, true), child: const Text("开始补齐"))],
     ));
@@ -340,6 +341,17 @@ class _LocationRegPageState extends State<LocationRegPage> {
       }
     }
     if (parsed.isEmpty) { _toast("未解析到有效行：需要「标签」列与「货位」列（如 完整货位编码）"); return; }
+    // ㉓编码损坏检测：GBK表被按UTF-8存取会留下U+FFFD乱码——物料名留空防扩散，事后批量补齐找回
+    int garbled = 0;
+    for (final e in parsed) { if (e.length > 4 && e[4].contains("\uFFFD")) { e[4] = ""; garbled++; } }
+    if (garbled > 0) {
+      final go = await showDialog<bool>(context: context, builder: (dc) => AlertDialog(
+        title: const Text("⚠️ 检测到编码损坏的物料名", style: TextStyle(color: Colors.orange)),
+        content: SizedBox(width: 320, child: Text("$garbled 行的物料名含无法识别字符（文件编码问题，常见于 GBK 编码被按 UTF-8 保存/转换）。\n\n本次已自动留空这些物料名（防止乱码进账本扩散）。建议：\n① WPS 把源表另存为「UTF-8 CSV」后重新导入；\n② 或导入后点右上「批量补齐物料信息」，从 MES 自动找回正确名称。", style: const TextStyle(fontSize: 13, height: 1.5))),
+        actions: [TextButton(onPressed: () => Navigator.pop(dc, false), child: const Text("取消，先去改文件")), FilledButton(onPressed: () => Navigator.pop(dc, true), child: const Text("继续导入"))],
+      ));
+      if (go != true) return;
+    }
     final preview = parsed.take(5).map((e) => "${e[0]} → ${e[1]}").join("\n");
     final yes = await showDialog<bool>(context: context, builder: (dctx) => AlertDialog(
       title: const Text("确认导入货架账本"),
