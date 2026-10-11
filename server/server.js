@@ -60,7 +60,7 @@ function encSec(s) { if (!s || String(s).indexOf('enc1:') === 0) return s; try {
 function decSec(s) { if (!s || String(s).indexOf('enc1:') !== 0) return s; try { const q = String(s).split(':'); const d = crypto.createDecipheriv('aes-256-gcm', secretKey(), Buffer.from(q[1], 'base64')); d.setAuthTag(Buffer.from(q[2], 'base64')); return Buffer.concat([d.update(Buffer.from(q[3], 'base64')), d.final()]).toString('utf8'); } catch (_) { console.log('[sec] secret.key 与 db.json 不匹配：RCS/WMAS 密码需在设置页重录一次'); return ''; } }
 function walkSec(o, fn) { for (const k of ['rcsConfig', 'wmasConfig']) { const c = o[k]; if (c && c.pwd) fn(c, 'pwd'); } if (o.rcsToken) fn(o, 'rcsToken'); }
 function clientFp(req) { let ip = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, ''); const seg = ip.indexOf(':') >= 0 ? ip.split(':').slice(0, 2).join(':') : ip.split('.').slice(0, 2).join('.'); return crypto.createHash('sha1').update(seg + '|' + String(req.headers['user-agent'] || '')).digest('hex').slice(0, 12); }
-function prefsFor(uid) { const o = (db.prefs && db.prefs[uid]) || {}; const r = {}; for (const k in o) { if (k === 'notes') r[k] = o[k].v; else if (k === 'kpi') r[k] = Array.isArray(o[k].v) ? o[k].v : []; else r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); } return r; }
+function prefsFor(uid) { const o = (db.prefs && db.prefs[uid]) || {}; const r = {}; for (const k in o) { if (k === 'notes') r[k] = o[k].v; else if (k === 'kpi') r[k] = Array.isArray(o[k].v) ? o[k].v : []; else if (k === 'work') r[k] = Number(o[k].v) === 1 ? 1 : 0; else if (k === 'rate') r[k] = Math.min(0.9, Math.max(0.3, Number(o[k].v) || 0.55)); else if (k === 'voice') r[k] = o[k].v !== false; else r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); } return r; }
 function archLoad(kind) { const out = {}; try { const dir = path.join(DATA_DIR, 'archive'); for (const f of fs.readdirSync(dir)) { if (f.indexOf('-' + kind + '.json') < 0) continue; try { Object.assign(out, JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))); } catch (_) {} } } catch (_) {} return out; }
 function loadDb() {
   if (!fs.existsSync(DB_FILE)) { const d = defaultDb(); saveDb(d); console.log('[init] 已创建初始账号 admin / admin123（首次登录需改密）'); return d; }
@@ -1882,19 +1882,22 @@ const server = http.createServer(async (req, res) => {
         if (b.theme !== undefined) mine.theme = { v: b.theme === 'dark' ? 'dark' : '', at: Date.now() }; // ㉕丙6 主题上云（空=浅色）
         if (Array.isArray(b.kpi)) mine.kpi = { v: b.kpi.slice(0, 30).map((x) => String(x).slice(0, 14)), at: Date.now() };
         if (b.notes && typeof b.notes === 'object') { const nn = {}; for (const t2 of ['req_new', 'req_urge', 'req_arrive', 'req_flow', 'watch_in', 'stock_out']) nn[t2] = b.notes[t2] !== false; mine.notes = { v: nn, at: Date.now() }; }
+        if (b.work !== undefined) mine.work = { v: Number(b.work) === 1 ? 1 : 0, at: Date.now() }; // ㉖B14 PDA工作模式上云（0=AGV站台 1=人工地面）
+        if (b.rate !== undefined) { const rr = Number(b.rate); if (Number.isFinite(rr)) mine.rate = { v: Math.min(0.9, Math.max(0.3, rr)), at: Date.now() }; } // ㉖B14 播报语速上云
+        if (b.voice !== undefined) mine.voice = { v: b.voice !== false, at: Date.now() }; // ㉖B14 扫码播报开关上云
         save(); return send(res, 200, { ok: true, prefs: prefsFor(u.id) });
       }
       if (req.method === 'POST' && p === '/api/prefs/apply') {
         const b = await readBody(req); const t = (db.prefTemplates || []).find((x) => x.name === String(b.name || '').slice(0, 40));
         if (!t) return send(res, 404, { ok: false, msg: '模板不存在' });
         db.prefs[u.id] = db.prefs[u.id] || {}; const nowMs = Date.now();
-        for (const k of ['landing', 'theme', 'kpi', 'notes']) if (t.prefs[k] !== undefined) db.prefs[u.id][k] = { v: JSON.parse(JSON.stringify(t.prefs[k])), at: nowMs };
+        for (const k of ['landing', 'theme', 'kpi', 'notes', 'work', 'rate', 'voice']) if (t.prefs[k] !== undefined) db.prefs[u.id][k] = { v: JSON.parse(JSON.stringify(t.prefs[k])), at: nowMs };
         save(); pushOps(u, '套用偏好模板', String(b.name || ''), ''); return send(res, 200, { ok: true, prefs: prefsFor(u.id) });
       }
       if (req.method === 'POST' && p === '/api/admin/prefs/template') {
         if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可存模板' });
         const b = await readBody(req); const name = String(b.name || '').trim().slice(0, 40); if (!name) return send(res, 400, { ok: false, msg: '缺模板名' });
-        const src = b.prefs || {}; const clean = {}; for (const k of ['landing', 'theme', 'kpi', 'notes']) if (src[k] !== undefined) clean[k] = k === 'kpi' ? (Array.isArray(src[k]) ? src[k].slice(0, 30) : []) : src[k];
+        const src = b.prefs || {}; const clean = {}; for (const k of ['landing', 'theme', 'kpi', 'notes', 'work', 'rate', 'voice']) if (src[k] !== undefined) clean[k] = k === 'kpi' ? (Array.isArray(src[k]) ? src[k].slice(0, 30) : []) : src[k];
         db.prefTemplates = db.prefTemplates || []; const ex = db.prefTemplates.find((x) => x.name === name);
         if (ex) { ex.prefs = clean; ex.by = u.name; ex.at = Date.now(); } else db.prefTemplates.push({ name, prefs: clean, by: u.name, at: Date.now() });
         if (db.prefTemplates.length > 20) db.prefTemplates = db.prefTemplates.slice(-20);
@@ -2141,7 +2144,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush|urge|delitem)$/);
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush|urge|delitem|ready|back)$/);
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
@@ -2277,6 +2280,29 @@ const server = http.createServer(async (req, res) => {
             hpush(r.rush ? `标记急料（${u.name}）` : `取消急料（${u.name}）`);
             if (r.rush) db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled && x.id !== u.id).forEach((x) =>
               notify(x.id, 'req_new', `🔥 急料单 ${r.no}（${r.byName}），请优先备料`, r.id));
+          } else if (act === 'ready') { // ㉖B3 看板拖拽：备料中→标记备齐（仍有未处理行时强制备齐=短装收尾，必须给原因）
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可标记备齐' });
+            if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可标记备齐` });
+            const undone = r.items.filter(i => !i.transferred && !i.skipped);
+            if (!undone.length) { finalize(); }
+            else {
+              const note = String(b.note || '').trim().slice(0, 60);
+              if (!note) return send(res, 400, { ok: false, msg: `仍有 ${undone.length} 行未处理，强制备齐必须填写原因` });
+              r.status = 'ready';
+              hpush(`网页标记备齐（强制）：${note}；未处理 ${undone.length} 行：${undone.slice(0, 5).map(i => i.partNo + '×' + i.qty).join('、')}${undone.length > 5 ? ' 等' : ''}`);
+              notify(r.by, 'req_ready', `领料单 ${r.no} 已被 ${u.name} 标记备齐（注意：${undone.length} 行未发齐，原因：${note}），请确认收货`, r.id);
+              db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
+                notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）被 ${u.name} 强制标记备齐，未处理 ${undone.length} 行`, r.id));
+            }
+          } else if (act === 'back') { // ㉖B3 看板拖拽：待签收→退回继续备料
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可退回备料' });
+            if (r.status !== 'ready') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]无需退回` });
+            r.status = 'accepted';
+            const note = String(b.note || '').trim().slice(0, 60);
+            hpush(`退回继续备料${note ? '：' + note : ''}（${u.name}）`);
+            notify(r.by, 'req_flow', `领料单 ${r.no} 被 ${u.name} 退回继续备料${note ? '：' + note : ''}，暂缓签收`, r.id);
+            if (r.acceptedBy) db.users.filter(x => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && x.name === r.acceptedBy).forEach(x =>
+              notify(x.id, 'req_flow', `你接的领料单 ${r.no} 被 ${u.name} 退回继续备料${note ? '：' + note : ''}`, r.id));
           } else if (act === 'urge') {
             // 催单：仅下单人/管理员；同单10分钟限一次防轰炸；pending催接单、accepted催备料
             if (r.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅下单人或管理员可催单' });

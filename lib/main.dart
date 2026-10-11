@@ -1299,6 +1299,7 @@ class _MainPageState extends State<MainPage>
     kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
     _startNotifPolling();
     _restoreWorkMode(); // ②按登录账号恢复上次工作模式（AGV站台/人工地面）
+    PrefsSync.changed.addListener(_onPrefsChanged); // ㉖B14 服务器偏好回写后刷新工作模式
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
     _initLoadData();
@@ -1340,11 +1341,18 @@ class _MainPageState extends State<MainPage>
       if (_srvFails >= 10 && !_srvDownWarned) {
         _srvDownWarned = true;
         unawaited(NotifyService.speak("服务器连接中断，请检查网络"));
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("⚠️ 服务器失联超过5分钟：同步与通知已暂停，请联系管理员检查服务器"), backgroundColor: Colors.redAccent, duration: Duration(seconds: 8)));
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text("⚠️ 服务器失联超过5分钟：同步与通知已暂停，请联系管理员检查服务器"),
+              backgroundColor: Colors.redAccent,
+              duration: Duration(seconds: 8)));
       }
       return;
     }
-    if (_srvFails > 0) { _srvFails = 0; _srvDownWarned = false; }
+    if (_srvFails > 0) {
+      _srvFails = 0;
+      _srvDownWarned = false;
+    }
     if (!mounted) return;
     final list = List<Map>.from(r["notifications"] ?? []);
     if (list.isEmpty) return;
@@ -1375,6 +1383,7 @@ class _MainPageState extends State<MainPage>
   @override
   void dispose() {
     kNotifTap.removeListener(_onNotifTap);
+    PrefsSync.changed.removeListener(_onPrefsChanged); // ㉖B14
     _notifTimer?.cancel();
     _tabController.dispose();
     _goodsFocusNode.dispose(); //【新增】释放焦点资源
@@ -1697,7 +1706,8 @@ class _MainPageState extends State<MainPage>
     return true;
   }
 
-  Future<void> _scanSuccessAction({String mesPartNo = "", double qty = 0}) async {
+  Future<void> _scanSuccessAction(
+      {String mesPartNo = "", double qty = 0}) async {
     try {
       if (await AppSettings.getVibrationEnabled()) {
         if ((await Vibration.hasVibrator()) ?? false) {
@@ -1706,9 +1716,14 @@ class _MainPageState extends State<MainPage>
       }
       // ⑭语音播报：零件号后四位+件数；开关关闭或无TTS引擎回退提示音
       bool said = false;
-      if (await RemindPrefs.enabledByKey(RemindPrefs.kVoice) && mesPartNo.isNotEmpty) {
-        final tail = mesPartNo.length > 4 ? mesPartNo.substring(mesPartNo.length - 4) : mesPartNo;
-        final qs = qty == qty.roundToDouble() ? qty.toInt().toString() : qty.toStringAsFixed(1);
+      if (await RemindPrefs.enabledByKey(RemindPrefs.kVoice) &&
+          mesPartNo.isNotEmpty) {
+        final tail = mesPartNo.length > 4
+            ? mesPartNo.substring(mesPartNo.length - 4)
+            : mesPartNo;
+        final qs = qty == qty.roundToDouble()
+            ? qty.toInt().toString()
+            : qty.toStringAsFixed(1);
         said = await NotifyService.speak("$tail，$qs件");
       }
       if (!said && await AppSettings.getSoundEnabled()) {
@@ -1926,7 +1941,8 @@ class _MainPageState extends State<MainPage>
         }
       });
       LocalLog.op('扫码保存', code);
-      await _scanSuccessAction(mesPartNo: rec.mesPartNo ?? "", qty: rec.mesQty ?? 0);
+      await _scanSuccessAction(
+          mesPartNo: rec.mesPartNo ?? "", qty: rec.mesQty ?? 0);
       _goodsInputCtrl.clear();
       setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
@@ -1938,13 +1954,15 @@ class _MainPageState extends State<MainPage>
           _selectedGroundLoc = null; // ✅人工模式，录入成功清空地面货位
         }
       });
-      final autoCallSt = _workType == 0 ? (_selectedStation ?? "") : ""; // ⑳清空前捕获站台，供自动入库叫车
+      final autoCallSt =
+          _workType == 0 ? (_selectedStation ?? "") : ""; // ⑳清空前捕获站台，供自动入库叫车
       if (_workType == 0 && !_palletMode) {
         setState(() {
           _selectedStation = null;
         });
       }
-      await _ledgerRegisterOnSave(code, autoCallStation: autoCallSt); //顺手登记货位账本（选填，不影响采集主流程）
+      await _ledgerRegisterOnSave(code,
+          autoCallStation: autoCallSt); //顺手登记货位账本（选填，不影响采集主流程）
       scheduleScanPush(); //采集流水定时同步电脑数据库
       await _refreshRecord();
       await _refreshBatchStat();
@@ -1973,7 +1991,8 @@ class _MainPageState extends State<MainPage>
 
   ///采集页顺手登记：保存成功时若填了「货位账本编码」，把本标签（整托含兄弟码）写入账本，并预约全量同步电脑。
   ///留空则不写账本，与改动前行为完全一致；编码格式不符或货位已被他人占用时只提示不写入。
-  Future<void> _ledgerRegisterOnSave(String code, {String autoCallStation = ""}) async {
+  Future<void> _ledgerRegisterOnSave(String code,
+      {String autoCallStation = ""}) async {
     try {
       if (_ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO') {
         //自动分配：先按零件号定货位并回填
@@ -2073,13 +2092,18 @@ class _MainPageState extends State<MainPage>
             content: Text("账本已登记：$loc（${codes.length} 码）"),
             backgroundColor: const Color(0xFF2E7D32)));
       // ⑳扫码自动入库：账本登记成功后触发；校验链与手动提交一致，失败不影响账本
-      if (_workType == 0 && autoCallStation.isNotEmpty && loc.startsWith('NB02-') && ctype.isNotEmpty && await WmasConfig.autoCallEnabled()) {
+      if (_workType == 0 &&
+          autoCallStation.isNotEmpty &&
+          loc.startsWith('NB02-') &&
+          ctype.isNotEmpty &&
+          await WmasConfig.autoCallEnabled()) {
         if (_palletMode) {
           if (mounted) setState(() => _autoCallTip = "ℹ️ 整托模式：扫完本托请手动「提交任务」");
           if (mounted)
             ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                 content: Text("整托模式不自动叫车：托上全部码扫完后请手动「提交任务」"),
-                backgroundColor: Colors.blueGrey, duration: Duration(seconds: 3)));
+                backgroundColor: Colors.blueGrey,
+                duration: Duration(seconds: 3)));
         } else {
           await _autoCallInbound(autoCallStation, loc, ctype);
         }
@@ -3337,42 +3361,54 @@ class _MainPageState extends State<MainPage>
         ],
       ),
       bottomNavigationBar: ValueListenableBuilder<int>(
-        valueListenable: kUnreadMsgs,
-        builder: (_, unread, __) => BottomNavigationBar(
-        items: [
-          const BottomNavigationBarItem(icon: SizedBox.shrink(), label: "采集"),
-          BottomNavigationBarItem(icon: const SizedBox.shrink(), label: unread > 0 ? "消息·$unread" : "消息"),
-          const BottomNavigationBarItem(icon: SizedBox.shrink(), label: "设置"),
-        ],
-        currentIndex: 0,
-        type: BottomNavigationBarType.fixed,
-        showSelectedLabels: true,
-        showUnselectedLabels: true,
-        onTap: (idx) async {
-          if (idx == 0) {
-            _tabController.animateTo(0);
-          } else if (idx == 1) {
-            // ㉑消息中枢：分组卡片流，点消息跳领料页
-            await Navigator.push(context, MaterialPageRoute(builder: (_) => MessageHubPage(
-              onOpenReq: () => _tabController.animateTo(_tabKeys.indexOf('req') >= 0 ? _tabKeys.indexOf('req') : 0),
-            )));
-            kUnreadMsgs.value = 0;
-          } else if (idx == 2) {
-            //跳转设置菜单页（导出功能已并入此页顶部）
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (context) => SettingsMenuPage(
-                onCopyCsv: () async {
-                  final csv = await _generateCsvText();
-                  await Clipboard.setData(ClipboardData(text: csv));
+          valueListenable: kUnreadMsgs,
+          builder: (_, unread, __) => BottomNavigationBar(
+                items: [
+                  const BottomNavigationBarItem(
+                      icon: SizedBox.shrink(), label: "采集"),
+                  BottomNavigationBarItem(
+                      icon: const SizedBox.shrink(),
+                      label: unread > 0 ? "消息·$unread" : "消息"),
+                  const BottomNavigationBarItem(
+                      icon: SizedBox.shrink(), label: "设置"),
+                ],
+                currentIndex: 0,
+                type: BottomNavigationBarType.fixed,
+                showSelectedLabels: true,
+                showUnselectedLabels: true,
+                onTap: (idx) async {
+                  if (idx == 0) {
+                    _tabController.animateTo(0);
+                  } else if (idx == 1) {
+                    // ㉑消息中枢：分组卡片流，点消息跳领料页
+                    await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => MessageHubPage(
+                                  onOpenReq: () => _tabController.animateTo(
+                                      _tabKeys.indexOf('req') >= 0
+                                          ? _tabKeys.indexOf('req')
+                                          : 0),
+                                )));
+                    kUnreadMsgs.value = 0;
+                  } else if (idx == 2) {
+                    //跳转设置菜单页（导出功能已并入此页顶部）
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (context) => SettingsMenuPage(
+                                onCopyCsv: () async {
+                                  final csv = await _generateCsvText();
+                                  await Clipboard.setData(
+                                      ClipboardData(text: csv));
+                                },
+                                onExportCsv: _exportCsvFile,
+                                onWifi: _toggleWifiServer,
+                              )),
+                    );
+                  }
                 },
-                onExportCsv: _exportCsvFile,
-                onWifi: _toggleWifiServer,
               )),
-            );
-          }
-        },
-      )),
     );
   }
 
@@ -3419,7 +3455,24 @@ class _MainPageState extends State<MainPage>
 
   void _saveWorkMode(int type) {
     SharedPreferences.getInstance()
-        .then((sp) => sp.setInt('worktype_' + (Auth.user?.id ?? ''), type));
+        .then((sp) => sp.setInt("worktype_" + (Auth.user?.id ?? ""), type))
+        .then((_) => PrefsSync.pushAll()); // ㉖B14 工作模式上云
+  }
+
+  /// ㉖B14 服务器偏好回写本地后，刷新工作模式选择
+  void _onPrefsChanged() {
+    if (!mounted) return;
+    SharedPreferences.getInstance().then((sp) {
+      final v = sp.getInt("worktype_" + (Auth.user?.id ?? ""));
+      if (mounted && v != _workType)
+        setState(() {
+          _workType = v == 1 ? 1 : 0;
+          if (_workType == 1)
+            _selectedStation = null;
+          else
+            _selectedGroundLoc = null;
+        });
+    });
   }
 
   //作业模式卡片组件
@@ -3939,13 +3992,16 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
 }
 
 // ===================== 设置菜单主页 =====================
-bool get _isWhRole => Auth.user?.role == 'warehouse' || Auth.user?.role == 'admin'; // 设置页系统配置类条目仅仓管/管理员可见
+bool get _isWhRole =>
+    Auth.user?.role == 'warehouse' ||
+    Auth.user?.role == 'admin'; // 设置页系统配置类条目仅仓管/管理员可见
 
 class SettingsMenuPage extends StatelessWidget {
   final Future<void> Function()? onCopyCsv; // ㉑导出功能自底部栏迁入
   final Future<void> Function()? onExportCsv;
   final Future<void> Function()? onWifi;
-  const SettingsMenuPage({super.key, this.onCopyCsv, this.onExportCsv, this.onWifi});
+  const SettingsMenuPage(
+      {super.key, this.onCopyCsv, this.onExportCsv, this.onWifi});
 
   @override
   Widget build(BuildContext context) {
@@ -3958,14 +4014,26 @@ class SettingsMenuPage extends StatelessWidget {
         padding: const EdgeInsets.all(16),
         children: [
           if (onExportCsv != null) ...[
-            _settingTile(context, icon: Icons.file_download_outlined, color: const Color(0xFF00897B),
-              title: "导出CSV文件", subtitle: "当前批次采集数据 → Download 目录", onTap: () => onExportCsv!()),
+            _settingTile(context,
+                icon: Icons.file_download_outlined,
+                color: const Color(0xFF00897B),
+                title: "导出CSV文件",
+                subtitle: "当前批次采集数据 → Download 目录",
+                onTap: () => onExportCsv!()),
             if (onCopyCsv != null)
-              _settingTile(context, icon: Icons.content_copy_outlined, color: const Color(0xFF26A69A),
-                title: "复制CSV内容", subtitle: "当前批次数据进剪贴板，粘贴给电脑", onTap: () => onCopyCsv!()),
+              _settingTile(context,
+                  icon: Icons.content_copy_outlined,
+                  color: const Color(0xFF26A69A),
+                  title: "复制CSV内容",
+                  subtitle: "当前批次数据进剪贴板，粘贴给电脑",
+                  onTap: () => onCopyCsv!()),
             if (_isWhRole && onWifi != null)
-              _settingTile(context, icon: Icons.phone_android_outlined, color: Colors.deepOrange,
-                title: "WiFi局域网服务", subtitle: "开启后电脑浏览器下载采集CSV", onTap: () => onWifi!()),
+              _settingTile(context,
+                  icon: Icons.phone_android_outlined,
+                  color: Colors.deepOrange,
+                  title: "WiFi局域网服务",
+                  subtitle: "开启后电脑浏览器下载采集CSV",
+                  onTap: () => onWifi!()),
             const Divider(height: 24),
           ],
           _settingTile(
@@ -4006,75 +4074,75 @@ class SettingsMenuPage extends StatelessWidget {
               },
             ),
           if (_isWhRole)
-          _settingTile(
-            context,
-            icon: Icons.dns_outlined,
-            color: const Color(0xFF3F51B5),
-            title: "MES服务器设置",
-            subtitle: "服务地址 / 账号登录 / 退出登录",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const MesSettingPage())),
-          ),
+            _settingTile(
+              context,
+              icon: Icons.dns_outlined,
+              color: const Color(0xFF3F51B5),
+              title: "MES服务器设置",
+              subtitle: "服务地址 / 账号登录 / 退出登录",
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const MesSettingPage())),
+            ),
           if (_isWhRole)
-          _settingTile(
-            context,
-            icon: Icons.local_shipping_outlined,
-            color: const Color(0xFF00897B),
-            title: "WMAS(AGV)设置",
-            subtitle: "调度服务地址 / 一键建任务账号",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const WmasSettingPage())),
-          ),
+            _settingTile(
+              context,
+              icon: Icons.local_shipping_outlined,
+              color: const Color(0xFF00897B),
+              title: "WMAS(AGV)设置",
+              subtitle: "调度服务地址 / 一键建任务账号",
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const WmasSettingPage())),
+            ),
           if (_isWhRole)
-          _settingTile(
-            context,
-            icon: Icons.smart_toy_outlined,
-            color: const Color(0xFF37474F),
-            title: "AGV调度系统(哈工库讯)",
-            subtitle: "登录账号 / 实时大屏地址（AGV模块数据源）",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const AgvSettingPage())),
-          ),
+            _settingTile(
+              context,
+              icon: Icons.smart_toy_outlined,
+              color: const Color(0xFF37474F),
+              title: "AGV调度系统(哈工库讯)",
+              subtitle: "登录账号 / 实时大屏地址（AGV模块数据源）",
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const AgvSettingPage())),
+            ),
           if (Auth.can("agv_monitor"))
-          _settingTile(
-            context,
-            icon: Icons.insights_outlined,
-            color: const Color(0xFF3949AB),
-            title: "数据驾驶舱",
-            subtitle: "今日出入库/AGV/站台 实时KPI与7日趋势",
-            onTap: () => Navigator.push(
-                context, MaterialPageRoute(builder: (_) => const DashPage())),
-          ),
+            _settingTile(
+              context,
+              icon: Icons.insights_outlined,
+              color: const Color(0xFF3949AB),
+              title: "数据驾驶舱",
+              subtitle: "今日出入库/AGV/站台 实时KPI与7日趋势",
+              onTap: () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const DashPage())),
+            ),
           if (Auth.can("agv_monitor"))
-          _settingTile(
-            context,
-            icon: Icons.speed_outlined,
-            color: const Color(0xFF283593),
-            title: "AGV效率报表",
-            subtitle: "各车任务量/平均耗时/7×24搬运热力",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const AgvReportPage())),
-          ),
+            _settingTile(
+              context,
+              icon: Icons.speed_outlined,
+              color: const Color(0xFF283593),
+              title: "AGV效率报表",
+              subtitle: "各车任务量/平均耗时/7×24搬运热力",
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const AgvReportPage())),
+            ),
           if (Auth.can("agv_monitor"))
-          _settingTile(
-            context,
-            icon: Icons.grid_view_outlined,
-            color: const Color(0xFF00897B),
-            title: "货位占用图",
-            subtitle: "AGV货架/地面库位 实时在库热力视图",
-            onTap: () => Navigator.push(
-                context, MaterialPageRoute(builder: (_) => const LocMapPage())),
-          ),
+            _settingTile(
+              context,
+              icon: Icons.grid_view_outlined,
+              color: const Color(0xFF00897B),
+              title: "货位占用图",
+              subtitle: "AGV货架/地面库位 实时在库热力视图",
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const LocMapPage())),
+            ),
           if (_isWhRole)
-          _settingTile(
-            context,
-            icon: Icons.monitor_heart_outlined,
-            color: const Color(0xFF455A64),
-            title: "设备诊断",
-            subtitle: "数据库/网络/权限自查 · 异常日志导出",
-            onTap: () => Navigator.push(
-                context, MaterialPageRoute(builder: (_) => const DiagPage())),
-          ),
+            _settingTile(
+              context,
+              icon: Icons.monitor_heart_outlined,
+              color: const Color(0xFF455A64),
+              title: "设备诊断",
+              subtitle: "数据库/网络/权限自查 · 异常日志导出",
+              onTap: () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const DiagPage())),
+            ),
           _settingTile(
             context,
             icon: Icons.volume_up_outlined,
@@ -4085,22 +4153,22 @@ class SettingsMenuPage extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const SoundVibrationPage())),
           ),
           if (_isWhRole)
-          _settingTile(
-            context,
-            icon: Icons.fact_check_outlined,
-            color: const Color(0xFF6D4C41),
-            title: "操作审计日志",
-            subtitle: "关键操作流水 / 一键导出排查",
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const AuditLogPage())),
-          ),
-
+            _settingTile(
+              context,
+              icon: Icons.fact_check_outlined,
+              color: const Color(0xFF6D4C41),
+              title: "操作审计日志",
+              subtitle: "关键操作流水 / 一键导出排查",
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const AuditLogPage())),
+            ),
           _settingTile(
             context,
             icon: Icons.system_update_alt,
             color: const Color(0xFF00897B),
             title: "检查更新",
-            subtitle: "当前 v${AppUpdater.localVersion}+${AppUpdater.localBuild} · 手动查询服务器新版本",
+            subtitle:
+                "当前 v${AppUpdater.localVersion}+${AppUpdater.localBuild} · 手动查询服务器新版本",
             onTap: () => AppUpdater.checkAtLaunch(manual: true),
           ),
         ],
@@ -4142,7 +4210,13 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
   bool _sound = true;
   bool _vibration = true;
   bool _voice = true;
-  bool _nNew = true, _nUrge = true, _nArrive = true, _nResult = true, _nWatch = true, _nStock = true, _nCar = true;
+  bool _nNew = true,
+      _nUrge = true,
+      _nArrive = true,
+      _nResult = true,
+      _nWatch = true,
+      _nStock = true,
+      _nCar = true;
   double _rate = 0.55;
   bool _loaded = false;
   bool _notifGranted = false;
@@ -4152,10 +4226,17 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
   void initState() {
     super.initState();
     _load();
+    PrefsSync.changed.addListener(_load); // ㉖B14 服务器回写后刷新开关状态
   }
 
   final ValueNotifier<double> _vpProg = ValueNotifier<double>(-1);
-  @override void dispose() { _vpProg.dispose(); super.dispose(); }
+  @override
+  void dispose() {
+    PrefsSync.changed.removeListener(_load);
+    _vpProg.dispose();
+    super.dispose();
+  }
+
   Future<void> _voicePackAction() async {
     final installed = await VoicePack.installed();
     if (!mounted) return;
@@ -4163,37 +4244,75 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
       final dis = await VoicePack.disabled();
       if (!mounted) return;
       if (dis) {
-        final yes = await showDialog<bool>(context: context, builder: (c2) => AlertDialog(
-          title: const Text("离线引擎已停用（崩溃保护）", style: TextStyle(color: Colors.orange)),
-          content: const Text("上次在语音合成时异常退出，已自动降级为数字拼播。\n\n如确认是偶发问题可重新启用；再次崩溃会再次自动停用。"),
-          actions: [TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("保持停用")),
-            FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("重新启用"))],
-        ));
-        if (yes == true) { await VoicePack.setDisabled(false); if (mounted) setState(() {}); }
+        final yes = await showDialog<bool>(
+            context: context,
+            builder: (c2) => AlertDialog(
+                  title: const Text("离线引擎已停用（崩溃保护）",
+                      style: TextStyle(color: Colors.orange)),
+                  content: const Text(
+                      "上次在语音合成时异常退出，已自动降级为数字拼播。\n\n如确认是偶发问题可重新启用；再次崩溃会再次自动停用。"),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(c2, false),
+                        child: const Text("保持停用")),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(c2, true),
+                        child: const Text("重新启用"))
+                  ],
+                ));
+        if (yes == true) {
+          await VoicePack.setDisabled(false);
+          if (mounted) setState(() {});
+        }
         return;
       }
-      final yes = await showDialog<bool>(context: context, builder: (c2) => AlertDialog(
-        title: const Text("离线语音包已安装"),
-        content: const Text("约64MB模型在本地，无系统TTS时自动启用。删除后回落数字拼播。"),
-        actions: [TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("关闭")),
-          TextButton(onPressed: () => Navigator.pop(c2, true), child: const Text("删除", style: TextStyle(color: Colors.red)))],
-      ));
-      if (yes == true) { await VoicePack.remove(); if (mounted) setState(() {}); }
+      final yes = await showDialog<bool>(
+          context: context,
+          builder: (c2) => AlertDialog(
+                title: const Text("离线语音包已安装"),
+                content: const Text("约64MB模型在本地，无系统TTS时自动启用。删除后回落数字拼播。"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2, false),
+                      child: const Text("关闭")),
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2, true),
+                      child:
+                          const Text("删除", style: TextStyle(color: Colors.red)))
+                ],
+              ));
+      if (yes == true) {
+        await VoicePack.remove();
+        if (mounted) setState(() {});
+      }
       return;
     }
-    final yes = await showDialog<bool>(context: context, builder: (c2) => AlertDialog(
-      title: const Text("下载离线语音包？"),
-      content: const Text("从局域网服务器下载约64MB中文语音模型（仅一次，不耗外网流量）。下载中可继续使用，完成后无系统TTS的设备扫码播报自动升级为真人音色。"),
-      actions: [TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消")),
-        FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("下载"))],
-    ));
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (c2) => AlertDialog(
+              title: const Text("下载离线语音包？"),
+              content: const Text(
+                  "从局域网服务器下载约64MB中文语音模型（仅一次，不耗外网流量）。下载中可继续使用，完成后无系统TTS的设备扫码播报自动升级为真人音色。"),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(c2, false),
+                    child: const Text("取消")),
+                FilledButton(
+                    onPressed: () => Navigator.pop(c2, true),
+                    child: const Text("下载"))
+              ],
+            ));
     if (yes != true || !mounted) return;
     _vpProg.value = 0;
     final r = await VoicePack.download((p) => _vpProg.value = p);
     _vpProg.value = -1;
     if (!mounted) return;
     setState(() {});
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r["ok"] == true ? '语音包已安装，点「试听语音播报」验证' : '下载失败：' + (r["msg"] ?? "").toString()), backgroundColor: r["ok"] == true ? Colors.green : Colors.red));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(r["ok"] == true
+            ? '语音包已安装，点「试听语音播报」验证'
+            : '下载失败：' + (r["msg"] ?? "").toString()),
+        backgroundColor: r["ok"] == true ? Colors.green : Colors.red));
   }
 
   Future<void> _load() async {
@@ -4219,15 +4338,23 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
 
   Future<void> _setKey(String key, bool v) async {
     await RemindPrefs.setEnabled(key, v);
+    PrefsSync.pushAll(); // ㉖B14 提醒订阅/语音开关上云（fire-and-forget）
     setState(() {
       // 同步界面绑定字段：否则Switch读旧值弹回，表现为关不掉
-      if (key == RemindPrefs.kNew) _nNew = v;
-      else if (key == RemindPrefs.kUrge) _nUrge = v;
-      else if (key == RemindPrefs.kArrive) _nArrive = v;
-      else if (key == RemindPrefs.kResult) _nResult = v;
-      else if (key == RemindPrefs.kWatch) _nWatch = v;
-      else if (key == RemindPrefs.kStock) _nStock = v;
-      else if (key == RemindPrefs.kCar) _nCar = v;
+      if (key == RemindPrefs.kNew)
+        _nNew = v;
+      else if (key == RemindPrefs.kUrge)
+        _nUrge = v;
+      else if (key == RemindPrefs.kArrive)
+        _nArrive = v;
+      else if (key == RemindPrefs.kResult)
+        _nResult = v;
+      else if (key == RemindPrefs.kWatch)
+        _nWatch = v;
+      else if (key == RemindPrefs.kStock)
+        _nStock = v;
+      else if (key == RemindPrefs.kCar)
+        _nCar = v;
       else if (key == RemindPrefs.kVoice) _voice = v;
     });
   }
@@ -4256,31 +4383,104 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
           Card(
             color: _notifGranted ? null : const Color(0xFFFFF3E0),
             child: ListTile(
-              leading: Icon(Icons.notifications_active, color: _notifGranted ? Colors.green : Colors.orange),
-              title: Text(_notifGranted ? "系统通知已开启" : "系统通知未开启", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-              subtitle: Text(_notifGranted ? "待接单/催单/到站提醒将以悬浮横幅+锁屏通知送达，铃声为闹钟音量" : "息屏/后台收不到提醒，点此去授权", style: const TextStyle(fontSize: 12)),
+              leading: Icon(Icons.notifications_active,
+                  color: _notifGranted ? Colors.green : Colors.orange),
+              title: Text(_notifGranted ? "系统通知已开启" : "系统通知未开启",
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600)),
+              subtitle: Text(
+                  _notifGranted
+                      ? "待接单/催单/到站提醒将以悬浮横幅+锁屏通知送达，铃声为闹钟音量"
+                      : "息屏/后台收不到提醒，点此去授权",
+                  style: const TextStyle(fontSize: 12)),
               trailing: _notifGranted ? null : const Icon(Icons.chevron_right),
               onTap: _notifGranted ? null : _askNotifPerm,
             ),
           ),
           const SizedBox(height: 8),
-          const Padding(padding: EdgeInsets.fromLTRB(4, 8, 4, 6), child: Text("提醒类别（关闭后该类不再弹系统通知）", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.blueGrey))),
-          Card(child: SwitchListTile(value: _nNew, activeColor: const Color(0xFF515BD4), title: const Text("待接单提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("新领料单/超时放开/转派给你", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kNew, v))),
-          Card(child: SwitchListTile(value: _nUrge, activeColor: const Color(0xFF515BD4), title: const Text("催单提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("领料员催接单/催备料", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kUrge, v))),
-          Card(child: SwitchListTile(value: _nArrive, activeColor: const Color(0xFF515BD4), title: const Text("到站催扫提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("货架到站台超时未扫码发料", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kArrive, v))),
-          Card(child: SwitchListTile(value: _nResult, activeColor: const Color(0xFF515BD4), title: const Text("结果动态提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("接单/备齐/签收/驳回/取消", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kResult, v))),
-          Card(child: SwitchListTile(value: _nWatch, activeColor: const Color(0xFF515BD4), title: const Text("预约到料提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("关注的零件入库时通知（库存页·我的预约）", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kWatch, v))),
-          Card(child: SwitchListTile(value: _nStock, activeColor: const Color(0xFF515BD4), title: const Text("断料预警提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("零件在架清零时通知仓管与相关物料员", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kStock, v))),
-          Card(child: SwitchListTile(value: _nCar, activeColor: const Color(0xFF515BD4), title: const Text("车辆告警提醒", style: TextStyle(fontSize: 15)), subtitle: const Text("AGV急停/通讯断开/故障/低电时通知全体仓管，恢复时复位", style: TextStyle(fontSize: 12)), onChanged: (v) => _setKey(RemindPrefs.kCar, v))),
+          const Padding(
+              padding: EdgeInsets.fromLTRB(4, 8, 4, 6),
+              child: Text("提醒类别（关闭后该类不再弹系统通知）",
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blueGrey))),
+          Card(
+              child: SwitchListTile(
+                  value: _nNew,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("待接单提醒", style: TextStyle(fontSize: 15)),
+                  subtitle: const Text("新领料单/超时放开/转派给你",
+                      style: TextStyle(fontSize: 12)),
+                  onChanged: (v) => _setKey(RemindPrefs.kNew, v))),
+          Card(
+              child: SwitchListTile(
+                  value: _nUrge,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("催单提醒", style: TextStyle(fontSize: 15)),
+                  subtitle:
+                      const Text("领料员催接单/催备料", style: TextStyle(fontSize: 12)),
+                  onChanged: (v) => _setKey(RemindPrefs.kUrge, v))),
+          Card(
+              child: SwitchListTile(
+                  value: _nArrive,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("到站催扫提醒", style: TextStyle(fontSize: 15)),
+                  subtitle: const Text("货架到站台超时未扫码发料",
+                      style: TextStyle(fontSize: 12)),
+                  onChanged: (v) => _setKey(RemindPrefs.kArrive, v))),
+          Card(
+              child: SwitchListTile(
+                  value: _nResult,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("结果动态提醒", style: TextStyle(fontSize: 15)),
+                  subtitle: const Text("接单/备齐/签收/驳回/取消",
+                      style: TextStyle(fontSize: 12)),
+                  onChanged: (v) => _setKey(RemindPrefs.kResult, v))),
+          Card(
+              child: SwitchListTile(
+                  value: _nWatch,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("预约到料提醒", style: TextStyle(fontSize: 15)),
+                  subtitle: const Text("关注的零件入库时通知（库存页·我的预约）",
+                      style: TextStyle(fontSize: 12)),
+                  onChanged: (v) => _setKey(RemindPrefs.kWatch, v))),
+          Card(
+              child: SwitchListTile(
+                  value: _nStock,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("断料预警提醒", style: TextStyle(fontSize: 15)),
+                  subtitle: const Text("零件在架清零时通知仓管与相关物料员",
+                      style: TextStyle(fontSize: 12)),
+                  onChanged: (v) => _setKey(RemindPrefs.kStock, v))),
+          Card(
+              child: SwitchListTile(
+                  value: _nCar,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("车辆告警提醒", style: TextStyle(fontSize: 15)),
+                  subtitle: const Text("AGV急停/通讯断开/故障/低电时通知全体仓管，恢复时复位",
+                      style: TextStyle(fontSize: 12)),
+                  onChanged: (v) => _setKey(RemindPrefs.kCar, v))),
           const SizedBox(height: 8),
-          const Padding(padding: EdgeInsets.fromLTRB(4, 8, 4, 6), child: Text("扫码反馈", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.blueGrey))),
+          const Padding(
+              padding: EdgeInsets.fromLTRB(4, 8, 4, 6),
+              child: Text("扫码反馈",
+                  style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blueGrey))),
           Card(
             color: _ttsOk == false ? const Color(0xFFFFF3E0) : null,
             child: SwitchListTile(
               value: _voice,
               activeColor: const Color(0xFF00897B),
-              title: const Text("语音播报（零件号后四位+件数）", style: TextStyle(fontSize: 15)),
-              subtitle: Text(_ttsOk == false ? "⚠️本机未检测到TTS引擎，将回退提示音" : "例：扫 6608453824 → 播报「3824，25件」", style: const TextStyle(fontSize: 12)),
+              title:
+                  const Text("语音播报（零件号后四位+件数）", style: TextStyle(fontSize: 15)),
+              subtitle: Text(
+                  _ttsOk == false
+                      ? "⚠️本机未检测到TTS引擎，将回退提示音"
+                      : "例：扫 6608453824 → 播报「3824，25件」",
+                  style: const TextStyle(fontSize: 12)),
               onChanged: (v) async {
                 await _setKey(RemindPrefs.kVoice, v);
                 if (v) await NotifyService.speak("测试播报");
@@ -4290,55 +4490,106 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
           Card(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text("播报语速：${_rate < 0.45 ? "慢" : _rate > 0.65 ? "快" : "中"}", style: const TextStyle(fontSize: 14)),
-                Slider(
-                  value: _rate, min: 0.3, max: 0.9,
-                  activeColor: const Color(0xFF00897B),
-                  onChanged: (v) => setState(() => _rate = v),
-                  onChangeEnd: (v) async {
-                    await RemindPrefs.setRate(v);
-                    await NotifyService.speak("3824，25件");
-                  },
-                ),
-              ]),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                        "播报语速：${_rate < 0.45 ? "慢" : _rate > 0.65 ? "快" : "中"}",
+                        style: const TextStyle(fontSize: 14)),
+                    Slider(
+                      value: _rate,
+                      min: 0.3,
+                      max: 0.9,
+                      activeColor: const Color(0xFF00897B),
+                      onChanged: (v) => setState(() => _rate = v),
+                      onChangeEnd: (v) async {
+                        await RemindPrefs.setRate(v);
+                        PrefsSync.pushAll(); // ㉖B14 语速上云
+                        await NotifyService.speak("3824，25件");
+                      },
+                    ),
+                  ]),
             ),
           ),
-          Card(child: SwitchListTile(value: _sound, activeColor: const Color(0xFF515BD4), title: const Text("提示音（无语音时兜底）", style: TextStyle(fontSize: 15)), subtitle: const Text("语音播报关闭或不可用时，扫码成功播放", style: TextStyle(fontSize: 12)), onChanged: (v) async {
-            await AppSettings.setSoundEnabled(v);
-            setState(() => _sound = v);
-          })),
-          Card(child: SwitchListTile(value: _vibration, activeColor: const Color(0xFF515BD4), title: const Text("扫码成功震动", style: TextStyle(fontSize: 15)), onChanged: (v) async {
-            await AppSettings.setVibrationEnabled(v);
-            setState(() => _vibration = v);
-            if (v) { try { if ((await Vibration.hasVibrator()) ?? false) await Vibration.vibrate(duration: 120); } catch (_) {} }
-          })),
+          Card(
+              child: SwitchListTile(
+                  value: _sound,
+                  activeColor: const Color(0xFF515BD4),
+                  title:
+                      const Text("提示音（无语音时兜底）", style: TextStyle(fontSize: 15)),
+                  subtitle: const Text("语音播报关闭或不可用时，扫码成功播放",
+                      style: TextStyle(fontSize: 12)),
+                  onChanged: (v) async {
+                    await AppSettings.setSoundEnabled(v);
+                    setState(() => _sound = v);
+                  })),
+          Card(
+              child: SwitchListTile(
+                  value: _vibration,
+                  activeColor: const Color(0xFF515BD4),
+                  title: const Text("扫码成功震动", style: TextStyle(fontSize: 15)),
+                  onChanged: (v) async {
+                    await AppSettings.setVibrationEnabled(v);
+                    setState(() => _vibration = v);
+                    if (v) {
+                      try {
+                        if ((await Vibration.hasVibrator()) ?? false)
+                          await Vibration.vibrate(duration: 120);
+                      } catch (_) {}
+                    }
+                  })),
           const SizedBox(height: 16),
           ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, minimumSize: const Size(double.infinity, 48)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF515BD4),
+                foregroundColor: Colors.white,
+                minimumSize: const Size(double.infinity, 48)),
             onPressed: () async {
               await NotifyService.test();
               if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已发测试通知：看横幅与听铃声（息屏测试请先锁屏再等30秒轮询）"), backgroundColor: Colors.green));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text("已发测试通知：看横幅与听铃声（息屏测试请先锁屏再等30秒轮询）"),
+                  backgroundColor: Colors.green));
             },
             icon: const Icon(Icons.volume_up),
             label: const Text("发送测试通知（验证铃声/横幅/锁屏）"),
           ),
           const SizedBox(height: 10),
-          Card(child: ListTile(dense: true, leading: const Icon(Icons.cloud_download_outlined, color: Color(0xFF3949AB)),
-            title: const Text('离线语音包（无系统TTS设备可选）', style: TextStyle(fontSize: 14)),
-            subtitle: FutureBuilder<String>(future: NotifyService.engineLabel(), builder: (cc, ss) => Text(ss.hasData ? '当前播报引擎：' + ss.data! : '检测中…', style: const TextStyle(fontSize: 11.5))),
-            trailing: ValueListenableBuilder<double>(valueListenable: _vpProg, builder: (cc, v, __) => v >= 0 && v < 100 ? SizedBox(width: 60, child: LinearProgressIndicator(value: v / 100, minHeight: 6)) : const Icon(Icons.chevron_right)),
-            onTap: _voicePackAction)),
+          Card(
+              child: ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.cloud_download_outlined,
+                      color: Color(0xFF3949AB)),
+                  title: const Text('离线语音包（无系统TTS设备可选）',
+                      style: TextStyle(fontSize: 14)),
+                  subtitle: FutureBuilder<String>(
+                      future: NotifyService.engineLabel(),
+                      builder: (cc, ss) => Text(
+                          ss.hasData ? '当前播报引擎：' + ss.data! : '检测中…',
+                          style: const TextStyle(fontSize: 11.5))),
+                  trailing: ValueListenableBuilder<double>(
+                      valueListenable: _vpProg,
+                      builder: (cc, v, __) => v >= 0 && v < 100
+                          ? SizedBox(
+                              width: 60,
+                              child: LinearProgressIndicator(
+                                  value: v / 100, minHeight: 6))
+                          : const Icon(Icons.chevron_right)),
+                  onTap: _voicePackAction)),
           const SizedBox(height: 10),
           ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.grey.shade200, foregroundColor: Colors.black87, minimumSize: const Size(double.infinity, 48)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.grey.shade200,
+                foregroundColor: Colors.black87,
+                minimumSize: const Size(double.infinity, 48)),
             onPressed: () => NotifyService.speak("3824，25件"),
             icon: const Icon(Icons.record_voice_over),
             label: const Text("试听语音播报"),
           ),
           const SizedBox(height: 8),
-          const Text("提醒铃声：把任意 wav 命名为 reminder.wav 放到 APK 的 res/raw/reminder 即为自定义铃声（当前用占位音，可联系管理员替换）。", style: TextStyle(fontSize: 11, color: Colors.grey)),
+          const Text(
+              "提醒铃声：把任意 wav 命名为 reminder.wav 放到 APK 的 res/raw/reminder 即为自定义铃声（当前用占位音，可联系管理员替换）。",
+              style: TextStyle(fontSize: 11, color: Colors.grey)),
         ],
       ),
     );
@@ -4359,30 +4610,100 @@ class _MessageHubPageState extends State<MessageHubPage> {
   String _err = "";
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   Future<void> _load() async {
-    setState(() { _loading = true; _err = ""; });
+    setState(() {
+      _loading = true;
+      _err = "";
+    });
     final r = await AuthApi.notificationsHistory(limit: 100);
     if (!mounted) return;
     if (r["ok"] == true) {
       final list = List<Map>.from(r["notifications"] ?? []);
-      list.sort((a, b) => (b["time"] ?? "").toString().compareTo((a["time"] ?? "").toString()));
-      setState(() { _msgs = list; _loading = false; });
-    } else { setState(() { _loading = false; _err = (r["msg"] ?? "加载失败").toString(); }); }
+      list.sort((a, b) =>
+          (b["time"] ?? "").toString().compareTo((a["time"] ?? "").toString()));
+      setState(() {
+        _msgs = list;
+        _loading = false;
+      });
+    } else {
+      setState(() {
+        _loading = false;
+        _err = (r["msg"] ?? "加载失败").toString();
+      });
+    }
   }
 
   static const _groups = [
-    {"name": "派单与超时", "types": ["req_new", "req_timeout", "req_reassign"], "icon": Icons.assignment_add, "color": Color(0xFF515BD4)},
-    {"name": "催单", "types": ["req_urge"], "icon": Icons.alarm, "color": Colors.deepOrange},
-    {"name": "接单与进度", "types": ["req_accept", "req_ready", "req_ready_wh", "req_done", "req_confirm"], "icon": Icons.local_shipping, "color": Colors.teal},
-    {"name": "到站催扫", "types": ["req_arrive"], "icon": Icons.inbox, "color": Colors.orange},
-    {"name": "车辆告警", "types": ["car_alarm"], "icon": Icons.error, "color": Colors.red},
-    {"name": "断料与预约", "types": ["stock_out", "watch_in"], "icon": Icons.inventory_2, "color": Colors.blueGrey},
-    {"name": "其他", "types": [], "icon": Icons.notifications_none, "color": Colors.grey},
+    {
+      "name": "派单与超时",
+      "types": ["req_new", "req_timeout", "req_reassign"],
+      "icon": Icons.assignment_add,
+      "color": Color(0xFF515BD4)
+    },
+    {
+      "name": "催单",
+      "types": ["req_urge"],
+      "icon": Icons.alarm,
+      "color": Colors.deepOrange
+    },
+    {
+      "name": "接单与进度",
+      "types": [
+        "req_accept",
+        "req_ready",
+        "req_ready_wh",
+        "req_done",
+        "req_confirm"
+      ],
+      "icon": Icons.local_shipping,
+      "color": Colors.teal
+    },
+    {
+      "name": "到站催扫",
+      "types": ["req_arrive"],
+      "icon": Icons.inbox,
+      "color": Colors.orange
+    },
+    {
+      "name": "车辆告警",
+      "types": ["car_alarm"],
+      "icon": Icons.error,
+      "color": Colors.red
+    },
+    {
+      "name": "断料与预约",
+      "types": ["stock_out", "watch_in"],
+      "icon": Icons.inventory_2,
+      "color": Colors.blueGrey
+    },
+    {
+      "name": "其他",
+      "types": [],
+      "icon": Icons.notifications_none,
+      "color": Colors.grey
+    },
   ];
 
-  static const _known = {"req_new", "req_timeout", "req_reassign", "req_urge", "req_accept", "req_ready", "req_ready_wh", "req_done", "req_confirm", "req_arrive", "car_alarm", "stock_out", "watch_in"};
+  static const _known = {
+    "req_new",
+    "req_timeout",
+    "req_reassign",
+    "req_urge",
+    "req_accept",
+    "req_ready",
+    "req_ready_wh",
+    "req_done",
+    "req_confirm",
+    "req_arrive",
+    "car_alarm",
+    "stock_out",
+    "watch_in"
+  };
 
   List<Map> _of(Map g) {
     final ts = List<String>.from(g["types"] ?? []);
@@ -4408,56 +4729,123 @@ class _MessageHubPageState extends State<MessageHubPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF7F7FA),
-      appBar: AppBar(title: const Text("消息", style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white,
-        actions: [IconButton(tooltip: "刷新", icon: const Icon(Icons.refresh), onPressed: _load)]),
+      appBar: AppBar(
+          title: const Text("消息",
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+          backgroundColor: const Color(0xFF515BD4),
+          foregroundColor: Colors.white,
+          actions: [
+            IconButton(
+                tooltip: "刷新",
+                icon: const Icon(Icons.refresh),
+                onPressed: _load)
+          ]),
       body: _loading
-        ? const Center(child: CircularProgressIndicator())
-        : _err.isNotEmpty
-          ? Center(child: Text(_err, style: const TextStyle(color: Colors.red)))
-          : _msgs.isEmpty
-            ? const Center(child: Text("暂无消息", style: TextStyle(color: Colors.grey)))
-            : ListView(padding: const EdgeInsets.all(10), children: [
-                for (final g in _groups)
-                  if (_of(g).isNotEmpty)
-                    Builder(builder: (_) {
-                      final ms = _of(g);
-                      final latest = ms.first;
-                      final hasNew = (DateTime.tryParse(latest["time"]?.toString() ?? "") != null) && DateTime.now().difference(DateTime.parse(latest["time"].toString())).inHours < 24;
-                      final color = g["color"] as Color;
-                      return Card(
-                        margin: const EdgeInsets.symmetric(vertical: 5),
-                        child: Theme(
-                          data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-                          child: ExpansionTile(
-                            tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-                            childrenPadding: const EdgeInsets.only(bottom: 6),
-                            leading: Row(mainAxisSize: MainAxisSize.min, children: [
-                              SizedBox(width: 8, child: hasNew ? Container(width: 8, height: 8, decoration: BoxDecoration(color: Colors.blue.shade400, shape: BoxShape.circle)) : const SizedBox.shrink()),
-                              const SizedBox(width: 6),
-                              CircleAvatar(backgroundColor: color.withOpacity(0.12), child: Icon(g["icon"] as IconData, size: 20, color: color)),
-                            ]),
-                            title: Text("${g["name"]} (${ms.length})", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                            subtitle: Text(ms.first["text"]?.toString() ?? "", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
-                            trailing: Text(_rel(ms.first["time"]?.toString() ?? ""), style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                            children: ms.map((m) {
-                              final rid = m["reqId"]?.toString() ?? "";
-                              return ListTile(
-                                dense: true,
-                                contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 1),
-                                title: Text(m["text"]?.toString() ?? "", style: const TextStyle(fontSize: 12.5)),
-                                subtitle: Text(_rel(m["time"]?.toString() ?? ""), style: const TextStyle(fontSize: 10.5, color: Colors.grey)),
-                                trailing: rid.isNotEmpty ? const Icon(Icons.chevron_right, size: 18, color: Colors.grey) : null,
-                                onTap: rid.isEmpty ? null : () { Navigator.pop(context); widget.onOpenReq(); },
-                              );
-                            }).toList(),
-                          ),
-                        ),
-                      );
-                    }),
-                const SizedBox(height: 8),
-                const Center(child: Text("点击带单号的消息可跳转领料页", style: TextStyle(fontSize: 11, color: Colors.grey))),
-              ]),
+          ? const Center(child: CircularProgressIndicator())
+          : _err.isNotEmpty
+              ? Center(
+                  child: Text(_err, style: const TextStyle(color: Colors.red)))
+              : _msgs.isEmpty
+                  ? const Center(
+                      child: Text("暂无消息", style: TextStyle(color: Colors.grey)))
+                  : ListView(padding: const EdgeInsets.all(10), children: [
+                      for (final g in _groups)
+                        if (_of(g).isNotEmpty)
+                          Builder(builder: (_) {
+                            final ms = _of(g);
+                            final latest = ms.first;
+                            final hasNew = (DateTime.tryParse(
+                                        latest["time"]?.toString() ?? "") !=
+                                    null) &&
+                                DateTime.now()
+                                        .difference(DateTime.parse(
+                                            latest["time"].toString()))
+                                        .inHours <
+                                    24;
+                            final color = g["color"] as Color;
+                            return Card(
+                              margin: const EdgeInsets.symmetric(vertical: 5),
+                              child: Theme(
+                                data: Theme.of(context)
+                                    .copyWith(dividerColor: Colors.transparent),
+                                child: ExpansionTile(
+                                  tilePadding: const EdgeInsets.symmetric(
+                                      horizontal: 12),
+                                  childrenPadding:
+                                      const EdgeInsets.only(bottom: 6),
+                                  leading: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        SizedBox(
+                                            width: 8,
+                                            child: hasNew
+                                                ? Container(
+                                                    width: 8,
+                                                    height: 8,
+                                                    decoration: BoxDecoration(
+                                                        color: Colors
+                                                            .blue.shade400,
+                                                        shape: BoxShape.circle))
+                                                : const SizedBox.shrink()),
+                                        const SizedBox(width: 6),
+                                        CircleAvatar(
+                                            backgroundColor:
+                                                color.withOpacity(0.12),
+                                            child: Icon(g["icon"] as IconData,
+                                                size: 20, color: color)),
+                                      ]),
+                                  title: Text("${g["name"]} (${ms.length})",
+                                      style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600)),
+                                  subtitle: Text(
+                                      ms.first["text"]?.toString() ?? "",
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.blueGrey)),
+                                  trailing: Text(
+                                      _rel(ms.first["time"]?.toString() ?? ""),
+                                      style: const TextStyle(
+                                          fontSize: 11, color: Colors.grey)),
+                                  children: ms.map((m) {
+                                    final rid = m["reqId"]?.toString() ?? "";
+                                    return ListTile(
+                                      dense: true,
+                                      contentPadding:
+                                          const EdgeInsets.symmetric(
+                                              horizontal: 16, vertical: 1),
+                                      title: Text(m["text"]?.toString() ?? "",
+                                          style:
+                                              const TextStyle(fontSize: 12.5)),
+                                      subtitle: Text(
+                                          _rel(m["time"]?.toString() ?? ""),
+                                          style: const TextStyle(
+                                              fontSize: 10.5,
+                                              color: Colors.grey)),
+                                      trailing: rid.isNotEmpty
+                                          ? const Icon(Icons.chevron_right,
+                                              size: 18, color: Colors.grey)
+                                          : null,
+                                      onTap: rid.isEmpty
+                                          ? null
+                                          : () {
+                                              Navigator.pop(context);
+                                              widget.onOpenReq();
+                                            },
+                                    );
+                                  }).toList(),
+                                ),
+                              ),
+                            );
+                          }),
+                      const SizedBox(height: 8),
+                      const Center(
+                          child: Text("点击带单号的消息可跳转领料页",
+                              style:
+                                  TextStyle(fontSize: 11, color: Colors.grey))),
+                    ]),
     );
   }
 }
