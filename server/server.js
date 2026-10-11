@@ -93,13 +93,17 @@ function loadDb() {
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
   return d;
 }
+// ㉖G3 SQLite迁移触发线监控：落盘写耗时滚动统计（近50次 max/avg）
+const _saveStat = { ring: [], max: 0, avg: 0, n: 0 };
 function saveDb(db) { // 原子写：临时文件 + rename
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const tmp = DB_FILE + '.tmp';
   const _sv = []; // ㉕F6 落盘加密：同步暂换→序列化→还原（单线程无并发观察，免整库深拷贝）
   try { walkSec(db, (o, k) => { const e = encSec(o[k]); if (e !== o[k]) { _sv.push([o, k, o[k]]); o[k] = e; } }); } catch (_) {}
+  const _t0 = Date.now();
   try { fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf8'); } finally { for (const it of _sv) it[0][it[1]] = it[2]; }
   fs.renameSync(tmp, DB_FILE);
+  try { const ms = Date.now() - _t0; _saveStat.ring.push(ms); if (_saveStat.ring.length > 50) _saveStat.ring.shift(); _saveStat.n++; _saveStat.max = Math.max.apply(null, _saveStat.ring); _saveStat.avg = Math.round(_saveStat.ring.reduce((a, b) => a + b, 0) / _saveStat.ring.length); } catch (_) {}
 }
 // ---- 数据自动备份：启动一次 + 每30分钟快照，保留最近72份（约36小时）；误删/损坏可从 data/backups 恢复 ----
 function backupDb() {
@@ -2613,15 +2617,37 @@ const server = http.createServer(async (req, res) => {
         const upMin = Math.round(process.uptime() / 60), mem = Math.round(process.memoryUsage().rss / 1048576);
         let score = 100, items = [];
         const cut = (pt, name, val, pass) => { if (!pass) score -= pt; items.push({ name, val, ok: pass }); };
-        cut(15, '服务在线', upMin + '分钟', upMin > 0);
-        cut(15, '内存占用', mem + 'MB', mem < 400);
-        cut(20, '备份新鲜度', bkAge < 0 ? '无备份' : Math.round(bkAge / 60) + '分钟前', bkAge >= 0 && bkAge < 45 * 60);
-        cut(15, '路网就绪', netReady ? '已建' : '未建', netReady);
-        cut(20, '队列积压', queueWait + '框待下发', queueWait < 30);
-        cut(15, '账本同步', ledAge < 0 ? '从未' : Math.round(ledAge / 60) + '分钟前', ledAge >= 0 && ledAge < 6 * 3600);
-        return send(res, 200, { ok: true, score, items, uptimeMin: upMin, memMB: mem, bkAgeSec: bkAge, queueWait, ledAgeSec: ledAge, netReady, sessions: Object.keys(db.sessions || {}).length });
+        cut(10, '服务在线', upMin + '分钟', upMin > 0);
+        cut(10, '内存占用', mem + 'MB', mem < 400);
+        cut(15, '备份新鲜度', bkAge < 0 ? '无备份' : Math.round(bkAge / 60) + '分钟前', bkAge >= 0 && bkAge < 45 * 60);
+        cut(10, '路网就绪', netReady ? '已建' : '未建', netReady);
+        cut(15, '队列积压', queueWait + '框待下发', queueWait < 30);
+        cut(10, '账本同步', ledAge < 0 ? '从未' : Math.round(ledAge / 60) + '分钟前', ledAge >= 0 && ledAge < 6 * 3600);
+        // ㉖G3：db.json 体积 + 落盘写耗时（SQLite 迁移触发线预警：>50MB 或 单次>500ms）
+        let dbMB = 0; try { dbMB = Math.round(fs.statSync(DB_FILE).size / 104857.6) / 10; } catch (_) {}
+        cut(15, '数据文件体积', dbMB + 'MB（触发线50）', dbMB < 45);
+        cut(15, '落盘写耗时', (_saveStat.n ? '近' + _saveStat.ring.length + '次 max' + _saveStat.max + '/avg' + _saveStat.avg + 'ms（触发线500）' : '尚无写入'), _saveStat.max <= 500);
+        return send(res, 200, { ok: true, score, items, uptimeMin: upMin, memMB: mem, bkAgeSec: bkAge, queueWait, ledAgeSec: ledAge, netReady, dbMB, saveMaxMs: _saveStat.max, saveAvgMs: _saveStat.avg, saveCount: _saveStat.n, sessions: Object.keys(db.sessions || {}).length });
       }
-      // ---- ㉕B5 发布台：POST /api/apk/upload?version=&build= 流式收APK（绕开8MB体上限，仅admin）----
+      // ---- ㉖G9 灾备恢复演练登记：POST 记结论进 ops（滚动留痕）；GET 最近一次/半年到期判定 ----
+      if (req.method === 'POST' && p === '/api/admin/drill') {
+        const b = await readBody(req);
+        const res1 = String(b.result || '').trim().slice(0, 200);
+        if (!res1) return send(res, 400, { ok: false, msg: '请填写演练结论（恢复了哪天的快照/验证了什么/有无问题）' });
+        const snap = String(b.snapshot || '').trim().slice(0, 60);
+        pushOps(u, '恢复演练', snap || 'db.json', `结论：${res1}`);
+        db.lastDrill = { at: Date.now(), by: u.name, note: res1, snapshot: snap };
+        save();
+        console.log(`[drill] ${u.name} 登记灾备演练：${res1.slice(0, 60)}`);
+        return send(res, 200, { ok: true, msg: '演练已登记进活动流（每半年一次，检查单 G9）' });
+      }
+      if (req.method === 'GET' && p === '/api/admin/drill') {
+        const hist = opsLoadDays(366).filter((x) => x.act === '恢复演练').sort((a, b) => b.t - a.t);
+        const last = db.lastDrill || (hist.length ? { at: hist[0].t, by: hist[0].by, note: hist[0].det || '', snapshot: hist[0].obj || '' } : null);
+        const due = last ? (Date.now() - (Number(last.at) || 0) > 180 * 864e5) : true;
+        return send(res, 200, { ok: true, last, due, count: hist.length, history: hist.slice(0, 12) });
+      }
+
       if (req.method === 'POST' && p === '/api/apk/upload') {
         const version = String(url.searchParams.get('version') || '').trim();
         const build = parseInt(url.searchParams.get('build') || '0', 10);
