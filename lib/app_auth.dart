@@ -317,9 +317,18 @@ class AuthApi {
   // ㉖④ 检验模式三接口
   static Future<Map> inspectList() async =>
       _req("GET", "/api/inspect/list", token: await AuthStore.token());
-  static Future<Map> inspectStart(String from, String note) async =>
+  static Future<Map> inspectStart(String from, String note,
+          {String station = ""}) async =>
       _req("POST", "/api/inspect/start",
-          body: {"from": from, "note": note}, token: await AuthStore.token());
+          body: {
+            "from": from,
+            "note": note,
+            if (station.isNotEmpty) "station": station
+          },
+          token: await AuthStore.token());
+  static Future<Map> inspectSearch(String pn) async =>
+      _req("GET", "/api/inspect/search?pn=" + Uri.encodeComponent(pn),
+          token: await AuthStore.token());
   static Future<Map> inspectReturn(String id, String note) async =>
       _req("POST", "/api/inspect/return",
           body: {"id": id, "note": note}, token: await AuthStore.token());

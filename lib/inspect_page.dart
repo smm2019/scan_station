@@ -1,4 +1,4 @@
-// ===================== ㉖④ 检验模式页（AGV 下架检验 → 备注 → 原样归位） =====================
+// ===================== ㉖④ 检验模式页：按零件号搜框 → AGV下架到站台 → 检验备注 → 一键归位 =====================
 class InspectPage extends StatefulWidget {
   const InspectPage({super.key});
   @override
@@ -7,10 +7,13 @@ class InspectPage extends StatefulWidget {
 
 class _InspectPageState extends State<InspectPage>
     with AutomaticKeepAliveClientMixin {
-  final TextEditingController _codeCtrl = TextEditingController();
+  final TextEditingController _pnCtrl = TextEditingController();
+  List<Map> _boxes = [];
   List<Map> _list = [];
-  bool _loading = false, _loaded = false;
-  String _err = "";
+  List<String> _free = [];
+  int _total = 0;
+  bool _searching = false, _searched = false, _loading = false, _loaded = false;
+  String _err = "", _serr = "";
   Timer? _timer;
 
   @override
@@ -27,7 +30,7 @@ class _InspectPageState extends State<InspectPage>
   @override
   void dispose() {
     _timer?.cancel();
-    _codeCtrl.dispose();
+    _pnCtrl.dispose();
     super.dispose();
   }
 
@@ -47,49 +50,76 @@ class _InspectPageState extends State<InspectPage>
     });
   }
 
-  String _stText(String s) => switch (s) {
-        "toStation" => "🚚 下架途中",
-        "atStation" => "📍 站台待检",
-        "returning" => "🔙 归位途中",
-        "done" => "✅ 已归位",
-        "stuck" => "⚠️ 超时待核",
-        "cancel" => "已取消",
-        _ => s,
-      };
-
-  Future<void> _start() async {
-    final code = _codeCtrl.text.trim().toUpperCase();
-    if (code.isEmpty) {
-      _toast("请先扫描或输入框标签号");
+  Future<void> _search() async {
+    final q = _pnCtrl.text.trim().toUpperCase();
+    if (q.length < 2) {
+      _toast("零件号片段至少2个字符（也可直接扫/贴完整标签号）");
       return;
     }
-    // 事由
-    final why = await _prompt("检验事由备注（将记入工单与留痕）", "");
-    if (why == null) return;
-    if (why.trim().isEmpty) {
-      _toast("检验事由必填");
-      return;
-    }
-    // 先查标签当前货位
-    final lg = await AuthApi.ledgerGetByCode(code);
+    setState(() {
+      _searching = true;
+      _serr = "";
+    });
+    final r = await AuthApi.inspectSearch(q);
     if (!mounted) return;
-    final items = List<Map>.from(lg["items"] ?? []);
-    if (lg["ok"] != true || items.isEmpty) {
-      _toast("该标签不在库（账本无此框），无法检验下架");
-      return;
+    setState(() {
+      _searching = false;
+      _searched = true;
+      if (r["ok"] == true) {
+        _boxes = List<Map>.from(r["boxes"] ?? []);
+        _total = (r["total"] as num?)?.toInt() ?? _boxes.length;
+        _free =
+            ((r["freeStns"] as List?) ?? []).map((e) => e.toString()).toList();
+        _serr = "";
+      } else {
+        _boxes = [];
+        _serr = (r["msg"] ?? "搜索失败").toString();
+      }
+    });
+  }
+
+  Future<String?> _pickStation() async {
+    if (_free.isEmpty) {
+      _toast("当前无空闲站台（都占有货/队列/检验），请先清台或稍后再试");
+      return null;
     }
-    final loc = (items.first["l"] ?? "").toString();
-    final part = (items.first["p"] ?? "").toString();
-    if (loc.isEmpty) {
-      _toast("查不到该框当前货位");
-      return;
-    }
+    return showModalBottomSheet<String>(
+        context: context,
+        builder: (c2) => SafeArea(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text("指定检验下架站台",
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15))),
+              ..._free.map((st) => ListTile(
+                  leading: const Icon(Icons.pin_drop_outlined,
+                      color: Color(0xFF00897B)),
+                  title: Text(st),
+                  onTap: () => Navigator.pop(c2, st))),
+              TextButton(
+                  onPressed: () => Navigator.pop(c2), child: const Text("取消")),
+            ])));
+  }
+
+  Future<void> _start(Map b, {String station = ""}) async {
+    final why = await _prompt("检验事由备注（必填，将记入工单与留痕）", "");
+    if (why == null || why.trim().isEmpty) return;
+    if (!mounted) return;
+    final loc = (b["loc"] ?? "").toString();
+    final codes = List<String>.from(b["codes"] ?? []);
+    final part = (b["part"] ?? "").toString();
+    final nm = (b["nm"] ?? "").toString();
+    final firstTag = codes.isNotEmpty ? codes[0] : "";
+    final more = codes.length > 1 ? " 等${codes.length}码" : "";
+    final nmX = nm.isNotEmpty ? " · $nm" : "";
+    final stTip = station.isEmpty ? "自动分配空闲站台" : station;
     final yes = await showDialog<bool>(
         context: context,
         builder: (c2) => AlertDialog(
                 title: const Text("确认检验下架"),
                 content: Text(
-                    "标签 $code\n零件 $part\n当前货位 $loc\n\n将派 AGV 把整框叉到空闲站台，检验完成后在本页点「归位」送回原货位 $loc。"),
+                    "货位 $loc\n零件 $part$nmX · ${b["q"] ?? 0}件\n标签 $firstTag$more\n\n站台：$stTip\n检验完成后在本页点「检验完·归位」，AGV 原样送回 $loc。"),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(c2, false),
@@ -99,15 +129,16 @@ class _InspectPageState extends State<InspectPage>
                       child: const Text("发起下架")),
                 ]));
     if (yes != true || !mounted) return;
-    final r = await AuthApi.inspectStart(loc, why.trim());
+    final r = await AuthApi.inspectStart(loc, why.trim(), station: station);
     if (!mounted) return;
     if (r["ok"] == true) {
       final rec = Map.from(r["rec"] ?? {});
-      _toast("✅ 已下架 ${rec['code'] ?? code} → ${rec['station'] ?? '站台'}，到台后通知");
-      _codeCtrl.clear();
+      _toast("✅ 已下架 → ${rec["station"] ?? "站台"}，到台后通知归位");
+      _search();
       _load();
     } else {
       _toast("发起失败：${r["msg"] ?? "未知错误"}");
+      _search(); // 状态可能已变化，刷新框列表
     }
   }
 
@@ -116,7 +147,7 @@ class _InspectPageState extends State<InspectPage>
     if (note == null || note.trim().isEmpty) return;
     final r = await AuthApi.inspectReturn(q["id"].toString(), note.trim());
     if (!mounted) return;
-    _toast(r["ok"] == true ? "✅ 归位任务已下发，AGV 送回后自动完成" : "失败：${r["msg"]}");
+    _toast(r["ok"] == true ? "✅ 归位任务已下发，AGV 送回原货位后自动完成" : "失败：${r["msg"]}");
     if (r["ok"] == true) _load();
   }
 
@@ -125,7 +156,7 @@ class _InspectPageState extends State<InspectPage>
     final res = await showDialog<String>(
         context: context,
         builder: (c2) => AlertDialog(
-                title: Text(title, style: const TextStyle(fontSize: 16)),
+                title: Text(title, style: const TextStyle(fontSize: 15.5)),
                 content: TextField(
                     controller: ctl,
                     maxLines: 2,
@@ -154,7 +185,86 @@ class _InspectPageState extends State<InspectPage>
                   : Colors.blueGrey)));
   }
 
-  Widget _card(Map q) {
+  String _stText(String s) => switch (s) {
+        "toStation" => "🚚 下架途中",
+        "atStation" => "📍 站台待检",
+        "returning" => "🔙 归位途中",
+        "done" => "✅ 已归位",
+        "stuck" => "⚠️ 超时待核",
+        "cancel" => "已取消",
+        _ => s,
+      };
+
+  Widget _boxCard(Map b) {
+    final can = b["canDown"] == true;
+    final codes = List<String>.from(b["codes"] ?? []);
+    final loc = (b["loc"] ?? "").toString();
+    final part = (b["part"] ?? "").toString();
+    final nm = (b["nm"] ?? "").toString();
+    final ct = (b["ct"] ?? "").toString();
+    final tg = codes.take(2).join("、") +
+        (codes.length > 2 ? " 等${codes.length}码" : "");
+    final nmX = nm.isNotEmpty ? " · $nm" : "";
+    final why = (b["why"] ?? "").toString();
+    return Card(
+        margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+        child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Expanded(
+                    child: Text(loc,
+                        style: const TextStyle(
+                            fontFamily: "monospace",
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14.5))),
+                Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                        color:
+                            can ? Colors.green.shade50 : Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(8)),
+                    child: Text(can ? "可下架" : (why.isEmpty ? "不可下架" : why),
+                        style: TextStyle(
+                            fontSize: 11,
+                            color: can
+                                ? Colors.green.shade800
+                                : Colors.blueGrey.shade700))),
+              ]),
+              Text(
+                  "$part$nmX · ${b["q"] ?? 0}件${ct.isNotEmpty ? " · 容器 $ct" : ""}",
+                  style:
+                      const TextStyle(fontSize: 12.5, color: Colors.blueGrey)),
+              Text(tg,
+                  style: const TextStyle(
+                      fontSize: 11.5,
+                      color: Colors.grey,
+                      fontFamily: "monospace")),
+              Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                if (can)
+                  TextButton.icon(
+                      onPressed: () => _start(b),
+                      icon: const Icon(Icons.local_shipping_outlined,
+                          size: 18, color: Color(0xFF515BD4)),
+                      label: const Text("一键下架",
+                          style: TextStyle(color: Color(0xFF515BD4)))),
+                if (can)
+                  TextButton.icon(
+                      onPressed: () async {
+                        final st = await _pickStation();
+                        if (st != null && mounted) _start(b, station: st);
+                      },
+                      icon: const Icon(Icons.pin_drop_outlined,
+                          size: 18, color: Color(0xFF00897B)),
+                      label: const Text("指定站台",
+                          style: TextStyle(color: Color(0xFF00897B)))),
+              ]),
+            ])));
+  }
+
+  Widget _woCard(Map q) {
     final st = (q["state"] ?? "").toString();
     final mins = st == "atStation"
         ? ((DateTime.now().millisecondsSinceEpoch -
@@ -162,6 +272,9 @@ class _InspectPageState extends State<InspectPage>
                 60000)
             .round()
         : 0;
+    final note = (q["note"] ?? "").toString();
+    final note2 = (q["note2"] ?? "").toString();
+    final err = (q["err"] ?? "").toString();
     return Card(
       margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
       child: Padding(
@@ -187,18 +300,16 @@ class _InspectPageState extends State<InspectPage>
           const SizedBox(height: 4),
           Text("${q["from"] ?? ""} ⇄ ${q["station"] ?? ''}",
               style: const TextStyle(fontSize: 13)),
-          Text(
-              "${q["part"] ?? ""}${q["nm"] != null && (q["nm"].toString()).isNotEmpty ? " · ${q["nm"]}" : ""}",
+          Text("${q["part"] ?? ""}",
               style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
-          if (q["note"] != null && (q["note"].toString()).isNotEmpty)
-            Text("事由：${q["note"]}",
+          if (note.isNotEmpty)
+            Text("事由：$note",
                 style: const TextStyle(fontSize: 12, color: Colors.grey)),
-          if (q["note2"] != null && (q["note2"].toString()).isNotEmpty)
-            Text("检验：${q["note2"]}",
+          if (note2.isNotEmpty)
+            Text("检验：$note2",
                 style: const TextStyle(fontSize: 12, color: Colors.teal)),
-          if (q["err"] != null && (q["err"].toString()).isNotEmpty)
-            Text("${q["err"]}",
-                style: const TextStyle(fontSize: 12, color: Colors.red)),
+          if (err.isNotEmpty)
+            Text(err, style: const TextStyle(fontSize: 12, color: Colors.red)),
           if (mins > 0)
             Text("已在站台等待约 $mins 分钟",
                 style:
@@ -230,61 +341,96 @@ class _InspectPageState extends State<InspectPage>
       Container(
         width: double.infinity,
         color: const Color(0xFFF3F4FB),
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Expanded(
                 child: TextField(
-                    controller: _codeCtrl,
-                    textInputAction: TextInputAction.done,
+                    controller: _pnCtrl,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (_) => _search(),
                     decoration: const InputDecoration(
-                        hintText: "扫描或输入要检验的框标签号",
+                        hintText: "零件号片段 / 完整标签号（扫码枪可直接扫）",
                         isDense: true,
-                        prefixIcon: Icon(Icons.qr_code_scanner, size: 20),
+                        prefixIcon: Icon(Icons.search, size: 20),
                         border: OutlineInputBorder(),
                         filled: true,
                         fillColor: Colors.white))),
             const SizedBox(width: 8),
             ElevatedButton(
-                onPressed: _loading ? null : _start,
+                onPressed: _searching ? null : _search,
                 style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF515BD4),
                     foregroundColor: Colors.white),
-                child: const Text("下架检验")),
+                child: Text(_searching ? "搜索中" : "搜索")),
           ]),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           Text(
-              "流程：扫框标签 → AGV 叉到空闲站台 → 现场检验 → 本页点「检验完·归位」→ AGV 送回原货位并自动核对到账。检验期间该框不可出库叫车。",
+              _free.isNotEmpty
+                  ? "空闲站台 ${_free.length} 个：${_free.join("、")}"
+                  : (_searched && _serr.isEmpty
+                      ? "⚠ 当前 8 个站台全部被占（有货/队列/检验），无法下架"
+                      : "流程：搜零件号 → 选框下架到站台 → 现场检验 → 本页「检验完·归位」原样放回"),
               style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
         ]),
       ),
       Expanded(
         child: RefreshIndicator(
-          onRefresh: _load,
+          onRefresh: () async {
+            await _load();
+            if (_searched) await _search();
+          },
           child: ListView(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            children: [
-              if (_err.isNotEmpty)
-                Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: Text("加载失败：$_err　重试点下拉",
-                        textAlign: TextAlign.center,
-                        style:
-                            const TextStyle(color: Colors.red, fontSize: 13))),
-              if (_list.isEmpty && _loaded && _err.isEmpty)
-                const Padding(
-                    padding: EdgeInsets.all(30),
-                    child: Center(
-                        child: Text("暂无检验工单",
-                            style: TextStyle(color: Colors.grey)))),
-              Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: Text("检验工单（${_list.length}）",
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 13))),
-              ..._list.map(_card),
-            ],
-          ),
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              children: [
+                if (_serr.isNotEmpty)
+                  Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Text("搜索失败：$_serr",
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              color: Colors.red, fontSize: 13))),
+                if (_searched && _serr.isEmpty) ...[
+                  Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+                      child: Text(
+                          "匹配货位（$_total 框${_total > _boxes.length ? "，显示前${_boxes.length}" : ""}）",
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13))),
+                  if (_boxes.isEmpty)
+                    const Padding(
+                        padding: EdgeInsets.all(14),
+                        child: Center(
+                            child: Text("账本中无匹配在库框",
+                                style: TextStyle(color: Colors.grey)))),
+                  ..._boxes.map(_boxCard),
+                  Container(
+                      margin: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+                      padding: const EdgeInsets.only(top: 8),
+                      decoration: const BoxDecoration(
+                          border: Border(
+                              top: BorderSide(color: Color(0xFFE0E0E0)))),
+                      child: const Text("检验工单（${_list.length}）",
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 13))),
+                ],
+                if (_err.isNotEmpty)
+                  Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: Text("工单加载失败：$_err",
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              color: Colors.red, fontSize: 13))),
+                if (!_searched && _list.isEmpty && _loaded && _err.isEmpty)
+                  const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(
+                          child: Text("输入零件号搜索要检验的框\n（也可直接扫标签号）",
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                  color: Colors.grey, fontSize: 13)))),
+                ..._list.map(_woCard),
+              ]),
         ),
       ),
     ]);

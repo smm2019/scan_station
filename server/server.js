@@ -2003,6 +2003,24 @@ const server = http.createServer(async (req, res) => {
         item.state = '取消'; item.updAt = Date.now(); save();
         return send(res, 200, { ok: true, msg: '已请求取消（若WMAS已叉出则无法撤回，需人工处理）' });
       }
+      // ---- ㉖ 检验搜索：按零件号/物料名片段列在库框（含AGV货架位判定/可下架性），并附空闲站台清单 ----
+      if (req.method === 'GET' && p === '/api/inspect/search') {
+        const q = String(url.searchParams.get('pn') || '').trim().toUpperCase();
+        if (!q) return send(res, 400, { ok: false, msg: '缺少 pn（零件号片段）' });
+        const bm = new Map();
+        for (const x of db.ledger || []) {
+          const pn = String(x.p || '').toUpperCase();
+          if (!pn.includes(q) && String(x.n || '').toUpperCase().indexOf(q) < 0 && String(x.c || '').toUpperCase() !== q) continue;
+          const k = boxKeyOf(x); if (!bm.has(k)) bm.set(k, { loc: '', codes: [], part: pn, nm: x.n || '', q: 0, ct: x.f || '', last: 0 });
+          const b2 = bm.get(k); b2.codes.push(x.c);
+          const L = String(x.l || '').toUpperCase(); if (!b2.loc || L < b2.loc) b2.loc = L; // 同框多标签取最小货位代表
+          b2.q = Math.max(b2.q, Number(x.q) || 0); if (!b2.nm && x.n) b2.nm = String(x.n); b2.last = Math.max(b2.last, Number(x.t) || 0);
+        }
+        const boxes = [...bm.values()].map((b2) => { const st = inspBoxState({ l: b2.loc, c: b2.codes[0] }); return { ...b2, shelf: st.isShelf, canDown: st.ok, why: st.why }; }).sort((a, x) => (x.canDown - a.canDown) || String(a.loc).localeCompare(String(x.loc)));
+        const freeStns = AGV_STNS.filter((st) => inspStationFree(st, Date.now()));
+        const busyStns = {}; for (const st of AGV_STNS) { const v = (db.rcsStations || {})[st]; busyStns[st] = v && v.state && v.state !== '空闲' ? v.state : (freeStns.includes(st) ? '' : '队列/检验占用'); }
+        return send(res, 200, { ok: true, boxes: boxes.slice(0, 80), total: boxes.length, freeStns, busyStns });
+      }
       // ---- ㉖④ 检验模式：下架到站台检验，看完备注后原样归位（复用 WMAS CARRY/transfer 通道）----
       if (req.method === 'POST' && p === '/api/inspect/start') {
         if (!canFeature(u, 'inspect_mode')) return send(res, 403, { ok: false, msg: '当前角色未开通「检验模式」权限' });
@@ -2014,8 +2032,10 @@ const server = http.createServer(async (req, res) => {
         const code = String(srcBox.c || '').toUpperCase();
         if ((db.inspects || []).some((q) => (q.from === from || String(q.code).toUpperCase() === code) && ['toStation', 'atStation', 'returning'].includes(q.state))) return send(res, 400, { ok: false, msg: '该货位已有进行中的检验任务' });
         if ((db.agvQueue || []).some((x) => x.type !== 'transfer' && String(x.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(x.state))) return send(res, 400, { ok: false, msg: '该货位已在出库任务中，不能同时检验下架' });
-        // 选一个空闲站台（复用调度器空闲判定的简化版：优先未占用无在途）
-        let to = ''; for (const st of AGV_STNS) { if (stn[st] && stn[st].state !== '空闲' && stn[st].state) continue; if ((db.agvQueue || []).some((q) => q.station === st && ['排队', '下发中', '已下发'].includes(q.state))) continue; if ((db.inspects || []).some((q) => q.station === st && ['toStation', 'atStation', 'returning'].includes(q.state))) continue; to = st; break; }
+        // ㉖ 指定站台优先：可用性与自动找同一判据；未指定则自动找空闲（优先 CK-05 起）
+        const want = String(b.station || '').trim().toUpperCase(); let to = '';
+        if (want) { if (!AGV_STNS.includes(want)) return send(res, 400, { ok: false, msg: '站台编码不在 8 个出库站台范围（NB02-CK-05~12）' }); if (!inspStationFree(want, Date.now())) return send(res, 400, { ok: false, msg: '站台 ' + want + ' 当前被占用（有货/队列/检验中），请改选或稍后再试' }); to = want; }
+        else { for (const st of AGV_STNS) { if (!inspStationFree(st, Date.now())) continue; to = st; break; } }
         if (!to) return send(res, 400, { ok: false, msg: '暂无空闲站台放下架框，请稍后再试' });
         const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
         const rec = { id: newId('insp'), code, from, station: to, palletType: String(srcBox.f || '').toUpperCase(), part: String(srcBox.p || ''), nm: String(srcBox.n || ''), uid: u.id, by: u.name, note: String(b.note || '').slice(0, 120), state: 'toStation', at: Date.now(), updAt: Date.now(), taskNo: '' };
@@ -3152,6 +3172,21 @@ startRcsTimer();
 // 下发走 WMAS（与人工叫车同通道同参数）；容器编码自动取该托盘类型下未被在途任务占用的第一个。
 // 模式 db.agvDispatchMode：'dry'(默认，只演算记 plan 不真发) / 'live'(真下发)。PDA 设置页切换。
 const AGV_STNS = Array.from({ length: 8 }, (_, i) => 'NB02-CK-' + String(i + 5).padStart(2, '0'));
+function inspStationFree(stn, nowMs) { // 检验可用站台：无有货/占用、无出库/移库队列占用、无检验占用
+  const st = (db.rcsStations || {})[stn];
+  if (st && st.state && st.state !== '空闲') return false;
+  if ((db.agvQueue || []).some((q) => q.station === stn && ['排队', '下发中', '已下发'].includes(q.state))) return false;
+  if ((db.inspects || []).some((q) => q.station === stn && ['toStation', 'atStation', 'returning'].includes(q.state))) return false;
+  return true;
+}
+function inspBoxState(x) { // 检验框可下架性：AGV货架位(非CK站台) + 无进行中检验 + 无在途出库
+  const from = String(x.l || '').toUpperCase();
+  const code = String(x.c || '').toUpperCase();
+  const isShelf = /^NB02-/.test(from) && !/-CK-/.test(from);
+  const busyInsp = (db.inspects || []).some((q) => (String(q.from).toUpperCase() === from || String(q.code).toUpperCase() === code) && ['toStation', 'atStation', 'returning'].includes(q.state));
+  const busyOut = (db.agvQueue || []).some((q) => q.type !== 'transfer' && String(q.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(q.state));
+  return { isShelf, ok: isShelf && !busyInsp && !busyOut, why: busyInsp ? '检验中' : busyOut ? '出库在途' : isShelf ? '' : '非AGV货架位（地面框人工搬运）' };
+}
 function agvStationFree(stn, nowMs, runT, assigned) {
   const s = (db.rcsStations || {})[stn];
   if (s && (s.state === '有货' || s.state === '占用中')) return false;
