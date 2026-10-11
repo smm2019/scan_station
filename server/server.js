@@ -83,6 +83,7 @@ function loadDb() {
   if (typeof d.scanlog !== 'object' || d.scanlog === null || Array.isArray(d.scanlog)) { d.scanlog = {}; added = true; }
   if (typeof d.outbound !== 'object' || d.outbound === null || Array.isArray(d.outbound)) { d.outbound = {}; added = true; }
   if (!Array.isArray(d.watchlist)) { d.watchlist = []; added = true; }
+  if (!d.params || typeof d.params !== 'object' || Array.isArray(d.params)) { d.params = {}; added = true; }
   if (typeof d.groundSlots !== 'object' || d.groundSlots === null || Array.isArray(d.groundSlots)) { d.groundSlots = {}; added = true; }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
@@ -410,6 +411,28 @@ function reqItemsSuggestText(r) {
     return `${i.partNo}×${i.qty}→${sg.inStock ? '待补齐' : '无货'}`;
   }).join('、');
 }
+// ---- ㉖B8 运营参数：调度/通知/告警阈值集中可调，服务器端统一取值（改完即时生效）----
+const PARAMS = {
+  pollSec:        { name: 'RCS轮询间隔', unit: '秒', min: 5, max: 300, d: 20, tip: '站台/车辆/任务刷新频率，越小越实时但越吃RCS负载' },
+  assignMin:      { name: '指定单超时放开', unit: '分钟', min: 1, max: 240, d: 30, tip: '指定仓管员下单后，超时未接单自动放开给全员' },
+  urgeMin:        { name: '催单最小间隔', unit: '分钟', min: 1, max: 120, d: 10, tip: '同一张领料单两次催单的最小间隔，防轰炸' },
+  pushMin:        { name: '急料到站催扫', unit: '分钟', min: 1, max: 60, d: 5, tip: '急料框到站台超此时长未扫码→广播全体仓管' },
+  urgeScanMin:    { name: '普通到站催扫', unit: '分钟', min: 1, max: 120, d: 10, tip: '普通框到站台超此时长未扫码→催叫车人' },
+  jamMin:         { name: '交管堵点告警', unit: '分钟', min: 1, max: 60, d: 3, tip: '车辆被交管卡住超此时长→通知在线仓管' },
+  lowBatPct:      { name: '低电阈值', unit: '%', min: 5, max: 80, d: 25, tip: '电量低于此值计入低电观察' },
+  lowBatMin:      { name: '低电未回充告警', unit: '分钟', min: 5, max: 240, d: 20, tip: '低电且空闲超此时长未回充→提醒安排充电' },
+  batch:          { name: '单轮最多下发', unit: '单', min: 1, max: 8, d: 4, tip: '排队调度器每轮最多真实下发几单（保守节奏）' },
+  agingMin:       { name: '排队防饿死升级', unit: '分钟', min: 2, max: 120, d: 10, tip: '普通队列项等待超此时长自动按急料优先级调度' },
+  sendTimeoutMin: { name: '下发无回执判失败', unit: '分钟', min: 1, max: 30, d: 5, tip: '下发中超此时长无回执→判失败可重试，防站台封死' },
+  staleMin:       { name: '在途超时判定', unit: '分钟', min: 5, max: 240, d: 40, tip: '已下发/移库超此时长未完成→判失败并通知' },
+  manualHoldMin:  { name: '人工占台压制', unit: '分钟', min: 1, max: 240, d: 30, tip: '人工标记站台占用后的压制时长，防误叫车撞台' },
+  aggMin:         { name: '同类通知聚合窗', unit: '分钟', min: 0, max: 60, d: 5, tip: '同类型通知在此窗口内合并为"等N条"（0=不聚合）' },
+  rateMax:        { name: '每人每分钟条数上限', unit: '条', min: 1, max: 50, d: 5, tip: '单人单分钟超此条数→跨类型强制合并防风暴刷屏' },
+  nStart:         { name: '夜间静默起(时)', unit: '点', min: 0, max: 23, d: 22, tip: '从该点起非急停类通知进按人缓冲（车辆告警豁免）' },
+  nEnd:           { name: '夜间静默止(时)', unit: '点', min: 0, max: 23, d: 6, tip: '到该点发送各自夜间汇总（带原单号可跳转）' },
+};
+function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
+
 // ---- ㉕T1 通知治理：同类5分钟静默聚合（并入原条"等N条"）/ 每人每分钟超5条跨类型强制聚合 / 夜间22-6点非急停类按人缓冲，早6点各自一条汇总 ----
 const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
 const URGENT_TYPES = new Set(['car_alarm']);   // 车辆告警（含急停）永不静默
@@ -417,7 +440,7 @@ const NTYPE = { req_new: 'req_new', req_timeout: 'req_new', req_reassign: 'req_n
 function notify(toUserId, type, text, reqId) {
   try {
     const now = Date.now(), hr = new Date(now).getHours();
-    if ((hr >= 22 || hr < 6) && !URGENT_TYPES.has(type)) { // 夜间非急停：按人进缓冲，早6点各自汇总
+    if ((hr >= P().nStart || hr < P().nEnd) && !URGENT_TYPES.has(type)) { // 夜间非急停：按人进缓冲，到点各自汇总
       db.nightBuf = db.nightBuf || {};
       const arr = (db.nightBuf[toUserId] = db.nightBuf[toUserId] || []);
       if (arr.length < 40) arr.push({ type, text: String(text).slice(0, 60), reqId: reqId || '', at: new Date(now).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) });
@@ -430,7 +453,7 @@ function notify(toUserId, type, text, reqId) {
     rk[1]++; _nrate.set(toUserId, rk);
     const last = _nq.get(key);
     // 同类型5分钟聚合；或该人本分钟已超5条→跨类型也合并到其最近一条（限流消费，防风暴刷屏）
-    if (last && now - last.at < 5 * 60000) {
+    if (last && now - last.at < P().aggMin * 60000) {
       const idx = db.notifications.findIndex((x) => x.id === last.id);
       if (idx >= 0) {
         const n = (last.n || 1) + 1; last.n = n; last.at2 = now;
@@ -441,9 +464,9 @@ function notify(toUserId, type, text, reqId) {
         return;
       }
     }
-    if (rk[1] > 5) {
+    if (rk[1] > P().rateMax) {
       let newest = null, nIdx = -1;
-      for (let i = db.notifications.length - 1; i >= 0 && i >= db.notifications.length - 60; i--) { const x = db.notifications[i]; if (x.to === toUserId && !/已合并/.test(x.text) && now - Date.parse(x.time) < 5 * 60000) { newest = x; nIdx = i; break; } }
+      for (let i = db.notifications.length - 1; i >= 0 && i >= db.notifications.length - 60; i--) { const x = db.notifications[i]; if (x.to === toUserId && !/已合并/.test(x.text) && now - Date.parse(x.time) < P().aggMin * 60000) { newest = x; nIdx = i; break; } }
       if (newest) {
         const n = (newest._mn || 1) + 1; newest._mn = n;
         const base = newest.text.replace(/（等 \d+ 条，已合并）$/, '');
@@ -462,9 +485,9 @@ function notify(toUserId, type, text, reqId) {
 // 夜间缓冲日出汇总：每人一条（只含本人昨夜通知，带原reqId可跳转；night_digest不在PDA白名单=不弹系统通知，站内/网页可见，不破坏旧APK）
 function nightDigest() {
   try {
-    const hr = new Date().getHours(); if (hr < 6 || hr >= 22) return;
+    const hr = new Date().getHours(); if (hr < P().nEnd || hr >= P().nStart) return;
     if (Array.isArray(db.nightBuf)) db.nightBuf = {}; // ㉕兼容：旧全局数组缓冲已废弃，按人分桶重来
-    const day = new Date().getFullYear() + '-' + (new Date().getMonth() + 1) + '-' + new Date().getDate() + 'H6';
+    const day = new Date().getFullYear() + '-' + (new Date().getMonth() + 1) + '-' + new Date().getDate() + 'H' + P().nEnd;
     if (_nightFlushed === day) return;
     _nightFlushed = day;
     const buf = db.nightBuf || {}; db.nightBuf = {}; save();
@@ -1026,15 +1049,21 @@ const server = http.createServer(async (req, res) => {
     // ---- 采集流水/出库单公开查询 + 数据核对看板（局域网公开；门户 iframe 不带 token）----
     if (req.method === 'GET' && p === '/api/scanlog') {
       const fc = (url.searchParams.get('c') || '').trim().toUpperCase();
+      const fpn = (url.searchParams.get('pn') || '').trim().toUpperCase();
+      const fft = Number(url.searchParams.get('from')) || 0, ftt = Number(url.searchParams.get('to')) || 0;
       const lim = Math.min(20000, Math.max(1, Number(url.searchParams.get('limit')) || 2000));
       let arr = Object.values(db.scanlog).sort((a, x) => (x.t || 0) - (a.t || 0));
       if (fc) arr = arr.filter(x => String(x.code).toUpperCase() === fc);
+      if (fpn) arr = arr.filter(x => String(x.pn || '').toUpperCase() === fpn); // ㉖B7 零件号过滤
+      if (fft || ftt) arr = arr.filter(x => (!fft || (x.t || 0) >= fft) && (!ftt || (x.t || 0) <= ftt)); // ㉖B7 时间窗
       return send(res, 200, { ok: true, at: db.scanlogAt, total: db.scanlogCount, count: arr.length, items: arr.slice(0, lim) });
     }
     if (req.method === 'GET' && p === '/api/outbound') {
       const fl = (url.searchParams.get('req') || '').trim().toUpperCase();
       let arr = Object.values(db.outbound).sort((a, x) => (x.createdAt || 0) - (a.createdAt || 0));
       if (fl) arr = arr.filter(x => String(x.linkReqNo || '').toUpperCase() === fl);
+      const fq = (url.searchParams.get('q') || '').trim().toUpperCase();
+      if (fq) arr = arr.filter(x => String(x.orderNo || '').toUpperCase().includes(fq) || String(x.linkReqNo || '').toUpperCase().includes(fq) || String(x.toLoc || '').toUpperCase().includes(fq) || String(x.operator || '').toUpperCase().includes(fq) || (x.items || []).some((i) => String(i.code || '').toUpperCase().includes(fq) || String(i.name || '').toUpperCase().includes(fq) || String(i.barcode || '').toUpperCase().includes(fq))); // ㉖B7 关键字过滤
       return send(res, 200, { ok: true, at: db.outboundAt, total: db.outboundCount, count: arr.length, items: arr.slice(0, 500) });
     }
     if (req.method === 'GET' && p === '/board/data') {
@@ -1444,6 +1473,62 @@ const server = http.createServer(async (req, res) => {
         q.prio = Date.now(); pushOps(u, '队列置顶', code, '框 ' + code); save();
         console.log(`[agv-q] ${u.name} 置顶排队框 ${code}`);
         return send(res, 200, { ok: true, msg: '已置顶，下一轮调度优先下发' });
+      }
+      // ---- ㉖B6 零件档案：搜索 / 全景画像（在库框+出入库史+预约人+待处理需求）/ 管理员代取消预约 ----
+      if (req.method === 'GET' && p === '/api/parts') {
+        const q = String(url.searchParams.get('q') || '').trim().toUpperCase();
+        const m = {};
+        const touch = (pn, nm) => { if (!pn) return; const e = (m[pn] = m[pn] || { nm: '', n: 0 }); if (nm && !e.nm) e.nm = String(nm).slice(0, 80); };
+        for (const x of db.ledger || []) { touch(String(x.p || '').toUpperCase(), x.n); if (x.p) m[String(x.p).toUpperCase()].n++; }
+        for (const st of Object.values(db.scanlog || {})) touch(String(st.pn || '').toUpperCase(), st.nm);
+        for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) touch(String(i.code || '').toUpperCase(), i.name);
+        if (db.itemDict) for (const [pn, dd] of Object.entries(db.itemDict)) touch(String(pn).toUpperCase(), dd && dd.nm);
+        let ks = Object.keys(m);
+        if (q) ks = ks.filter((k) => k.includes(q) || String(m[k].nm || '').toUpperCase().includes(q));
+        ks.sort((a, b) => (m[b].n || 0) - (m[a].n || 0) || a.localeCompare(b));
+        return send(res, 200, { ok: true, list: ks.slice(0, 40).map((k) => ({ pn: k, nm: m[k].nm, n: m[k].n })) });
+      }
+      if (req.method === 'GET' && p === '/api/part/profile') {
+        const pn = String(url.searchParams.get('pn') || '').trim().toUpperCase();
+        if (!pn) return send(res, 400, { ok: false, msg: '缺少 pn' });
+        const bm = {};
+        for (const x of db.ledger || []) {
+          if (String(x.p || '').toUpperCase() !== pn) continue;
+          const k = boxKeyOf(x); const e = (bm[k] = bm[k] || { tags: [], locs: {}, q: 0, nm: '', last: 0 });
+          e.tags.push(x.c); e.locs[String(x.l || '').toUpperCase()] = 1; e.q = Math.max(e.q, Number(x.q) || 0); e.last = Math.max(e.last, Number(x.t) || 0);
+          if (!e.nm && x.n) e.nm = String(x.n).slice(0, 80);
+        }
+        const boxes = Object.values(bm).map((b) => ({ loc: Object.keys(b.locs)[0] || '', tags: b.tags, q: b.q, last: b.last })).sort((a, x) => x.last - a.last);
+        const qty = boxes.reduce((a, b) => a + b.q, 0);
+        const _sl = Object.values(db.scanlog || {}).filter((st) => String(st.pn || '').toUpperCase() === pn).sort((a, x) => (x.t || 0) - (a.t || 0));
+        const inb = _sl.slice(0, 60).map((st) => ({ t: Number(st.t) || 0, code: st.code, q: Number(st.q) || 0, lot: st.lot || '', loc: (st.wt === 0 ? st.st : st.gl) || '', op: st.op || '', cx: !!st.cx }));
+        const outAll = [];
+        for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) { if (String(i.code || '').toUpperCase() !== pn) continue; outAll.push({ t: Number(o.createdAt) || 0, no: o.orderNo, q: Number(i.qty) || 0, tag: i.barcode || '', from: i.fromLoc || '', to: o.toLoc || '', req: o.linkReqNo || '', by: o.operator || '' }); }
+        outAll.sort((a, x) => x.t - a.t);
+        const demand = [];
+        for (const r of db.requisitions || []) {
+          if (!['pending', 'accepted'].includes(r.status)) continue;
+          for (const it of r.items || []) {
+            if (String(it.partNo || '').toUpperCase() !== pn) continue;
+            const iss = (it.issued || []).reduce((a, e2) => a + (Number(typeof e2 === 'string' ? 0 : e2.q) || 0), 0);
+            const need = (Number(it.qty) || 0) - iss; if (need > 1e-9) demand.push({ no: r.no, by: r.byName || '', status: r.status, need });
+          }
+        }
+        const watchers = (db.watchlist || []).filter((w) => String(w.partNo || '').toUpperCase() === pn).map((w) => { const uu = db.users.find((x) => x.id === w.userId); return { uid: w.userId, name: uu ? uu.name : w.userId, at: w.at }; });
+        let nm = ''; for (const b of Object.values(bm)) { if (b.nm) { nm = b.nm; break; } }
+        if (!nm && inb.length) { const rec = Object.values(db.scanlog || {}).find((st) => String(st.pn || '').toUpperCase() === pn && st.nm); nm = rec ? rec.nm : ''; }
+        if (!nm && db.itemDict && db.itemDict[pn]) nm = db.itemDict[pn].nm || '';
+        return send(res, 200, { ok: true, pn, name: String(nm || '').slice(0, 80), boxes, qty, inb, inbTotal: _sl.filter((st) => !st.cx).length, out: outAll.slice(0, 200), outTotal: outAll.length, demand, watchers, watched: watchers.some((w) => w.uid === u.id) });
+      }
+      if (req.method === 'POST' && p === '/api/watchlist/rm') {
+        if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可代他人取消预约' });
+        const b = await readBody(req);
+        const pn = String(b.partNo || '').trim().toUpperCase(), uid = String(b.userId || '');
+        const before = (db.watchlist || []).length;
+        db.watchlist = (db.watchlist || []).filter((w) => !(String(w.partNo || '').toUpperCase() === pn && (!uid || w.userId === uid)));
+        const cut = before - db.watchlist.length; if (cut) save();
+        if (cut) pushOps(u, '取消预约', pn, uid);
+        return send(res, 200, { ok: true, removed: cut });
       }
       if (req.method === 'GET' && p === '/api/watchlist') {
         return send(res, 200, { ok: true, list: (db.watchlist || []).filter((w) => w.userId === u.id) });
@@ -2005,7 +2090,7 @@ const server = http.createServer(async (req, res) => {
             by: u.id, byName: u.name, items: clean, status: 'pending',
             remark: String(b.remark || ''), createdAt: now.toISOString(), history: [],
             assigneeId: assignee ? assignee.id : '', assigneeName: assignee ? assignee.name : '',
-            assignOpenAt: assignee ? new Date(now.getTime() + 30 * 60000).toISOString() : '',
+            assignOpenAt: assignee ? new Date(now.getTime() + P().assignMin * 60000).toISOString() : '',
             rush: b.rush === true, // 急料：调度优先插队+催扫5分钟广播
           };
           db.requisitions.push(r);
@@ -2125,7 +2210,7 @@ const server = http.createServer(async (req, res) => {
             const oldId = r.assigneeId || ''; const oldName = r.assigneeName || '';
             if (oldId === tId) return send(res, 200, { ok: true, req: reqView(r) }); // 幂等：目标就是当前指定人
             r.assigneeId = t.id; r.assigneeName = t.name;
-            r.assignOpenAt = new Date(Date.now() + 30 * 60000).toISOString();
+            r.assignOpenAt = new Date(Date.now() + P().assignMin * 60000).toISOString();
             hpush(`${oldName ? `转派：${oldName} → ${t.name}` : `指定给 ${t.name}`}（${u.name}）`);
             if (oldId && oldId !== t.id) notify(oldId, 'req_reassign', `领料单 ${r.no} 已从你转派给 ${t.name}`, r.id);
             notify(t.id, 'req_new', `${u.name} 指定你备料：领料单 ${r.no}：${reqItemsSuggestText(r)}（30分钟内未接单将放开给全部仓管）`, r.id);
@@ -2197,7 +2282,7 @@ const server = http.createServer(async (req, res) => {
             if (r.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅下单人或管理员可催单' });
             if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]无需催单` });
             const lastU = Date.parse(String(r.lastUrgeAt || '')) || 0;
-            const waitMin = Math.ceil((10 * 60 * 1000 - (Date.now() - lastU)) / 60000);
+            const waitMin = Math.ceil((P().urgeMin * 60 * 1000 - (Date.now() - lastU)) / 60000);
             if (waitMin > 0) return send(res, 429, { ok: false, msg: `刚催过，请 ${waitMin} 分钟后再催` });
             const note = String(b.note || '').trim().slice(0, 60);
             r.lastUrgeAt = new Date().toISOString();
@@ -2308,6 +2393,33 @@ const server = http.createServer(async (req, res) => {
         pushOps(u,'看板门禁'+(db.pageAuth?'开':'关'), '', '');
         console.log(`[admin] ${u.name} 看板页鉴权 → ${db.pageAuth ? '开' : '关'}`);
         return send(res, 200, { ok: true, on: db.pageAuth });
+      }
+
+      // ---- ㉖B8 运营参数配置：GET 定义+当前值，POST 校验范围/乐观锁/留痕，保存即时生效 ----
+      if (req.method === 'GET' && p === '/api/admin/params') {
+        const cur = P();
+        const items = Object.entries(PARAMS).map(([k, d]) => ({ k, name: d.name, unit: d.unit, min: d.min, max: d.max, def: d.d, val: cur[k], tip: d.tip, set: (db.params || {})[k] !== undefined }));
+        return send(res, 200, { ok: true, items, cfgRev: db.cfgRev || 0 });
+      }
+      if (req.method === 'POST' && p === '/api/admin/params') {
+        const b = await readBody(req);
+        const _cg = cfgGuard(b); if (_cg) return send(res, 409, { ok: false, code: 'conflict', cfgRev: _cg.cur, msg: _cg.msg });
+        const inp = b.values && typeof b.values === 'object' ? b.values : {};
+        const changed = [], bad = [];
+        for (const [k, v] of Object.entries(inp)) {
+          const d = PARAMS[k]; if (!d) { bad.push(String(k)); continue; }
+          const num = Number(v);
+          if (!Number.isFinite(num) || num < d.min || num > d.max) { bad.push(d.name + '=' + v + '（应 ' + d.min + '~' + d.max + '）'); continue; }
+          db.params = db.params || {};
+          if (db.params[k] !== num) { db.params[k] = num; changed.push(d.name + '=' + num + d.unit); }
+        }
+        if (bad.length) return send(res, 400, { ok: false, msg: '取值不合法：' + bad.join('，') });
+        if (!changed.length) return send(res, 200, { ok: true, msg: '无改动', cfgRev: db.cfgRev || 0 });
+        const _cr = cfgBump(); save();
+        pushOps(u, '参数配置', changed.join(' '), '');
+        console.log(`[params] ${u.name} ${changed.join(' / ')}`);
+        startRcsTimer(); // 轮询间隔等参数即时生效，无需重启
+        return send(res, 200, { ok: true, msg: '已保存并即时生效：' + changed.join('，'), cfgRev: _cr });
       }
 
       // ---- 管理员：用户管理 ----
@@ -2646,7 +2758,7 @@ async function rcsPoll() {
   // ===== 到站催扫：站台仍"有货"且到站超10分钟 → 通知叫车人（用快照标签，不受货架位补新框干扰） =====
   for (const [stn, s] of Object.entries(db.rcsStations)) {
     if (s.state !== '有货' || !(s.codes || []).length) continue;
-    if (nowMs - (s.ts || 0) < 5 * 60 * 1000 || nowMs - (s.ts || 0) > 2 * 3600 * 1000) continue; // 急料5分钟起催，普通单10分钟（下方按rush判断）
+    if (nowMs - (s.ts || 0) < P().pushMin * 60 * 1000 || nowMs - (s.ts || 0) > 2 * 3600 * 1000) continue; // 急料起催阈值，普通单下方另判
     const codes = s.codes.map(c => String(c).toUpperCase());
     const called = [];
     for (const r of db.requisitions || []) {
@@ -2660,8 +2772,8 @@ async function rcsPoll() {
       const key = cl.c + '|' + stn;
       if (db.rcsRemind && db.rcsRemind[key]) continue;
       const rush = !!cl.req.rush;
-      if (!rush && nowMs - (s.ts || 0) < 10 * 60 * 1000) continue; // 普通单仍10分钟
-      const msg = `⏰ ${rush ? '🔥急料' : ''}到站催扫：框 ${cl.c} 已到站台 ${stn} 超${rush ? 5 : 10}分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台`;
+      if (!rush && nowMs - (s.ts || 0) < P().urgeScanMin * 60 * 1000) continue; // 普通单起催阈值
+      const msg = `⏰ ${rush ? '🔥急料' : ''}到站催扫：框 ${cl.c} 已到站台 ${stn} 超${rush ? P().pushMin : P().urgeScanMin}分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台`;
       if (rush) db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, cl.req.id));
       else notify(cl.by || cl.req.by, 'req_arrive', msg, cl.req.id);
       db.rcsRemind = db.rcsRemind || {}; db.rcsRemind[key] = nowMs;
@@ -2687,9 +2799,9 @@ async function rcsPoll() {
     for (const [id, info] of Object.entries(blockedNow)) {
       if (!db.rcsJam[id]) { db.rcsJam[id] = { at: nowMs, notified: false, ...info }; continue; }
       const j = db.rcsJam[id];
-      if (!j.notified && nowMs - j.at > 3 * 60 * 1000) {
+      if (!j.notified && nowMs - j.at > P().jamMin * 60 * 1000) {
         j.notified = true;
-        const msg = `🚧 交管堵点：${carName(id)} 在 ${info.zone}${info.lands ? '（点位' + info.lands + '）' : ''} 被卡超3分钟，占行车辆：${info.lockLand || '未知'}`;
+        const msg = `🚧 交管堵点：${carName(id)} 在 ${info.zone}${info.lands ? '（点位' + info.lands + '）' : ''} 被卡超${P().jamMin}分钟，占行车辆：${info.lockLand || '未知'}`;
         db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, ''));
         console.log('[jam] ' + msg);
       }
@@ -2703,7 +2815,9 @@ async function rcsPoll() {
   save();
   try { sseTick(nowMs); } catch (_) {} // ㉔SSE广播+轨迹/甘特采样
 }
-setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, 20 * 1000).unref();
+let _rcsTimer = null;
+function startRcsTimer() { if (_rcsTimer) clearInterval(_rcsTimer); _rcsTimer = setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, P().pollSec * 1000); if (_rcsTimer.unref) _rcsTimer.unref(); console.log('[rcs] 轮询间隔=' + P().pollSec + '秒'); }
+startRcsTimer();
 
 // ================= AGV 出库排队调度（一键叫车→8站台自动分配→空闲即下发；入库优先） =================
 // 站台空闲=无有货/占用、无在途任务指向(含入库)、未被人工占用30分钟、未被队列占用；出库任务随时可排队，站台空了才下发。
@@ -2713,7 +2827,7 @@ const AGV_STNS = Array.from({ length: 8 }, (_, i) => 'NB02-CK-' + String(i + 5).
 function agvStationFree(stn, nowMs, runT, assigned) {
   const s = (db.rcsStations || {})[stn];
   if (s && (s.state === '有货' || s.state === '占用中')) return false;
-  if ((db.rcsManual || {})[stn] && nowMs - db.rcsManual[stn] < 30 * 60000) return false;
+  if ((db.rcsManual || {})[stn] && nowMs - db.rcsManual[stn] < P().manualHoldMin * 60000) return false;
   for (const t of runT) { const { sp, ep } = parsePts(t); if (ep === stn) return false; if (sp === stn && !(nodeTimes(t).pickAt > 0)) return false; } // 出库将到=占用；入库已叉离=物理已空可用
   if ((assigned || []).includes(stn)) return false;
   for (const q of db.agvQueue || []) if (q.station === stn && (q.state === '下发中' || q.state === '已下发')) return false;
@@ -2801,7 +2915,7 @@ async function agvDispatch(nowMs, runT) {
     const has = s && Array.isArray(s.codes) && s.codes.map((c) => String(c).toUpperCase()).includes(q.code);
     if (q.state === '下发中') {
       // 下发中超过5分钟无回执（进程中断/异常残留）→ 判失败可重试，防止永久封死该站台
-      if (nowMs - (q.updAt || q.at) > 5 * 60 * 1000) { q.state = '失败'; q.err = '下发超时未回执，请重新叫车'; q.updAt = nowMs; }
+      if (nowMs - (q.updAt || q.at) > P().sendTimeoutMin * 60 * 1000) { q.state = '失败'; q.err = '下发超时未回执，请重新叫车'; q.updAt = nowMs; }
     } else if (q.state === '已下发') {
       if (s && s.state === '有货' && has) q.state = '到站'; // 按标签匹配（容器号尾6位≠RCS任务号尾6位，不能用via比对）
     } else if (q.state === '到站') {
@@ -2817,15 +2931,15 @@ async function agvDispatch(nowMs, runT) {
   });
   const waiting = db.agvQueue.filter((q) => q.state === '排队');
   const _trf = (db.agvQueue || []).filter(function (x) { return x.type === 'transfer' && !x.dry && ['下发中', '已下发'].includes(x.state) && x.taskNo; });
-  if (_trf.length) { const _ttk = await wmasToken(); if (_ttk) { for (const _t of _trf) { try { const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_t.taskNo), _ttk); const _rec = (_lr && _lr.data && _lr.data.records || []).find(function (z) { return String(z.taskNo) === String(_t.taskNo); }); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { /* 仍在途 */ } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { _t.state = '取消'; _t.updAt = nowMs; } else { _t.state = '完成'; _t.updAt = nowMs; const moved = applyTransferLedger(_t); if (!moved) { _t.err = '已到达但账本未自动更新，请用位置登记核对'; } } } else { _t.state = '完成'; _t.updAt = nowMs; _t.err = 'WMAS任务记录已不可查，未自动改账，请核对货位'; } if (nowMs - (_t.sentAt || _t.at) > 40 * 60000) { _t.state = '失败'; _t.err = '超时未完成'; _t.updAt = nowMs; } } catch (_) {} } } }
+  if (_trf.length) { const _ttk = await wmasToken(); if (_ttk) { for (const _t of _trf) { try { const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_t.taskNo), _ttk); const _rec = (_lr && _lr.data && _lr.data.records || []).find(function (z) { return String(z.taskNo) === String(_t.taskNo); }); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { /* 仍在途 */ } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { _t.state = '取消'; _t.updAt = nowMs; } else { _t.state = '完成'; _t.updAt = nowMs; const moved = applyTransferLedger(_t); if (!moved) { _t.err = '已到达但账本未自动更新，请用位置登记核对'; } } } else { _t.state = '完成'; _t.updAt = nowMs; _t.err = 'WMAS任务记录已不可查，未自动改账，请核对货位'; } if (nowMs - (_t.sentAt || _t.at) > P().staleMin * 60000) { _t.state = '失败'; _t.err = '超时未完成'; _t.updAt = nowMs; } } catch (_) {} } } }
   if (!waiting.length) return;
   // 置顶最高优先（网页队列控制台）；急料插队；普通项等待超10分钟自动升级（aging防饿死）；同级保持FIFO
-  const effRush = (q) => !!q.rush || (nowMs - (q.at || 0) > 10 * 60 * 1000);
+  const effRush = (q) => !!q.rush || (nowMs - (q.at || 0) > P().agingMin * 60 * 1000);
   waiting.sort((a, b) => ((b.prio || 0) - (a.prio || 0)) || (effRush(b) ? 1 : 0) - (effRush(a) ? 1 : 0) || (a.at || 0) - (b.at || 0));
   const live = (db.agvDispatchMode || 'dry') === 'live';
   const assigned = [];
   for (const q of waiting) {
-    if (live && assigned.length >= 4) break; // 一轮最多下发4单，保守节奏
+    if (live && assigned.length >= P().batch) break; // 一轮最多下发 N 单，保守节奏
     const manual = q.stationManual && agvStationFree(q.stationManual, nowMs, runT, assigned) ? q.stationManual : '';
     // 距离感知：路网可用时选"离货架最近"的空闲台（AGV少跑一米是一米）；缺映射/不可达回退首个空闲台
     let stn = manual;
@@ -2852,7 +2966,7 @@ async function agvDispatch(nowMs, runT) {
 
 // ===== ⑲ 出库任务超时兜底：已下发超40分钟仍未到站 → 判失败+通知全体仓管人工核查（对齐移库40分钟机制） =====
 function dispatchWatchdog(nowMs) {
-  const stale = (db.agvQueue || []).filter((q) => q.type !== 'transfer' && q.state === '已下发' && q.sentAt && nowMs - q.sentAt > 40 * 60 * 1000);
+  const stale = (db.agvQueue || []).filter((q) => q.type !== 'transfer' && q.state === '已下发' && q.sentAt && nowMs - q.sentAt > P().staleMin * 60 * 1000);
   for (const q of stale) {
     q.state = '失败'; q.err = '下发超40分钟未到站，请人工核查'; q.updAt = nowMs; clearQueueCall(q.reqId, q.code);
     const msg = `⏰ AGV任务超时：框 ${q.code}（${q.fromLoc}→${q.station || '待分配'}）下发超40分钟未到站，请到RCS核查是否卡死`;
@@ -2870,11 +2984,11 @@ async function lowBatWatch(tk, nowMs) {
   for (const c of cars) {
     const id = c.agvId; const pw = Number(c.power) || 0;
     const idle = !c.executeTaskNo && c.carState === 'idle' && c.charging !== true && c.communicationBreak !== true && c.enable === 1;
-    if (id !== undefined && pw > 0 && pw <= 25 && idle) {
+    if (id !== undefined && pw > 0 && pw <= P().lowBatPct && idle) {
       seen[id] = 1;
       if (!db.rcsLowBat[id]) { db.rcsLowBat[id] = { at: nowMs, notified: false }; continue; }
       const j = db.rcsLowBat[id];
-      if (!j.notified && nowMs - j.at > 20 * 60 * 1000) {
+      if (!j.notified && nowMs - j.at > P().lowBatMin * 60 * 1000) {
         j.notified = true;
         const msg = `🔋 低电提醒：AGV${String(id).padStart(2, '0')} 电量 ${pw}% 已空闲 ${Math.round((nowMs - j.at) / 60000)} 分钟未回充，请安排充电或手动回桩`;
         db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, ''));
