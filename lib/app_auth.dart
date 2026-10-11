@@ -326,6 +326,8 @@ class AuthApi {
             if (station.isNotEmpty) "station": station
           },
           token: await AuthStore.token());
+  static Future<Map> sysStatus() async =>
+      _req("GET", "/api/sysstatus", token: await AuthStore.token());
   static Future<Map> inspectSearch(String pn) async =>
       _req("GET", "/api/inspect/search?pn=" + Uri.encodeComponent(pn),
           token: await AuthStore.token());

@@ -1336,9 +1336,30 @@ class _MainPageState extends State<MainPage>
   void _onNotifTap() {
     final v = kNotifTap.value;
     if (v.isEmpty || !mounted) return;
-    kUnreadMsgs.value++;
+    _recountUnread();
     final i = _tabKeys.indexOf('req');
     if (i >= 0) _tabController.animateTo(i);
+  }
+
+  /// ㉖ 重算未读：拉一次未读接口（服务器会标read）→ 按分类已读时间戳算展示级未读
+  Future<void> _recountUnread() async {
+    try {
+      await AuthApi.notifications();
+    } catch (_) {}
+    final sp = await SharedPreferences.getInstance();
+    final r = await AuthApi.notificationsHistory(limit: 100);
+    if (r["ok"] != true || !mounted) return;
+    int n = 0;
+    for (final m in List<Map>.from(r["notifications"] ?? [])) {
+      final tp = m["type"]?.toString() ?? "";
+      final gk = _hubGroupKey(tp);
+      final seen = sp.getInt("hubseen_" + gk) ?? 0;
+      final ts = DateTime.tryParse(m["time"]?.toString() ?? "")
+              ?.millisecondsSinceEpoch ??
+          0;
+      if (ts > seen) n++;
+    }
+    kUnreadMsgs.value = n;
   }
 
   /// 领料通知轮询：每30秒拉一次，未读消息弹横幅，点击跳领料页
@@ -1379,7 +1400,28 @@ class _MainPageState extends State<MainPage>
     final kind = first["type"]?.toString() ?? "";
     if (RemindPrefs.keyOf(kind) != null) {
       final rid = first["reqId"]?.toString() ?? "";
-      unawaited(NotifyService.push(kind, "📦 领料提醒", text, payload: rid));
+      const _nt = {
+        "req_new": "📥 新领料单",
+        "req_timeout": "⏱ 领料超时",
+        "req_reassign": "🔄 转派通知",
+        "req_urge": "⏰ 催单提醒",
+        "req_arrive": "📍 到站提醒",
+        "req_accept": "🙋 接单动态",
+        "req_ready": "✅ 备齐提醒",
+        "req_ready_wh": "✅ 备齐动态",
+        "req_done": "📦 签收动态",
+        "req_confirm": "📦 签收动态",
+        "req_reject": "⛔ 拒单动态",
+        "req_cancel": "🚫 取消动态",
+        "req_flow": "🔄 流转动态",
+        "watch_in": "🔔 预约到料",
+        "stock_out": "⚠️ 断料预警",
+        "car_alarm": "🚨 车辆告警",
+        "transfer_done": "🛒 移库完成",
+        "night_digest": "🌙 夜间汇总"
+      };
+      unawaited(
+          NotifyService.push(kind, _nt[kind] ?? "📦 领料提醒", text, payload: rid));
     }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(list.length > 1 ? "$text（共 ${list.length} 条新消息）" : text,
@@ -3477,19 +3519,14 @@ class _MainPageState extends State<MainPage>
                                           ? _tabKeys.indexOf('req')
                                           : 0),
                                 )));
-                    kUnreadMsgs.value = 0;
+                    // 已读时间戳落盘后重算未读（进页面看过即消，不再无脑清零）
+                    _recountUnread();
                   } else if (idx == 2) {
                     //跳转设置菜单页（导出功能已并入此页顶部）
                     Navigator.push(
                       context,
                       MaterialPageRoute(
                           builder: (context) => SettingsMenuPage(
-                                onCopyCsv: () async {
-                                  final csv = await _generateCsvText();
-                                  await Clipboard.setData(
-                                      ClipboardData(text: csv));
-                                },
-                                onExportCsv: _exportCsvFile,
                                 onWifi: _toggleWifiServer,
                               )),
                     );
@@ -4097,11 +4134,8 @@ bool get _isWhRole =>
     Auth.user?.role == 'admin'; // 设置页系统配置类条目仅仓管/管理员可见
 
 class SettingsMenuPage extends StatelessWidget {
-  final Future<void> Function()? onCopyCsv; // ㉑导出功能自底部栏迁入
-  final Future<void> Function()? onExportCsv;
   final Future<void> Function()? onWifi;
-  const SettingsMenuPage(
-      {super.key, this.onCopyCsv, this.onExportCsv, this.onWifi});
+  const SettingsMenuPage({super.key, this.onWifi});
 
   @override
   Widget build(BuildContext context) {
@@ -4113,29 +4147,15 @@ class SettingsMenuPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (onExportCsv != null) ...[
+          const SysStatusCard(),
+          if (_isWhRole && onWifi != null)
             _settingTile(context,
-                icon: Icons.file_download_outlined,
-                color: const Color(0xFF00897B),
-                title: "导出CSV文件",
-                subtitle: "当前批次采集数据 → Download 目录",
-                onTap: () => onExportCsv!()),
-            if (onCopyCsv != null)
-              _settingTile(context,
-                  icon: Icons.content_copy_outlined,
-                  color: const Color(0xFF26A69A),
-                  title: "复制CSV内容",
-                  subtitle: "当前批次数据进剪贴板，粘贴给电脑",
-                  onTap: () => onCopyCsv!()),
-            if (_isWhRole && onWifi != null)
-              _settingTile(context,
-                  icon: Icons.phone_android_outlined,
-                  color: Colors.deepOrange,
-                  title: "WiFi局域网服务",
-                  subtitle: "开启后电脑浏览器下载采集CSV",
-                  onTap: () => onWifi!()),
-            const Divider(height: 24),
-          ],
+                icon: Icons.phone_android_outlined,
+                color: Colors.deepOrange,
+                title: "WiFi局域网服务",
+                subtitle: "开启后电脑浏览器下载采集CSV",
+                onTap: () => onWifi!()),
+          const Divider(height: 24),
           _settingTile(
             context,
             icon: Icons.cloud_outlined,
@@ -4706,6 +4726,93 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
 }
 
 // ===================== ㉑ 消息中枢：分组卡片流（仿系统信息App会话列表） =====================
+// ===================== ㉖ 消息中枢（会话式两级：一级分类列表·二级明细，看过红点消失） =====================
+const _kHubGroups = <Map<String, dynamic>>[
+  {
+    "key": "work",
+    "name": "派单与超时",
+    "types": ["req_new", "req_timeout", "req_reassign"],
+    "icon": Icons.assignment_add,
+    "color": Color(0xFF515BD4)
+  },
+  {
+    "key": "urge",
+    "name": "催单",
+    "types": ["req_urge"],
+    "icon": Icons.alarm,
+    "color": Color(0xFFE65100)
+  },
+  {
+    "key": "flow",
+    "name": "接单与进度",
+    "types": [
+      "req_accept",
+      "req_ready",
+      "req_ready_wh",
+      "req_done",
+      "req_confirm",
+      "req_reject",
+      "req_cancel",
+      "req_flow"
+    ],
+    "icon": Icons.local_shipping,
+    "color": Color(0xFF00897B)
+  },
+  {
+    "key": "arrive",
+    "name": "到站与移库",
+    "types": ["req_arrive", "transfer_done"],
+    "icon": Icons.inbox,
+    "color": Color(0xFFFF8F00)
+  },
+  {
+    "key": "car",
+    "name": "车辆告警",
+    "types": ["car_alarm"],
+    "icon": Icons.error,
+    "color": Color(0xFFD32F2F)
+  },
+  {
+    "key": "stock",
+    "name": "断料与预约",
+    "types": ["stock_out", "watch_in"],
+    "icon": Icons.inventory_2,
+    "color": Color(0xFF546E7A)
+  },
+  {
+    "key": "other",
+    "name": "其他与系统",
+    "types": [],
+    "icon": Icons.notifications_none,
+    "color": Color(0xFF9E9E9E)
+  },
+];
+const _kHubKnown = {
+  "req_new",
+  "req_timeout",
+  "req_reassign",
+  "req_urge",
+  "req_accept",
+  "req_ready",
+  "req_ready_wh",
+  "req_done",
+  "req_confirm",
+  "req_reject",
+  "req_cancel",
+  "req_flow",
+  "req_arrive",
+  "transfer_done",
+  "car_alarm",
+  "stock_out",
+  "watch_in",
+};
+String _hubGroupKey(String type) {
+  for (final g in _kHubGroups) {
+    if ((g["types"] as List).contains(type)) return g["key"] as String;
+  }
+  return "other";
+}
+
 class MessageHubPage extends StatefulWidget {
   final VoidCallback onOpenReq;
   const MessageHubPage({super.key, required this.onOpenReq});
@@ -4715,6 +4822,7 @@ class MessageHubPage extends StatefulWidget {
 
 class _MessageHubPageState extends State<MessageHubPage> {
   List<Map> _msgs = [];
+  final Map<String, int> _seen = {};
   bool _loading = true;
   String _err = "";
 
@@ -4725,10 +4833,16 @@ class _MessageHubPageState extends State<MessageHubPage> {
   }
 
   Future<void> _load() async {
-    setState(() {
-      _loading = true;
-      _err = "";
-    });
+    if (mounted)
+      setState(() {
+        _loading = true;
+        _err = "";
+      });
+    final sp = await SharedPreferences.getInstance();
+    for (final g in _kHubGroups) {
+      _seen[g["key"] as String] =
+          sp.getInt("hubseen_" + (g["key"] as String)) ?? 0;
+    }
     final r = await AuthApi.notificationsHistory(limit: 100);
     if (!mounted) return;
     if (r["ok"] == true) {
@@ -4747,80 +4861,17 @@ class _MessageHubPageState extends State<MessageHubPage> {
     }
   }
 
-  static const _groups = [
-    {
-      "name": "派单与超时",
-      "types": ["req_new", "req_timeout", "req_reassign"],
-      "icon": Icons.assignment_add,
-      "color": Color(0xFF515BD4)
-    },
-    {
-      "name": "催单",
-      "types": ["req_urge"],
-      "icon": Icons.alarm,
-      "color": Colors.deepOrange
-    },
-    {
-      "name": "接单与进度",
-      "types": [
-        "req_accept",
-        "req_ready",
-        "req_ready_wh",
-        "req_done",
-        "req_confirm"
-      ],
-      "icon": Icons.local_shipping,
-      "color": Colors.teal
-    },
-    {
-      "name": "到站催扫",
-      "types": ["req_arrive"],
-      "icon": Icons.inbox,
-      "color": Colors.orange
-    },
-    {
-      "name": "车辆告警",
-      "types": ["car_alarm"],
-      "icon": Icons.error,
-      "color": Colors.red
-    },
-    {
-      "name": "断料与预约",
-      "types": ["stock_out", "watch_in"],
-      "icon": Icons.inventory_2,
-      "color": Colors.blueGrey
-    },
-    {
-      "name": "其他",
-      "types": [],
-      "icon": Icons.notifications_none,
-      "color": Colors.grey
-    },
-  ];
-
-  static const _known = {
-    "req_new",
-    "req_timeout",
-    "req_reassign",
-    "req_urge",
-    "req_accept",
-    "req_ready",
-    "req_ready_wh",
-    "req_done",
-    "req_confirm",
-    "req_arrive",
-    "car_alarm",
-    "stock_out",
-    "watch_in"
-  };
-
   List<Map> _of(Map g) {
     final ts = List<String>.from(g["types"] ?? []);
     return _msgs.where((m) {
       final tp = m["type"]?.toString() ?? "";
-      return ts.isEmpty ? !_known.contains(tp) : ts.contains(tp);
+      return ts.isEmpty ? !_kHubKnown.contains(tp) : ts.contains(tp);
     }).toList();
   }
+
+  int _tsOf(Map m) =>
+      DateTime.tryParse(m["time"]?.toString() ?? "")?.millisecondsSinceEpoch ??
+      0;
 
   String _rel(String t) {
     final d = DateTime.tryParse(t);
@@ -4834,13 +4885,55 @@ class _MessageHubPageState extends State<MessageHubPage> {
     return "${d.month}月${d.day}日";
   }
 
+  Future<void> _markSeen(String key) async {
+    final sp = await SharedPreferences.getInstance();
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    await sp.setInt("hubseen_$key", nowMs);
+    _seen[key] = nowMs;
+  }
+
+  void _openGroup(Map g) async {
+    final ms = _of(g);
+    await Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (_) => _HubThreadPage(
+                title: g["name"] as String,
+                icon: g["icon"] as IconData,
+                color: g["color"] as Color,
+                msgs: ms,
+                onJumpReq: () {
+                  Navigator.of(context).pop();
+                  widget.onOpenReq();
+                })));
+    await _markSeen(g["key"] as String);
+    if (mounted) setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) {
+    final totalUnread = _msgs
+        .where((m) =>
+            _tsOf(m) > (_seen[_hubGroupKey(m["type"]?.toString() ?? "")] ?? 0))
+        .length;
     return Scaffold(
       backgroundColor: const Color(0xFFF7F7FA),
       appBar: AppBar(
-          title: const Text("消息",
-              style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+          title: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Text("消息",
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            if (totalUnread > 0)
+              Container(
+                  margin: const EdgeInsets.only(left: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                      color: Colors.redAccent,
+                      borderRadius: BorderRadius.circular(10)),
+                  child: Text("$totalUnread 未读",
+                      style:
+                          const TextStyle(fontSize: 11, color: Colors.white))),
+          ]),
           backgroundColor: const Color(0xFF515BD4),
           foregroundColor: Colors.white,
           actions: [
@@ -4857,104 +4950,171 @@ class _MessageHubPageState extends State<MessageHubPage> {
               : _msgs.isEmpty
                   ? const Center(
                       child: Text("暂无消息", style: TextStyle(color: Colors.grey)))
-                  : ListView(padding: const EdgeInsets.all(10), children: [
-                      for (final g in _groups)
-                        if (_of(g).isNotEmpty)
-                          Builder(builder: (_) {
-                            final ms = _of(g);
-                            final latest = ms.first;
-                            final hasNew = (DateTime.tryParse(
-                                        latest["time"]?.toString() ?? "") !=
-                                    null) &&
-                                DateTime.now()
-                                        .difference(DateTime.parse(
-                                            latest["time"].toString()))
-                                        .inHours <
-                                    24;
-                            final color = g["color"] as Color;
-                            return Card(
-                              margin: const EdgeInsets.symmetric(vertical: 5),
-                              child: Theme(
-                                data: Theme.of(context)
-                                    .copyWith(dividerColor: Colors.transparent),
-                                child: ExpansionTile(
-                                  tilePadding: const EdgeInsets.symmetric(
-                                      horizontal: 12),
-                                  childrenPadding:
-                                      const EdgeInsets.only(bottom: 6),
-                                  leading: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        SizedBox(
-                                            width: 8,
-                                            child: hasNew
-                                                ? Container(
-                                                    width: 8,
-                                                    height: 8,
+                  : ListView(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      children: [
+                          for (final g in _kHubGroups)
+                            if (_of(g).isNotEmpty)
+                              Builder(builder: (_) {
+                                final ms = _of(g);
+                                final key = g["key"] as String;
+                                final color = g["color"] as Color;
+                                final un = ms
+                                    .where((m) => _tsOf(m) > (_seen[key] ?? 0))
+                                    .length;
+                                final latest = ms.first;
+                                return Card(
+                                  margin: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4),
+                                  child: ListTile(
+                                    onTap: () => _openGroup(g),
+                                    leading: Stack(
+                                        clipBehavior: Clip.none,
+                                        children: [
+                                          CircleAvatar(
+                                              backgroundColor:
+                                                  color.withOpacity(0.12),
+                                              child: Icon(g["icon"] as IconData,
+                                                  size: 21, color: color)),
+                                          if (un > 0)
+                                            Positioned(
+                                                right: -4,
+                                                top: -4,
+                                                child: Container(
+                                                    padding: const EdgeInsets
+                                                        .symmetric(
+                                                        horizontal: 5,
+                                                        vertical: 1),
                                                     decoration: BoxDecoration(
-                                                        color: Colors
-                                                            .blue.shade400,
-                                                        shape: BoxShape.circle))
-                                                : const SizedBox.shrink()),
-                                        const SizedBox(width: 6),
-                                        CircleAvatar(
-                                            backgroundColor:
-                                                color.withOpacity(0.12),
-                                            child: Icon(g["icon"] as IconData,
-                                                size: 20, color: color)),
-                                      ]),
-                                  title: Text("${g["name"]} (${ms.length})",
-                                      style: const TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w600)),
-                                  subtitle: Text(
-                                      ms.first["text"]?.toString() ?? "",
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                          fontSize: 12,
-                                          color: Colors.blueGrey)),
-                                  trailing: Text(
-                                      _rel(ms.first["time"]?.toString() ?? ""),
-                                      style: const TextStyle(
-                                          fontSize: 11, color: Colors.grey)),
-                                  children: ms.map((m) {
-                                    final rid = m["reqId"]?.toString() ?? "";
-                                    return ListTile(
-                                      dense: true,
-                                      contentPadding:
-                                          const EdgeInsets.symmetric(
-                                              horizontal: 16, vertical: 1),
-                                      title: Text(m["text"]?.toString() ?? "",
-                                          style:
-                                              const TextStyle(fontSize: 12.5)),
-                                      subtitle: Text(
-                                          _rel(m["time"]?.toString() ?? ""),
+                                                        color: Colors.red,
+                                                        borderRadius:
+                                                            BorderRadius
+                                                                .circular(9)),
+                                                    child: Text("$un",
+                                                        style: const TextStyle(
+                                                            fontSize: 10,
+                                                            color: Colors.white,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .bold)))),
+                                        ]),
+                                    title: Row(children: [
+                                      Text(g["name"] as String,
+                                          style: TextStyle(
+                                              fontSize: 14.5,
+                                              fontWeight: un > 0
+                                                  ? FontWeight.bold
+                                                  : FontWeight.w500,
+                                              color: un > 0
+                                                  ? Colors.black87
+                                                  : Colors.black54)),
+                                      const SizedBox(width: 6),
+                                      Text("(${ms.length})",
                                           style: const TextStyle(
-                                              fontSize: 10.5,
+                                              fontSize: 12,
                                               color: Colors.grey)),
-                                      trailing: rid.isNotEmpty
-                                          ? const Icon(Icons.chevron_right,
-                                              size: 18, color: Colors.grey)
-                                          : null,
-                                      onTap: rid.isEmpty
-                                          ? null
-                                          : () {
-                                              Navigator.pop(context);
-                                              widget.onOpenReq();
-                                            },
-                                    );
-                                  }).toList(),
-                                ),
-                              ),
-                            );
-                          }),
-                      const SizedBox(height: 8),
-                      const Center(
-                          child: Text("点击带单号的消息可跳转领料页",
+                                    ]),
+                                    subtitle: Text(
+                                        latest["text"]?.toString() ?? "",
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: un > 0
+                                                ? Colors.blueGrey.shade700
+                                                : Colors.blueGrey)),
+                                    trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text(
+                                              _rel(latest["time"]?.toString() ??
+                                                  ""),
+                                              style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.grey)),
+                                          const Icon(Icons.chevron_right,
+                                              size: 18, color: Colors.grey),
+                                        ]),
+                                  ),
+                                );
+                              }),
+                          const SizedBox(height: 6),
+                          const Center(
+                              child: Text("进入分类看过后，红点即消失；带单号消息可跳转领料页",
+                                  style: TextStyle(
+                                      fontSize: 11, color: Colors.grey))),
+                        ]),
+    );
+  }
+}
+
+class _HubThreadPage extends StatelessWidget {
+  final String title;
+  final IconData icon;
+  final Color color;
+  final List<Map> msgs;
+  final VoidCallback onJumpReq;
+  const _HubThreadPage(
+      {required this.title,
+      required this.icon,
+      required this.color,
+      required this.msgs,
+      required this.onJumpReq});
+
+  String _rel(String t) {
+    final d = DateTime.tryParse(t);
+    if (d == null) return "";
+    final diff = DateTime.now().difference(d);
+    if (diff.inMinutes < 1) return "刚刚";
+    if (diff.inMinutes < 60) return "${diff.inMinutes}分钟前";
+    if (diff.inHours < 24) return "${diff.inHours}小时前";
+    if (diff.inDays < 2) return "昨天";
+    if (diff.inDays < 8) return "${diff.inDays}天前";
+    return "${d.month}月${d.day}日 ${d.hour.toString().padLeft(2, "0")}:${d.minute.toString().padLeft(2, "0")}";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7FA),
+      appBar: AppBar(
+          title: Text("$title（${msgs.length}）",
+              style:
+                  const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          backgroundColor: const Color(0xFF515BD4),
+          foregroundColor: Colors.white),
+      body: msgs.isEmpty
+          ? const Center(
+              child: Text("该分类暂无消息", style: TextStyle(color: Colors.grey)))
+          : ListView(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              children: [
+                  for (final m in msgs)
+                    Card(
+                        margin: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 4),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                              radius: 16,
+                              backgroundColor: color.withOpacity(0.12),
+                              child: Icon(icon, size: 17, color: color)),
+                          title: Text(m["text"]?.toString() ?? "",
                               style:
-                                  TextStyle(fontSize: 11, color: Colors.grey))),
-                    ]),
+                                  const TextStyle(fontSize: 13, height: 1.35)),
+                          subtitle: Padding(
+                              padding: const EdgeInsets.only(top: 3),
+                              child: Text(_rel(m["time"]?.toString() ?? ""),
+                                  style: const TextStyle(
+                                      fontSize: 11, color: Colors.grey))),
+                          trailing: (m["reqId"]?.toString() ?? "").isNotEmpty
+                              ? const Icon(Icons.chevron_right,
+                                  size: 20, color: Color(0xFF515BD4))
+                              : null,
+                          onTap: (m["reqId"]?.toString() ?? "").isEmpty
+                              ? null
+                              : onJumpReq,
+                        )),
+                ]),
     );
   }
 }
@@ -5301,6 +5461,138 @@ class _MesSettingPageState extends State<MesSettingPage> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ===================== ㉖ 系统连接状态卡：服务器 / MES / RCS(AGV调度) / WMAS(任务下发) =====================
+class SysStatusCard extends StatefulWidget {
+  const SysStatusCard({super.key});
+  @override
+  State<SysStatusCard> createState() => _SysStatusCardState();
+}
+
+class _SysStatusCardState extends State<SysStatusCard> {
+  bool _busy = false;
+  String _srv = "", _mes = "", _rcs = "", _wm = "";
+  Color _c(String st) => st.startsWith("✅")
+      ? Colors.green
+      : (st.startsWith("⚠")
+          ? Colors.orange
+          : (st.startsWith("❌") ? Colors.red : Colors.grey));
+
+  @override
+  void initState() {
+    super.initState();
+    _probe();
+  }
+
+  Future<void> _probe() async {
+    setState(() => _busy = true);
+    // 服务器 + RCS/WMAS（一次 sysstatus 拿全）
+    String srv = "检测中…", rcs = "检测中…", wm = "检测中…";
+    try {
+      final me = await AuthApi.me();
+      srv = me["ok"] == true ? "✅ 已连接（鉴权正常）" : "❌ ${me["msg"] ?? "不可达"}";
+    } catch (e) {
+      srv = "❌ 不可达";
+    }
+    try {
+      final r = await AuthApi.sysStatus();
+      if (r["ok"] == true) {
+        final rc = Map.from(r["rcs"] ?? {});
+        final wmj = Map.from(r["wmas"] ?? {});
+        rcs = rc["cfg"] != true
+            ? "⚠ 未配置（任意PDA「AGV调度系统」填账号即同步）"
+            : (rc["ok"] == true ? "✅ 在线（轮询中）" : "❌ 已配置但轮询中断（地址不通/账号失效）");
+        wm = wmj["cfg"] != true
+            ? "⚠ 未配置（检验下架/归位/一键叫车不可用）"
+            : (wmj["ok"] == true
+                ? "✅ 账号在线，可下发任务"
+                : "❌ 登录失败/凭据失效（去「WMAS(AGV)设置」重测）");
+      } else {
+        rcs = "⚠ 服务器未升级（无状态接口）";
+        wm = rcs;
+      }
+    } catch (_) {
+      rcs = "⚠ 查询失败";
+      wm = rcs;
+    }
+    // MES：本机配置 + token 时效
+    String mes = "检测中…";
+    try {
+      final sp = await SharedPreferences.getInstance();
+      final host = sp.getString(MesConfig.keyHost) ?? "";
+      final tok = sp.getString(MesConfig.keyToken) ?? "";
+      if (host.isEmpty) {
+        mes = "⚠ 未配置服务地址（去「MES服务器设置」）";
+      } else if (tok.isEmpty) {
+        mes = "⚠ 已配置未登录（去「MES服务器设置」登录）";
+      } else {
+        mes = "✅ 已配置并登录（$host）";
+      }
+    } catch (_) {
+      mes = "⚠ 读取失败";
+    }
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _srv = srv;
+      _mes = mes;
+      _rcs = rcs;
+      _wm = wm;
+    });
+  }
+
+  Widget _row(String icon, String name, String st) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(children: [
+          SizedBox(
+              width: 26,
+              child: Text(icon, style: const TextStyle(fontSize: 14))),
+          SizedBox(
+              width: 62,
+              child: Text(name,
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600))),
+          Expanded(
+              child: Text(st.isEmpty ? "…" : st,
+                  style: TextStyle(fontSize: 12, color: _c(st)))),
+        ]),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Expanded(
+                child: Text("系统连接状态",
+                    style:
+                        TextStyle(fontSize: 15, fontWeight: FontWeight.bold))),
+            _busy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : IconButton(
+                    icon: const Icon(Icons.refresh, size: 20),
+                    tooltip: "重新检测",
+                    onPressed: _probe),
+          ]),
+          _row("🖥", "服务器", _srv),
+          _row("🏭", "MES", _mes),
+          _row("🤖", "RCS", _rcs),
+          _row("🚚", "WMAS", _wm),
+          const SizedBox(height: 2),
+          const Text(
+              "RCS=AGV状态监控（地图/站台/告警）；WMAS=任务下发（检验/叫车/移库）。RCS/WMAS 凭据在任意 PDA 配置一次即全端共享。",
+              style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+        ]),
       ),
     );
   }

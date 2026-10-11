@@ -337,7 +337,7 @@ function sseClose(rs) { try { rs.end(); } catch (_) {} sseSet.delete(rs); }
 // ---- ㉔回放轨迹采样（近24h滚动）+ 站台状态变化（甘特数据）+ 轮询后广播 ----
 function sseTick(nowMs) {
   try {
-    sseSend({ t: 'snap', at: db.rcsAt || new Date().toISOString(), run: (db.rcsRun || []).length, queue: (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length, on: !!(db.rcsConfig && db.rcsConfig.host), sc: db.scanlogAt || '' }); // ㉕F10 健康灯字段
+    sseSend({ t: 'snap', at: db.rcsAt || new Date().toISOString(), run: (db.rcsRun || []).length, queue: (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length, on: !!(db.rcsConfig && db.rcsConfig.host), sc: db.scanlogAt || '', wm: db.wmasOkAt || 0 }); // ㉕F10 健康灯字段
     const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : null;
     if (!tk) return;
     rcsReq('/uds/car/getCarInfoList', 'GET', tk).then((cr) => {
@@ -2090,6 +2090,15 @@ const server = http.createServer(async (req, res) => {
         const live = Object.values(db.scanlog || {}).filter((x) => !x.cx).length;
         return send(res, 200, { ok: true, at: new Date().toISOString(), ledger: (db.ledger || []).length, scanlogLive: live, scanlogTotal: Object.keys(db.scanlog || {}).length, archScan, outbound: Object.keys(db.outbound || {}).length, archOut, reqs: (db.requisitions || []).length, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).length, queueTotal: (db.agvQueue || []).length, tasks: Object.keys(db.agvTasks || {}).length, events: (db.carEvents || []).length, ops: opsLoadDays(30).length, inspects: (db.inspects || []).length, inspectActive: (db.inspects || []).filter((q) => ['toStation', 'atStation', 'returning'].includes(q.state)).length, seenIn: Object.keys(db.seenIn || {}).length, seenOut: Object.keys(db.seenOut || {}).length, dict: Object.keys(db.itemDict || {}).length, ledRev: db.ledgerRev || 0, ledAt: db.ledgerAt || '', backup: fs.existsSync(path.join(DATA_DIR, 'backups')) ? fs.readdirSync(path.join(DATA_DIR, 'backups')).filter((f) => /^db-.*\.json$/.test(f)).length : 0 });
       }
+      // ---- ㉖ 系统连接状态：RCS(哈工库讯) / WMAS(AGV下发) 配置与最近成功时刻（MES 凭据在 PDA 本地，由 App 自查）----
+      if (req.method === "GET" && p === "/api/sysstatus") {
+        const nowMs = Date.now();
+        const rcsCfg = !!(db.rcsConfig && db.rcsConfig.host);
+        const rcsAge = db.rcsAt ? Math.round((nowMs - Date.parse(db.rcsAt)) / 1000) : -1;
+        const wmAge = db.wmasOkAt ? Math.round((nowMs - db.wmasOkAt) / 1000) : -1;
+        let wmOk = false; try { const _t = await wmasToken(); wmOk = !!_t; } catch (_) {}
+        return send(res, 200, { ok: true, rcs: { cfg: rcsCfg, ok: rcsCfg && rcsAge >= 0 && rcsAge < 120, lastSec: rcsAge, host: rcsCfg ? String(db.rcsConfig.host || "") : "" }, wmas: { cfg: !!(db.wmasConfig && db.wmasConfig.host), ok: wmOk, lastSec: wmAge } });
+      }
       // ---- ㉖① 标签全局查重：采集入库/出库/AGV 前预检（任何批次命中即拦）----
       if (req.method === 'GET' && p === '/api/label/check') {
         const cs = String(url.searchParams.get('c') || '').trim().toUpperCase();
@@ -3214,11 +3223,12 @@ function wmasHttp(method, path, token, body) {
 let _wmasTk = '', _wmasTkAt = 0, _wmasLoc = null, _wmasLocAt = 0;
 // WMAS 各接口成功标志不统一（登录返回 code:200，业务返回 success:true），统一判定
 const wmasOk = (r) => !!r && (r.success === true || r.code === 200 || r.code === 0);
+function wmasMarkOk() { try { db.wmasOkAt = Date.now(); } catch (_) {} }
 async function wmasToken() {
   if (_wmasTk && Date.now() - _wmasTkAt < 10 * 3600 * 1000) return _wmasTk;
   const cfg = db.wmasConfig || {}; if (!cfg.account || !cfg.pwd) return '';
   const r = await wmasHttp('POST', '/api/auth/login', null, { username: cfg.account, password: cfg.pwd });
-  if (wmasOk(r) && r.data && r.data.token) { _wmasTk = r.data.token; _wmasTkAt = Date.now(); return _wmasTk; }
+  if (wmasOk(r) && r.data && r.data.token) { _wmasTk = r.data.token; _wmasTkAt = Date.now(); wmasMarkOk(); return _wmasTk; }
   console.log('[agv-q] WMAS登录失败：' + JSON.stringify(r).slice(0, 150));
   return '';
 }
