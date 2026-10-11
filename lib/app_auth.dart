@@ -224,6 +224,9 @@ class AuthApi {
 
   /// 拉取电脑服务器上的账本全量（公开只读；含墓碑，PDA 合并用）
   static Future<Map> ledgerGet() async => _req("GET", "/api/ledger");
+  static Future<Map> ledgerGetByCode(String c) async =>
+      _req("GET", "/api/ledger?c=" + Uri.encodeComponent(c),
+          token: await AuthStore.token());
   // ---- 采集流水 / 出库单同步（流水按键增量合并；删批次单独上报） ----
   static Future<Map> scanlogSync(List items) async =>
       _req("POST", "/api/scanlog/sync",
@@ -304,6 +307,22 @@ class AuthApi {
       _req("GET", "/api/tts/info", token: await AuthStore.token());
   static Future<Map> setPrefs(Map body) async => _req("POST", "/api/prefs",
       body: body, token: await AuthStore.token()); // ㉖B14 偏好上云
+  // ㉖① 标签全局查重（采集入库前调用）
+  static Future<Map> labelCheck(String c) async =>
+      _req("GET", "/api/label/check?c=" + Uri.encodeComponent(c),
+          token: await AuthStore.token());
+  static Future<Map> labelForce(String c, String why) async =>
+      _req("POST", "/api/label/force",
+          body: {"code": c, "why": why}, token: await AuthStore.token());
+  // ㉖④ 检验模式三接口
+  static Future<Map> inspectList() async =>
+      _req("GET", "/api/inspect/list", token: await AuthStore.token());
+  static Future<Map> inspectStart(String from, String note) async =>
+      _req("POST", "/api/inspect/start",
+          body: {"from": from, "note": note}, token: await AuthStore.token());
+  static Future<Map> inspectReturn(String id, String note) async =>
+      _req("POST", "/api/inspect/return",
+          body: {"id": id, "note": note}, token: await AuthStore.token());
   static Future<Map> dashboard() async =>
       _req("GET", "/api/dashboard", token: await AuthStore.token());
   static Future<Map> agvFunnel(int days) async =>

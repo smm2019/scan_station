@@ -20,13 +20,13 @@ const ROLES = ['material', 'warehouse', 'admin']; // 物料员 / 仓管员 / 管
 const ROLE_NAMES = { material: '物料员', warehouse: '仓管员', admin: '管理员' };
 // 按角色功能开关（管理员可在线改；App 登录与心跳时拉取）
 const DEFAULT_FEATURES = {
-  material: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: true, receive_confirm: true, location_reg: false, agv_monitor: false, agv_control: false, admin_panel: false },
-  warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: false },
-  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: true },
+  material: { collect: false, inventory: false, export: true, mes_query: true, direct_transfer: false, requisition: true, receive_confirm: true, location_reg: false, agv_monitor: false, agv_control: false, admin_panel: false, inspect_mode: false },
+  warehouse: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: false, receive_confirm: false, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: false, inspect_mode: true },
+  admin: { collect: true, inventory: true, export: true, mes_query: true, direct_transfer: true, requisition: true, receive_confirm: true, location_reg: true, agv_monitor: true, agv_control: true, admin_panel: true, inspect_mode: true },
 };
 // 功能开关判定：管理员在线关掉某角色开关后，服务器端同步拒绝（全局生效，不只UI隐藏）
 function canFeature(u, key) { return !!(db.features && db.features[u.role] && db.features[u.role][key] === true); }
-const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', location_reg: '位置登记', agv_monitor: 'AGV监控', agv_control: 'AGV车辆控制', admin_panel: '管理后台' };
+const FEATURE_NAMES = { collect: '采集录入', inventory: '盘点模式', export: '导出下载', mes_query: 'MES查询', direct_transfer: '直调转单', requisition: '领料下单', receive_confirm: '签收确认', location_reg: '位置登记', agv_monitor: 'AGV监控', agv_control: 'AGV车辆控制', admin_panel: '管理后台', inspect_mode: '检验模式' };
 
 // ---------------- 存储 ----------------
 function defaultDb() {
@@ -46,7 +46,8 @@ function defaultDb() {
     scanlogAt: '', scanlogCount: 0,
     outbound: {}, // 出库单（按单号存最新快照）
     outboundAt: '', outboundCount: 0,
-    watchlist: [], // ⑮预约来料 [{userId,partNo,at}]
+    watchlist: [], // ⑮预约来料
+    inspects: [], seenIn: {}, seenOut: {}, // ㉖④检验工单 / ①②标签生命周期索引 [{userId,partNo,at}]
     groundSlots: {}, // ⑮地面排格数覆盖 {"NB03-A-11":13}，缺省12
     stockAlert: {}, // ⑮断料告警去重 {零件号: 最近告警日}
     prefs: {}, // ㉕F5 个人偏好 {userId:{key:{v,at}}}（后写覆盖=方案"到达序新者胜"）
@@ -84,7 +85,10 @@ function loadDb() {
   if (typeof d.outbound !== 'object' || d.outbound === null || Array.isArray(d.outbound)) { d.outbound = {}; added = true; }
   if (!Array.isArray(d.watchlist)) { d.watchlist = []; added = true; }
   if (!d.params || typeof d.params !== 'object' || Array.isArray(d.params)) { d.params = {}; added = true; }
-  if (!Array.isArray(d.carEvents)) { d.carEvents = []; added = true; } // ㉖异常事件持久表（180天滚动，恢复即归档不删除）
+  if (!Array.isArray(d.carEvents)) { d.carEvents = []; added = true; }
+  if (!Array.isArray(d.inspects)) { d.inspects = []; added = true; } // 检验模式工单
+  if (!d.seenOut || typeof d.seenOut !== 'object') { d.seenOut = {}; added = true; }
+  if (!d.seenIn || typeof d.seenIn !== 'object') { d.seenIn = {}; added = true; } // 历史录入过的标签（跨批次/跨设备永久防重，不受窗口截断） // 曾出库标签登记（跨生命周期防重） // ㉖异常事件持久表（180天滚动，恢复即归档不删除）
   if (typeof d.groundSlots !== 'object' || d.groundSlots === null || Array.isArray(d.groundSlots)) { d.groundSlots = {}; added = true; }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
@@ -417,6 +421,35 @@ function buildEvents() {
   for (const [id, v] of Object.entries(db.rcsLowBat || {})) { if (v && v.notified) addOld(v.at || 0, '低电', 'AGV' + String(id).padStart(2, '0'), '低电空闲未回充'); }
   ev.sort((a, b) => b.ts - a.ts);
   return ev.slice(0, 800);
+}
+
+// ㉖①② 标签全局状态：返回该标签在各数据域的命中（账本在库/采集流水/出库单/领料已发/AGV队列在途/检验中/历史出库）
+function labelStatus(codeRaw) {
+  const code = String(codeRaw || '').trim().toUpperCase(); if (!code) return null;
+  const inLedger = (db.ledger || []).filter((x) => String(x.c || '').toUpperCase() === code);
+  const inScanlog = Object.values(db.scanlog || {}).filter((x) => String(x.code || '').toUpperCase() === code && !x.cx);
+  const inOutbound = []; for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) if (String(i.code || '').toUpperCase() === code || String(i.barcode || '').toUpperCase() === code) inOutbound.push(o.orderNo);
+  const inIssued = []; for (const r of db.requisitions || []) for (const it of (r.items || [])) for (const e of (it.issued || [])) if (String(typeof e === 'string' ? e : (e.c || '')).toUpperCase() === code) inIssued.push(r.no);
+  const inQueue = (db.agvQueue || []).filter((q) => String(q.code || '').toUpperCase() === code && ['排队', '下发中', '已下发', '到站'].includes(q.state));
+  const inInspect = (db.inspects || []).filter((q) => String(q.code || '').toUpperCase() === code && ['toStation', 'atStation', 'returning'].includes(q.state));
+  const everOut = !!(db.seenOut || {})[code];
+  const everIn = !!(db.seenIn || {})[code]; // ㉖ 历史录过（当前不在架也可能曾在上游批次）
+  return { code, inLedger, inScanlog, inOutbound, inIssued, inQueue, inInspect, everOut, everIn, inMeta: (db.seenIn || {})[code] || null };
+}
+function labelBlockReason(st, purpose) { // purpose: in(采集入库)|out(出库/发料)|agvin|agvout
+  if (!st) return '';
+  if (purpose === 'in' && (st.inLedger.length || st.inScanlog.length || st.everIn || st.everOut)) {
+    if (st.inLedger.length) return '该标签已在库（货位 ' + String(st.inLedger[0].l || '') + '），禁止重复录入';
+    if (st.inScanlog.length) return '该标签已有采集记录（批次 ' + String(st.inScanlog[0].gl || st.inScanlog[0].st || '') + '），禁止重复录入';
+    if (st.everIn && !st.inLedger.length && !st.inScanlog.length) return '该标签此前已被录入过（' + (st.inMeta && st.inMeta.by ? st.inMeta.by + ' ' : '') + (st.inMeta && st.inMeta.t ? new Date(st.inMeta.t).toLocaleDateString('zh-CN') : '历史') + '，可能已出库），标签号不可复用，禁止重复录入';
+    if (st.everOut) return '该标签历史上架并已出库（' + (st.everOut.at ? new Date(st.everOut.at).toLocaleDateString('zh-CN') : '历史') + '），标签不可回收复用，禁止重复录入';
+  }
+  if (purpose === 'out') {
+    if (st.inOutbound.length) return '该标签已在出库单 ' + st.inOutbound.slice(0, 3).join('、') + '，禁止重复出库';
+    if (st.inIssued.length) return '该标签已发料到领料单 ' + st.inIssued.slice(0, 3).join('、') + '，禁止重复发料';
+  }
+  if (st.inInspect.length) return '该框正在检验流程中，暂不可操作';
+  return '';
 }
 
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
@@ -1255,7 +1288,7 @@ const server = http.createServer(async (req, res) => {
         // 增量合并：按标签号 upsert + 墓碑删除，多PDA互不覆盖
         // ㉔S1 时间戳双轨（F2加固）：指纹=登记时刻+内容（含t）；"无新到达"=与本机上次推送一致(含已删行的旧副本)
         // 或与服务器现值完全一致(首拉旧副本重放)——一律不动服务器；真改动(内容/t变)按到达时刻rec裁决，墓碑按t拦截早于它的重登
-        const rec0 = Date.now(); const _diffs = []; // ㉖方案4.2：服务器diff自动留痕（谁把X从A改到B，字段级前值→后值）
+        const rec0 = Date.now(); const _diffs = []; const _seen = (db.seenIn = db.seenIn || {}); // ㉖方案4.2：服务器diff自动留痕（谁把X从A改到B，字段级前值→后值）
         const _preCounts = partBoxCounts(); // ⑮合并前在架快照（断料检测基线）
         const cur = new Map(db.ledger.map(x => [String(x.c).toUpperCase(), x]));
         const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), { t: Number(x.t) || 0, rec: Number(x.rec) || 0 }]));
@@ -1277,6 +1310,7 @@ const server = http.createServer(async (req, res) => {
           if (tombT && it.t > 0 && it.t < tombT) { skipped++; rejected.push(key); continue; } // 早于墓碑的真改动重登：作废（不记指纹，持续提示冲突待拉取）
           if (!_fpOld[key] && !Object.keys(_fpOld).length && old && it.t > 0 && Number(old.t) > it.t) { skipped++; rejected.push(key); continue; } // 设备首推无指纹档案：保守回退旧规则（t更旧者拒），防服务重启窗口倒退
           _fpNew[key] = h; // 本轮该设备视图留档
+          if (!old) { _seen[key] = { by: u.name, t: rec0, l: it.l, p: it.p || '' }; } // ㉖ 首次入账登记，永久防重
           if (old) { updated++; const fl = []; for (const k of ['l', 'p', 'q', 'b', 'f', 'mv']) { const av = String(old[k] == null ? '' : old[k]), bv = String(it[k] == null ? '' : it[k]); if (av !== bv) fl.push(k + ':' + (av || '∅') + '→' + (bv || '∅')); } if (fl.length) _diffs.push(it.c + ' ' + fl.join(' ')); if (String(old.l) !== String(it.l)) _diffs.length === 0 && _diffs.push(it.c + ' l:' + old.l + '→' + it.l); } else { added++; seenNew.add(key); _diffs.push(it.c + ' 入账@' + it.l + (it.p ? '(' + it.p + ')' : '')); }
           ledgerPut(cur, key, { ...it, by: u.name, rec: rec0 }, old);
           if (tombT) tomb.delete(key); // 新到达=重新登记，复活
@@ -1464,6 +1498,7 @@ const server = http.createServer(async (req, res) => {
           if (!code || !fromLoc) continue;
           if (_confTrf.some(function (x) { return String(x.from).toUpperCase() === fromLoc || String(x.to).toUpperCase() === fromLoc; })) { conflict++; continue; } // 该货位有进行中移库
           if (db.agvQueue.some((q) => q.code === code && !['完成', '取消', '失败'].includes(q.state))) { dup++; continue; } // 同框已在队列
+          if ((db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['toStation', 'atStation', 'returning'].includes(q.state))) { conflict++; continue; } // ㉖②④ 检验中禁止出库叫车
           db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', rush: !!(rq && rq.rush), station: '', at: Date.now(), updAt: Date.now() });
           const ti = rq && (rq.items || []).find((i) => i.partNo === it.partNo); // 登记叫车标记：建议区变🚗排队，单框叫车自动跳过
           if (ti) { ti.agvCalled = (ti.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code); ti.agvCalled.push({ c: code, s: '', q: 1, by: u.id, t: new Date().toISOString() }); }
@@ -1968,6 +2003,43 @@ const server = http.createServer(async (req, res) => {
         item.state = '取消'; item.updAt = Date.now(); save();
         return send(res, 200, { ok: true, msg: '已请求取消（若WMAS已叉出则无法撤回，需人工处理）' });
       }
+      // ---- ㉖④ 检验模式：下架到站台检验，看完备注后原样归位（复用 WMAS CARRY/transfer 通道）----
+      if (req.method === 'POST' && p === '/api/inspect/start') {
+        if (!canFeature(u, 'inspect_mode')) return send(res, 403, { ok: false, msg: '当前角色未开通「检验模式」权限' });
+        const b = await readBody(req);
+        const from = String(b.from || '').trim().toUpperCase();
+        if (!/^[A-Z0-9\-]{3,40}$/.test(from)) return send(res, 400, { ok: false, msg: '货位编码格式不对（如 NB02-A-08-2F）' });
+        const srcBox = (db.ledger || []).find((x) => String(x.l).toUpperCase() === from);
+        if (!srcBox) return send(res, 400, { ok: false, msg: '该货位当前无货（货位账本查不到在库框）' });
+        const code = String(srcBox.c || '').toUpperCase();
+        if ((db.inspects || []).some((q) => (q.from === from || String(q.code).toUpperCase() === code) && ['toStation', 'atStation', 'returning'].includes(q.state))) return send(res, 400, { ok: false, msg: '该货位已有进行中的检验任务' });
+        if ((db.agvQueue || []).some((x) => x.type !== 'transfer' && String(x.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(x.state))) return send(res, 400, { ok: false, msg: '该货位已在出库任务中，不能同时检验下架' });
+        // 选一个空闲站台（复用调度器空闲判定的简化版：优先未占用无在途）
+        let to = ''; for (const st of AGV_STNS) { if (stn[st] && stn[st].state !== '空闲' && stn[st].state) continue; if ((db.agvQueue || []).some((q) => q.station === st && ['排队', '下发中', '已下发'].includes(q.state))) continue; if ((db.inspects || []).some((q) => q.station === st && ['toStation', 'atStation', 'returning'].includes(q.state))) continue; to = st; break; }
+        if (!to) return send(res, 400, { ok: false, msg: '暂无空闲站台放下架框，请稍后再试' });
+        const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
+        const rec = { id: newId('insp'), code, from, station: to, palletType: String(srcBox.f || '').toUpperCase(), part: String(srcBox.p || ''), nm: String(srcBox.n || ''), uid: u.id, by: u.name, note: String(b.note || '').slice(0, 120), state: 'toStation', at: Date.now(), updAt: Date.now(), taskNo: '' };
+        db.inspects = db.inspects || []; db.inspects.push(rec);
+        const r = await wmasDispatchOne({ fromLoc: from, palletType: rec.palletType }, tk, { from: from, to: to, pallet: rec.palletType, ref: 'JC-' + code });
+        if (!r.ok) { db.inspects = db.inspects.filter((x) => x !== rec); save(); return send(res, 400, { ok: false, msg: '下架任务下发失败：' + r.msg }); }
+        rec.taskNo = r.taskNo || ''; save(); pushOps(u, '检验下架', code, from + '→' + to);
+        return send(res, 200, { ok: true, rec });
+      }
+      // ---- ㉖④ 检验：归位（站台→原货位，leg2）----
+      if (req.method === 'POST' && p === '/api/inspect/return') {
+        if (!canFeature(u, 'inspect_mode')) return send(res, 403, { ok: false, msg: '当前角色未开通「检验模式」权限' });
+        const b = await readBody(req);
+        const rec = (db.inspects || []).find((x) => x.id === String(b.id || ''));
+        if (!rec) return send(res, 400, { ok: false, msg: '检验工单不存在' });
+        if (rec.state !== 'atStation') return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']不可归位（需已到站台）' });
+        const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
+        const r = await wmasDispatchOne({ fromLoc: rec.station, palletType: rec.palletType }, tk, { from: rec.station, to: rec.from, pallet: rec.palletType, ref: 'JCG-' + rec.code });
+        if (!r.ok) return send(res, 400, { ok: false, msg: '归位任务下发失败：' + r.msg });
+        rec.note2 = String(b.note || '').slice(0, 200); rec.state = 'returning'; rec.taskNo2 = r.taskNo || ''; rec.retAt = Date.now(); rec.updAt = Date.now();
+        save(); pushOps(u, '检验归位', rec.code, '→归位 ' + rec.from + (rec.note2 ? ' 备注:' + rec.note2 : ''));
+        if (rec.note2) { rec.note = (rec.note ? rec.note + ' | ' : '') + '检验备注：' + rec.note2; save(); }
+        return send(res, 200, { ok: true, rec });
+      }
       if (req.method === 'POST' && p === '/api/agv/mode') { // 调度模式：dry演算 / live真下发
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
@@ -1992,6 +2064,34 @@ const server = http.createServer(async (req, res) => {
       }
       // ================= 数据驾驶舱（只读聚合，登录即可看） =================
       // ---- ㉕F5 个人偏好 prefs（落地页/通知订阅/概览卡自选）+ 管理员模板 ----
+      // ---- ㉖③ 数据资产总计数：各域在库/流水/出库/队列/留痕/事件/检验 + 归档量，网页"有迹可查"面板 ----
+      if (req.method === 'GET' && p === '/api/counts') {
+        let archScan = 0, archOut = 0; try { for (const f of fs.readdirSync(path.join(DATA_DIR, 'archive'))) { if (/scanlog/.test(f)) archScan += Object.keys(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', f), 'utf8'))).length; else if (/outbound/.test(f)) archOut += Object.keys(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', f), 'utf8'))).length; } } catch (_) {}
+        const live = Object.values(db.scanlog || {}).filter((x) => !x.cx).length;
+        return send(res, 200, { ok: true, at: new Date().toISOString(), ledger: (db.ledger || []).length, scanlogLive: live, scanlogTotal: Object.keys(db.scanlog || {}).length, archScan, outbound: Object.keys(db.outbound || {}).length, archOut, reqs: (db.requisitions || []).length, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).length, queueTotal: (db.agvQueue || []).length, tasks: Object.keys(db.agvTasks || {}).length, events: (db.carEvents || []).length, ops: opsLoadDays(30).length, inspects: (db.inspects || []).length, inspectActive: (db.inspects || []).filter((q) => ['toStation', 'atStation', 'returning'].includes(q.state)).length, seenIn: Object.keys(db.seenIn || {}).length, seenOut: Object.keys(db.seenOut || {}).length, dict: Object.keys(db.itemDict || {}).length, ledRev: db.ledgerRev || 0, ledAt: db.ledgerAt || '', backup: fs.existsSync(path.join(DATA_DIR, 'backups')) ? fs.readdirSync(path.join(DATA_DIR, 'backups')).filter((f) => /^db-.*\.json$/.test(f)).length : 0 });
+      }
+      // ---- ㉖① 标签全局查重：采集入库/出库/AGV 前预检（任何批次命中即拦）----
+      if (req.method === 'GET' && p === '/api/label/check') {
+        const cs = String(url.searchParams.get('c') || '').trim().toUpperCase();
+        if (!cs) return send(res, 400, { ok: false, msg: '缺少 c' });
+        const st = labelStatus(cs);
+        const inReason = labelBlockReason(st, 'in');
+        return send(res, 200, { ok: true, code: cs, seen: !!(inReason || st.inLedger.length || st.inScanlog.length || st.everIn || st.everOut), blockIn: !!inReason, everIn: !!st.everIn, reason: inReason, loc: st.inLedger.length ? String(st.inLedger[0].l || '') : '', part: st.inLedger.length ? String(st.inLedger[0].p || '') : '', batch: st.inScanlog.length ? String(st.inScanlog[0].gl || st.inScanlog[0].st || '') : (st.everOut ? String(st.everOut.batch || '') : ''), by: st.inLedger.length ? String(st.inLedger[0].by || '') : (st.inScanlog.length ? String(st.inScanlog[0].op || '') : ''), everOut: st.everOut ? { at: st.everOut.at, batch: st.everOut.batch || '' } : null });
+      }
+      // ---- ㉖① 强制继续录入留痕（PDA 全局查重被拦后人工填原因放行）----
+      if (req.method === "POST" && p === "/api/label/force") {
+        const b = await readBody(req);
+        const fc = String(b.code || "").trim().toUpperCase(); if (!fc) return send(res, 400, { ok: false, msg: "缺少 code" });
+        pushOps(u, "重复标签强过", fc, String(b.why || "").slice(0, 120));
+        save();
+        return send(res, 200, { ok: true });
+      }
+      // ---- ㉖④ 检验模式工单列表 ----
+      if (req.method === 'GET' && p === '/api/inspect/list') {
+        const only = url.searchParams.get('mine') === '1' ? u.id : '';
+        const list = (db.inspects || []).filter((q) => !only || q.uid === only).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 200);
+        return send(res, 200, { ok: true, list });
+      }
       if (req.method === 'GET' && p === '/api/prefs') {
         return send(res, 200, { ok: true, prefs: prefsFor(u.id), templates: (db.prefTemplates || []).map((t) => ({ name: t.name, by: t.by })) });
       }
@@ -2178,6 +2278,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         const no = String(b.orderNo || '').trim();
         if (!no) return send(res, 400, { ok: false, msg: '缺少 orderNo' });
+        for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.code || itx.barcode || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; } // ㉖② 历史出库登记（标签生命周期防复用）
         db.outbound[no] = { orderNo: no, createdAt: Number(b.createdAt) || 0, toLoc: String(b.toLoc || ''), operator: String(b.operator || ''), status: Number(b.status) || 0, linkReqNo: String(b.linkReqNo || ''), items: Array.isArray(b.items) ? b.items : [] };
         for (const e of (db.outbound[no].items || [])) feedDict(e.code, e.name, '出库单'); // ㉒G7 字典沉淀
         db.outboundAt = new Date().toISOString(); db.outboundCount = Object.keys(db.outbound).length;
@@ -2350,6 +2451,8 @@ const server = http.createServer(async (req, res) => {
             const code = String(b.barcode || '').trim();
             if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
             if (r.items.some(i => normIssued(i).some(e => e.c === code))) return send(res, 400, { ok: false, msg: `标签 ${code} 已扫过` });
+            // ㉖② 全局出库防重：该标签已在其他出库单/其他领料单发过 → 拦（应急登记旁路，需原因）
+            if (b.emergency !== true) { const _lst = labelStatus(code); const _b2 = labelBlockReason(_lst, 'out') || labelBlockReason(_lst, 'x'); if ((_lst.inOutbound.length || _lst.inIssued.length) && _b2) return send(res, 400, { ok: false, msg: _b2 }); if (_lst.inInspect.length) return send(res, 400, { ok: false, msg: '该框检验中，不可发料出库' }); }
             // 一框一发：同框兄弟码（同托号/同货位同零件号）已发过则拦截，防整框数量双计
             {
               const self = db.ledger.find(x => String(x.c).toUpperCase() === code.toUpperCase());
@@ -2473,6 +2576,7 @@ const server = http.createServer(async (req, res) => {
             if (got <= 0) return send(res, 400, { ok: false, msg: '该行还没有扫入任何标签，不能转单' });
             target.transferred = true;
             target.transferQty = got;
+            for (const e of target.issued) { const c1 = String((typeof e === 'string' ? e : e.c) || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Date.now(), no: r.no, by: u.name }; } // ㉖② 转MES=出库承诺，登记历史防标签复用
             target.mesNo = String(b.mesNo || '').trim(); // App 侧出库单号，便于对账
             hpush(`转MES ${target.partNo} 实发${got}件${got < (Number(target.qty) || 0) ? '（短装' + ((Number(target.qty) || 0) - got) + '件）' : ''}（${u.name}）`);
             finalize();
@@ -2770,6 +2874,36 @@ async function rcsLogin() {
     } catch (_) { resolve(null); }
   });
 }
+function seenInBackfill() { // ㉖ 首次升级：现存账本+采集流水的标签一次性登记进 seenIn（幂等）
+  try {
+    if (db.seenInBackfilled) return;
+    db.seenIn = db.seenIn || {};
+    let n = 0;
+    for (const x of db.ledger || []) { const c = String(x.c || '').toUpperCase(); if (c && !db.seenIn[c]) { db.seenIn[c] = { by: x.by || '', t: Number(x.t) || Date.now(), l: x.l, p: x.p || '' }; n++; } }
+    for (const st of Object.values(db.scanlog || {})) { const c = String(st.code || '').toUpperCase(); if (c && !db.seenIn[c]) { db.seenIn[c] = { by: st.op || '', t: Number(st.t) || Date.now(), l: (st.wt === 0 ? st.gl : st.st) || '', p: st.pn || '' }; n++; } }
+    db.seenInBackfilled = 1; if (n) console.log('[seenIn] 历史标签回填 ' + n + ' 个');
+  } catch (_) {}
+}
+// ㉖④ 检验工单状态机推进：toStation→atStation（站台快照出现本框标签）；returning→done（归位后该框回到原货位=账本命中）
+function updateInspects(nowMs) {
+  try {
+    let dirty = false; const stn = db.rcsStations || {}; const led = db.ledger || [];
+    for (const q of db.inspects || []) {
+      if (q.state === 'toStation') {
+        const s = stn[q.station];
+        if (s && s.state === '有货' && (s.codes || []).map((c) => String(c).toUpperCase()).includes(String(q.code).toUpperCase())) { q.state = 'atStation'; q.arriveAt = nowMs; dirty = true; db.users.filter((x) => (x.id === q.uid || x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', '🔎 检验框已到站台 ' + q.station + '（' + q.code + '），请核对并归位', '')); }
+        else if (nowMs - (q.at || 0) > 30 * 60000) { q.state = 'stuck'; q.err = '下架超30分钟未到站台，请到RCS核查'; dirty = true; }
+      } else if (q.state === 'returning') {
+        // 归位完成判定：账本里该标签回到原货位
+        const back = led.find((x) => String(x.c || '').toUpperCase() === String(q.code).toUpperCase() && String(x.l || '').toUpperCase() === String(q.from).toUpperCase());
+        if (back) { q.state = 'done'; q.doneAt = nowMs; dirty = true; db.users.filter((x) => (x.id === q.uid) && x.enabled).forEach((x) => notify(x.id, 'req_flow', '✅ 检验框 ' + q.code + ' 已归位回 ' + q.from, '')); }
+        else if (nowMs - (q.retAt || 0) > 30 * 60000) { q.state = 'stuck'; q.err = '归位超30分钟未回原货位，请核查'; dirty = true; }
+      }
+      if (q.updAt !== nowMs && q.state !== 'toStation' && q.state !== 'returning') q.updAt = nowMs;
+    }
+    if (dirty) save();
+  } catch (_) {}
+}
 function parsePts(t) { try { const s = JSON.parse(t.suspensionMsg || '{}'); return { sp: String(s.startPoint || '').toUpperCase(), ep: String(s.endPoint || '').toUpperCase() }; } catch (_) { return { sp: '', ep: '' }; } }
 function rcsTs(s) { s = String(s || ''); if (s.length < 14) return 0; return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}`).getTime(); }
 function dstr(ms) { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()}`; } // 报表/驾驶舱共用
@@ -3008,8 +3142,10 @@ async function rcsPoll() {
   try { sseTick(nowMs); } catch (_) {} // ㉔SSE广播+轨迹/甘特采样
 }
 let _rcsTimer = null;
-function startRcsTimer() { if (_rcsTimer) clearInterval(_rcsTimer); _rcsTimer = setInterval(() => { rcsPoll().catch(e => console.log('[rcs] 轮询异常', e.message)); }, P().pollSec * 1000); if (_rcsTimer.unref) _rcsTimer.unref(); console.log('[rcs] 轮询间隔=' + P().pollSec + '秒'); }
+function rcsTick() { rcsPoll().catch((e) => console.log('[rcs] 轮询异常', e.message)); }
+function startRcsTimer() { if (_rcsTimer) clearInterval(_rcsTimer); _rcsTimer = setInterval(rcsTick, P().pollSec * 1000); if (_rcsTimer.unref) _rcsTimer.unref(); console.log('[rcs] 轮询间隔=' + P().pollSec + '秒'); }
 startRcsTimer();
+(function inspLoop() { try { updateInspects(Date.now()); } catch (_) {} setTimeout(inspLoop, 15000); })(); // ㉖④ 检验态独立推进（不依赖RCS配置，15秒一轮）
 
 // ================= AGV 出库排队调度（一键叫车→8站台自动分配→空闲即下发；入库优先） =================
 // 站台空闲=无有货/占用、无在途任务指向(含入库)、未被人工占用30分钟、未被队列占用；出库任务随时可排队，站台空了才下发。
@@ -3270,4 +3406,4 @@ function buildFunnel(days) {
   return { call: stat('call'), queue: stat('queue'), dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
 }
 
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); opsDigestTick(); } catch (_) {} backupDb(); archiveOld(); });
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); } catch (_) {} backupDb(); archiveOld(); });

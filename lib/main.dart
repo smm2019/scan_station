@@ -44,6 +44,7 @@ part 'agv_api.dart'; // AGV调度系统(哈工库讯RCS)：任务/车辆/交管�
 part 'local_log.dart'; // ⑤本地审计日志 + ⑦全局异常兜底落盘 + 审计查看页
 part 'diag_page.dart'; // ⑥设备诊断页
 part 'display_prefs_page.dart'; // 第3档 显示与扫码偏好（字号/聚焦/默认框型/领料默认值上云）
+part 'inspect_page.dart'; // ㉖④ 检验模式：AGV下架检验→备注→原样归位
 part 'loc_map_page.dart'; // ③货位占用可视化
 part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 part 'agv_map_page.dart'; // ①2D实时地图
@@ -1269,7 +1270,8 @@ class _MainPageState extends State<MainPage>
       _showInv = true,
       _showDirect = true,
       _showReq = true,
-      _showAgv = true; // 角色化Tab可见性
+      _showAgv = true,
+      _showInsp = false; // 角色化Tab可见性（㉖④ 检验模式按 inspect_mode 权限）
   List<String> _tabKeys = const [];
   List<String> _selectedBatchIds = [];
   // ===== 整托合并模式状态 =====
@@ -1298,6 +1300,7 @@ class _MainPageState extends State<MainPage>
     _showDirect = Auth.can("direct_transfer");
     _showReq = wh || Auth.can("requisition") || Auth.can("receive_confirm");
     _showAgv = wh || Auth.can("agv_monitor");
+    _showInsp = Auth.can("inspect_mode");
     _tabKeys = [
       if (_showCollect) 'collect',
       if (_showCollect) 'history',
@@ -1305,7 +1308,8 @@ class _MainPageState extends State<MainPage>
       if (_showDirect) 'direct',
       'stock',
       if (_showReq) 'req',
-      if (_showAgv) 'agv'
+      if (_showAgv) 'agv',
+      if (_showInsp) 'insp'
     ];
     _tabController = TabController(length: _tabKeys.length, vsync: this);
     kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
@@ -1627,6 +1631,70 @@ class _MainPageState extends State<MainPage>
     return false;
   }
 
+  /// ㉖① 全局标签查重：服务器 labelSeen 权威（任何批次录过即拦）；断网降级本机 Isar 全批次。命中默认拒绝，可填原因强制继续（留痕）。
+  Future<bool> _globalDupCheck(String code) async {
+    final r = await AuthApi.labelCheck(code);
+    if (r["net"] == true) {
+      // 断网/服务不可达：降级查本机全部批次（未作废）
+      final any = await _isar.scanRecords
+          .filter()
+          .goodsCodeEqualTo(code)
+          .isCancelEqualTo(false)
+          .findFirst();
+      if (any != null) {
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(
+                  "⚠ 离线模式：标签 $code 本机已录入过（批次 ${any.batchId}），已拦截；联网后以服务器全局查为准"),
+              backgroundColor: Colors.orange));
+        return true;
+      }
+      return false;
+    }
+    if (r["ok"] != true || r["blockIn"] != true) return false;
+    final reason = (r["reason"] ?? "该标签已存在").toString();
+    final ctl = TextEditingController();
+    final res = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("⛔ 标签全局重复，已拦截"),
+        content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(reason, style: const TextStyle(fontSize: 13.5)),
+              const SizedBox(height: 4),
+              Text("提示：全厂范围内该标签号不允许重复入账。若确认是系统误拦（如标签确实换了实物用途），由责任人填写原因后强制继续。",
+                  style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+              const SizedBox(height: 8),
+              TextField(controller: ctl, hintText: "强制继续必填原因", maxLines: 2),
+            ]),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, "abort"),
+              child: const Text("取消录入")),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, "force"),
+              child: const Text("强制继续", style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (res != "force") return true;
+    final why = ctl.text.trim();
+    ctl.dispose();
+    if (why.isEmpty) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("强制继续必须填写原因"), backgroundColor: Colors.orange));
+      return true;
+    }
+    LocalLog.op("重复标签强过", "$code 原因:$why");
+    try {
+      await AuthApi.labelForce(code, why);
+    } catch (_) {} // 强过留痕进服务器活动流
+    return false;
+  }
+
   //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug】
   Future<bool> _isCodeDuplicate(String code) async {
     final exist = await _isar.scanRecords
@@ -1796,6 +1864,7 @@ class _MainPageState extends State<MainPage>
               .showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
         return;
       }
+      if (await _globalDupCheck(code)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）
       if (await _isCodeDuplicate(code)) return;
       if (_workType == 0 && _selectedStation == null) {
         if (mounted) {
@@ -3021,6 +3090,7 @@ class _MainPageState extends State<MainPage>
             const Tab(text: "库存"),
             if (_showReq) const Tab(text: "领料"),
             if (_showAgv) const Tab(text: "AGV"),
+            if (_showInsp) const Tab(text: "检验"),
           ],
         ),
       ),
@@ -3373,7 +3443,8 @@ class _MainPageState extends State<MainPage>
           //领料单页面
           if (_showReq) const RequisitionPage(),
           //AGV调度监控模块（任务/车辆/交管/实时大屏）
-          if (_showAgv) const AgvMonitorPage()
+          if (_showAgv) const AgvMonitorPage(),
+          if (_showInsp) const InspectPage()
         ],
       ),
       bottomNavigationBar: ValueListenableBuilder<int>(
