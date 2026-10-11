@@ -60,7 +60,7 @@ function encSec(s) { if (!s || String(s).indexOf('enc1:') === 0) return s; try {
 function decSec(s) { if (!s || String(s).indexOf('enc1:') !== 0) return s; try { const q = String(s).split(':'); const d = crypto.createDecipheriv('aes-256-gcm', secretKey(), Buffer.from(q[1], 'base64')); d.setAuthTag(Buffer.from(q[2], 'base64')); return Buffer.concat([d.update(Buffer.from(q[3], 'base64')), d.final()]).toString('utf8'); } catch (_) { console.log('[sec] secret.key 与 db.json 不匹配：RCS/WMAS 密码需在设置页重录一次'); return ''; } }
 function walkSec(o, fn) { for (const k of ['rcsConfig', 'wmasConfig']) { const c = o[k]; if (c && c.pwd) fn(c, 'pwd'); } if (o.rcsToken) fn(o, 'rcsToken'); }
 function clientFp(req) { let ip = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, ''); const seg = ip.indexOf(':') >= 0 ? ip.split(':').slice(0, 2).join(':') : ip.split('.').slice(0, 2).join('.'); return crypto.createHash('sha1').update(seg + '|' + String(req.headers['user-agent'] || '')).digest('hex').slice(0, 12); }
-function prefsFor(uid) { const o = (db.prefs && db.prefs[uid]) || {}; const r = {}; for (const k in o) { if (k === 'notes') r[k] = o[k].v; else if (k === 'kpi') r[k] = Array.isArray(o[k].v) ? o[k].v : []; else if (k === 'work') r[k] = Number(o[k].v) === 1 ? 1 : 0; else if (k === 'rate') r[k] = Math.min(0.9, Math.max(0.3, Number(o[k].v) || 0.55)); else if (k === 'voice') r[k] = o[k].v !== false; else r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); } return r; }
+function prefsFor(uid) { const o = (db.prefs && db.prefs[uid]) || {}; const r = {}; for (const k in o) { if (k === 'notes') r[k] = o[k].v; else if (k === 'kpi') r[k] = Array.isArray(o[k].v) ? o[k].v : []; else if (k === 'work') r[k] = Number(o[k].v) === 1 ? 1 : 0; else if (k === 'rate') r[k] = Math.min(0.9, Math.max(0.3, Number(o[k].v) || 0.55)); else if (k === 'voice') r[k] = o[k].v !== false; else if (k === 'pd_focus' || k === 'pd_defAssignee') r[k] = o[k].v !== false; else if (k === 'pd_font') r[k] = ['std','lg','xl'].includes(String(o[k].v)) ? String(o[k].v) : 'std'; else if (k === 'pd_dateOffset') r[k] = Math.min(90, Math.max(0, Number(o[k].v) || 0)); else if (k === 'pd_defPallet') r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); else r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); } return r; }
 function archLoad(kind) { const out = {}; try { const dir = path.join(DATA_DIR, 'archive'); for (const f of fs.readdirSync(dir)) { if (f.indexOf('-' + kind + '.json') < 0) continue; try { Object.assign(out, JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))); } catch (_) {} } } catch (_) {} return out; }
 function loadDb() {
   if (!fs.existsSync(DB_FILE)) { const d = defaultDb(); saveDb(d); console.log('[init] 已创建初始账号 admin / admin123（首次登录需改密）'); return d; }
@@ -741,6 +741,7 @@ function renderReqPrint(r) {
   <div class="noprint"><button onclick="window.print()">🖨 打印本单（Ctrl+P 亦可）</button> <span style="font-size:12px;color:#666">零件号可直接鼠标选中复制</span></div>
   <h1>领&nbsp;&nbsp;料&nbsp;&nbsp;单</h1>
   <div class="meta"><span>单号：<b>${esc(r.no)}</b></span><span>领料人：${esc(r.byName)}</span><span>日期：${esc(time)}</span></div>
+  ${r.needDate ? `<div class="meta"><span>期望到货：<b>${esc(r.needDate)}</b></span></div>` : ''}
   <div class="meta"><span>状态：${esc(REQ_STATUS_TEXT[r.status] || r.status)}</span><span>备注：${esc(r.remark || '')}</span></div>
   ${r.shortInfo ? `<div class="meta"><span style="color:#c00">短装：${esc(r.shortInfo)}</span></div>` : ''}
   <table><thead><tr>
@@ -1831,7 +1832,55 @@ const server = http.createServer(async (req, res) => {
         let list = Object.entries(db.itemDict || {}).map(([pn, v]) => ({ pn, nm: v.nm, src: v.src }));
         if (q) list = list.filter((x) => x.pn.includes(q) || x.nm.toUpperCase().includes(q));
         list.sort((a, b) => a.pn.localeCompare(b.pn));
+        if ((url.searchParams.get('miss') || '') === '1') { // ㉖G8 缺口扫描：出现在账本/流水/出库/领料但字典无名的零件号
+          const named = new Set(Object.entries(db.itemDict || {}).filter(([, v]) => String(v && v.nm || '').trim()).map(([k]) => k));
+          const seen = {};
+          const feed = (pn, hint) => { pn = String(pn || '').toUpperCase().trim(); if (!pn || named.has(pn)) return; const e = (seen[pn] = seen[pn] || { pn, src: '', n: 0 }); e.n++; if (!e.src && hint) e.src = hint; };
+          for (const x of db.ledger || []) feed(x.p, '账本');
+          for (const st of Object.values(db.scanlog || {})) feed(st.pn, '入库流水');
+          for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) feed(i.code || i.pn, '出库单');
+          for (const r of db.requisitions || []) for (const it of (r.items || [])) feed(it.partNo, '领料单');
+          const miss = Object.values(seen).sort((a, b) => b.n - a.n || a.pn.localeCompare(b.pn));
+          return send(res, 200, { ok: true, miss: true, total: miss.length, list: miss.slice(0, 500) });
+        }
         return send(res, 200, { ok: true, total: list.length, list: list.slice(0, 300) });
+      }
+      // ---- ㉖G8 批量补录：items=[{pn,nm}] 或 text="零件号,名称"逐行；仅仓管/管理员；进字典+活动流 ----
+      if (req.method === 'POST' && p === '/api/dict') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可补录物料字典' });
+        const b = await readBody(req);
+        let pairs = [];
+        if (Array.isArray(b.items)) pairs = b.items.map((it) => [String((it && it.pn) || ''), String((it && it.nm) || '')]);
+        else if (typeof b.text === 'string') pairs = b.text.split(/[\r\n]+/).map((l) => { const i = l.search(/[，,\t]/); return i < 0 ? [l, ''] : [l.slice(0, i), l.slice(i + 1)]; });
+        db.itemDict = db.itemDict || {};
+        let set = 0, skip = 0;
+        for (let pr of pairs) {
+          let pn = String(pr[0] || '').toUpperCase().trim(), nm = String(pr[1] || '').trim().replace(/[，,\t]/g, ' ');
+          if (!pn || pn.length > 40 || !nm) { skip++; continue; }
+          if (nm.length > 80) nm = nm.slice(0, 80);
+          const old = db.itemDict[pn];
+          if (old && old.nm === nm) { skip++; continue; }
+          db.itemDict[pn] = { nm, unit: (old && old.unit) || '', src: '手工补录', by: u.name, at: Date.now() };
+          set++;
+        }
+        save(); pushOps(u, '补录字典', set + '项', skip ? ('跳过' + skip) : '');
+        console.log(`[dict] ${u.name} 批量补录 ${set} 项`);
+        return send(res, 200, { ok: true, set, skip });
+      }
+      // ---- ㉖G8 交叉自愈：凡同一零件号在 ledger/scanlog/outbound 任一处有名字，补进字典无名项（零外部请求）----
+      if (req.method === 'POST' && p === '/api/dict/heal') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可执行' });
+        db.itemDict = db.itemDict || {};
+        const cand = {};
+        const give = (pn, nm) => { pn = String(pn || '').toUpperCase().trim(); nm = String(nm || '').replace(/\uFFFD/g, '').trim(); if (!pn || !nm || pn.length > 40 || nm.length > 80) return; if (!cand[pn]) cand[pn] = nm.slice(0, 80); };
+        for (const x of db.ledger || []) give(x.p, x.n);
+        for (const st of Object.values(db.scanlog || {})) give(st.pn, st.nm);
+        for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) give(i.code || i.pn, i.name);
+        let healed = 0;
+        for (const kv of Object.entries(cand)) { const pn = kv[0], nm = kv[1]; const old = db.itemDict[pn]; if (!old || !String(old.nm || '').trim()) { db.itemDict[pn] = Object.assign({}, old, { nm, src: (old && old.src) || '交叉补全', by: u.name, at: Date.now() }); healed++; } }
+        save(); pushOps(u, '字典交叉补全', healed + '项', '');
+        console.log(`[dict] ${u.name} 交叉自愈 ${healed} 项`);
+        return send(res, 200, { ok: true, healed });
       }
       // ===== ㉓G12 在线工作量报表：?from=YYYY-MM-DD&to=YYYY-MM-DD（缺省近14天），管理员/仓管可见 =====
       if (req.method === 'GET' && p === '/api/report/work') {
@@ -1953,6 +2002,12 @@ const server = http.createServer(async (req, res) => {
         if (b.work !== undefined) mine.work = { v: Number(b.work) === 1 ? 1 : 0, at: Date.now() }; // ㉖B14 PDA工作模式上云（0=AGV站台 1=人工地面）
         if (b.rate !== undefined) { const rr = Number(b.rate); if (Number.isFinite(rr)) mine.rate = { v: Math.min(0.9, Math.max(0.3, rr)), at: Date.now() }; } // ㉖B14 播报语速上云
         if (b.voice !== undefined) mine.voice = { v: b.voice !== false, at: Date.now() }; // ㉖B14 扫码播报开关上云
+        // ㉖第3档 PDA个性化三项：字号档位/扫码自动聚焦/领料默认值(指定仓管/框型/日期偏移)
+        if (b.pd_font !== undefined) mine.pd_font = { v: ['std', 'lg', 'xl'].includes(String(b.pd_font)) ? String(b.pd_font) : 'std', at: Date.now() };
+        if (b.pd_focus !== undefined) mine.pd_focus = { v: b.pd_focus !== false, at: Date.now() };
+        if (b.pd_defAssignee !== undefined) mine.pd_defAssignee = { v: b.pd_defAssignee !== false, at: Date.now() };
+        if (b.pd_defPallet !== undefined) mine.pd_defPallet = { v: String(b.pd_defPallet == null ? '' : b.pd_defPallet).slice(0, 20), at: Date.now() };
+        if (b.pd_dateOffset !== undefined) { const dd = Number(b.pd_dateOffset); if (Number.isFinite(dd)) mine.pd_dateOffset = { v: Math.min(90, Math.max(0, dd)), at: Date.now() }; }
         save(); return send(res, 200, { ok: true, prefs: prefsFor(u.id) });
       }
       if (req.method === 'POST' && p === '/api/prefs/apply') {
@@ -2163,6 +2218,7 @@ const server = http.createServer(async (req, res) => {
             assigneeId: assignee ? assignee.id : '', assigneeName: assignee ? assignee.name : '',
             assignOpenAt: assignee ? new Date(now.getTime() + P().assignMin * 60000).toISOString() : '',
             rush: b.rush === true, // 急料：调度优先插队+催扫5分钟广播
+            needDate: /^\d{4}-\d{2}-\d{2}$/.test(String(b.needDate || '')) ? String(b.needDate) : '', // 第3档 期望到货日期（PDA默认值可预填）
           };
           db.requisitions.push(r);
           if (assignee) {

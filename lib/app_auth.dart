@@ -5,6 +5,15 @@ part of 'main.dart';
 
 /// ㉒G11 服务器时钟偏移（毫秒）：本机显示时间统一校正用；心跳/登录时更新
 int kClockOffsetMs = 0;
+// ---- 第3档 PDA显示偏好：字号档位(响应式即时生效)/扫码自动聚焦 ----
+final ValueNotifier<double> kFontScaleN =
+    ValueNotifier(1.0); // std=1.0 lg=1.18 xl=1.35
+bool kAutoFocus = true;
+double kFontScaleOf(String f) => f == 'lg'
+    ? 1.18
+    : f == 'xl'
+        ? 1.35
+        : 1.0;
 
 class AuthUser {
   final String id, username, name, role;
@@ -165,13 +174,16 @@ class AuthApi {
 
   // ---- 领料单 ----
   static Future<Map> reqCreate(List<Map> items, String remark,
-          {String assigneeId = "", bool rush = false}) async =>
+          {String assigneeId = "",
+          bool rush = false,
+          String needDate = ""}) async =>
       _req("POST", "/api/requisitions",
           body: {
             "items": items,
             "remark": remark,
             "assigneeId": assigneeId,
-            "rush": rush
+            "rush": rush,
+            if (needDate.isNotEmpty) "needDate": needDate
           },
           token: await AuthStore.token());
 
@@ -1244,6 +1256,29 @@ class PrefsSync {
       }
       if (pv["voice"] != null)
         await sp.setBool("remind_voice_scan", pv["voice"] != false);
+      // 第3档 PDA个性化三项回写
+      if (pv["pd_font"] != null)
+        await sp.setString(
+            "pd_font",
+            ['std', 'lg', 'xl'].contains(pv["pd_font"].toString())
+                ? pv["pd_font"].toString()
+                : "std");
+      if (pv["pd_focus"] != null)
+        await sp.setBool("pd_focus", pv["pd_focus"] != false);
+      if (pv["pd_defAssignee"] != null)
+        await sp.setBool("pd_defAssignee", pv["pd_defAssignee"] != false);
+      if (pv["pd_defPallet"] != null)
+        await sp.setString("pd_defPallet", pv["pd_defPallet"].toString());
+      if (pv["pd_dateOffset"] != null) {
+        final dd = (int.tryParse(pv["pd_dateOffset"].toString()) ?? 0);
+        await sp.setInt(
+            "pd_dateOffset",
+            dd < 0
+                ? 0
+                : dd > 90
+                    ? 90
+                    : dd);
+      }
       final n = pv["notes"];
       if (n is Map) {
         if (n["req_new"] != null)
@@ -1259,6 +1294,8 @@ class PrefsSync {
         if (n["stock_out"] != null)
           await sp.setBool("remind_stock_out", n["stock_out"] != false);
       }
+      kFontScaleN.value = kFontScaleOf(sp.getString("pd_font") ?? "std");
+      kAutoFocus = sp.getBool("pd_focus") ?? true;
       changed.value++;
     } catch (_) {}
     _applying = false;
@@ -1281,6 +1318,12 @@ class PrefsSync {
         },
         "rate": sp.getDouble("remind_speech_rate") ?? 0.55,
         "voice": sp.getBool("remind_voice_scan") ?? true,
+        // 第3档 PDA个性化三项上推
+        "pd_font": sp.getString("pd_font") ?? "std",
+        "pd_focus": sp.getBool("pd_focus") ?? true,
+        "pd_defAssignee": sp.getBool("pd_defAssignee") ?? true,
+        "pd_defPallet": sp.getString("pd_defPallet") ?? "",
+        "pd_dateOffset": sp.getInt("pd_dateOffset") ?? 0,
       };
       if (uid.isNotEmpty) body["work"] = sp.getInt("worktype_$uid") ?? 0;
       await AuthApi.setPrefs(body);

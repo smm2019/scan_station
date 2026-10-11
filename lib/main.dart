@@ -43,6 +43,7 @@ part 'requisition_page.dart'; // 领料单：物料员下单/签收，仓管接�
 part 'agv_api.dart'; // AGV调度系统(哈工库讯RCS)：任务/车辆/交管监控 + 实时大屏WebView + 设置
 part 'local_log.dart'; // ⑤本地审计日志 + ⑦全局异常兜底落盘 + 审计查看页
 part 'diag_page.dart'; // ⑥设备诊断页
+part 'display_prefs_page.dart'; // 第3档 显示与扫码偏好（字号/聚焦/默认框型/领料默认值上云）
 part 'loc_map_page.dart'; // ③货位占用可视化
 part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 part 'agv_map_page.dart'; // ①2D实时地图
@@ -85,7 +86,7 @@ class ScanBar extends StatelessWidget {
             child: TextField(
           controller: ctrl,
           focusNode: focus,
-          autofocus: true,
+          autofocus: kAutoFocus, // 第3档 扫码自动聚焦开关
           textInputAction: TextInputAction.done,
           decoration: InputDecoration(
               hintText: hint,
@@ -1181,6 +1182,11 @@ void main() async {
     LocalLog.err('未捕获', e, s);
     return true;
   };
+  try {
+    final sp = await SharedPreferences.getInstance();
+    kFontScaleN.value = kFontScaleOf(sp.getString("pd_font") ?? "std");
+    kAutoFocus = sp.getBool("pd_focus") ?? true;
+  } catch (_) {}
   runApp(const MyApp());
 }
 
@@ -1192,6 +1198,12 @@ class MyApp extends StatelessWidget {
       navigatorKey: _globalNavigatorKey,
       title: "AGV货位采集器",
       theme: ThemeData(primarySwatch: Colors.blue),
+      builder: (ctx, child) => ValueListenableBuilder<double>(
+          valueListenable: kFontScaleN,
+          builder: (c2, v, ch) => MediaQuery(
+              data:
+                  MediaQuery.of(ctx).copyWith(textScaler: TextScaler.linear(v)),
+              child: ch!)),
       home: const AuthGate(), //登录门禁：无有效会话显示登录页
       debugShowCheckedModeBanner: false,
     );
@@ -1299,6 +1311,7 @@ class _MainPageState extends State<MainPage>
     kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
     _startNotifPolling();
     _restoreWorkMode(); // ②按登录账号恢复上次工作模式（AGV站台/人工地面）
+    _applyDefaultPallet(); // 第3档 按偏好预填默认框型（减少每托重复点选）
     PrefsSync.changed.addListener(_onPrefsChanged); // ㉖B14 服务器偏好回写后刷新工作模式
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
@@ -1973,13 +1986,16 @@ class _MainPageState extends State<MainPage>
       //【修复】保存后重挂扫码框焦点：节点可能自认为仍有焦点但原生输入连接已断，
       //PDA扫码枪按键进不来；先 unfocus 释放，再隔一帧重新申请，强制重建输入连接
       _goodsFocusNode.unfocus();
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _goodsFocusNode.requestFocus();
-          });
-        }
-      });
+      if (kAutoFocus) {
+        // 第3档 自动聚焦开：保存后重挂焦点；关则交还用户手动点框，防软键盘反复弹
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted && kAutoFocus) _goodsFocusNode.requestFocus();
+            });
+          }
+        });
+      }
     } catch (e) {
       if (mounted)
         ScaffoldMessenger.of(context)
@@ -3453,6 +3469,19 @@ class _MainPageState extends State<MainPage>
     if (v == 1 && mounted) setState(() => _workType = 1);
   }
 
+  /// 第3档 按偏好预填默认框型（仅在尚未选择时；全机偏好）
+  Future<void> _applyDefaultPallet() async {
+    final sp = await SharedPreferences.getInstance();
+    final p = sp.getString("pd_defPallet") ?? "";
+    const legal = ["1800*1200_2", "1600*1100", "2.4米铁框", "华强铁框", "托盘"];
+    if (p.isNotEmpty &&
+        legal.contains(p) &&
+        mounted &&
+        _containerType == null) {
+      setState(() => _containerType = p);
+    }
+  }
+
   void _saveWorkMode(int type) {
     SharedPreferences.getInstance()
         .then((sp) => sp.setInt("worktype_" + (Auth.user?.id ?? ""), type))
@@ -4044,6 +4073,15 @@ class SettingsMenuPage extends StatelessWidget {
             subtitle: "当前账号 / 修改密码 / 用户与功能管理",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const AccountPage())),
+          ),
+          _settingTile(
+            context,
+            icon: Icons.text_fields,
+            color: const Color(0xFF7E57C2),
+            title: "显示与扫码偏好",
+            subtitle: "字号档位 / 自动聚焦 / 默认框型 / 领料默认值（存服务器换设备跟随）",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const DisplayPrefsPage())),
           ),
           if (Auth.can("location_reg"))
             _settingTile(
