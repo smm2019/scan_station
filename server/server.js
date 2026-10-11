@@ -1559,7 +1559,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, at: new Date().toISOString(), names, stages, bottleneck, total: stages.reduce((s, a) => s + a.length, 0) });
       }
       if (req.method === 'GET' && p === '/api/agv/alarms') { // 当前活动告警（车辆页认领按钮数据源）
-        const list = Object.entries(db.rcsCarAlarm || {}).map(([id, r]) => ({ id: Number(id) || id, fp: r.fp, since: r.since, severe: !!r.severe, ackBy: r.ackBy || '', ackAt: r.ackAt || 0 }));
+        const list = Object.entries(db.rcsCarAlarm || {}).map(([id, r]) => ({ id: Number(id) || id, fp: r.fp, since: r.since, severe: !!r.severe, ackBy: r.ackBy || '', ackAt: r.ackAt || 0, esc: r.esc || 0, red: (r.esc || 0) >= 2 })); // ㉖红牌=急停30分未处理(esc>=2)
         return send(res, 200, { ok: true, list });
       }
       if (req.method === 'POST' && p === '/api/agv/alarm/ack') { // G2 告警认领：body={id} 处理人落库+广播，停止升级
