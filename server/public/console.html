@@ -322,7 +322,7 @@ async function rptDl(){const f=$('#rf')?$('#rf').value:'',t=$('#rt')?$('#rt').va
   if(!r.ok){const j=await r.json().catch(()=>({}));T('❌ '+(j.msg||('HTTP '+r.status)));return}
   const cd=r.headers.get('Content-Disposition')||'';let nm='';const m=/filename\*=UTF-8''([^;]+)/i.exec(cd);if(m)nm=decodeURIComponent(m[1]);else nm='工作量报表.xls';
   const u=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=u;a.download=nm;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);T('✅ 已下载 '+nm,1)}catch(e){T('下载失败')}}
-const DSLS=[['D1','库位表（货位账本快照）'],['D2','库存汇总（按框口径）'],['D3','入库流水（全厂采集）'],['D4','出库流水（领料+直调）'],['D5','AGV任务（近30天六节点）'],['D6','AGV异常事件（180天持久表）'],['D7','工作量报表（按人/按日/按车）'],['D8','领料台账（全节点时刻）'],['D9','活动流审计（180天留痕+每日断链）'],['D10','盘点结果（差异三表）'],['PACK','月度对账包（四表+口径sheet）']];
+const DSLS=[['D1','库位表（货位账本快照）'],['D2','库存汇总（按框口径，可勾零库存）'],['D3','入库流水（全厂采集）'],['D4','出库流水（领料+直调）'],['D5','AGV任务（近30天六节点）'],['D6','AGV异常事件（180天持久表）'],['D7','工作量报表（按人/按日/按车）'],['D8','领料台账（全节点时刻）'],['D9','活动流审计（180天留痕+每日断链）'],['D10','盘点结果（差异三表）'],['PACK','月度对账包（四表+口径sheet）']];
 const dsVisible=(k)=>U.role=='admin'?true:k=='D9'?false:U.role=='warehouse'?true:!(k=='D8'||k=='D10'); // ㉕A1 与服务器expRoleOk同口径
 // ===== ㉕批次四 控制后台：活动流 / 用户管理 / 权限矩阵 / 系统健康 / 发布台 =====
 async function pgAdmin(){if(U.role!='admin'){$('#main').innerHTML='<div class="card" style="color:var(--sub)">仅管理员可见</div>';return}
@@ -379,17 +379,18 @@ async function pubFile(f){if(!f)return;const v=$('#pv').value.trim(),b=$('#pb').
   xh.upload.onprogress=(e)=>{if(e.lengthComputable)pb.textContent='上传中 '+Math.round(e.loaded/e.total*100)+'%（'+(e.loaded/1048576).toFixed(1)+' / '+(e.total/1048576).toFixed(1)+' MB）'};
   xh.onload=()=>{let j={};try{j=JSON.parse(xh.responseText)}catch(_){}if(xh.status==200&&j.ok){pb.textContent='';T('✅ '+j.msg,1);adTab('pub')}else pb.textContent='❌ '+(j.msg||('HTTP '+xh.status))};
   xh.onerror=()=>{pb.textContent='❌ 网络中断'};xh.send(f)}catch(e){pb.textContent='上传失败：'+e}}
+function ezTgl(){const w=document.getElementById('ezWrap'),ds=document.getElementById('eds');if(w&&ds)w.style.display=(ds.value=='D2'||ds.value=='PACK')?'inline-flex':'none'}
 function pgExp(){
  $('#main').innerHTML=`<div class="card"><h3 style="margin-bottom:4px">📤 导出中心</h3><p style="color:var(--sub);font-size:12.5px;margin-bottom:10px">每次导出登记快照（谁/何时/条件/行数/内容指纹），文件自带口径说明——对账拿文件说话，不用问"这数哪来的"。</p>
-<div class="row"><select id="eds">${DSLS.filter(([k])=>dsVisible(k)).map(([k,n])=>`<option value="${k}">${k} ${n}</option>`).join('')}</select>
+<div class="row"><select id="eds" onchange="ezTgl()">${DSLS.filter(([k])=>dsVisible(k)).map(([k,n])=>`<option value="${k}">${k} ${n}</option>`).join('')}</select>
 <input id="ef" type="date" title="起始日期（流水类可选）"><input id="et" type="date" title="结束日期">
-<button class="pill" onclick="dl('csv')">⬇ CSV</button><button class="pill g" onclick="dl('xls')">⬇ Excel(含口径sheet)</button><button class="pill q" onclick="dl('json')">⬇ JSON(系统对接)</button><label style="font-size:12px;color:var(--sub);display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="ear" style="width:auto">含归档（历史月流水）</label></div>
-<div id="ehist" style="margin-top:10px;color:var(--sub);font-size:12.5px">最近导出：加载中…</div></div>`;
+<button class="pill" onclick="dl('csv')">⬇ CSV</button><button class="pill g" onclick="dl('xls')">⬇ Excel(含口径sheet)</button><button class="pill q" onclick="dl('json')">⬇ JSON(系统对接)</button><label style="font-size:12px;color:var(--sub);display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="ear" style="width:auto">含归档（历史月流水）</label><label id="ezWrap" style="display:none;font-size:12px;color:var(--sub);align-items:center;gap:4px" title="曾有出入记录但现在不在架的零件，框数/数量列为0"><input type="checkbox" id="ez" style="width:auto">含零库存</label></div>
+<div id="ehist" style="margin-top:10px;color:var(--sub);font-size:12.5px">最近导出：加载中…</div></div>`;ezTgl();
  api('/api/exports?limit=30').then(j=>{$('#ehist').innerHTML=`<table><thead><tr><th>编号</th><th>数据集</th><th>格式</th><th>行数</th><th>条件</th><th>操作人</th><th>时间</th><th>指纹</th><th>操作</th></tr></thead><tbody>${(j.list||[]).map(e=>`<tr><td class="mono">${e.id}</td><td>${e.ds}</td><td>${e.fmt}</td><td>${e.rows}</td><td class="mono" style="font-size:11px">${Object.entries(e.f||{}).filter(([k,v])=>v).map(([k,v])=>k+'='+v).join(' ')||'全量'}</td><td>${e.by}</td><td style="font-size:11px;color:var(--sub)">${e.at}</td><td class="mono" style="font-size:11px">${e.sha}</td><td><button class="pill" style="padding:2px 8px;font-size:11px" onclick="reDl('${e.id}')">⬇重下</button></td></tr>`).join('')||'<tr><td colspan=9>暂无</td></tr>'}</tbody></table>`}).catch(()=>{$('#ehist').textContent='历史加载失败'})}
 let PV=null;
 async function dl(fmt){const ds=$('#eds').value,f=$('#ef').value,t=$('#et').value;
  if((ds=='D3'||ds=='D4'||ds=='PACK'||ds=='D5'||ds=='D7'||ds=='D8')&&f&&t&&f>t){T('起始日期晚于结束');return}
- PV={ds,fmt,f,t};const _ar=($('#ear')&&$('#ear').checked)?'&arch=1':'';const q='?ds='+ds+'&fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:'')+_ar+'&preview=1';
+ PV={ds,fmt,f,t};const _ar=($('#ear')&&$('#ear').checked)?'&arch=1':'';const _ez=($('#ez')&&$('#ez').checked&&(ds=='D2'||ds=='PACK'))?'&zero=1':'';const q='?ds='+ds+'&fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:'')+_ar+_ez+'&preview=1';
  T('预览生成中…');
  try{const r=await fetch('/api/export'+q,{headers:{'Authorization':'Bearer '+TK}});
   if(!r.ok){const j=await r.json().catch(()=>({}));T('❌ '+(j.msg||('HTTP '+r.status)));return}
@@ -401,7 +402,7 @@ async function dl(fmt){const ds=$('#eds').value,f=$('#ef').value,t=$('#et').valu
 <div style="overflow:auto;max-height:46vh"><table style="font-size:11px"><thead><tr>${(j.head||[]).map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${j.sample.map(r2=>`<tr>${r2.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
 <div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill g" onclick="dlGo()">确认下载</button></div>`)
  }catch(e){T('预览失败：'+e)}}
-async function dlGo(){$('#mask').classList.add('hide');const{ds,fmt,f,t}=PV;const _ar=($('#ear')&&$('#ear').checked)?'&arch=1':'';const q='?ds='+ds+'&fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:'')+_ar;
+async function dlGo(){$('#mask').classList.add('hide');const{ds,fmt,f,t}=PV;const _ar=($('#ear')&&$('#ear').checked)?'&arch=1':'';const _ez=($('#ez')&&$('#ez').checked&&(ds=='D2'||ds=='PACK'))?'&zero=1':'';const q='?ds='+ds+'&fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:'')+_ar+_ez;
  T('生成中…');
  try{const r=await fetch('/api/export'+q,{headers:{'Authorization':'Bearer '+TK}});
   if(!r.ok){const j=await r.json().catch(()=>({}));T('❌ '+(j.msg||('HTTP '+r.status)));return}
