@@ -1201,6 +1201,7 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(primarySwatch: Colors.blue),
       builder: (ctx, child) => ValueListenableBuilder<double>(
           valueListenable: kFontScaleN,
+          child: child, // 修复：漏传 child 致 builder 的 ch 恒 null，ch! 必炸(真机全屏红)
           builder: (c2, v, ch) => MediaQuery(
               data:
                   MediaQuery.of(ctx).copyWith(textScaler: TextScaler.linear(v)),
