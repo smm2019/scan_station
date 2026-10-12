@@ -4,6 +4,7 @@ part of 'main.dart';
 // 主档不建表：NB02 由编码规则生成（8区×16架×4层=512），空位 = 主档 − 账本占用；
 // NB03 按"每排12格位"规划渲染，A-11/C-11 两排带手动加的第13格位。
 final Set<String> _colCalled = {}; // 本会话已叫车的货位（防重复叫车）
+
 extension CollectionLedgerExt on _MainPageState {
   static const List<String> _lz = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
   static Map<String, int> _gSlots = {}; // ⑮地面排格数覆盖（服务器拉取，缺省12）
@@ -50,11 +51,17 @@ extension CollectionLedgerExt on _MainPageState {
     final free = nb02MasterAll().where((l) => !byLoc.containsKey(l)).toList();
     if (free.isEmpty) return null;
     if (partNo.isNotEmpty) {
-      final recs = await _isar.scanRecords.filter().mesPartNoEqualTo(partNo).findAll();
-      final codes = recs.where((r) => !r.isCancel).map((r) => r.goodsCode.toUpperCase()).toSet();
+      final recs =
+          await _isar.scanRecords.filter().mesPartNoEqualTo(partNo).findAll();
+      final codes = recs
+          .where((r) => !r.isCancel)
+          .map((r) => r.goodsCode.toUpperCase())
+          .toSet();
       final shelves = <String>{};
       for (final e in byLoc.entries) {
-        if (e.key.startsWith('NB02-') && e.key.length >= 9 && e.value.any((c) => codes.contains(c))) {
+        if (e.key.startsWith('NB02-') &&
+            e.key.length >= 9 &&
+            e.value.any((c) => codes.contains(c))) {
           shelves.add(e.key.substring(0, 9)); //NB02-A-08
         }
       }
@@ -66,7 +73,8 @@ extension CollectionLedgerExt on _MainPageState {
         }
         //同件所在区优先（集中堆放）
         final zones = shelves.map((s) => s[5]).toSet();
-        final sameZone = free.where((l) => l.length > 5 && zones.contains(l[5])).toList();
+        final sameZone =
+            free.where((l) => l.length > 5 && zones.contains(l[5])).toList();
         if (sameZone.isNotEmpty) return _preferLow3(sameZone);
       }
     }
@@ -82,60 +90,93 @@ extension CollectionLedgerExt on _MainPageState {
         const SizedBox(height: 8),
         Row(
           children: [
-            const Text("货位账本登记", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+            const Text("货位账本登记",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
             const SizedBox(width: 6),
-            Text(isAgv ? "选填 · 点选/输入/AUTO" : "选填 · 点选空位生成", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            Text(isAgv ? "选填 · 点选/输入/AUTO" : "选填 · 点选空位生成",
+                style: const TextStyle(fontSize: 12, color: Colors.grey)),
           ],
         ),
         const SizedBox(height: 4),
+        TextField(
+          controller: _ledgerLocCtrl,
+          textCapitalization: TextCapitalization.characters,
+          enabled: !_palletMode || _currentPalletId != null,
+          decoration: InputDecoration(
+            hintText: _palletMode && _currentPalletId == null
+                ? "整托：先扫首件，再点选/填（如 NB02-A-08-2F）"
+                : (isAgv ? "货位编码 / 输AUTO自动分配" : "点「选位」挑空位（如 NB03-B-13-07）"),
+            isDense: true,
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 6),
         Row(
           children: [
-            Expanded(
-              child: TextField(
-                controller: _ledgerLocCtrl,
-                textCapitalization: TextCapitalization.characters,
-                enabled: !_palletMode || _currentPalletId != null,
-                decoration: InputDecoration(
-                  hintText: _palletMode && _currentPalletId == null
-                      ? "整托：先扫首件，再点选/填（如 NB02-A-08-2F）"
-                      : (isAgv ? "货位编码 / 输AUTO自动分配" : "点右侧选位（如 NB03-B-13-07）"),
-                  isDense: true,
-                  border: const OutlineInputBorder(),
-                ),
+            if (isAgv)
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF8B93E0),
+                    foregroundColor: Colors.white),
+                onPressed: () => setState(() => _ledgerLocCtrl.text =
+                    _ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO'
+                        ? ''
+                        : 'AUTO'),
+                child: const Text("自动"),
               ),
-            ),
             const SizedBox(width: 6),
-            if (isAgv) ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF8B93E0), foregroundColor: Colors.white),
-              onPressed: () => setState(() => _ledgerLocCtrl.text = _ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO' ? '' : 'AUTO'),
-              child: const Text("自动"),
-            ),
-            const SizedBox(width: 4),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
-              onPressed: isAgv ? _pickNb02 : _pickNb03,
-              child: const Text("选位"),
+            Expanded(
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF515BD4),
+                    foregroundColor: Colors.white),
+                onPressed: isAgv ? _pickNb02 : _pickNb03,
+                child: const Text("选位"),
+              ),
             ),
             if (isAgv) ...[
               const SizedBox(width: 6),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00897B), foregroundColor: Colors.white),
-                onPressed: _showWmasCard,
-                child: const Text("提交任务"),
+              Expanded(
+                flex: 2,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00897B),
+                      foregroundColor: Colors.white),
+                  onPressed: _showWmasCard,
+                  child: const Text("提交任务"),
+                ),
               ),
             ],
           ],
         ),
         if (_autoCallTip.isNotEmpty)
-          Padding(padding: const EdgeInsets.only(top: 5), child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            decoration: BoxDecoration(
-                color: _autoCallTip.startsWith("🚗") ? const Color(0xFFE8F5E9) : (_autoCallTip.startsWith("⚠️") ? const Color(0xFFFFF3E0) : const Color(0xFFECEFF1)),
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: _autoCallTip.startsWith("🚗") ? Colors.green.shade200 : (_autoCallTip.startsWith("⚠️") ? Colors.orange.shade200 : Colors.blueGrey.shade200))),
-            child: Text(_autoCallTip, style: TextStyle(fontSize: 11.5, color: _autoCallTip.startsWith("🚗") ? Colors.green.shade800 : (_autoCallTip.startsWith("⚠️") ? Colors.orange.shade900 : Colors.blueGrey))),
-          )),
+          Padding(
+              padding: const EdgeInsets.only(top: 5),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                    color: _autoCallTip.startsWith("🚗")
+                        ? const Color(0xFFE8F5E9)
+                        : (_autoCallTip.startsWith("⚠️")
+                            ? const Color(0xFFFFF3E0)
+                            : const Color(0xFFECEFF1)),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: _autoCallTip.startsWith("🚗")
+                            ? Colors.green.shade200
+                            : (_autoCallTip.startsWith("⚠️")
+                                ? Colors.orange.shade200
+                                : Colors.blueGrey.shade200))),
+                child: Text(_autoCallTip,
+                    style: TextStyle(
+                        fontSize: 11.5,
+                        color: _autoCallTip.startsWith("🚗")
+                            ? Colors.green.shade800
+                            : (_autoCallTip.startsWith("⚠️")
+                                ? Colors.orange.shade900
+                                : Colors.blueGrey))),
+              )),
       ],
     );
   }
@@ -157,16 +198,23 @@ extension CollectionLedgerExt on _MainPageState {
 
   ///AUTO 解析：按本次 MES 零件号给 NB02 自动分配货位并回填；分配不到保留 AUTO 走格式提示。
   Future<void> _handleAutoLedger(String code) async {
-    final rec = await _isar.scanRecords.filter().goodsCodeEqualTo(code.toUpperCase()).findFirst();
+    final rec = await _isar.scanRecords
+        .filter()
+        .goodsCodeEqualTo(code.toUpperCase())
+        .findFirst();
     final partNo = rec?.mesPartNo ?? "";
     final loc = await nb02AutoAssign(partNo);
     if (!mounted) return;
     if (loc == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("货架已无空位，无法自动分配，请改用选位或手输"), backgroundColor: Colors.orange));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("货架已无空位，无法自动分配，请改用选位或手输"),
+          backgroundColor: Colors.orange));
       return;
     }
     setState(() => _ledgerLocCtrl.text = loc);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("自动分配货位：$loc（零件 $partNo）"), backgroundColor: const Color(0xFF00897B)));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text("自动分配货位：$loc（零件 $partNo）"),
+        backgroundColor: const Color(0xFF00897B)));
   }
 
   ///NB02 picker：选区→16架×4层网格，占用显示标签，点空位回填
@@ -175,63 +223,86 @@ extension CollectionLedgerExt on _MainPageState {
     if (!mounted) return;
     String zone = _ledgerLocCtrl.text.length > 5 ? _ledgerLocCtrl.text[5] : 'A';
     if (!'ABCDEFGH'.contains(zone)) zone = 'A';
-    final picked = await showDialog<String>(context: context, builder: (dctx) {
-      return StatefulBuilder(builder: (bctx, setSt) {
-        final rows = <Widget>[];
-        for (var r = 1; r <= 16; r++) {
-          final rr = r.toString().padLeft(2, '0');
-          final cells = <Widget>[];
-          for (var f = 1; f <= 4; f++) {
-            final code = 'NB02-$zone-$rr-$f' + 'F';
-            final occ = byLoc[code];
-            final full = occ != null && occ.isNotEmpty;
-            cells.add(Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 2),
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: full ? const Color(0xFFE0E0E0) : Colors.white,
-                    foregroundColor: full ? Colors.grey.shade600 : const Color(0xFF3F51B5),
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+    final picked = await showDialog<String>(
+        context: context,
+        builder: (dctx) {
+          return StatefulBuilder(builder: (bctx, setSt) {
+            final rows = <Widget>[];
+            for (var r = 1; r <= 16; r++) {
+              final rr = r.toString().padLeft(2, '0');
+              final cells = <Widget>[];
+              for (var f = 1; f <= 4; f++) {
+                final code = 'NB02-$zone-$rr-$f' + 'F';
+                final occ = byLoc[code];
+                final full = occ != null && occ.isNotEmpty;
+                cells.add(Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 2),
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor:
+                            full ? const Color(0xFFE0E0E0) : Colors.white,
+                        foregroundColor: full
+                            ? Colors.grey.shade600
+                            : const Color(0xFF3F51B5),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                      ),
+                      onPressed: () {
+                        if (full) {
+                          ScaffoldMessenger.of(bctx).showSnackBar(SnackBar(
+                              content: Text("$code 已占用：${occ.join('、')}"),
+                              backgroundColor: Colors.orange));
+                        } else {
+                          Navigator.pop(bctx, code);
+                        }
+                      },
+                      child: Text(full ? "${f}F\n${occ.length}码" : "$f" + "F",
+                          style: const TextStyle(fontSize: 12)),
+                    ),
                   ),
-                  onPressed: () {
-                    if (full) {
-                      ScaffoldMessenger.of(bctx).showSnackBar(SnackBar(content: Text("$code 已占用：${occ.join('、')}"), backgroundColor: Colors.orange));
-                    } else {
-                      Navigator.pop(bctx, code);
-                    }
-                  },
-                  child: Text(full ? "${f}F\n${occ.length}码" : "$f" + "F", style: const TextStyle(fontSize: 12)),
-                ),
+                ));
+              }
+              rows.add(Row(children: [
+                SizedBox(
+                    width: 40,
+                    child: Text("$zone-$rr",
+                        style: const TextStyle(
+                            fontSize: 12, fontFamily: "monospace"))),
+                Expanded(child: Row(children: cells)),
+              ]));
+              rows.add(const SizedBox(height: 3));
+            }
+            return AlertDialog(
+              title: Text("选择 AGV 货架位（$zone 区）"),
+              content: SizedBox(
+                width: 380,
+                height: 420,
+                child: Column(children: [
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                        children: _lz
+                            .map((z) => Padding(
+                                  padding: const EdgeInsets.only(right: 6),
+                                  child: ChoiceChip(
+                                      label: Text(z),
+                                      selected: z == zone,
+                                      onSelected: (_) => setSt(() => zone = z)),
+                                ))
+                            .toList()),
+                  ),
+                  const SizedBox(height: 6),
+                  Expanded(child: ListView(children: rows)),
+                ]),
               ),
-            ));
-          }
-          rows.add(Row(children: [
-            SizedBox(width: 40, child: Text("$zone-$rr", style: const TextStyle(fontSize: 12, fontFamily: "monospace"))),
-            Expanded(child: Row(children: cells)),
-          ]));
-          rows.add(const SizedBox(height: 3));
-        }
-        return AlertDialog(
-          title: Text("选择 AGV 货架位（$zone 区）"),
-          content: SizedBox(
-            width: 380, height: 420,
-            child: Column(children: [
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(children: _lz.map((z) => Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: ChoiceChip(label: Text(z), selected: z == zone, onSelected: (_) => setSt(() => zone = z)),
-                )).toList()),
-              ),
-              const SizedBox(height: 6),
-              Expanded(child: ListView(children: rows)),
-            ]),
-          ),
-          actions: [TextButton(onPressed: () => Navigator.pop(bctx), child: const Text("取消"))],
-        );
-      });
-    });
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(bctx),
+                    child: const Text("取消"))
+              ],
+            );
+          });
+        });
     if (picked != null && mounted) setState(() => _ledgerLocCtrl.text = picked);
   }
 
@@ -260,11 +331,14 @@ extension CollectionLedgerExt on _MainPageState {
           child: ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: full ? const Color(0xFFE0E0E0) : Colors.white,
-              foregroundColor: full ? Colors.grey.shade600 : const Color(0xFF3F51B5),
+              foregroundColor:
+                  full ? Colors.grey.shade600 : const Color(0xFF3F51B5),
             ),
             onPressed: () {
               if (full) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("$code 已占用：${occ.join('、')}"), backgroundColor: Colors.orange));
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                    content: Text("$code 已占用：${occ.join('、')}"),
+                    backgroundColor: Colors.orange));
               } else {
                 Navigator.pop(context, code);
               }
@@ -274,16 +348,26 @@ extension CollectionLedgerExt on _MainPageState {
         ),
       ));
     }
-    final picked = await showDialog<String>(context: context, builder: (dctx) => AlertDialog(
-      title: Text("选格位：$prefix（空 ${maxSlot - byLoc.keys.where((k) => k.startsWith('$prefix-')).length}/$maxSlot）"),
-      content: SizedBox(width: 300, child: Wrap(children: cells)),
-      actions: [TextButton(onPressed: () => Navigator.pop(dctx), child: const Text("取消"))],
-    ));
+    final picked = await showDialog<String>(
+        context: context,
+        builder: (dctx) => AlertDialog(
+              title: Text(
+                  "选格位：$prefix（空 ${maxSlot - byLoc.keys.where((k) => k.startsWith('$prefix-')).length}/$maxSlot）"),
+              content: SizedBox(width: 300, child: Wrap(children: cells)),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(dctx),
+                    child: const Text("取消"))
+              ],
+            ));
     if (picked != null && mounted) setState(() => _ledgerLocCtrl.text = picked);
   }
 
   void _toastGroundPickFirst() {
-    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先在上方选择地面货位（区+排），再点选格位"), backgroundColor: Colors.orange));
+    if (mounted)
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("请先在上方选择地面货位（区+排），再点选格位"),
+          backgroundColor: Colors.orange));
   }
 
   /// 最近一次入账的货位（扫码保存后输入框会清空，叫车时回退取它）
@@ -297,34 +381,75 @@ extension CollectionLedgerExt on _MainPageState {
   /// ⑳扫码自动入库叫车：与手动「提交任务」同校验链（会话防重/容器主档反查）；失败只提示不动账本
   Future<void> _autoCallInbound(String st, String loc, String ctype) async {
     try {
-      if (_colCalled.contains(loc)) { if (mounted) setState(() => _autoCallTip = "ℹ️ $loc 本会话已叫过车（防重复）"); return; }
+      if (_colCalled.contains(loc)) {
+        if (mounted) setState(() => _autoCallTip = "ℹ️ $loc 本会话已叫过车（防重复）");
+        return;
+      }
       final cands = await WmasMaster.containerCodesOf(ctype);
       if (cands.isEmpty) {
-        if (mounted) setState(() => _autoCallTip = "⚠️ 自动叫车未发：主档无「$ctype」容器｜请手动「提交任务」");
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("自动叫车未发：主档无「$ctype」容器编码，请手动「提交任务」"), backgroundColor: Colors.orange));
+        if (mounted)
+          setState(() => _autoCallTip = "⚠️ 自动叫车未发：主档无「$ctype」容器｜请手动「提交任务」");
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text("自动叫车未发：主档无「$ctype」容器编码，请手动「提交任务」"),
+              backgroundColor: Colors.orange));
         return;
       }
       String cn = cands.first;
       if (cands.length > 1) {
         //多候选不猜：弹轻选择（取消则留手动），避免自动模式拿错容器
         if (!mounted) return;
-        final picked = await showDialog<String>(context: context, builder: (dc) => AlertDialog(
-          title: const Text("选择容器编码（自动叫车）"),
-          content: SizedBox(width: 300, height: (cands.length > 8 ? 8 : cands.length) * 44 + 30, child: ListView(children: cands.map((c) => RadioListTile<String>(dense: true, contentPadding: EdgeInsets.zero, title: Text(c, style: const TextStyle(fontSize: 13, fontFamily: "monospace")), value: c, groupValue: null, onChanged: (v) => Navigator.pop(dc, v))).toList())),
-          actions: [TextButton(onPressed: () => Navigator.pop(dc), child: const Text("取消（稍后手动提交）"))],
-        ));
-        if (picked == null) { if (mounted) setState(() => _autoCallTip = "ℹ️ 已取消容器选择，未叫车｜可手动「提交任务」"); return; }
+        final picked = await showDialog<String>(
+            context: context,
+            builder: (dc) => AlertDialog(
+                  title: const Text("选择容器编码（自动叫车）"),
+                  content: SizedBox(
+                      width: 300,
+                      height: (cands.length > 8 ? 8 : cands.length) * 44 + 30,
+                      child: ListView(
+                          children: cands
+                              .map((c) => RadioListTile<String>(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text(c,
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          fontFamily: "monospace")),
+                                  value: c,
+                                  groupValue: null,
+                                  onChanged: (v) => Navigator.pop(dc, v)))
+                              .toList())),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dc),
+                        child: const Text("取消（稍后手动提交）"))
+                  ],
+                ));
+        if (picked == null) {
+          if (mounted)
+            setState(() => _autoCallTip = "ℹ️ 已取消容器选择，未叫车｜可手动「提交任务」");
+          return;
+        }
         cn = picked;
       }
-      final r = await WmasTask.createCarry(startPoint: st, endPoint: loc, containerNo: cn);
+      final r = await WmasTask.createCarry(
+          startPoint: st, endPoint: loc, containerNo: cn);
       if (r["ok"] == true) {
         _colCalled.add(loc);
         LocalLog.op('自动入库叫车', "$st→$loc 容器$cn");
-        if (mounted) setState(() => _autoCallTip = "🚗 自动叫车成功：$st → $loc（容器 $cn）");
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("🚗 自动叫车：${r["msg"]}"), backgroundColor: const Color(0xFF2E7D32), duration: const Duration(seconds: 3)));
+        if (mounted)
+          setState(() => _autoCallTip = "🚗 自动叫车成功：$st → $loc（容器 $cn）");
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text("🚗 自动叫车：${r["msg"]}"),
+              backgroundColor: const Color(0xFF2E7D32),
+              duration: const Duration(seconds: 3)));
       } else if (mounted) {
         setState(() => _autoCallTip = "⚠️ 自动叫车失败：${r["msg"]}｜可手动「提交任务」");
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("自动叫车失败：${r["msg"]}（账本已登记，可手动「提交任务」）"), backgroundColor: Colors.orange, duration: const Duration(seconds: 5)));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("自动叫车失败：${r["msg"]}（账本已登记，可手动「提交任务」）"),
+            backgroundColor: Colors.orange,
+            duration: const Duration(seconds: 5)));
       }
     } catch (e) {
       debugPrint('[auto-call] $e');
@@ -334,27 +459,44 @@ extension CollectionLedgerExt on _MainPageState {
 
   ///WMAS 任务卡：叫车前先强制校验"该货位已扫码入账"，从流程上杜绝"叫了车忘扫码"；本会话已叫过的货位禁止重复叫车
   Future<void> _showWmasCard() async {
-    final st = _selectedStation ?? "";
+    final st =
+        _selectedStation ?? _lastScanStation ?? ""; // ㉖⑬ 扫码后站台选中态已清，回退本框扫码时的站台
     var loc = _ledgerLocCtrl.text.trim().toUpperCase();
-    if (loc.isEmpty || loc == 'AUTO') loc = await _latestRegLoc(); // 扫码后输入框清空→回退最近入账货位
-    final ctype = _containerType ?? "";
-    void warn(String m) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), backgroundColor: Colors.orange)); }
+    if (loc.isEmpty || loc == 'AUTO')
+      loc = await _latestRegLoc(); // 扫码后输入框清空→回退最近入账货位
+    final ctype = _containerType ?? _lastScanContainer ?? ""; // ㉖⑬ 容器同左回退
+    void warn(String m) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(m), backgroundColor: Colors.orange));
+    }
+
     if (st.isEmpty) return warn("请先选择起始站台");
     if (loc.isEmpty) return warn("还没有扫码入账的货位——请先扫描货物标签，再叫车");
-    if (_colCalled.contains(loc)) return warn("货位 $loc 本会话已叫过车，请勿重复；如需重叫请先到AGV系统核对该托盘任务");
+    if (_colCalled.contains(loc))
+      return warn("货位 $loc 本会话已叫过车，请勿重复；如需重叫请先到AGV系统核对该托盘任务");
     final codes = (await _ledgerByLoc())[loc] ?? const <String>[];
     if (codes.isEmpty) return warn("货位 $loc 还没有扫码入账——请先扫描货物标签，再叫车（防止叫车忘扫码）");
     if (!mounted) return;
-    showDialog(context: context, builder: (dctx) => _WmasCardDialog(startPoint: st, endPoint: loc, containerType: ctype, cargoCodes: codes));
+    showDialog(
+        context: context,
+        builder: (dctx) => _WmasCardDialog(
+            startPoint: st,
+            endPoint: loc,
+            containerType: ctype,
+            cargoCodes: codes));
   }
 }
-
 
 /// WMAS 任务确认对话框：容器编码反查主档（多候选可选），提交=建任务+下发
 class _WmasCardDialog extends StatefulWidget {
   final String startPoint, endPoint, containerType;
   final List<String> cargoCodes;
-  const _WmasCardDialog({required this.startPoint, required this.endPoint, required this.containerType, this.cargoCodes = const []});
+  const _WmasCardDialog(
+      {required this.startPoint,
+      required this.endPoint,
+      required this.containerType,
+      this.cargoCodes = const []});
   @override
   State<_WmasCardDialog> createState() => _WmasCardDialogState();
 }
@@ -380,10 +522,15 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
         _loading = false;
         _cands = list;
         _picked = list.length == 1 ? list.first : null;
-        if (list.isEmpty) _err = "容器主档里没有「${widget.containerType}」对应的容器编码，请核对容器类型或手动在WMAS建任务";
+        if (list.isEmpty)
+          _err = "容器主档里没有「${widget.containerType}」对应的容器编码，请核对容器类型或手动在WMAS建任务";
       });
     } catch (e) {
-      if (mounted) setState(() { _loading = false; _err = "查容器主档失败：$e"; });
+      if (mounted)
+        setState(() {
+          _loading = false;
+          _err = "查容器主档失败：$e";
+        });
     }
   }
 
@@ -391,62 +538,124 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
     final cn = _picked ?? "";
     if (cn.isEmpty || _busy) return;
     setState(() => _busy = true);
-    final r = await WmasTask.createCarry(startPoint: widget.startPoint, endPoint: widget.endPoint, containerNo: cn);
+    final r = await WmasTask.createCarry(
+        startPoint: widget.startPoint,
+        endPoint: widget.endPoint,
+        containerNo: cn);
     if (!mounted) return;
     setState(() => _busy = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(r["ok"] == true ? "AGV任务：${r["msg"]}" : "AGV任务失败：${r["msg"]}"),
-      backgroundColor: r["ok"] == true ? const Color(0xFF2E7D32) : Colors.red, duration: const Duration(seconds: 4)));
-    if (r["ok"] == true) { _colCalled.add(widget.endPoint); Navigator.pop(context); }
+        content:
+            Text(r["ok"] == true ? "AGV任务：${r["msg"]}" : "AGV任务失败：${r["msg"]}"),
+        backgroundColor: r["ok"] == true ? const Color(0xFF2E7D32) : Colors.red,
+        duration: const Duration(seconds: 4)));
+    if (r["ok"] == true) {
+      _colCalled.add(widget.endPoint);
+      Navigator.pop(context);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final ready = widget.startPoint.isNotEmpty && widget.endPoint.isNotEmpty && widget.endPoint != 'AUTO';
+    final ready = widget.startPoint.isNotEmpty &&
+        widget.endPoint.isNotEmpty &&
+        widget.endPoint != 'AUTO';
     final cn = _picked ?? "";
-    final clip = [widget.startPoint, widget.endPoint, cn].where((s) => s.isNotEmpty && s != 'AUTO').join("\n");
+    final clip = [widget.startPoint, widget.endPoint, cn]
+        .where((s) => s.isNotEmpty && s != 'AUTO')
+        .join("\n");
     return AlertDialog(
       title: const Text("AGV 搬运任务（WMAS）"),
-      content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text("起始库位：${widget.startPoint.isEmpty ? "（未选站台）" : widget.startPoint}", style: const TextStyle(fontSize: 14)),
-        Text("目标库位：${!ready ? (widget.endPoint.isEmpty ? "（未定）" : widget.endPoint) : widget.endPoint}", style: const TextStyle(fontSize: 14)),
-        const SizedBox(height: 4),
-        Text("容器类型：${widget.containerType.isEmpty ? "（未选）" : widget.containerType}", style: const TextStyle(fontSize: 13, color: Colors.grey)),
-        if (widget.cargoCodes.isNotEmpty)
-          Text("货物标签：${widget.cargoCodes.join("、")}", style: const TextStyle(fontSize: 13, color: Color(0xFF1A237E))),
-        const SizedBox(height: 6),
-        if (_loading)
-          const Row(children: [SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)), SizedBox(width: 8), Text("查询容器主档…", style: TextStyle(fontSize: 12))])
-        else if (_err.isNotEmpty)
-          Text(_err, style: const TextStyle(fontSize: 12.5, color: Colors.deepOrange))
-        else if (_cands.length == 1)
-          Text("容器编码：$cn", style: const TextStyle(fontSize: 14, fontFamily: "monospace", color: Color(0xFF1A237E)))
-        else
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text("容器编码（${widget.containerType} 在主档有 ${_cands.length} 个，选架上这只）：", style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+                "起始库位：${widget.startPoint.isEmpty ? "（未选站台）" : widget.startPoint}",
+                style: const TextStyle(fontSize: 14)),
+            Text(
+                "目标库位：${!ready ? (widget.endPoint.isEmpty ? "（未定）" : widget.endPoint) : widget.endPoint}",
+                style: const TextStyle(fontSize: 14)),
             const SizedBox(height: 4),
-            SizedBox(height: 96, child: ListView.builder(
-              shrinkWrap: true, itemCount: _cands.length,
-              itemBuilder: (bc, i) => RadioListTile<String>(
-                dense: true, contentPadding: EdgeInsets.zero, visualDensity: VisualDensity.compact,
-                title: Text(_cands[i], style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
-                value: _cands[i], groupValue: _picked, onChanged: (v) => setState(() => _picked = v),
-              ),
-            )),
+            Text(
+                "容器类型：${widget.containerType.isEmpty ? "（未选）" : widget.containerType}",
+                style: const TextStyle(fontSize: 13, color: Colors.grey)),
+            if (widget.cargoCodes.isNotEmpty)
+              Text("货物标签：${widget.cargoCodes.join("、")}",
+                  style:
+                      const TextStyle(fontSize: 13, color: Color(0xFF1A237E))),
+            const SizedBox(height: 6),
+            if (_loading)
+              const Row(children: [
+                SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2)),
+                SizedBox(width: 8),
+                Text("查询容器主档…", style: TextStyle(fontSize: 12))
+              ])
+            else if (_err.isNotEmpty)
+              Text(_err,
+                  style:
+                      const TextStyle(fontSize: 12.5, color: Colors.deepOrange))
+            else if (_cands.length == 1)
+              Text("容器编码：$cn",
+                  style: const TextStyle(
+                      fontSize: 14,
+                      fontFamily: "monospace",
+                      color: Color(0xFF1A237E)))
+            else
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(
+                    "容器编码（${widget.containerType} 在主档有 ${_cands.length} 个，选架上这只）：",
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                const SizedBox(height: 4),
+                SizedBox(
+                    height: 96,
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: _cands.length,
+                      itemBuilder: (bc, i) => RadioListTile<String>(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        visualDensity: VisualDensity.compact,
+                        title: Text(_cands[i],
+                            style: const TextStyle(
+                                fontSize: 13, fontFamily: "monospace")),
+                        value: _cands[i],
+                        groupValue: _picked,
+                        onChanged: (v) => setState(() => _picked = v),
+                      ),
+                    )),
+              ]),
           ]),
-      ]),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text("关闭")),
         TextButton(
-          onPressed: clip.split("\n").length < 3 ? null : () {
-            Clipboard.setData(ClipboardData(text: clip));
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已复制三要素（每行一项）"), backgroundColor: Color(0xFF2E7D32)));
-          },
-          child: const Text("复制手填")),
+            onPressed: () => Navigator.pop(context), child: const Text("关闭")),
+        TextButton(
+            onPressed: clip.split("\n").length < 3
+                ? null
+                : () {
+                    Clipboard.setData(ClipboardData(text: clip));
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text("已复制三要素（每行一项）"),
+                        backgroundColor: Color(0xFF2E7D32)));
+                  },
+            child: const Text("复制手填")),
         ElevatedButton.icon(
-          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00897B), foregroundColor: Colors.white, disabledBackgroundColor: Colors.grey.shade300),
-          onPressed: (ready && cn.isNotEmpty && !_busy && !_loading) ? _submit : null,
-          icon: _busy ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.send, size: 16),
+          style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00897B),
+              foregroundColor: Colors.white,
+              disabledBackgroundColor: Colors.grey.shade300),
+          onPressed:
+              (ready && cn.isNotEmpty && !_busy && !_loading) ? _submit : null,
+          icon: _busy
+              ? const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.send, size: 16),
           label: const Text("提交任务"),
         ),
       ],
@@ -467,8 +676,14 @@ void scheduleLedgerPush({int seconds = 30}) {
 Future<Map> ledgerPushNow() async {
   try {
     final all = await _globalIsar.shelfPlacements.where().findAll();
-    final infos = {for (final e in await _globalIsar.labelInfos.where().findAll()) e.goodsCode: e};
-    final pids = {for (final e in await _globalIsar.recordExtras.where().findAll()) e.goodsCode: e.palletId}; // 托号：整托多码同框
+    final infos = {
+      for (final e in await _globalIsar.labelInfos.where().findAll())
+        e.goodsCode: e
+    };
+    final pids = {
+      for (final e in await _globalIsar.recordExtras.where().findAll())
+        e.goodsCode: e.palletId
+    }; // 托号：整托多码同框
     // 入库搬运方式：采集流水 workType 0=AGV站台(来站=stationNo) 1=人工地面(来源=groundLocation)；无流水=手工登记
     final mvMap = <String, String>{}, srcMap = <String, String>{};
     final recs = await _globalIsar.scanRecords.where().findAll();
@@ -476,8 +691,13 @@ Future<Map> ledgerPushNow() async {
     for (final r in recs) {
       if (r.isCancel) continue;
       final up = r.goodsCode.toUpperCase();
-      if (r.workType == 0) { mvMap[up] = "AGV"; srcMap[up] = r.stationNo ?? ""; }
-      else { mvMap[up] = "人工"; srcMap[up] = r.groundLocation ?? ""; }
+      if (r.workType == 0) {
+        mvMap[up] = "AGV";
+        srcMap[up] = r.stationNo ?? "";
+      } else {
+        mvMap[up] = "人工";
+        srcMap[up] = r.groundLocation ?? "";
+      }
     }
     final items = all.map((p) {
       final i = infos[p.goodsCode];
@@ -486,10 +706,19 @@ Future<Map> ledgerPushNow() async {
       final mv = mvMap[up] ?? "登记";
       final src = srcMap[up] ?? "";
       return {
-        "c": p.goodsCode, "l": p.loc, "f": p.container, "t": p.assignedAt,
-        "mv": mv, if (src.isNotEmpty) "src": src,
+        "c": p.goodsCode,
+        "l": p.loc,
+        "f": p.container,
+        "t": p.assignedAt,
+        "mv": mv,
+        if (src.isNotEmpty) "src": src,
         if (pid.isNotEmpty) "pid": pid,
-        if (i != null && !i.missing) ...{"p": i.partNo, "n": i.itemName, "q": i.qty, "b": i.lotNo},
+        if (i != null && !i.missing) ...{
+          "p": i.partNo,
+          "n": i.itemName,
+          "q": i.qty,
+          "b": i.lotNo
+        },
       };
     }).toList();
     final del = await ledgerTombs();
@@ -501,12 +730,20 @@ Future<Map> ledgerPushNow() async {
       debugPrint('[ledger] 冲突标签: $rej');
       final ctx = _globalNavigatorKey.currentContext;
       if (ctx != null) {
-        unawaited(showDialog(context: ctx, builder: (dc) => AlertDialog(
-          icon: const Icon(Icons.sync_problem, color: Colors.orange, size: 34),
-          title: const Text("货位登记冲突"),
-          content: Text("${rej.length} 个标签的登记被其他设备更新的数据覆盖（你推送前它已被别台改过）：\n${rej.take(8).join("、")}${rej.length > 8 ? " …" : ""}\n\n请到「位置登记」重新登记这些框的实际货位，并和同事对齐现场。"),
-          actions: [FilledButton(onPressed: () => Navigator.pop(dc), child: const Text("知道了"))],
-        )));
+        unawaited(showDialog(
+            context: ctx,
+            builder: (dc) => AlertDialog(
+                  icon: const Icon(Icons.sync_problem,
+                      color: Colors.orange, size: 34),
+                  title: const Text("货位登记冲突"),
+                  content: Text(
+                      "${rej.length} 个标签的登记被其他设备更新的数据覆盖（你推送前它已被别台改过）：\n${rej.take(8).join("、")}${rej.length > 8 ? " …" : ""}\n\n请到「位置登记」重新登记这些框的实际货位，并和同事对齐现场。"),
+                  actions: [
+                    FilledButton(
+                        onPressed: () => Navigator.pop(dc),
+                        child: const Text("知道了"))
+                  ],
+                )));
       }
     }
     if (r["ok"] == true) await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
@@ -526,12 +763,15 @@ Future<Map<String, int>> _loadTombs() async {
   try {
     final m = jsonDecode(s) as Map<String, dynamic>;
     return m.map((k, v) => MapEntry(k, (v as num).toInt()));
-  } catch (_) { return {}; }
+  } catch (_) {
+    return {};
+  }
 }
 
 Future<void> _saveTombs(Map<String, int> m) async {
   final sp = await SharedPreferences.getInstance();
-  if (m.length > 8000) { // 只留最新8000条，防无限膨胀
+  if (m.length > 8000) {
+    // 只留最新8000条，防无限膨胀
     final e = m.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
     m = Map.fromEntries(e.take(8000));
   }
@@ -543,7 +783,13 @@ Future<void> ledgerMarkDeleted(Iterable<String> codes) async {
   final m = await _loadTombs();
   final now = DateTime.now().millisecondsSinceEpoch;
   var changed = false;
-  for (final c in codes) { final up = c.toUpperCase(); if (up.isNotEmpty) { m[up] = now; changed = true; } }
+  for (final c in codes) {
+    final up = c.toUpperCase();
+    if (up.isNotEmpty) {
+      m[up] = now;
+      changed = true;
+    }
+  }
   if (changed) await _saveTombs(m);
 }
 
@@ -551,7 +797,9 @@ Future<void> ledgerMarkDeleted(Iterable<String> codes) async {
 Future<void> ledgerUnmarkDeleted(Iterable<String> codes) async {
   final m = await _loadTombs();
   var changed = false;
-  for (final c in codes) { if (m.remove(c.toUpperCase()) != null) changed = true; }
+  for (final c in codes) {
+    if (m.remove(c.toUpperCase()) != null) changed = true;
+  }
   if (changed) await _saveTombs(m);
 }
 
@@ -575,9 +823,14 @@ Future<void> ledgerClearSentTombs(List<Map> sent) async {
 Future<String> ledgerLocOfCode(String code) async {
   try {
     if (code.isEmpty) return "";
-    final sp = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(code.toUpperCase()).findAll();
+    final sp = await _globalIsar.shelfPlacements
+        .filter()
+        .goodsCodeEqualTo(code.toUpperCase())
+        .findAll();
     return sp.isNotEmpty ? sp.first.loc : "";
-  } catch (_) { return ""; }
+  } catch (_) {
+    return "";
+  }
 }
 
 /// 从电脑服务器拉取账本并**增量合并**进本机（物料员/新PDA看库存的关键：本机没采集也能有数据）。
@@ -586,14 +839,17 @@ Future<String> ledgerLocOfCode(String code) async {
 Future<void> pullGroundSlots() async {
   try {
     final r = await AuthApi.groundSlotsGet();
-    if (r["ok"] == true) CollectionLedgerExt._gSlots = Map<String, int>.from((r["slots"] as Map).map((k, v) => MapEntry(k.toString(), (v as num).toInt())));
+    if (r["ok"] == true)
+      CollectionLedgerExt._gSlots = Map<String, int>.from((r["slots"] as Map)
+          .map((k, v) => MapEntry(k.toString(), (v as num).toInt())));
   } catch (_) {}
 }
 
 Future<Map> ledgerPullMerge() async {
   try {
     final r = await AuthApi.ledgerGet();
-    if (r["ok"] != true) return {"ok": false, "msg": (r["msg"] ?? "拉取失败").toString()};
+    if (r["ok"] != true)
+      return {"ok": false, "msg": (r["msg"] ?? "拉取失败").toString()};
     final items = List<Map>.from(r["items"] ?? []);
     final tomb = List<Map>.from(r["tomb"] ?? []);
     final local = await _globalIsar.shelfPlacements.where().findAll();
@@ -614,20 +870,28 @@ Future<Map> ledgerPullMerge() async {
       final me = localMap[c];
       if (me != null && me.assignedAt >= t) continue; // 本机登记时间更新 → 保留本机
       upserts.add(ShelfPlacement()
-        ..goodsCode = c ..loc = l
+        ..goodsCode = c
+        ..loc = l
         ..container = (x["f"] ?? "").toString()
         ..operator = (x["by"] ?? "拉取合并").toString()
         ..assignedAt = t > 0 ? t : now);
       final pn = (x["p"] ?? "").toString().toUpperCase();
       if (pn.isNotEmpty) {
         infoUpserts.add(LabelInfo()
-          ..goodsCode = c ..partNo = pn
+          ..goodsCode = c
+          ..partNo = pn
           ..itemName = (x["n"] ?? "").toString()
           ..qty = (x["q"] as num?)?.toDouble() ?? 0
           ..lotNo = (x["b"] ?? "").toString()
-          ..missing = false ..syncedAt = now);
+          ..missing = false
+          ..syncedAt = now);
       }
-      if (me == null) added++; else { rmIds.add(me.id); updated++; }
+      if (me == null)
+        added++;
+      else {
+        rmIds.add(me.id);
+        updated++;
+      }
     }
     // 服务器墓碑比本机新 → 本机消位并落墓碑（别台拣下的框这里同步消失）
     for (final d in tomb) {
@@ -636,14 +900,23 @@ Future<Map> ledgerPullMerge() async {
       if (c.isEmpty || t == 0) continue;
       final me = localMap[c];
       if (me != null && me.assignedAt > t) continue; // 本机后来重新登记 → 保留
-      if (me != null) { rmIds.add(me.id); deleted++; }
+      if (me != null) {
+        rmIds.add(me.id);
+        deleted++;
+      }
       if ((tombMap[c] ?? 0) < t) tombAdds[c] = t;
     }
     await _globalIsar.writeTxn(() async {
-      if (rmIds.isNotEmpty) await _globalIsar.shelfPlacements.deleteAll(rmIds.toList());
+      if (rmIds.isNotEmpty)
+        await _globalIsar.shelfPlacements.deleteAll(rmIds.toList());
       if (upserts.isNotEmpty) await _globalIsar.shelfPlacements.putAll(upserts);
       if (infoUpserts.isNotEmpty) {
-        for (final e in infoUpserts) { await _globalIsar.labelInfos.filter().goodsCodeEqualTo(e.goodsCode).deleteAll(); }
+        for (final e in infoUpserts) {
+          await _globalIsar.labelInfos
+              .filter()
+              .goodsCodeEqualTo(e.goodsCode)
+              .deleteAll();
+        }
         await _globalIsar.labelInfos.putAll(infoUpserts);
       }
     });
@@ -653,7 +926,13 @@ Future<Map> ledgerPullMerge() async {
       await _saveTombs(m);
     }
     unawaited(pullGroundSlots()); // ⑮顺带刷新地面排格数
-    return {"ok": true, "added": added, "updated": updated, "deleted": deleted, "total": items.length};
+    return {
+      "ok": true,
+      "added": added,
+      "updated": updated,
+      "deleted": deleted,
+      "total": items.length
+    };
   } catch (e) {
     return {"ok": false, "msg": "$e"};
   }
@@ -665,11 +944,19 @@ Future<void> ledgerRemoveAndPush(Iterable<String> codes) async {
     final gone = <String>[];
     await _globalIsar.writeTxn(() async {
       for (final c in codes) {
-        final olds = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(c).findAll();
-        if (olds.isNotEmpty) { gone.add(c); await _globalIsar.shelfPlacements.deleteAll(olds.map((e) => e.id).toList()); }
+        final olds = await _globalIsar.shelfPlacements
+            .filter()
+            .goodsCodeEqualTo(c)
+            .findAll();
+        if (olds.isNotEmpty) {
+          gone.add(c);
+          await _globalIsar.shelfPlacements
+              .deleteAll(olds.map((e) => e.id).toList());
+        }
       }
     });
-    if (gone.isNotEmpty) await ledgerMarkDeleted(gone); // 记墓碑：服务器合并时同步删除，别台PDA可拉取感知
+    if (gone.isNotEmpty)
+      await ledgerMarkDeleted(gone); // 记墓碑：服务器合并时同步删除，别台PDA可拉取感知
     scheduleLedgerPush(seconds: 8);
   } catch (e) {
     debugPrint("[ledger] 拣下失败：$e");
@@ -682,20 +969,36 @@ Future<void> ledgerRemoveBoxAndPush(String code) async {
   final up = code.toUpperCase();
   final codes = <String>{up};
   try {
-    final extra = await _globalIsar.recordExtras.filter().goodsCodeEqualTo(up).findFirst();
+    final extra = await _globalIsar.recordExtras
+        .filter()
+        .goodsCodeEqualTo(up)
+        .findFirst();
     final pid = extra?.palletId ?? "";
     if (pid.isNotEmpty) {
-      final mates = await _globalIsar.recordExtras.filter().palletIdEqualTo(pid).findAll();
+      final mates = await _globalIsar.recordExtras
+          .filter()
+          .palletIdEqualTo(pid)
+          .findAll();
       codes.addAll(mates.map((m) => m.goodsCode.toUpperCase()));
     } else {
-      final self = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(up).findAll();
-      final info = await _globalIsar.labelInfos.filter().goodsCodeEqualTo(up).findFirst();
+      final self = await _globalIsar.shelfPlacements
+          .filter()
+          .goodsCodeEqualTo(up)
+          .findAll();
+      final info = await _globalIsar.labelInfos
+          .filter()
+          .goodsCodeEqualTo(up)
+          .findFirst();
       if (self.isNotEmpty && info != null && info.partNo.isNotEmpty) {
         final all = await _globalIsar.shelfPlacements.where().findAll();
         for (final p in all) {
           if (p.loc != self.first.loc) continue;
-          final i = await _globalIsar.labelInfos.filter().goodsCodeEqualTo(p.goodsCode).findFirst();
-          if (i != null && i.partNo == info.partNo) codes.add(p.goodsCode.toUpperCase());
+          final i = await _globalIsar.labelInfos
+              .filter()
+              .goodsCodeEqualTo(p.goodsCode)
+              .findFirst();
+          if (i != null && i.partNo == info.partNo)
+            codes.add(p.goodsCode.toUpperCase());
         }
       }
     }
@@ -716,16 +1019,30 @@ Future<void> scanPushNow() async {
   try {
     final all = await _globalIsar.scanRecords.where().findAll();
     if (all.isEmpty) return;
-    final extras = {for (final e in await _globalIsar.recordExtras.where().findAll()) e.goodsCode: e};
+    final extras = {
+      for (final e in await _globalIsar.recordExtras.where().findAll())
+        e.goodsCode: e
+    };
     final items = all.map((r) {
       final x = extras[r.goodsCode.toUpperCase()];
       return {
         "k": "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}",
-        "code": r.goodsCode, "wt": r.workType, "st": r.stationNo ?? "", "gl": r.groundLocation ?? "",
-        "ct": r.containerType ?? "", "rm": r.remark, "batch": r.batchId, "cx": r.isCancel,
-        "t": r.scanTime.millisecondsSinceEpoch, "pn": r.mesPartNo ?? "", "q": r.mesQty ?? 0,
-        "mk": r.mesCreateTime ?? "", "op": x?.operator ?? "", "nm": x?.mesItemName ?? "",
-        "lot": x?.mesLotNo ?? "", "pid": x?.palletId ?? "",
+        "code": r.goodsCode,
+        "wt": r.workType,
+        "st": r.stationNo ?? "",
+        "gl": r.groundLocation ?? "",
+        "ct": r.containerType ?? "",
+        "rm": r.remark,
+        "batch": r.batchId,
+        "cx": r.isCancel,
+        "t": r.scanTime.millisecondsSinceEpoch,
+        "pn": r.mesPartNo ?? "",
+        "q": r.mesQty ?? 0,
+        "mk": r.mesCreateTime ?? "",
+        "op": x?.operator ?? "",
+        "nm": x?.mesItemName ?? "",
+        "lot": x?.mesLotNo ?? "",
+        "pid": x?.palletId ?? "",
       };
     }).toList();
     final res = await AuthApi.scanlogSync(items);
@@ -741,8 +1058,13 @@ void outboundPushNow(OutboundOrder ob) {
     try {
       final items = (jsonDecode(ob.itemsJson) as List);
       final res = await AuthApi.outboundSync({
-        "orderNo": ob.orderNo, "createdAt": ob.createdAt, "toLoc": ob.toLoc, "operator": ob.operator,
-        "status": ob.status, "linkReqNo": ob.linkReqNo, "items": items,
+        "orderNo": ob.orderNo,
+        "createdAt": ob.createdAt,
+        "toLoc": ob.toLoc,
+        "operator": ob.operator,
+        "status": ob.status,
+        "linkReqNo": ob.linkReqNo,
+        "items": items,
       });
       if (res["ok"] != true) debugPrint("[outbound] 同步失败：${res["msg"]}");
     } catch (e) {

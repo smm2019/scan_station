@@ -1224,6 +1224,8 @@ class _MainPageState extends State<MainPage>
   String? _currentBatchId;
   int _workType = 0; //0 AGV站台，1人工地面
   String? _selectedStation; //【修改：存储编码 NB02-CK-05】
+  String? _lastScanStation; // ㉖ 扫码保存后站台即清，留作手动「提交任务」回退
+  String? _lastScanContainer; // ㉖ 容器类型同左
   String? _selectedGroundLoc;
   String? _containerType;
   final TextEditingController _ledgerLocCtrl =
@@ -1571,6 +1573,8 @@ class _MainPageState extends State<MainPage>
       _palletSummary = [];
       _palletTotalBoxes = 0;
       _selectedStation = null;
+      _lastScanStation = null;
+      _lastScanContainer = null;
       _selectedGroundLoc = null;
       _containerType = null;
       _ledgerLocCtrl.clear(); //整托结托：顺手登记参数归零
@@ -1606,6 +1610,8 @@ class _MainPageState extends State<MainPage>
       _palletSummary = [];
       _palletTotalBoxes = 0;
       _selectedStation = null;
+      _lastScanStation = null; // ㉖⑬ 切整托开关：回退记忆同步归零，防脏回退
+      _lastScanContainer = null;
       _selectedGroundLoc = null;
       _containerType = null;
       _ledgerLocCtrl.clear(); //切整托开关：顺手登记参数归零
@@ -1673,6 +1679,8 @@ class _MainPageState extends State<MainPage>
     setState(() {
       _currentBatchId = newBatch.batchId;
       _selectedStation = null;
+      _lastScanStation = null;
+      _lastScanContainer = null;
       _selectedGroundLoc = null;
       _selectedTags.clear(); //新建批次清空多选标签
       _ledgerLocCtrl.clear(); //顺手登记参数归零
@@ -2106,6 +2114,7 @@ class _MainPageState extends State<MainPage>
       await _scanSuccessAction(
           mesPartNo: rec.mesPartNo ?? "", qty: rec.mesQty ?? 0);
       _goodsInputCtrl.clear();
+      final lastCtype = _containerType; // ㉖⑬ 清空前捕获容器，供手动「提交任务」
       setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
         _remarkInputCtrl.clear();
@@ -2121,6 +2130,8 @@ class _MainPageState extends State<MainPage>
       if (_workType == 0 && !_palletMode) {
         setState(() {
           _selectedStation = null;
+          _lastScanStation = autoCallSt.isEmpty ? null : autoCallSt; // ㉖ 手动提交回退
+          _lastScanContainer = lastCtype;
         });
       }
       await _ledgerRegisterOnSave(code,
@@ -3384,22 +3395,12 @@ class _MainPageState extends State<MainPage>
                           const SizedBox(height: 6),
                           if (_workType == 0) _buildStationPanel(),
                           if (_workType == 1) _buildGroundLocPanel(),
-                          _buildLedgerExtras(), // ㉑旧重复登记块已删：标题+输入框+自动/选位/提交按钮统一在此
                         ],
                       ),
                     ),
                     const SizedBox(height: 12),
 
-                    const Text("扫码录入",
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.w500)),
-                    const SizedBox(height: 4),
-                    const Padding(
-                        padding: EdgeInsets.symmetric(vertical: 10),
-                        child: Text("👇 扫码框已固定在屏幕底部，随时可扫",
-                            style:
-                                TextStyle(fontSize: 12, color: Colors.grey))),
-                    const SizedBox(height: 16),
+                    const SizedBox(height: 12),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
@@ -3468,7 +3469,8 @@ class _MainPageState extends State<MainPage>
                           border: OutlineInputBorder(),
                           isDense: true),
                     ),
-                    const SizedBox(height: 12),
+                    const SizedBox(height: 4),
+                    _buildLedgerExtras(), // ㉖⑬ 账本登记挪表单底部：输入框整行不再被挤
                     const Divider(),
                     InkWell(
                       onTap: () {
@@ -3643,6 +3645,8 @@ class _MainPageState extends State<MainPage>
       if (mounted && v != _workType)
         setState(() {
           _workType = v == 1 ? 1 : 0;
+          _lastScanStation = null;
+          _lastScanContainer = null;
           if (_workType == 1)
             _selectedStation = null;
           else
@@ -3659,6 +3663,8 @@ class _MainPageState extends State<MainPage>
         setState(() {
           _workType = type;
           _saveWorkMode(type); // ②记住本账号工作模式
+          _lastScanStation = null;
+          _lastScanContainer = null;
           if (type == 0) {
             _selectedGroundLoc = null;
           } else {
