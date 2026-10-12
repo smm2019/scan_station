@@ -2240,6 +2240,16 @@ const server = http.createServer(async (req, res) => {
         save();
         return send(res, 200, { ok: true });
       }
+      // ---- ㉖⑭ 采集作废释放防重：该标签业务失效且未真实入库，撤回 seenIn 允许重扫（作废联动调用）----
+      if (req.method === "POST" && p === "/api/label/unsee") {
+        const b = await readBody(req);
+        const uc = String(b.code || "").trim().toUpperCase(); if (!uc) return send(res, 400, { ok: false, msg: "缺少 code" });
+        const had = !!(db.seenIn || {})[uc];
+        if (had) delete db.seenIn[uc];
+        pushOps(u, "采集作废释放", uc, had ? "已撤回全局防重，可重新录入" : "无防重记录（可能未入账）");
+        save();
+        return send(res, 200, { ok: true, had });
+      }
       // ---- ㉖④ 检验模式工单列表 ----
       if (req.method === 'GET' && p === '/api/inspect/list') {
         const only = url.searchParams.get('mine') === '1' ? u.id : '';

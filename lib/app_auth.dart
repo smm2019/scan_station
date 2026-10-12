@@ -314,6 +314,10 @@ class AuthApi {
   static Future<Map> labelForce(String c, String why) async =>
       _req("POST", "/api/label/force",
           body: {"code": c, "why": why}, token: await AuthStore.token());
+  // ㉖⑭ 采集作废释放全局防重（作废联动调用，允许同标签重扫纠错）
+  static Future<Map> labelUnsee(String c) async =>
+      _req("POST", "/api/label/unsee",
+          body: {"code": c}, token: await AuthStore.token());
   // ㉖④ 检验模式三接口
   static Future<Map> inspectList() async =>
       _req("GET", "/api/inspect/list", token: await AuthStore.token());
@@ -435,8 +439,10 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState st) {
-    if (st == AppLifecycleState.resumed && _stage == 2)
+    if (st == AppLifecycleState.resumed && _stage == 2) {
       _heartbeat(); // 回前台立刻校验，停用即时感知
+      if (scanPushPending) unawaited(scanPushNow()); // ㉖⑭ 断网期间积压的流水，回前台立即补推
+    }
   }
 
   Future<void> _bootstrap() async {

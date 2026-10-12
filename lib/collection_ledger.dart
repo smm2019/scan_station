@@ -1009,9 +1009,21 @@ Future<void> ledgerRemoveBoxAndPush(String code) async {
 }
 
 Timer? _pushScanTimer;
-void scheduleScanPush({int seconds = 60}) {
-  _pushScanTimer?.cancel();
+bool _scanPushPending = false; // ㉖ 有未推送的流水变更
+final ValueNotifier<int> kScanSync = ValueNotifier(0); // 0=已同步 1=待同步 2=失败重试中
+bool get scanPushPending => _scanPushPending;
+void scheduleScanPush({int seconds = 15}) {
+  _scanPushPending = true;
+  kScanSync.value = 1;
+  // ㉖⑭ 节流不重置：已在等就让它到点触发。原实现每次扫码重置60秒定时器，连续扫码流水永远推不出去（网页"很晚才显示"根因）
+  if (_pushScanTimer?.isActive == true) return;
   _pushScanTimer = Timer(Duration(seconds: seconds), scanPushNow);
+}
+
+void _scanPushRetry() {
+  _pushScanTimer?.cancel();
+  _pushScanTimer =
+      Timer(const Duration(seconds: 30), scanPushNow); // 失败30秒后自动重试
 }
 
 /// 采集流水全量推送电脑（含作废标记，按 标签|批次|时间 键去重）
@@ -1046,10 +1058,89 @@ Future<void> scanPushNow() async {
       };
     }).toList();
     final res = await AuthApi.scanlogSync(items);
-    if (res["ok"] != true) debugPrint("[scanlog] 同步失败：${res["msg"]}");
+    if (res["ok"] == true) {
+      _scanPushPending = false;
+      kScanSync.value = 0; // ㉖⑭ 推送成功：状态归零，网页30秒内可见
+    } else {
+      debugPrint("[scanlog] 同步失败：${res["msg"]}");
+      kScanSync.value = 2;
+      _scanPushRetry();
+    }
   } catch (e) {
     debugPrint("[scanlog] 同步异常：$e");
+    kScanSync.value = 2;
+    _scanPushRetry();
   }
+}
+
+// ===== ㉖⑭ 采集记录作废/恢复（替代物理删除：留痕可逆，网页流水同步显示）=====
+/// 作废一条采集记录：标记 isCancel + 释放站台 + 联动整框消账 + 撤回全局防重 + 立即推流水
+Future<void> scanRecordCancel(Isar isar, ScanRecord r) async {
+  await isar.writeTxn(() async {
+    r.isCancel = true;
+    await r.save();
+    if (r.workType == 0 && r.stationNo != null) {
+      final batch =
+          await isar.batchInfos.filter().batchIdEqualTo(r.batchId).findFirst();
+      if (batch != null) {
+        final mut = batch.usedStation.toList()..remove(r.stationNo);
+        batch.usedStation = mut;
+        await batch.save();
+      }
+    }
+  });
+  final up = r.goodsCode.toUpperCase();
+  // 本地 scanRecords 存扫码原样大小写，按本条记录的值查同码是否还有生效采集
+  final stillActive = await isar.scanRecords
+      .filter()
+      .goodsCodeEqualTo(r.goodsCode)
+      .isCancelEqualTo(false)
+      .findFirst();
+  if (stillActive == null) {
+    // 该标签已无生效采集：整框从账本拣下(墓碑同步服务器) + 撤回 seenIn 防重允许重扫
+    await ledgerRemoveBoxAndPush(up);
+    unawaited(AuthApi.labelUnsee(up));
+  }
+  unawaited(scanPushNow()); // 作废即刻上墙，网页入库流水秒级变"作废"
+}
+
+/// 恢复一条已作废记录：清标记 + 若账本无此码则按原货位重建登记 + 立即推流水
+Future<void> scanRecordRestore(Isar isar, ScanRecord r) async {
+  await isar.writeTxn(() async {
+    r.isCancel = false;
+    await r.save();
+    if (r.workType == 0 && r.stationNo != null) {
+      final batch =
+          await isar.batchInfos.filter().batchIdEqualTo(r.batchId).findFirst();
+      if (batch != null && !batch.usedStation.contains(r.stationNo)) {
+        batch.usedStation = [...batch.usedStation, r.stationNo!];
+        await batch.save();
+      }
+    }
+  });
+  final up = r.goodsCode.toUpperCase();
+  final inLedger =
+      await isar.shelfPlacements.filter().goodsCodeEqualTo(up).findFirst();
+  if (inLedger == null) {
+    // 作废期间已消账：按采集记录原货位重建（AGV=站台 人工=地面格位）
+    final loc = (r.workType == 0 ? r.stationNo : r.groundLocation) ?? "";
+    if (loc.isNotEmpty &&
+        RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc)) {
+      final extra =
+          await isar.recordExtras.filter().goodsCodeEqualTo(up).findFirst();
+      await isar.writeTxn(() async {
+        await isar.shelfPlacements.put(ShelfPlacement()
+          ..goodsCode = up
+          ..loc = loc
+          ..container = r.containerType ?? ""
+          ..operator = extra?.operator ?? (Auth.user?.name ?? "恢复重建")
+          ..assignedAt = DateTime.now().millisecondsSinceEpoch);
+      });
+      await ledgerUnmarkDeleted([up]); // 撤销墓碑，服务器"比墓碑新即复活"
+      scheduleLedgerPush(seconds: 5);
+    }
+  }
+  unawaited(scanPushNow()); // 恢复即刻回写，网页流水变回"正常"
 }
 
 /// 单张出库单推送电脑（按单号去重覆盖，核对状态变化也会更新）

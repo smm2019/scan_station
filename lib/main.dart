@@ -2768,43 +2768,58 @@ class _MainPageState extends State<MainPage>
                         style: TextStyle(
                             color: r.isCancel ? Colors.red : Colors.green)),
                   ),
-                  if (!r.isCancel)
-                    TextButton(
-                      style: TextButton.styleFrom(foregroundColor: Colors.red),
-                      onPressed: () async {
+                  TextButton(
+                    style: TextButton.styleFrom(
+                        foregroundColor:
+                            r.isCancel ? Colors.green : Colors.red),
+                    onPressed: () async {
+                      if (!r.isCancel) {
                         final confirm = await showDialog<bool>(
                           context: context,
                           builder: (ctx) => AlertDialog(
-                            title: const Text("删除记录"),
-                            content: const Text("确定删除本条采集记录？"),
+                            title: const Text("作废本条采集"),
+                            content: Text(
+                                "作废 = 业务失效但留痕可恢复（不物理删除）。\n\n若该标签本批次仅此一条生效采集：同步从货位账本拣下（消账）、释放占用站台、解除全局防重（可重新扫码纠错）。\n\n标签 ${r.goodsCode}"),
                             actions: [
                               TextButton(
                                   onPressed: () => Navigator.pop(ctx, false),
                                   child: const Text("取消")),
                               TextButton(
                                   onPressed: () => Navigator.pop(ctx, true),
-                                  child: const Text("确认")),
+                                  child: const Text("确认作废",
+                                      style: TextStyle(color: Colors.red))),
                             ],
                           ),
                         );
                         if (confirm != true) return;
-                        await _isar.writeTxn(() async {
-                          await _isar.scanRecords.delete(r.id);
-                          if (r.workType == 0 && r.stationNo != null) {
-                            BatchInfo? batch = await _getCurrentBatch();
-                            if (batch != null) {
-                              List<String> mutable = batch.usedStation.toList();
-                              mutable.remove(r.stationNo);
-                              batch.usedStation = mutable;
-                              await _isar.batchInfos.put(batch);
-                            }
-                          }
-                        });
-                        await _refreshRecord();
-                        await _refreshBatchStat();
-                      },
-                      child: const Text("删除", style: TextStyle(fontSize: 14)),
-                    ),
+                        await scanRecordCancel(_isar, r);
+                      } else {
+                        final confirm = await showDialog<bool>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text("恢复本条采集"),
+                            content: Text(
+                                "恢复为生效记录；若作废期间已消账，将按原货位重新登记账本。\n\n标签 ${r.goodsCode}"),
+                            actions: [
+                              TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text("取消")),
+                              TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text("确认恢复",
+                                      style: TextStyle(color: Colors.green))),
+                            ],
+                          ),
+                        );
+                        if (confirm != true) return;
+                        await scanRecordRestore(_isar, r);
+                      }
+                      await _refreshRecord();
+                      await _refreshBatchStat();
+                    },
+                    child: Text(r.isCancel ? "恢复" : "作废",
+                        style: const TextStyle(fontSize: 14)),
+                  ),
                 ],
               )
             ],
@@ -3491,6 +3506,18 @@ class _MainPageState extends State<MainPage>
                               Text("共 ${_recordList.length}条",
                                   style: TextStyle(
                                       fontSize: 13, color: Colors.grey)),
+                              const SizedBox(width: 8),
+                              ValueListenableBuilder<int>(
+                                  valueListenable: kScanSync,
+                                  builder: (_, st, __) => Text(
+                                      st == 0
+                                          ? "☁ 已同步"
+                                          : (st == 1 ? "⏳ 同步中" : "🔄 重试中"),
+                                      style: TextStyle(
+                                          fontSize: 11.5,
+                                          color: st == 0
+                                              ? Colors.green
+                                              : Colors.orange))),
                             ],
                           ),
                           Icon(_recordPanelExpanded
@@ -3748,38 +3775,32 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
   }
 
   Future<void> _deleteRecord(ScanRecord r) async {
+    // ㉖⑭ 物理删除改作废/恢复：留痕可逆，联动消账/重建与全局防重释放
+    final cancel = !r.isCancel;
     final confirm = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("删除记录"),
-        content: const Text("确定删除本条采集记录？"),
+        title: Text(cancel ? "作废本条采集" : "恢复本条采集"),
+        content: Text(cancel
+            ? "作废 = 业务失效但留痕可恢复；该标签无其他生效采集时同步消账、释放站台、解除防重。\n\n标签 ${r.goodsCode}"
+            : "恢复为生效记录；作废期间已消账的按原货位重新登记。\n\n标签 ${r.goodsCode}"),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text("取消")),
           TextButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: const Text("确认")),
+              child: Text(cancel ? "确认作废" : "确认恢复",
+                  style: TextStyle(color: cancel ? Colors.red : Colors.green))),
         ],
       ),
     );
     if (confirm != true) return;
-    await _isar.writeTxn(() async {
-      await _isar.scanRecords.delete(r.id);
-      if (r.workType == 0 && r.stationNo != null) {
-        BatchInfo? b = await _isar.batchInfos
-            .filter()
-            .batchIdEqualTo(widget.batch.batchId)
-            .findFirst();
-        if (b != null) {
-          List<String> mut = b.usedStation.toList();
-
-          mut.remove(r.stationNo);
-          b.usedStation = mut;
-          await _isar.batchInfos.put(b);
-        }
-      }
-    });
+    if (cancel) {
+      await scanRecordCancel(_isar, r);
+    } else {
+      await scanRecordRestore(_isar, r);
+    }
     await _loadRecords();
   }
 
@@ -3958,12 +3979,13 @@ class _BatchDetailPageState extends State<BatchDetailPage> {
                       },
                       child: const Text("查看"),
                     ),
-                    if (!archived && !r.isCancel)
+                    if (!archived)
                       TextButton(
-                        style:
-                            TextButton.styleFrom(foregroundColor: Colors.red),
+                        style: TextButton.styleFrom(
+                            foregroundColor:
+                                r.isCancel ? Colors.green : Colors.red),
                         onPressed: () => _deleteRecord(r),
-                        child: const Text("删除"),
+                        child: Text(r.isCancel ? "恢复" : "作废"),
                       ),
                   ],
                 ),
