@@ -391,6 +391,30 @@ class AuthApi {
             "fromLoc": fromLoc
           },
           token: await AuthStore.token());
+  // ㉖⑰ 统一搬运任务：入库/出库叫车全部经服务器入队再下发（队列控制台/流水线/链路全可见）
+  static Future<Map> agvCarry(
+          {required String from,
+          required String to,
+          required String dir, // in=站台→货架 out=货架→站台
+          String code = "",
+          String palletType = "",
+          String container = ""}) async =>
+      _req("POST", "/api/agv/carry",
+          body: {
+            "from": from,
+            "to": to,
+            "dir": dir,
+            if (code.isNotEmpty) "code": code,
+            if (palletType.isNotEmpty) "palletType": palletType,
+            if (container.isNotEmpty) "container": container,
+          },
+          token: await AuthStore.token());
+  static Future<Map> agvCarryState(String taskNo) async =>
+      _req("GET", "/api/agv/carryState?t=" + Uri.encodeComponent(taskNo),
+          token: await AuthStore.token());
+  // ㉖⑰ 服务器权威货架占用（入库自动分配货位用，多PDA统一）
+  static Future<Map> ledgerLocs() async =>
+      _req("GET", "/api/ledger/locs", token: await AuthStore.token());
   // 货架移库：起终点人工指定，服务器复用出库下发通道建CARRY任务（dry=1仅演算）
   static Future<Map> agvTransfer(
           {required String from,
@@ -460,6 +484,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     if (st == AppLifecycleState.resumed && _stage == 2) {
       _heartbeat(); // 回前台立刻校验，停用即时感知
       if (scanPushPending) unawaited(scanPushNow()); // ㉖⑭ 断网期间积压的流水，回前台立即补推
+      if (ledgerPushPending) unawaited(ledgerPushNow()); // ㉖⑰ 积压的账本同样回前台补推
     }
   }
 

@@ -2196,7 +2196,33 @@ class _MainPageState extends State<MainPage>
               content: Text("$_selectedGroundLoc 区内自动分配格位：$auto"),
               backgroundColor: const Color(0xFF00897B)));
       }
-      if (loc.isEmpty) return;
+      if (loc.isEmpty) {
+        // ㉖⑰ 修自动叫车被"必须填货位"绑架：AGV模式留空+自动叫车开 → 自动分配货位继续登记（否则下方叫车永远走不到）
+        if (_workType == 0 &&
+            autoCallStation.isNotEmpty &&
+            await WmasConfig.autoCallEnabled()) {
+          final recA = await _isar.scanRecords
+              .filter()
+              .goodsCodeEqualTo(code.toUpperCase())
+              .findFirst();
+          final auto = await nb02AutoAssign(recA?.mesPartNo ?? "");
+          if (auto == null) {
+            if (mounted)
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text("货架已无空位：请手动登记货位后再「提交任务」"),
+                  backgroundColor: Colors.orange));
+            return;
+          }
+          loc = auto;
+          if (mounted) setState(() => _ledgerLocCtrl.text = auto);
+          if (mounted)
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text("自动叫车联动分配货位：$auto"),
+                backgroundColor: const Color(0xFF00897B)));
+        } else {
+          return;
+        }
+      }
       if (!RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc)) {
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(

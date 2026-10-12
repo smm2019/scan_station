@@ -432,8 +432,14 @@ extension CollectionLedgerExt on _MainPageState {
         }
         cn = picked;
       }
-      final r = await WmasTask.createCarry(
-          startPoint: st, endPoint: loc, containerNo: cn);
+      final codes0 = (await _ledgerByLoc())[loc] ?? const <String>[];
+      final r = await AuthApi.agvCarry(
+          from: st,
+          to: loc,
+          dir: "in",
+          code: codes0.isNotEmpty ? codes0.first : "",
+          palletType: ctype,
+          container: cn); // ㉖⑰ 统一走服务器入队下发：队列/流水线/链路全可见
       if (r["ok"] == true) {
         _colCalled.add(loc);
         LocalLog.op('自动入库叫车', "$st→$loc 容器$cn");
@@ -538,10 +544,13 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
     final cn = _picked ?? "";
     if (cn.isEmpty || _busy) return;
     setState(() => _busy = true);
-    final r = await WmasTask.createCarry(
-        startPoint: widget.startPoint,
-        endPoint: widget.endPoint,
-        containerNo: cn);
+    final r = await AuthApi.agvCarry(
+        from: widget.startPoint,
+        to: widget.endPoint,
+        dir: "in",
+        code: widget.cargoCodes.isNotEmpty ? widget.cargoCodes.first : "",
+        palletType: widget.containerType,
+        container: cn); // ㉖⑰ 手动提交同样入服务器队列（全链路可见+防重）
     if (!mounted) return;
     setState(() => _busy = false);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -665,12 +674,18 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
 
 // ===== 全局推送助手（采集页/领料发料/出库单/登记页共用） =====
 Timer? _pushLedgerTimer;
-void scheduleLedgerPush({int seconds = 30}) {
+bool _ledgerPushPending = false; // ㉖⑰ 有未推送的账本变更
+bool get ledgerPushPending => _ledgerPushPending;
+void scheduleLedgerPush({int seconds = 15}) {
+  _ledgerPushPending = true;
+  // ㉖⑰ 节流不重置：原实现每次登记重置定时器，连续扫码账本永远推不出去（网页"查不到新料"根因）
+  if (_pushLedgerTimer?.isActive == true) return;
+  _pushLedgerTimer = Timer(Duration(seconds: seconds), ledgerPushNow);
+}
+
+void _ledgerPushRetry() {
   _pushLedgerTimer?.cancel();
-  _pushLedgerTimer = Timer(Duration(seconds: seconds), () async {
-    final r = await ledgerPushNow();
-    if (r["ok"] != true) debugPrint("[ledger] 自动同步失败：${r["msg"]}");
-  });
+  _pushLedgerTimer = Timer(const Duration(seconds: 30), ledgerPushNow);
 }
 
 Future<Map> ledgerPushNow() async {
@@ -746,9 +761,15 @@ Future<Map> ledgerPushNow() async {
                 )));
       }
     }
-    if (r["ok"] == true) await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
+    if (r["ok"] == true) {
+      await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
+      _ledgerPushPending = false; // ㉖⑰ 推送成功清 pending
+    } else {
+      _ledgerPushRetry(); // 失败30秒后自动重试
+    }
     return r;
   } catch (e) {
+    _ledgerPushRetry(); // ㉖⑰ 异常同样自动重试，防断网期间账本滞留本机
     return {"ok": false, "msg": "$e"};
   }
 }

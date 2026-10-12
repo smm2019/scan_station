@@ -529,8 +529,13 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
       widget.toast("叫车取消：站台 $stn 已有 $busyNow 个在途任务，请等送达或换站台", err: true);
       return;
     }
-    final r = await WmasTask.createCarry(
-        startPoint: widget.fromLoc, endPoint: stn, containerNo: cn!);
+    final r = await AuthApi.agvCarry(
+        from: widget.fromLoc,
+        to: stn,
+        dir: "out",
+        code: widget.label,
+        palletType: widget.containerType,
+        container: cn!); // ㉖⑰ 出库叫车入服务器队列下发：流水线/队列控制台/链路全可见
     if (r["ok"] != true)
       await AuthApi.agvRelease(container: cn!, station: stn); // 任务没发出去→释放占位允许重叫
     if (!mounted) return;
