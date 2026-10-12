@@ -1,3 +1,5 @@
+part of 'main.dart';
+
 // ===================== ㉖④ 检验模式页：按零件号搜框 → AGV下架到站台 → 检验备注 → 一键归位 =====================
 class InspectPage extends StatefulWidget {
   const InspectPage({super.key});
@@ -180,15 +182,28 @@ class _InspectPageState extends State<InspectPage>
   }
 
   Future<void> _verdict(Map q) async {
-    final vd = await _prompt("检验结论（通过 / 不合格 / 需复检）", "通过");
+    final vd = await _prompt("检验结论（通过 / 不合格 / 需复检 / 退货）", "通过");
     if (vd == null) return;
-    final v2 = ["通过", "不合格", "需复检"].contains(vd.trim()) ? vd.trim() : "通过";
+    final v2 =
+        ["通过", "不合格", "需复检", "退货"].contains(vd.trim()) ? vd.trim() : "通过";
+    String rr = "";
+    if (v2 == "退货") {
+      final r0 = await _prompt("退货原因（必填，如：来料不良/错料/供应商发错）", "");
+      if (r0 == null || r0.trim().isEmpty) {
+        _toast("退货必须填写原因");
+        return;
+      }
+      rr = r0.trim();
+    }
     final note = await _prompt("检验备注（可留空，记入工单留痕）", "");
     if (note == null) return;
-    final r = await AuthApi.inspectVerdict(q["id"].toString(), v2, note.trim());
+    final r = await AuthApi.inspectVerdict(q["id"].toString(), v2, note.trim(),
+        retReason: rr);
     if (!mounted) return;
     _toast(r["ok"] == true
-        ? "✅ 结论已记录[$v2]${r["wait"] == true ? '，已通知仓管协助归位' : ''}"
+        ? (r["returned"] == true
+            ? "✅ 已判退货：货留在站台，请仓管按直调/领料出库流程出账"
+            : "✅ 结论已记录[$v2]${r["wait"] == true ? '，已通知仓管协助归位' : ''}")
         : "失败：${r["msg"]}");
     if (r["ok"] == true) _load();
   }
@@ -239,10 +254,12 @@ class _InspectPageState extends State<InspectPage>
   String _stText(String s) => switch (s) {
         "waitOut" => "🤝 待协助下架",
         "waitBack" => "🤝 待协助归位",
+        "waitReturn" => "🔁 待退货出账",
         "toStation" => "🚚 下架途中",
         "atStation" => "📍 站台待检",
         "returning" => "🔙 归位途中",
         "done" => "✅ 已归位",
+        "returned" => "✅ 已退货出账",
         "stuck" => "⚠️ 超时待核",
         "cancel" => "已取消",
         _ => s,
@@ -373,14 +390,23 @@ class _InspectPageState extends State<InspectPage>
                 child: Text(
                     "${q["by"] ?? ""} · ${((q["at"] ?? 0) as num).toInt() > 0 ? DateTime.fromMillisecondsSinceEpoch((q["at"] as num).toInt()).toString().substring(5, 16) : ""}",
                     style: const TextStyle(fontSize: 11, color: Colors.grey))),
-            if (st == "atStation" && _assist)
+            if (st == "atStation" && _assist) ...[
               FilledButton.icon(
                   onPressed: () => _ret(q),
-                  icon: const Icon(Icons.restore, size: 18),
+                  icon: const Icon(Icons.restore, size: 16),
                   label: const Text("检验完·归位"),
                   style: FilledButton.styleFrom(
                       backgroundColor: const Color(0xFF00897B),
-                      padding: const EdgeInsets.symmetric(horizontal: 14))),
+                      padding: const EdgeInsets.symmetric(horizontal: 10))),
+              const SizedBox(width: 6),
+              FilledButton.icon(
+                  onPressed: () => _verdict(q),
+                  icon: const Icon(Icons.fact_check_outlined, size: 16),
+                  label: const Text("结论/退货"),
+                  style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFB26A00),
+                      padding: const EdgeInsets.symmetric(horizontal: 10))),
+            ],
             if (st == "atStation" && !_assist)
               FilledButton.icon(
                   onPressed: () => _verdict(q),
@@ -400,6 +426,10 @@ class _InspectPageState extends State<InspectPage>
             if ((st == "waitOut" || st == "waitBack") && !_assist)
               Text(st == "waitOut" ? "等待仓管协助下架" : "等待仓管协助归位",
                   style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            if (st == "waitReturn")
+              Text(_assist ? "🔁 请按直调/领料出库出账" : "等待仓管出库出账",
+                  style:
+                      const TextStyle(fontSize: 11, color: Color(0xFFB26A00))),
           ]),
         ]),
       ),
@@ -482,7 +512,7 @@ class _InspectPageState extends State<InspectPage>
                       decoration: const BoxDecoration(
                           border: Border(
                               top: BorderSide(color: Color(0xFFE0E0E0)))),
-                      child: const Text("检验工单（${_list.length}）",
+                      child: Text("检验工单（${_list.length}）",
                           style: TextStyle(
                               fontWeight: FontWeight.bold, fontSize: 13))),
                 ],

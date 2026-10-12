@@ -1743,7 +1743,10 @@ class _MainPageState extends State<MainPage>
               Text("提示：全厂范围内该标签号不允许重复入账。若确认是系统误拦（如标签确实换了实物用途），由责任人填写原因后强制继续。",
                   style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
               const SizedBox(height: 8),
-              TextField(controller: ctl, hintText: "强制继续必填原因", maxLines: 2),
+              TextField(
+                  controller: ctl,
+                  decoration: const InputDecoration(hintText: "强制继续必填原因"),
+                  maxLines: 2),
             ]),
         actions: [
           TextButton(

@@ -338,10 +338,15 @@ class AuthApi {
       _req("POST", "/api/inspect/assist",
           body: {"id": id, if (station.isNotEmpty) "station": station},
           token: await AuthStore.token());
-  static Future<Map> inspectVerdict(
-          String id, String verdict, String note) async =>
+  static Future<Map> inspectVerdict(String id, String verdict, String note,
+          {String retReason = ""}) async =>
       _req("POST", "/api/inspect/verdict",
-          body: {"id": id, "verdict": verdict, "note": note},
+          body: {
+            "id": id,
+            "verdict": verdict,
+            "note": note,
+            if (retReason.isNotEmpty) "retReason": retReason
+          },
           token: await AuthStore.token());
   static Future<Map> dashboard() async =>
       _req("GET", "/api/dashboard", token: await AuthStore.token());

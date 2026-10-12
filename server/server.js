@@ -433,7 +433,7 @@ function labelStatus(codeRaw) {
   const inOutbound = []; for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) if (String(i.code || '').toUpperCase() === code || String(i.barcode || '').toUpperCase() === code) inOutbound.push(o.orderNo);
   const inIssued = []; for (const r of db.requisitions || []) for (const it of (r.items || [])) for (const e of (it.issued || [])) if (String(typeof e === 'string' ? e : (e.c || '')).toUpperCase() === code) inIssued.push(r.no);
   const inQueue = (db.agvQueue || []).filter((q) => String(q.code || '').toUpperCase() === code && ['排队', '下发中', '已下发', '到站'].includes(q.state));
-  const inInspect = (db.inspects || []).filter((q) => String(q.code || '').toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state));
+  const inInspect = (db.inspects || []).filter((q) => String(q.code || '').toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state));
   const everOut = !!(db.seenOut || {})[code];
   const everIn = !!(db.seenIn || {})[code]; // ㉖ 历史录过（当前不在架也可能曾在上游批次）
   return { code, inLedger, inScanlog, inOutbound, inIssued, inQueue, inInspect, everOut, everIn, inMeta: (db.seenIn || {})[code] || null };
@@ -449,6 +449,10 @@ function labelBlockReason(st, purpose) { // purpose: in(采集入库)|out(出库
   if (purpose === 'out') {
     if (st.inOutbound.length) return '该标签已在出库单 ' + st.inOutbound.slice(0, 3).join('、') + '，禁止重复出库';
     if (st.inIssued.length) return '该标签已发料到领料单 ' + st.inIssued.slice(0, 3).join('、') + '，禁止重复发料';
+    // ㉖⑦ 检验判退货(waitReturn)的框：允许走正常出库通道出账；其余检验状态仍拦截
+    const blk = (st.inInspect || []).filter((q) => q.state !== 'waitReturn');
+    if (blk.length) return '该框正在检验流程中，暂不可操作';
+    return '';
   }
   if (st.inInspect.length) return '该框正在检验流程中，暂不可操作';
   return '';
@@ -1500,7 +1504,7 @@ const server = http.createServer(async (req, res) => {
           if (!code || !fromLoc) continue;
           if (_confTrf.some(function (x) { return String(x.from).toUpperCase() === fromLoc || String(x.to).toUpperCase() === fromLoc; })) { conflict++; continue; } // 该货位有进行中移库
           if (db.agvQueue.some((q) => q.code === code && !['完成', '取消', '失败'].includes(q.state))) { dup++; continue; } // 同框已在队列
-          if ((db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state))) { conflict++; continue; } // ㉖②④ 检验中禁止出库叫车
+          if ((db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state))) { conflict++; continue; } // ㉖②④ 检验中禁止出库叫车（waitReturn 待退货除外=放行）
           db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', rush: !!(rq && rq.rush), station: '', at: Date.now(), updAt: Date.now() });
           const ti = rq && (rq.items || []).find((i) => i.partNo === it.partNo); // 登记叫车标记：建议区变🚗排队，单框叫车自动跳过
           if (ti) { ti.agvCalled = (ti.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code); ti.agvCalled.push({ c: code, s: '', q: 1, by: u.id, t: new Date().toISOString() }); }
@@ -2032,7 +2036,7 @@ const server = http.createServer(async (req, res) => {
         const srcBox = (db.ledger || []).find((x) => String(x.l).toUpperCase() === from);
         if (!srcBox) return send(res, 400, { ok: false, msg: '该货位当前无货（货位账本查不到在库框）' });
         const code = String(srcBox.c || '').toUpperCase();
-        if ((db.inspects || []).some((q) => (q.from === from || String(q.code).toUpperCase() === code) && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state))) return send(res, 400, { ok: false, msg: '该货位已有进行中的检验任务' });
+        if ((db.inspects || []).some((q) => (q.from === from || String(q.code).toUpperCase() === code) && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state))) return send(res, 400, { ok: false, msg: '该货位已有进行中的检验任务' });
         if ((db.agvQueue || []).some((x) => x.type !== 'transfer' && String(x.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(x.state))) return send(res, 400, { ok: false, msg: '该货位已在出库任务中，不能同时检验下架' });
         // ㉖ 指定站台优先：可用性与自动找同一判据；未指定则自动找空闲（优先 CK-05 起）
         const want = String(b.station || '').trim().toUpperCase(); let to = '';
@@ -2061,8 +2065,19 @@ const server = http.createServer(async (req, res) => {
         if (!rec) return send(res, 400, { ok: false, msg: '检验工单不存在' });
         if (rec.state !== 'atStation') return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']不可归位（需已到站台）' });
         if (!canFeature(u, 'insp_assist')) { // 检验员点归位 = 填结论 + 请求协助
-          const vd = ['通过', '不合格', '需复检'].includes(String(b.verdict || '')) ? String(b.verdict) : '通过';
-          rec.verdict = vd; rec.note2 = String(b.note || '').slice(0, 200); rec.verdictBy = u.name; rec.verdictAt = Date.now(); rec.state = 'waitBack'; rec.updAt = Date.now();
+          const vd = ['通过', '不合格', '需复检', '退货'].includes(String(b.verdict || '')) ? String(b.verdict) : '通过';
+          const rr = String(b.retReason || '').slice(0, 120);
+          if (vd === '退货' && !rr) return send(res, 400, { ok: false, msg: '退货结论必须填写退货原因（如：来料不良/错料/供应商发错）' }); // ㉖⑦ 校验先行，失败不留脏字段
+          rec.verdict = vd; rec.note2 = String(b.note || '').slice(0, 200); rec.verdictBy = u.name; rec.verdictAt = Date.now();
+          if (vd === '退货') { // ㉖⑦ 判退货：不回原货位，挂待退货，走正常出库通道出账
+            rec.retReason = rr;
+            rec.state = 'waitReturn'; rec.updAt = Date.now();
+            rec.note = (rec.note ? rec.note + ' | ' : '') + '检验结论：退货·' + rec.retReason + (rec.note2 ? '（' + rec.note2 + '）' : '') + '，货留站台 ' + rec.station + '，请仓管走出库通道出账';
+            save(); pushOps(u, '检验结论', rec.code, '退货：' + rec.retReason);
+            db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'inspect', '🔁 检验判退货：' + rec.code + '（' + (rec.nm || rec.part) + '）在 ' + rec.station + '，退货原因：' + rec.retReason + '。请按直调/领料出库流程出账', ''));
+            return send(res, 200, { ok: true, rec, wait: true, returned: true });
+          }
+          rec.state = 'waitBack'; rec.updAt = Date.now();
           if (rec.note2) rec.note = (rec.note ? rec.note + ' | ' : '') + '检验结论：' + vd + '·' + rec.note2;
           save(); pushOps(u, '检验结论', rec.code, vd + (rec.note2 ? '：' + rec.note2 : ''));
           db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && canFeature(x, 'insp_assist')).forEach((x) => notify(x.id, 'inspect', '🤝 检验协助请求：' + rec.code + ' 已出结论[' + vd + ']，请协助归位回 ' + rec.from, ''));
@@ -2111,8 +2126,18 @@ const server = http.createServer(async (req, res) => {
         const rec = (db.inspects || []).find((x) => x.id === String(b.id || ''));
         if (!rec) return send(res, 400, { ok: false, msg: '检验工单不存在' });
         if (!['atStation', 'stuck'].includes(rec.state)) return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']不可填写结论' });
-        const vd = ['通过', '不合格', '需复检'].includes(String(b.verdict || '')) ? String(b.verdict) : '通过';
+        const vd = ['通过', '不合格', '需复检', '退货'].includes(String(b.verdict || '')) ? String(b.verdict) : '通过';
+        const rr = String(b.retReason || '').slice(0, 120);
+        if (vd === '退货' && !rr) return send(res, 400, { ok: false, msg: '退货结论必须填写退货原因（如：来料不良/错料/供应商发错）' }); // ㉖⑦ 校验先行
         rec.verdict = vd; rec.note2 = String(b.note || '').slice(0, 200); rec.verdictBy = u.name; rec.verdictAt = Date.now(); rec.updAt = Date.now();
+        if (vd === '退货') { // ㉖⑦ 仓管/管理员自判退货：货留站台，走出库通道出账
+          rec.retReason = rr;
+          rec.state = 'waitReturn';
+          rec.note = (rec.note ? rec.note + ' | ' : '') + '检验结论：退货·' + rec.retReason + (rec.note2 ? '（' + rec.note2 + '）' : '') + '，货留站台 ' + rec.station + '，请走出库通道出账';
+          save(); pushOps(u, '检验结论', rec.code, '退货：' + rec.retReason);
+          db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'inspect', '🔁 检验判退货：' + rec.code + '（' + (rec.nm || rec.part) + '）在 ' + rec.station + '，退货原因：' + rec.retReason + '。请按直调/领料出库流程出账', ''));
+          return send(res, 200, { ok: true, rec, returned: true });
+        }
         if (rec.note2) rec.note = (rec.note ? rec.note + ' | ' : '') + '检验结论：' + vd + '·' + rec.note2;
         if (rec.state === 'atStation') rec.state = 'waitBack';
         save(); pushOps(u, '检验结论', rec.code, vd + (rec.note2 ? '：' + rec.note2 : ''));
@@ -2284,7 +2309,7 @@ const server = http.createServer(async (req, res) => {
         const stnBusy = Object.values(db.rcsStations || {}).filter((s) => s.state === '有货' || s.state === '占用中').length;
         let stnTotal = Object.keys(NetMap.locLand || {}).filter((loc) => /-CK-/.test(loc)).length; if (!stnTotal) stnTotal = 12; // 分母=地图全量CK站台，路网未就绪时兜底
         const queueNow = (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length;
-        const inspWait = (db.inspects || []).filter((q) => ['waitOut', 'waitBack'].includes(q.state)).length;
+        const inspWait = (db.inspects || []).filter((q) => ['waitOut', 'waitBack', 'waitReturn'].includes(q.state)).length;
         return send(res, 200, { ok: true, at: new Date().toISOString(),
           kpi: { inBoxes, inQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday, agvQueue: queueNow,
             stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal, inspWait },
@@ -2542,7 +2567,7 @@ const server = http.createServer(async (req, res) => {
             if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
             if (r.items.some(i => normIssued(i).some(e => e.c === code))) return send(res, 400, { ok: false, msg: `标签 ${code} 已扫过` });
             // ㉖② 全局出库防重：该标签已在其他出库单/其他领料单发过 → 拦（应急登记旁路，需原因）
-            if (b.emergency !== true) { const _lst = labelStatus(code); const _b2 = labelBlockReason(_lst, 'out') || labelBlockReason(_lst, 'x'); if ((_lst.inOutbound.length || _lst.inIssued.length) && _b2) return send(res, 400, { ok: false, msg: _b2 }); if (_lst.inInspect.length) return send(res, 400, { ok: false, msg: '该框检验中，不可发料出库' }); }
+            if (b.emergency !== true) { const _lst = labelStatus(code); const _b2 = labelBlockReason(_lst, 'out') || labelBlockReason(_lst, 'x'); if ((_lst.inOutbound.length || _lst.inIssued.length) && _b2) return send(res, 400, { ok: false, msg: _b2 }); const _act = _lst.inInspect.filter((q) => q.state !== 'waitReturn'); if (_act.length) return send(res, 400, { ok: false, msg: '该框检验中，不可发料出库' }); if (_lst.inInspect.length) hpush('🔁 检验判退货框扫码出库：' + code + '（' + (_lst.inInspect[0].retReason || '') + '，检验单 ' + _lst.inInspect[0].id + '）'); }
             // 一框一发：同框兄弟码（同托号/同货位同零件号）已发过则拦截，防整框数量双计
             {
               const self = db.ledger.find(x => String(x.c).toUpperCase() === code.toUpperCase());
@@ -2974,7 +2999,7 @@ function seenInBackfill() { // ㉖ 首次升级：现存账本+采集流水的�
     db.seenInBackfilled = 1; if (n) console.log('[seenIn] 历史标签回填 ' + n + ' 个');
   } catch (_) {}
 }
-// ㉖④ 检验工单状态机推进：toStation→atStation（站台快照出现本框标签）；returning→done（归位后该框回到原货位=账本命中）
+// ㉖④ 检验工单状态机推进：toStation→atStation（站台快照出现本框标签）；returning→done（归位后该框回到原货位=账本命中）；waitReturn→returned（该框经出库通道出账）
 function updateInspects(nowMs) {
   try {
     let dirty = false; const stn = db.rcsStations || {}; const led = db.ledger || [];
@@ -2982,7 +3007,11 @@ function updateInspects(nowMs) {
     for (const q of db.inspects || []) {
       if (q.state === 'waitOut' && !q.notified && nowMs - (q.at || 0) > 10 * 60000) { q.notified = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🤝 检验协助催办：' + q.code + '（' + (q.nm || q.part) + '）等待下架已超10分钟，请协助', '')); }
       else if (q.state === 'waitBack' && !q.notified2 && nowMs - (q.verdictAt || q.at || 0) > 10 * 60000) { q.notified2 = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🤝 检验协助催办：' + q.code + ' 检验已出结论，等待归位超10分钟，请协助归位', '')); }
-      if (q.state === 'toStation') {
+      else if (q.state === 'waitReturn' && !q.notified3 && nowMs - (q.verdictAt || q.at || 0) > 30 * 60000) { q.notified3 = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🔁 退货催办：' + q.code + ' 判退货已超30分钟仍压站台 ' + q.station + '，请走出库通道出账', '')); }
+      if (q.state === 'waitReturn') { // ㉖⑦ 闭环：标签已不在账本 = 已经出库/直调出账
+        const still = led.some((x) => String(x.c || '').toUpperCase() === String(q.code || '').toUpperCase());
+        if (!still) { q.state = 'returned'; q.doneAt = nowMs; dirty = true; db.users.filter((x) => x.id === q.uid && x.enabled).forEach((x) => notify(x.id, 'req_flow', '✅ 退货框 ' + q.code + ' 已出库出账，检验单闭环（原因：' + (q.retReason || '') + '）', '')); }
+      } else if (q.state === 'toStation') {
         const s = stn[q.station];
         if (s && s.state === '有货' && (s.codes || []).map((c) => String(c).toUpperCase()).includes(String(q.code).toUpperCase())) { q.state = 'atStation'; q.arriveAt = nowMs; dirty = true; db.users.filter((x) => (x.id === q.uid || x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', '🔎 检验框已到站台 ' + q.station + '（' + q.code + '），请核对并归位', '')); }
         else if (nowMs - (q.at || 0) > 30 * 60000) { q.state = 'stuck'; q.err = '下架超30分钟未到站台，请到RCS核查'; dirty = true; }
@@ -3249,14 +3278,14 @@ function inspStationFree(stn, nowMs) { // 检验可用站台：无有货/占用�
   const st = (db.rcsStations || {})[stn];
   if (st && st.state && st.state !== '空闲') return false;
   if ((db.agvQueue || []).some((q) => q.station === stn && ['排队', '下发中', '已下发'].includes(q.state))) return false;
-  if ((db.inspects || []).some((q) => q.station === stn && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state))) return false;
+  if ((db.inspects || []).some((q) => q.station === stn && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state))) return false; // waitReturn=待退货框仍压站台
   return true;
 }
 function inspBoxState(x) { // 检验框可下架性：AGV货架位(非CK站台) + 无进行中检验 + 无在途出库
   const from = String(x.l || '').toUpperCase();
   const code = String(x.c || '').toUpperCase();
   const isShelf = /^NB02-/.test(from) && !/-CK-/.test(from);
-  const busyInsp = (db.inspects || []).some((q) => (String(q.from).toUpperCase() === from || String(q.code).toUpperCase() === code) && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state));
+  const busyInsp = (db.inspects || []).some((q) => (String(q.from).toUpperCase() === from || String(q.code).toUpperCase() === code) && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state));
   const busyOut = (db.agvQueue || []).some((q) => q.type !== 'transfer' && String(q.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(q.state));
   return { isShelf, ok: isShelf && !busyInsp && !busyOut, why: busyInsp ? '检验中' : busyOut ? '出库在途' : isShelf ? '' : '非AGV货架位（地面框人工搬运）' };
 }
