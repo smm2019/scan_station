@@ -135,6 +135,9 @@ class AuthApi {
           serverOverride: server);
   static Future<Map> me() async =>
       _req("GET", "/api/me", token: await AuthStore.token());
+  // ㉖⑯ 内嵌网页免登录：用原生会话换发一枚不绑设备指纹的网页 token
+  static Future<Map> webSession() async =>
+      _req("POST", "/api/web/session", token: await AuthStore.token());
   static Future<void> logout() async {
     final t = await AuthStore.token();
     if (t.isNotEmpty) await _req("POST", "/api/logout", token: t);
@@ -244,6 +247,21 @@ class AuthApi {
           token: await AuthStore.token());
   static Future<Map> rcsStations() async =>
       _req("GET", "/api/rcs/stations", token: await AuthStore.token());
+  // ㉖⑯ 站台看板富数据（今日吞吐/平均清台/占用明细/身份），PDA 站台详情弹层用
+  static Future<Map> stBoard() async =>
+      _req("GET", "/api/agv/stboard", token: await AuthStore.token());
+  // ㉖ 保存站台身份（别名/用途/停用，仓管·管理员）
+  static Future<Map> stMeta(String station,
+          {String? alias, String? role, bool? off, int? cfgRev}) async =>
+      _req("POST", "/api/agv/stmeta",
+          body: {
+            "station": station,
+            if (alias != null) "alias": alias,
+            if (role != null) "role": role,
+            if (off != null) "off": off,
+            if (cfgRev != null) "cfgRev": cfgRev,
+          },
+          token: await AuthStore.token());
   static Future<Map> rcsMap() async =>
       _req("GET", "/api/rcs/map", token: await AuthStore.token());
   static Future<Map> rcsNet() async =>

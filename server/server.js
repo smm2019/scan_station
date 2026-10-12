@@ -1164,7 +1164,7 @@ const server = http.createServer(async (req, res) => {
       const fpn = (url.searchParams.get('pn') || '').trim().toUpperCase();
       const fft = Number(url.searchParams.get('from')) || 0, ftt = Number(url.searchParams.get('to')) || 0;
       const lim = Math.min(20000, Math.max(1, Number(url.searchParams.get('limit')) || 2000));
-      let arr = Object.values(db.scanlog).sort((a, x) => (x.t || 0) - (a.t || 0));
+      let arr = Object.entries(db.scanlog).map(([k, v]) => { v.k = k; return v; }).sort((a, x) => (x.t || 0) - (a.t || 0)); // ㉖⑯ 附带主键k供网页作废/恢复定位
       if (fc) arr = arr.filter(x => String(x.code).toUpperCase() === fc);
       if (fpn) arr = arr.filter(x => String(x.pn || '').toUpperCase() === fpn); // ㉖B7 零件号过滤
       if (fft || ftt) arr = arr.filter(x => (!fft || (x.t || 0) >= fft) && (!ftt || (x.t || 0) <= ftt)); // ㉖B7 时间窗
@@ -1408,6 +1408,50 @@ const server = http.createServer(async (req, res) => {
         save();
         console.log(`[scanlog] ${u.name} 删批次 ${batch}：${n} 条 → 共 ${db.scanlogCount} 条`);
         return send(res, 200, { ok: true, deleted: n, count: db.scanlogCount });
+      }
+      // ---- ㉖⑯ 网页流水作废/恢复（与 PDA 作废语义对齐：cx标记+整框消账/重登+防重撤回+留痕；键=code|batch|t）----
+      if (req.method === 'POST' && p === '/api/scanlog/cancel') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可作废流水' });
+        const b = await readBody(req);
+        const key = String(b.k || '').trim();
+        const rec = (db.scanlog || {})[key];
+        if (!rec) return send(res, 404, { ok: false, msg: '流水记录不存在（可能已同步覆盖）' });
+        const code = String(rec.code || '').toUpperCase();
+        const on = b.cx === true; // true=作废 false=恢复
+        if (!!rec.cx === on) return send(res, 200, { ok: true, msg: on ? '已是作废态' : '已是正常态' });
+        rec.cx = on; rec.cxB = u.name; rec.cxA = Date.now();
+        const cur = new Map(db.ledger.map((x) => [String(x.c).toUpperCase(), x]));
+        let ledgerMsg = '';
+        if (on) { // 作废：整框消账（墓碑同步所有设备）+ 撤回全局防重允许重扫
+          const self = cur.get(code);
+          const bk = self ? boxKeyOf(self) : '';
+          const kin = bk ? [...cur.values()].filter((x) => boxKeyOf(x) === bk) : [];
+          const _nt = Date.now();
+          (kin.length ? kin : [{ c: code }]).forEach((x) => { const C = String(x.c).toUpperCase(); cur.delete(C); (db.ledgerTomb = db.ledgerTomb || []).push({ c: C, t: _nt, rec: _nt }); });
+          if (db.seenIn) delete db.seenIn[code];
+          ledgerMsg = '，整框已消账';
+        } else { // 恢复：按原货位重登账本（货位被占则只恢复流水不强行上账）
+          const loc = String((rec.wt === 0 ? rec.st : rec.gl) || '').toUpperCase();
+          const foreign = [...cur.values()].filter((x) => String(x.l).toUpperCase() === loc && String(x.c).toUpperCase() !== code);
+          if (loc && !foreign.length && !cur.has(code)) {
+            ledgerPut(cur, code, { c: code, l: loc, f: rec.ct || '', t: Date.now(), p: rec.pn || '', n: rec.nm || '', q: Number(rec.q) || 0, b: rec.lot || '', pid: rec.pid || '', src: '网页恢复' });
+            db.ledgerTomb = (db.ledgerTomb || []).filter((x) => String(x.c).toUpperCase() !== code);
+            (db.seenIn = db.seenIn || {})[code] = { by: u.name, t: Date.now(), l: loc, p: rec.pn || '' };
+            ledgerMsg = '，已按 ' + loc + ' 重登账本';
+          } else ledgerMsg = foreign.length ? '，⚠原货位 ' + loc + ' 已被占，仅恢复流水未上账' : '，仅恢复流水';
+        }
+        db.ledger = [...cur.values()]; db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
+        db.scanlogAt = new Date().toISOString();
+        pushOps(u, on ? '流水作废' : '流水恢复', code, (rec.batch || '') + ledgerMsg);
+        save();
+        return send(res, 200, { ok: true, msg: (on ? '已作废' : '已恢复') + ledgerMsg + '，账本v' + db.ledgerRev });
+      }
+      // ---- ㉖ PDA 内嵌控制台会话换发：原生 token（auth 已过指纹）换一枚不绑 UA 的网页 token，供 WebView 免登录 ----
+      if (req.method === 'POST' && p === '/api/web/session') {
+        const tk = newToken();
+        db.sessions[tk] = { userId: u.id, createdAt: Date.now(), lastSeen: Date.now(), fp: '' }; // 不绑指纹：WebView UA 与原生不同
+        save();
+        return send(res, 200, { ok: true, token: tk });
       }
       // ================= AGV 叫车占位（原子防重：叫车前占位成功才允许下发任务） =================
       // 规则：同容器占位15分钟（防两人重复叉同一框）；同一站台60秒内不可再次叫车（不限同一人，确保单站台单任务）。
@@ -2553,6 +2597,19 @@ const server = http.createServer(async (req, res) => {
           const limit = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '30') || 30));
           const mine = db.notifications.filter(n => n.to === u.id).slice(-limit).reverse();
           return send(res, 200, { ok: true, notifications: mine });
+        }
+
+        // ㉖⑯ 网页铃铛：未读计数+未读列表（只读，绝不标已读，避免轮询误清）
+        if (req.method === 'GET' && p === '/api/notifications/unread') {
+          const un = db.notifications.filter(n => n.to === u.id && !n.read).slice(-50).reverse();
+          const total = db.notifications.filter(n => n.to === u.id && !n.read).length;
+          return send(res, 200, { ok: true, unread: total, notifications: un });
+        }
+        // ㉖⑯ 网页消息中心：显式全部已读（用户点按钮才清，非轮询）
+        if (req.method === 'POST' && p === '/api/notifications/readall') {
+          let n = 0; db.notifications.forEach((x) => { if (x.to === u.id && !x.read) { x.read = true; n++; } });
+          if (n) save();
+          return send(res, 200, { ok: true, marked: n });
         }
 
         // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush

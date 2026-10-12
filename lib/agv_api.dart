@@ -1375,96 +1375,310 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
           final st = off ? "已停用" : (s?["state"]?.toString() ?? "空闲");
           final c = off ? Colors.blueGrey : cOf(st);
           final tl = AgvApi.stationTimeline(s);
-          return Container(
-              padding: const EdgeInsets.all(9),
-              decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: c.withOpacity(0.6), width: 1.2)),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Icon(off ? Icons.block : iOf(st), size: 15, color: c),
-                      const SizedBox(width: 4),
-                      Expanded(
-                          child: Text(
-                              alias.isEmpty ? "CK-$n" : "$alias·$n号", // 别名优先
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 13.5))),
-                      Text(st,
-                          style: TextStyle(
-                              color: c,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12.5))
-                    ]),
-                    const SizedBox(height: 3),
-                    Text(
-                        st == "有货"
-                            ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}"
-                            : (st == "占用中"
-                                ? "${s?["dir"] == "in" ? "入库取走中" : "出库在途"} ${s?["via"] ?? ""}"
-                                : "可正常叫车/入库"),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                            fontSize: 10.5,
-                            height: 1.25,
-                            color: st == "空闲" ? Colors.blueGrey : c)),
-                    // 时间线：每步发生即点亮（建单→接令→叉出/叉离→放架；有货末尾追加到站）
-                    if (tl.isNotEmpty)
-                      Expanded(
-                          child: Padding(
-                              padding: const EdgeInsets.only(top: 2),
+          return GestureDetector(
+              onTap: () => _stDetail(code), // ㉖⑯ 点卡片弹站台详情（吞吐/占用明细/身份）
+              child: Container(
+                  padding: const EdgeInsets.all(9),
+                  decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border:
+                          Border.all(color: c.withOpacity(0.6), width: 1.2)),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(children: [
+                          Icon(off ? Icons.block : iOf(st), size: 15, color: c),
+                          const SizedBox(width: 4),
+                          Expanded(
                               child: Text(
-                                  tl +
-                                      (st == "有货"
-                                          ? "·到站 ${AgvApi.fmtT(s!["since"])}${(_holdAvg[code] ?? 0) > 0 ? "\n预计约 ${_holdAvg[code]} 分钟清台（历史均值）" : ""}"
-                                          : (st == "占用中" &&
-                                                  (AgvApi.asNum(s?["putAt"]) ??
-                                                          0) ==
-                                                      0
-                                              ? "·进行中"
-                                              : "")),
-                                  maxLines: 3,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                      fontSize: 9.5,
-                                      height: 1.35,
-                                      color: st == "有货"
-                                          ? const Color(0xFF90A4AE)
-                                          : c)))),
-                    if (st == "有货" && _canCtl)
-                      Align(
-                          alignment: Alignment.centerRight,
-                          child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => _clearStation(code),
-                              child: const Padding(
-                                  padding: EdgeInsets.fromLTRB(6, 2, 2, 2),
-                                  child: Text("清台",
+                                  alias.isEmpty
+                                      ? "CK-$n"
+                                      : "$alias·$n号", // 别名优先
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13.5))),
+                          Text(st,
+                              style: TextStyle(
+                                  color: c,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12.5))
+                        ]),
+                        const SizedBox(height: 3),
+                        Text(
+                            st == "有货"
+                                ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}"
+                                : (st == "占用中"
+                                    ? "${s?["dir"] == "in" ? "入库取走中" : "出库在途"} ${s?["via"] ?? ""}"
+                                    : "可正常叫车/入库"),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 10.5,
+                                height: 1.25,
+                                color: st == "空闲" ? Colors.blueGrey : c)),
+                        // 时间线：每步发生即点亮（建单→接令→叉出/叉离→放架；有货末尾追加到站）
+                        if (tl.isNotEmpty)
+                          Expanded(
+                              child: Padding(
+                                  padding: const EdgeInsets.only(top: 2),
+                                  child: Text(
+                                      tl +
+                                          (st == "有货"
+                                              ? "·到站 ${AgvApi.fmtT(s!["since"])}${(_holdAvg[code] ?? 0) > 0 ? "\n预计约 ${_holdAvg[code]} 分钟清台（历史均值）" : ""}"
+                                              : (st == "占用中" &&
+                                                      (AgvApi.asNum(s?[
+                                                                  "putAt"]) ??
+                                                              0) ==
+                                                          0
+                                                  ? "·进行中"
+                                                  : "")),
+                                      maxLines: 3,
+                                      overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
-                                          fontSize: 11.5,
-                                          color: Color(0xFF1565C0),
-                                          fontWeight: FontWeight.bold))))),
-                    if (st == "空闲" && _canCtl) ...[
-                      const Spacer(),
-                      Align(
-                          alignment: Alignment.centerRight,
-                          child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => _markBusy(code),
-                              child: const Padding(
-                                  padding: EdgeInsets.fromLTRB(6, 2, 2, 2),
-                                  child: Text("标记占用",
-                                      style: TextStyle(
-                                          fontSize: 10.5,
-                                          color: Color(0xFFE65100),
-                                          fontWeight: FontWeight.bold))))),
-                    ],
-                  ]));
+                                          fontSize: 9.5,
+                                          height: 1.35,
+                                          color: st == "有货"
+                                              ? const Color(0xFF90A4AE)
+                                              : c)))),
+                        if (st == "有货" && _canCtl)
+                          Align(
+                              alignment: Alignment.centerRight,
+                              child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => _clearStation(code),
+                                  child: const Padding(
+                                      padding: EdgeInsets.fromLTRB(6, 2, 2, 2),
+                                      child: Text("清台",
+                                          style: TextStyle(
+                                              fontSize: 11.5,
+                                              color: Color(0xFF1565C0),
+                                              fontWeight: FontWeight.bold))))),
+                        if (st == "空闲" && _canCtl) ...[
+                          const Spacer(),
+                          Align(
+                              alignment: Alignment.centerRight,
+                              child: GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: () => _markBusy(code),
+                                  child: const Padding(
+                                      padding: EdgeInsets.fromLTRB(6, 2, 2, 2),
+                                      child: Text("标记占用",
+                                          style: TextStyle(
+                                              fontSize: 10.5,
+                                              color: Color(0xFFE65100),
+                                              fontWeight: FontWeight.bold))))),
+                        ],
+                      ])));
         }).toList());
+  }
+
+  // ---- ㉖⑯ 站台详情弹层（网页看板搬到 PDA：今日吞吐/平均清台/占用明细/身份编辑）----
+  Future<void> _stDetail(String code) async {
+    Map? d;
+    try {
+      final j = await AuthApi.stBoard();
+      final list = (j["list"] as List?)?.whereType<Map>() ?? [];
+      for (final x in list) {
+        if (x["code"]?.toString() == code) {
+          d = x;
+          break;
+        }
+      }
+    } catch (_) {}
+    if (!mounted) return;
+    if (d == null) {
+      _toast("站台数据加载失败");
+      return;
+    }
+    final dd = d; // 闭包内不可直接用可空 d（非最终变量无空安全提升）
+    final alias = (dd["alias"] ?? "").toString();
+    final role = (dd["role"] ?? "any").toString();
+    final off = dd["off"] == true;
+    final st = off ? "已停用" : (dd["state"]?.toString() ?? "空闲");
+    const roleCn = {"any": "通用", "out": "出库专用", "in": "入库专用", "insp": "检验专用"};
+    Color cOf(String s) => s == "有货"
+        ? const Color(0xFFE65100)
+        : (s == "占用中" ? const Color(0xFF1565C0) : Colors.green);
+    final cc = off ? Colors.blueGrey : cOf(st);
+    final q = (d["queue"] as List?)?.whereType<Map>() ?? [];
+    final isp = (d["insp"] as List?)?.whereType<Map>() ?? [];
+    const inspCn = {
+      "waitOut": "🤝待协助下架",
+      "toStation": "下架途中",
+      "atStation": "站台待检",
+      "waitBack": "🤝待协助归位",
+      "returning": "归位途中",
+      "waitReturn": "🔁待退货出账"
+    };
+    await showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        builder: (ctx) => Padding(
+            padding: const EdgeInsets.fromLTRB(18, 14, 18, 22),
+            child: SingleChildScrollView(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                  Row(children: [
+                    Container(
+                        width: 11,
+                        height: 11,
+                        decoration:
+                            BoxDecoration(color: cc, shape: BoxShape.circle)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                        child: Text(
+                            alias.isEmpty
+                                ? code
+                                : "$alias  (${code.split("-").last}号台)",
+                            style: const TextStyle(
+                                fontSize: 17, fontWeight: FontWeight.bold))),
+                    Text(st,
+                        style: TextStyle(
+                            color: cc,
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14))
+                  ]),
+                  const SizedBox(height: 4),
+                  Text(
+                      "用途 ${roleCn[role] ?? role} · 编码 $code${off ? " · 已停用（不参与任何分配）" : ""}",
+                      style: const TextStyle(
+                          fontSize: 11.5, color: Colors.blueGrey)),
+                  const SizedBox(height: 12),
+                  Row(children: [
+                    _stStat("今日出库", "${dd["todayOut"] ?? 0}", "框"),
+                    _stStat("今日入库", "${dd["todayIn"] ?? 0}", "框"),
+                    _stStat(
+                        "平均清台",
+                        (dd["holdAvg"] ?? 0) > 0 ? "${dd["holdAvg"]}" : "-",
+                        "分钟"),
+                  ]),
+                  const SizedBox(height: 12),
+                  if (st == "有货")
+                    Text(
+                        "📦 框在台待清：${dd["label"] ?? "-"}${(dd["goods"] ?? "").toString().isNotEmpty ? " · ${dd["goods"]}" : ""}${(dd["codes"] as List?)?.isNotEmpty == true ? " · 共 ${(dd["codes"] as List).length} 框" : ""} · 扫码后自动叉回",
+                        style: const TextStyle(fontSize: 12.5)),
+                  if (st == "占用中" && (dd["via"] ?? "").toString().isNotEmpty)
+                    Text(
+                        "🤖 AGV 搬运中（${dd["dir"] == "in" ? "入库取走" : "出库送达"}）· 任务 ${dd["via"]}",
+                        style: const TextStyle(fontSize: 12.5)),
+                  if (st == "占用中" && dd["manual"] == true)
+                    const Text("✋ 人工占用（叫车拦截中）",
+                        style: TextStyle(fontSize: 12.5)),
+                  if (q.isEmpty && isp.isEmpty && st == "空闲")
+                    const Text("✅ 当前无占用，可正常叫车/入库",
+                        style: TextStyle(fontSize: 12.5, color: Colors.green)),
+                  if (q.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text("排队队列（${q.length}）",
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.bold)),
+                    ...q.map((e) => Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Text(
+                            "· ${e["code"] ?? "-"} · ${(e["state"] ?? "").toString()}${(e["by"] ?? "").toString().isNotEmpty ? " · ${e["by"]}" : ""}${(e["reqNo"] ?? "").toString().isNotEmpty ? " · 单${e["reqNo"]}" : ""}",
+                            style: const TextStyle(
+                                fontSize: 11.5, color: Colors.black87)))),
+                  ],
+                  if (isp.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text("检验占用（${isp.length}）",
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.bold)),
+                    ...isp.map((e) => Padding(
+                        padding: const EdgeInsets.only(top: 3),
+                        child: Text(
+                            "· ${e["code"] ?? "-"} · ${inspCn[e["state"]] ?? e["state"] ?? ""}${(e["by"] ?? "").toString().isNotEmpty ? " · ${e["by"]}" : ""}",
+                            style: const TextStyle(
+                                fontSize: 11.5, color: Colors.black87)))),
+                  ],
+                  if (_canCtl) ...[
+                    const SizedBox(height: 16),
+                    SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.tonalIcon(
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              _stCfg(code, alias, role, off);
+                            },
+                            icon: const Icon(Icons.tune, size: 18),
+                            label: const Text("编辑站台身份（别名/用途/停用）"))),
+                  ] else
+                    const SizedBox(height: 6),
+                ]))));
+  }
+
+  Widget _stStat(String k, String v, String unit) => Expanded(
+          child: Column(children: [
+        Text(v,
+            style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
+        Text("$k($unit)",
+            style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey))
+      ]));
+
+  // ---- ㉖⑯ 编辑站台身份：别名/用途/停用，保存后全端生效 ----
+  Future<void> _stCfg(
+      String code, String alias0, String role0, bool off0) async {
+    final ac = TextEditingController(text: alias0);
+    var role = role0, off = off0;
+    const roleCn = {"any": "通用", "out": "出库专用", "in": "入库专用", "insp": "检验专用"};
+    final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => StatefulBuilder(
+            builder: (ctx, setS) => AlertDialog(
+                  title: Text("站台设置 · ${code.split("-").last}号台"),
+                  content: Column(mainAxisSize: MainAxisSize.min, children: [
+                    TextField(
+                        controller: ac,
+                        maxLength: 12,
+                        decoration: const InputDecoration(
+                            labelText: "别名（留空恢复默认编码）",
+                            hintText: "如：一号发货台 / 退货暂存",
+                            counterText: "")),
+                    const SizedBox(height: 6),
+                    DropdownButtonFormField<String>(
+                        value: role,
+                        decoration: const InputDecoration(labelText: "用途"),
+                        items: roleCn.entries
+                            .map((e) => DropdownMenuItem(
+                                value: e.key, child: Text(e.value)))
+                            .toList(),
+                        onChanged: (v) => setS(() => role = v ?? role)),
+                    SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title:
+                            const Text("停用此站台", style: TextStyle(fontSize: 14)),
+                        subtitle: const Text("停用后不参与任何自动分配",
+                            style: TextStyle(fontSize: 11)),
+                        value: off,
+                        onChanged: (v) => setS(() => off = v)),
+                  ]),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text("取消")),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text("保存"))
+                  ],
+                )));
+    if (ok != true || !mounted) return;
+    try {
+      final r = await AuthApi.stMeta(code,
+          alias: ac.text.trim(), role: role, off: off);
+      if (r["ok"] == true) {
+        _toast("✅ 站台设置已保存（全端生效）");
+        _load(silent: true);
+      } else {
+        _toast("保存失败：${r["msg"] ?? "未知错误"}");
+      }
+    } catch (e) {
+      _toast("保存失败：$e");
+    }
   }
 
   // ---- 交管页签：车辆级实时堵点（对齐调度大屏口径）+ 解除交管 ----

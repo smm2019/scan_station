@@ -50,6 +50,7 @@ part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 part 'agv_map_page.dart'; // ①2D实时地图
 part 'agv_report_page.dart'; // ⑦AGV效率报表
 part 'update_page.dart'; // ⑬APK自动更新
+part 'console_web_page.dart'; // ㉖⑯ 网页控制台驾驶舱（内嵌全功能）
 part 'notify_service.dart'; // ⑭系统通知+语音播报
 
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
@@ -4279,6 +4280,15 @@ class SettingsMenuPage extends StatelessWidget {
               onTap: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const MesSettingPage())),
             ),
+          _settingTile(
+            context,
+            icon: Icons.dashboard_outlined,
+            color: const Color(0xFF5C6BC0),
+            title: "控制台驾驶舱",
+            subtitle: "站台看板 / 零件档案 / 流水追溯 / 导出 / 设备异常（内嵌网页全功能）",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const ConsoleWebPage())),
+          ),
           if (_isWhRole)
             _settingTile(
               context,
