@@ -1425,9 +1425,8 @@ const server = http.createServer(async (req, res) => {
         const code = String(b.code || '').trim().toUpperCase(), palletType = String(b.palletType || '').trim().toUpperCase();
         const dir = b.dir === 'out' ? 'out' : 'in'; // in=站台→货架(入库) out=货架→站台(出库)
         if (!from || !to) return send(res, 400, { ok: false, msg: '缺少 from/to' });
-        const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败（PDA设置→AGV调度系统）' });
         db.agvQueue = db.agvQueue || [];
-        // ㉖⑱ 统一搬运补两道基石校验：carry 绕过了 queue 端点校验，此前可重复叫车 / 叫走检验中的框
+        // ㉖ 统一搬运补两道基石校验：carry 绕过了 queue 端点校验，此前可重复叫车 / 叫走检验中的框
         if (code) {
           if (db.agvQueue.some((q) => String(q.code).toUpperCase() === code && ['排队', '下发中', '已下发', '到站'].includes(q.state))) return send(res, 200, { ok: false, msg: '框 ' + code + ' 已有在途搬运任务，请勿重复叫车' });
           if (dir === 'out' && (db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['waitOut', 'toStation', 'atStation', 'waitBack', 'returning'].includes(q.state))) return send(res, 200, { ok: false, msg: '框 ' + code + ' 正在检验中，禁止出库叫车（请先完成检验归位）' });
@@ -1441,20 +1440,26 @@ const server = http.createServer(async (req, res) => {
           const old = (db.agvClaims || {})[ck];
           if (old && Date.now() - (old.at || 0) < 15 * 60 * 1000) return send(res, 200, { ok: false, msg: '容器 ' + cn + ' ' + Math.round((Date.now() - old.at) / 1000) + '秒前刚叫过车（' + old.by + '），请勿重复叉取' });
         }
-        const r = await wmasDispatchOne({ fromLoc: from, palletType }, tk, { from, to, pallet: palletType, container: b.container ? String(b.container).trim().toUpperCase() : '', ref: (dir === 'in' ? 'RK-' : 'CK-') + (code || '') });
-        if (!r.ok) return send(res, 200, { ok: false, msg: r.msg });
-        (db.agvClaims = db.agvClaims || {})['carry|' + String(r.container).toUpperCase()] = { cn: r.container, stn: dir === 'in' ? to : from, from, by: u.name, at: Date.now() };
-        const item = { code: code || r.container, fromLoc: from, station: to, palletType, type: dir === 'in' ? 'inbound' : 'outbound', by: u.name, state: '已下发', taskNo: r.container || '', wmsTask: r.taskNo || '', at: Date.now(), sentAt: Date.now(), updAt: Date.now() };
-        db.agvQueue.push(item); save();
-        pushOps(u, dir === 'in' ? '入库叫车' : '出库叫车', code || r.container, from + '→' + to + ' 容器' + r.container);
-        return send(res, 200, { ok: true, msg: '已建任务并下发（容器 ' + r.container + '）', container: r.container, taskNo: r.taskNo });
+        // ㉖⑲ 入队 + 立即下发：复用调度器同一 dispatchOne（遵守 dry/live、manualOnly 不改派、纳入统一状态机与批量/优先级治理）
+        const live = (db.agvDispatchMode || 'dry') === 'live';
+        const item = { id: newId('cq'), code: code || String(b.container || '').toUpperCase(), fromLoc: from, stationManual: to, station: '', palletType, type: dir === 'in' ? 'inbound' : 'outbound', manualOnly: true, container: b.container ? String(b.container).trim().toUpperCase() : '', ref: (dir === 'in' ? 'RK-' : 'CK-') + (code || ''), by: u.name, state: '排队', at: Date.now(), updAt: Date.now() };
+        // 把队列其他活跃项已占用的目的地作为 assigned 传入：并发 carry 送同一台时后者排队等待，杜绝双发同台
+        const _taken = db.agvQueue.filter((q) => q !== item && ['排队', '下发中', '已下发', '到站'].includes(q.state) && (q.station || q.stationManual)).map((q) => q.station || q.stationManual);
+        await dispatchOne(item, Date.now(), [], _taken, live); // ㉖⑲ 先局部下发（不进全局队列，与定时器轮次零并发窗口），再按结果入队
+        if (item.state === '失败') return send(res, 200, { ok: false, msg: item.err || '下发失败' }); // 失败不入队，PDA 可直接重试
+        db.agvQueue.push(item); // 已下发→纳入对账；排队(dry/暂无台)→纳入队列控制台，切 live 后自动下发
+        if (item.state === '已下发' && item.taskNo) (db.agvClaims = db.agvClaims || {})['carry|' + String(item.taskNo).toUpperCase()] = { cn: item.taskNo, stn: to, from, by: u.name, at: Date.now() };
+        save();
+        pushOps(u, dir === 'in' ? '入库叫车' : '出库叫车', item.code, from + '→' + to + (item.taskNo ? ' 容器' + item.taskNo : '（排队）'));
+        return send(res, 200, { ok: true, state: item.state, queued: item.state === '排队', id: item.id, container: item.taskNo || item.container, taskNo: item.wmsTask || '', msg: item.state === '已下发' ? ('已建任务并下发（容器 ' + item.taskNo + '）') : ('已排入队列 · 演算模式，切 live 后自动下发') });
       }
-      // ---- ㉖⑰ 搬运任务状态回查：PDA 叫车后轮询本接口，队列项按 WMAS 对账推进后可拿到终态 ----
+      // ---- ㉖⑰ 搬运任务状态回查：PDA 叫车后轮询本接口，队列项按 WMAS 对账推进后可拿到终态（按 id 或任务号）----
       if (req.method === 'GET' && p === '/api/agv/carryState') {
         const tn = String(url.searchParams.get('t') || '').trim().toUpperCase();
-        const q = (db.agvQueue || []).find((x) => String(x.wmsTask || '').toUpperCase() === tn || String(x.taskNo || '').toUpperCase() === tn);
+        const idq = String(url.searchParams.get('id') || '').trim();
+        const q = (db.agvQueue || []).find((x) => (idq && String(x.id) === idq) || (tn && (String(x.wmsTask || '').toUpperCase() === tn || String(x.taskNo || '').toUpperCase() === tn)));
         if (!q) return send(res, 200, { ok: true, found: false });
-        return send(res, 200, { ok: true, found: true, state: q.state, err: q.err || '' });
+        return send(res, 200, { ok: true, found: true, state: q.state, err: q.err || '', station: q.station || '' });
       }
       // ---- ㉖⑰ 货架位占用查询（服务器账本权威）：PDA 入库自动分配货位用，多PDA不再各算各的 ----
       if (req.method === 'GET' && p === '/api/ledger/locs') {
@@ -3582,6 +3587,33 @@ function clearQueueCall(reqId, code) { // 队列项取消/失败出队 → 解�
     }
   }
 }
+// ---- ㉖⑲ 单项下发（调度器与 carry 共用同一份逻辑，杜绝两套代码漂移）----
+// 返回 true=本轮已处理（下发/演算/失败），false=暂无空闲目的地需继续排队
+async function dispatchOne(q, nowMs, runT, assigned, live) {
+  let stn = '';
+  if (q.stationManual && agvStationFree(q.stationManual, nowMs, runT, assigned)) stn = q.stationManual; // 指定目的地可用才用
+  if (!stn && q.manualOnly) return false; // 起终点固定（PDA 手动叫车/入库搬运）：指定目的地不可用就排队等待，绝不自动改派到别的台
+  if (!stn) {
+    const free = AGV_STNS.filter((s) => agvStationFree(s, nowMs, runT, assigned));
+    if (free.length) {
+      let best = '', bestD = Infinity;
+      if (NetMap.ready()) for (const s of free) { const d = NetMap.dist(q.fromLoc, s); if (d >= 0 && d < bestD) { bestD = d; best = s; } } // 距离感知：AGV少跑一米是一米
+      stn = best || free[0];
+    }
+  }
+  if (!stn) return false; // 暂无空闲台：继续排队，下轮再看
+  assigned.push(stn); q.station = stn; q.updAt = nowMs;
+  if (!live) { q.plan = stn; console.log(`[agv-q·演算] 框 ${q.code} ${q.fromLoc} → ${stn}（切live后自动下发）`); return true; }
+  q.state = '下发中'; q.sentAt = Date.now();
+  const tk = await wmasToken();
+  if (!tk) { q.state = '失败'; q.err = 'WMAS未配置/登录失败（PDA设置→AGV调度系统同步WMAS账号）'; return true; }
+  let r;
+  const _ov = {}; if (q.container) _ov.container = q.container; if (q.ref !== undefined) _ov.ref = q.ref; // 领料队列项不传 ref → wmasDispatchOne 默认取 q.reqNo（行为与旧循环完全一致）
+  try { r = await wmasDispatchOne(q, tk, Object.keys(_ov).length ? _ov : undefined); } catch (e) { r = { ok: false, msg: '下发异常：' + e.message }; }
+  q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.wmsTask = r.taskNo || ''; q.err = r.ok ? '' : r.msg;
+  console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);
+  return true;
+}
 async function agvDispatch(nowMs, runT) {
   const queue = db.agvQueue || [];
   // 回收：队列项对应任务已到站/已完成 → 状态跟随（到站后由"有货/催扫/清台"机制接管）
@@ -3618,27 +3650,7 @@ async function agvDispatch(nowMs, runT) {
   const assigned = [];
   for (const q of waiting) {
     if (live && assigned.length >= P().batch) break; // 一轮最多下发 N 单，保守节奏
-    const manual = q.stationManual && agvStationFree(q.stationManual, nowMs, runT, assigned) ? q.stationManual : '';
-    // 距离感知：路网可用时选"离货架最近"的空闲台（AGV少跑一米是一米）；缺映射/不可达回退首个空闲台
-    let stn = manual;
-    if (!stn) {
-      const free = AGV_STNS.filter((s) => agvStationFree(s, nowMs, runT, assigned));
-      if (free.length) {
-        let best = '', bestD = Infinity;
-        if (NetMap.ready()) for (const s of free) { const d = NetMap.dist(q.fromLoc, s); if (d >= 0 && d < bestD) { bestD = d; best = s; } }
-        stn = best || free[0];
-      }
-    }
-    if (!stn) continue; // 暂无空闲台：继续排队，下轮再看
-    assigned.push(stn); q.station = stn; q.updAt = nowMs;
-    if (!live) { q.plan = stn; console.log(`[agv-q·演算] 框 ${q.code} ${q.fromLoc} → ${stn}（切live后自动下发）`); continue; }
-    q.state = '下发中'; q.sentAt = Date.now(); // 漏斗：记录真实下发时刻
-    const tk = await wmasToken();
-    if (!tk) { q.state = '失败'; q.err = 'WMAS未配置/登录失败（PDA设置→AGV调度系统同步WMAS账号）'; continue; }
-    let r;
-    try { r = await wmasDispatchOne(q, tk); } catch (e) { r = { ok: false, msg: '下发异常：' + e.message }; }
-    q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.wmsTask = r.taskNo || ''; q.err = r.ok ? '' : r.msg;
-    console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);
+    await dispatchOne(q, nowMs, runT, assigned, live);
   }
 }
 

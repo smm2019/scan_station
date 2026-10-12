@@ -541,7 +541,9 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
     if (!mounted) return;
     setState(() => _sending = false);
     widget.toast(
-        "${r["ok"] == true ? "AGV出库任务：$stn ← ${widget.fromLoc}" : "叫车失败：${r["msg"]}"}",
+        r["ok"] == true
+            ? "AGV出库：${r["queued"] == true ? "已排入队列" : "已下发"}（$stn ← ${widget.fromLoc}）"
+            : "叫车失败：${r["msg"]}",
         err: r["ok"] != true);
     if (r["ok"] == true) Navigator.pop(context, stn); // 回传站台：调用方登记"已叫AGV"
   }
