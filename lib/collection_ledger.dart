@@ -1078,14 +1078,15 @@ Future<void> scanPushNow() async {
 Future<void> scanRecordCancel(Isar isar, ScanRecord r) async {
   await isar.writeTxn(() async {
     r.isCancel = true;
-    await r.save();
+    await isar.scanRecords
+        .put(r); // ㉖ Isar3.x 对象无 save() 方法，用集合 put 更新（CI analyze 抓出）
     if (r.workType == 0 && r.stationNo != null) {
       final batch =
           await isar.batchInfos.filter().batchIdEqualTo(r.batchId).findFirst();
       if (batch != null) {
         final mut = batch.usedStation.toList()..remove(r.stationNo);
         batch.usedStation = mut;
-        await batch.save();
+        await isar.batchInfos.put(batch);
       }
     }
   });
@@ -1108,13 +1109,13 @@ Future<void> scanRecordCancel(Isar isar, ScanRecord r) async {
 Future<void> scanRecordRestore(Isar isar, ScanRecord r) async {
   await isar.writeTxn(() async {
     r.isCancel = false;
-    await r.save();
+    await isar.scanRecords.put(r); // ㉖ 同作废：Isar3.x 用 put 更新
     if (r.workType == 0 && r.stationNo != null) {
       final batch =
           await isar.batchInfos.filter().batchIdEqualTo(r.batchId).findFirst();
       if (batch != null && !batch.usedStation.contains(r.stationNo)) {
         batch.usedStation = [...batch.usedStation, r.stationNo!];
-        await batch.save();
+        await isar.batchInfos.put(batch);
       }
     }
   });
