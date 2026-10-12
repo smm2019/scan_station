@@ -410,7 +410,7 @@ async function pubFile(f){if(!f)return;const v=$('#pv').value.trim(),b=$('#pb').
  try{const xh=new XMLHttpRequest();xh.open('POST','/api/apk/upload?version='+encodeURIComponent(v)+'&build='+encodeURIComponent(b));xh.setRequestHeader('Authorization','Bearer '+TK);
   xh.upload.onprogress=(e)=>{if(e.lengthComputable)pb.textContent='上传中 '+Math.round(e.loaded/e.total*100)+'%（'+(e.loaded/1048576).toFixed(1)+' / '+(e.total/1048576).toFixed(1)+' MB）'};
   xh.onload=()=>{let j={};try{j=JSON.parse(xh.responseText)}catch(_){}if(xh.status==200&&j.ok){pb.textContent='';T('✅ '+j.msg,1);adTab('pub')}else pb.textContent='❌ '+(j.msg||('HTTP '+xh.status))};
-  xh.onerror=()=>{pb.textContent='❌ 网络中断'};xh.send(f)}catch(e){pb.textContent='上传失败：'+e}}
+  xh.onerror=()=>{pb.textContent='❌ 上传中断：网络异常或文件超出服务器上限（200MB），可重试；持续失败请核对服务器已重启到最新版'};xh.send(f)}catch(e){pb.textContent='上传失败：'+e}}
 function ezTgl(){const w=document.getElementById('ezWrap'),ds=document.getElementById('eds');if(w&&ds)w.style.display=(ds.value=='D2'||ds.value=='PACK')?'inline-flex':'none'}
 function pgExp(){
  $('#main').innerHTML=`<div class="card"><h3 style="margin-bottom:4px">📤 导出中心</h3><p style="color:var(--sub);font-size:12.5px;margin-bottom:10px">每次导出登记快照（谁/何时/条件/行数/内容指纹），文件自带口径说明——对账拿文件说话，不用问"这数哪来的"。</p>

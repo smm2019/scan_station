@@ -2932,10 +2932,10 @@ const server = http.createServer(async (req, res) => {
         const dir = path.join(DATA_DIR, 'app'); fs.mkdirSync(dir, { recursive: true });
         const tmp = path.join(dir, 'upload.tmp'), fin = path.join(dir, 'app-release.apk');
         const ws = fs.createWriteStream(tmp); let size = 0, aborted = false;
-        req.on('data', (c) => { size += c.length; if (size > 60 * 1048576) { aborted = true; ws.close(); try { fs.unlinkSync(tmp); } catch (_) {} req.destroy(); } });
+        req.on('data', (c) => { size += c.length; if (size > 200 * 1048576) { aborted = true; ws.close(); try { fs.unlinkSync(tmp); } catch (_) {} req.destroy(); } });
         req.pipe(ws);
         ws.on('finish', () => {
-          if (aborted || size < 1000) { try { fs.unlinkSync(tmp); } catch (_) {} return send(res, 400, { ok: false, msg: aborted ? '超过60MB上限' : '空文件' }); }
+          if (aborted || size < 1000) { try { fs.unlinkSync(tmp); } catch (_) {} return send(res, 400, { ok: false, msg: aborted ? '超过200MB上限' : '空文件' }); }
           try { fs.renameSync(tmp, fin); fs.writeFileSync(path.join(dir, 'version.json'), JSON.stringify({ version, build, size, at: new Date().toISOString() }, null, 2)); }
           catch (e) { return send(res, 500, { ok: false, msg: '落盘失败:' + e.message }); }
           pushOps(u, '发布APK', 'v' + version + '+' + build, (size / 1048576).toFixed(1) + 'MB');
