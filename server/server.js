@@ -2040,9 +2040,9 @@ const server = http.createServer(async (req, res) => {
         const code = String(srcBox.c || '').toUpperCase();
         if ((db.inspects || []).some((q) => (q.from === from || String(q.code).toUpperCase() === code) && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state))) return send(res, 400, { ok: false, msg: '该货位已有进行中的检验任务' });
         if ((db.agvQueue || []).some((x) => x.type !== 'transfer' && String(x.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(x.state))) return send(res, 400, { ok: false, msg: '该货位已在出库任务中，不能同时检验下架' });
-        // ㉖ 指定站台优先：可用性与自动找同一判据；未指定则自动找空闲（优先 CK-05 起）
+        // ㉖ 指定站台优先：可用性与自动找同一判据；未指定则自动找空闲（CK-01 起顺序找）
         const want = String(b.station || '').trim().toUpperCase(); let to = '';
-        if (want) { if (!AGV_STNS.includes(want)) return send(res, 400, { ok: false, msg: '站台编码不在 8 个出库站台范围（NB02-CK-05~12）' }); if (!inspStationFree(want, Date.now())) return send(res, 400, { ok: false, msg: '站台 ' + want + ' 当前被占用（有货/队列/检验中），请改选或稍后再试' }); to = want; }
+        if (want) { if (!AGV_STNS.includes(want)) return send(res, 400, { ok: false, msg: '站台编码不在 12 个站台范围（NB02-CK-01~12）' }); if (!inspStationFree(want, Date.now())) return send(res, 400, { ok: false, msg: '站台 ' + want + ' 当前被占用（有货/队列/检验中），请改选或稍后再试' }); to = want; }
         else { for (const st of AGV_STNS) { if (!inspStationFree(st, Date.now())) continue; to = st; break; } }
         if (!to) return send(res, 400, { ok: false, msg: '暂无空闲站台放下架框，请稍后再试' });
         const rec = { id: newId('insp'), code, from, station: to, palletType: String(srcBox.f || '').toUpperCase(), part: String(srcBox.p || ''), nm: String(srcBox.n || ''), uid: u.id, by: u.name, note: String(b.note || '').slice(0, 120), state: 'toStation', at: Date.now(), updAt: Date.now(), taskNo: '' };
@@ -3311,7 +3311,7 @@ startRcsTimer();
 // 站台空闲=无有货/占用、无在途任务指向(含入库)、未被人工占用30分钟、未被队列占用；出库任务随时可排队，站台空了才下发。
 // 下发走 WMAS（与人工叫车同通道同参数）；容器编码自动取该托盘类型下未被在途任务占用的第一个。
 // 模式 db.agvDispatchMode：'dry'(默认，只演算记 plan 不真发) / 'live'(真下发)。PDA 设置页切换。
-const AGV_STNS = Array.from({ length: 8 }, (_, i) => 'NB02-CK-' + String(i + 5).padStart(2, '0'));
+const AGV_STNS = Array.from({ length: 12 }, (_, i) => 'NB02-CK-' + String(i + 1).padStart(2, '0')); // ㉖ 启用一二三四号台：出库/检验站台白名单扩为 CK-01~12 全部12台
 function inspStationFree(stn, nowMs) { // 检验可用站台：无有货/占用、无出库/移库队列占用、无检验占用
   const st = (db.rcsStations || {})[stn];
   if (st && st.state && st.state !== '空闲') return false;

@@ -2531,8 +2531,9 @@ class _MainPageState extends State<MainPage>
       future: _getCurrentBatch(),
       builder: (ctx, snapshot) {
         List<String> used = snapshot.data?.usedStation ?? [];
-        // 8个站台，两行，每行4个：[5,6,7,8] / [9,10,11,12]
+        // ㉖ 12个站台(含启用一二三四号台)，三行每行4个：[1,2,3,4] / [5,6,7,8] / [9,10,11,12]
         final List<List<int>> stationRows = [
+          [1, 2, 3, 4],
           [5, 6, 7, 8],
           [9, 10, 11, 12]
         ];

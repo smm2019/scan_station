@@ -471,7 +471,7 @@ class _InspectPageState extends State<InspectPage>
               _free.isNotEmpty
                   ? "空闲站台 ${_free.length} 个：${_free.join("、")}"
                   : (_searched && _serr.isEmpty
-                      ? "⚠ 当前 8 个站台全部被占（有货/队列/检验），无法下架"
+                      ? "⚠ 当前 12 个站台全部被占（有货/队列/检验），无法下架"
                       : "流程：搜零件号 → 选框下架到站台 → 现场检验 → 本页「检验完·归位」原样放回"),
               style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
         ]),

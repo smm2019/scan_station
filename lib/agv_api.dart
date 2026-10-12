@@ -1331,7 +1331,20 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
 
   // ---- 站台页签：出库到站=有货(需尽快扫码清台)，AGV正送/正取=占用中，其余空闲 ----
   Widget _stationList() {
-    const all = ['05', '06', '07', '08', '09', '10', '11', '12'];
+    const all = [
+      '01',
+      '02',
+      '03',
+      '04',
+      '05',
+      '06',
+      '07',
+      '08',
+      '09',
+      '10',
+      '11',
+      '12'
+    ]; // ㉖ 启用一二三四号台：站台卡扩为12台
     final m = {for (final s in _stations) s["station"]?.toString(): s};
     if (_stations.isEmpty && !_stationsOn) {
       return const Padding(
