@@ -3,7 +3,7 @@ part of 'main.dart';
 // ===================== ⑬ APK 自动更新：版本检查 + 下载进度 + 调起系统安装 =====================
 class AppUpdater {
   static const localVersion = "1.0.0"; // 与 pubspec version 一致，发版同步改
-  static const localBuild = 38; // 与 pubspec +N 一致，发版同步改
+  static const localBuild = 39; // 与 pubspec +N 一致，发版同步改
   static const _ch = MethodChannel("app.installer");
   static bool _asked = false;
   static void _m(String m, {bool err = true}) {
@@ -45,16 +45,73 @@ class AppUpdater {
       final go = await showDialog<bool>(
           context: ctx,
           builder: (c) => AlertDialog(
-                title: const Text("发现新版本"),
-                content: Text(
-                    "v${j["version"] ?? localVersion}+$build（当前 v$localVersion+$localBuild · ${mb.toStringAsFixed(1)} MB）\n\n建议更新以获得最新功能与修复。"),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16)),
+                insetPadding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+                title: Row(children: [
+                  const Icon(Icons.system_update_alt,
+                      color: Colors.blueGrey, size: 26),
+                  const SizedBox(width: 8),
+                  Expanded(
+                      child: Text("发现新版本",
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold))),
+                ]),
+                content: SingleChildScrollView(
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                      Row(children: [
+                        Text("v${j["version"] ?? localVersion}+$build",
+                            style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF1565C0))),
+                        const SizedBox(width: 10),
+                        Text("当前 v$localVersion+$localBuild",
+                            style: const TextStyle(
+                                fontSize: 13, color: Colors.grey)),
+                      ]),
+                      const SizedBox(height: 8),
+                      Text(
+                          "安装包大小约 ${mb.toStringAsFixed(1)} MB，建议在 WiFi/车间局域网环境下更新。",
+                          style: const TextStyle(fontSize: 14, height: 1.5)),
+                      const SizedBox(height: 6),
+                      const Text("点「立即更新」后自动下载并调起安装，全程约 1 分钟，数据不会丢失。",
+                          style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.blueGrey,
+                              height: 1.5)),
+                    ])),
+                actionsPadding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
                 actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(c, false),
-                      child: const Text("下次再说")),
-                  FilledButton(
-                      onPressed: () => Navigator.pop(c, true),
-                      child: const Text("立即更新")),
+                  // actions 容器(OverflowBar)不是 Flex，Expanded 必须包在 Row 里，否则 release 下 ParentData 类型错误直接崩
+                  Row(children: [
+                    Expanded(
+                        child: OutlinedButton(
+                            onPressed: () => Navigator.pop(c, false),
+                            style: OutlinedButton.styleFrom(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 14),
+                                side: const BorderSide(color: Colors.grey)),
+                            child: const Text("下次再说",
+                                style: TextStyle(fontSize: 15)))),
+                    const SizedBox(width: 10),
+                    Expanded(
+                        flex: 2,
+                        child: FilledButton(
+                            onPressed: () => Navigator.pop(c, true),
+                            style: FilledButton.styleFrom(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 14),
+                                backgroundColor: const Color(0xFF1565C0)),
+                            child: const Text("立即更新",
+                                style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold)))),
+                  ]),
                 ],
               ));
       if (go == true) await _download(ctx, build, sp);
@@ -85,7 +142,7 @@ class AppUpdater {
     try {
       if (save.existsSync()) save.deleteSync();
     } catch (_) {}
-    final pct = ValueNotifier<double>(-1);
+    final pct = ValueNotifier<List<double>>([-1, 0, 0]);
     var dlgClosed = false;
     unawaited(showDialog(
         context: context,
@@ -108,12 +165,13 @@ class AppUpdater {
       await for (final chunk in resp.stream) {
         sink.add(chunk);
         got += chunk.length;
-        if (total > 0) pct.value = got * 100.0 / total;
+        if (total > 0)
+          pct.value = [got * 100.0 / total, got / 1048576.0, total / 1048576.0];
       }
       await sink.flush();
       await sink.close();
       client.close();
-      pct.value = 100;
+      pct.value = [100, got / 1048576.0, total / 1048576.0];
       await Future.delayed(const Duration(milliseconds: 400));
       if (!dlgClosed) _pop();
       final ok =
@@ -144,22 +202,38 @@ class AppUpdater {
 }
 
 class _DlDialog extends StatelessWidget {
-  final ValueNotifier<double> pct;
+  final ValueNotifier<List<double>> pct;
   const _DlDialog(this.pct);
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text("正在下载更新"),
-      content: ValueListenableBuilder<double>(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Row(children: const [
+        Icon(Icons.downloading, color: Color(0xFF1565C0), size: 26),
+        SizedBox(width: 8),
+        Text("正在下载更新",
+            style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold))
+      ]),
+      content: ValueListenableBuilder<List<double>>(
           valueListenable: pct,
           builder: (_, v, __) =>
               Column(mainAxisSize: MainAxisSize.min, children: [
                 LinearProgressIndicator(
-                    value: v < 0 ? null : v / 100, minHeight: 10),
-                const SizedBox(height: 8),
-                Text(v < 0 ? "连接服务器…" : "已完成 ${v.toStringAsFixed(1)}%",
-                    style:
-                        const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+                    value: v[0] < 0 ? null : v[0] / 100,
+                    minHeight: 14,
+                    borderRadius: BorderRadius.circular(7)),
+                const SizedBox(height: 10),
+                Text(
+                    v[0] < 0
+                        ? "连接服务器…"
+                        : "${v[0].toStringAsFixed(1)}%　已下载 ${v[1].toStringAsFixed(1)} / ${v[2] > 0 ? v[2].toStringAsFixed(1) : "?"} MB",
+                    style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFF1565C0))),
+                const SizedBox(height: 6),
+                const Text("请勿退出应用，下载完成后自动调起安装",
+                    style: TextStyle(fontSize: 12.5, color: Colors.grey)),
               ])),
     );
   }

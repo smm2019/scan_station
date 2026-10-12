@@ -22,6 +22,7 @@ class LocalLog {
     final d = DateTime.now();
     return '${d.year}${_pad2(d.month)}${_pad2(d.day)}';
   }
+
   static String _file([String? day]) => '$_dir/ops-${day ?? _today()}.jsonl';
 
   /// 记一条操作：event=事件名，detail=详情（含对象/数量等）。操作人自动取当前登录账号。
@@ -34,13 +35,14 @@ class LocalLog {
         'e': event,
         if (detail.isNotEmpty) 'd': detail,
       });
-      File(_file()).writeAsStringSync('$line\n', mode: FileMode.append, flush: true);
+      File(_file())
+          .writeAsStringSync('$line\n', mode: FileMode.append, flush: true);
     } catch (_) {}
   }
 
   /// 记一条异常（⑦全局兜底调用）。
-  static void err(String where, Object e, [StackTrace? s]) =>
-      op('异常', '$where: $e${s != null ? " | ${s.toString().split("\n").take(3).join(" ")}" : ""}');
+  static void err(String where, Object e, [StackTrace? s]) => op('异常',
+      '$where: $e${s != null ? " | ${s.toString().split("\n").take(3).join(" ")}" : ""}');
 
   /// 读最近 limit 条（跨当天及历史文件，最新在前）。
   static List<String> readRecent([int limit = 200]) {
@@ -89,29 +91,107 @@ class LocalLog {
     try {
       if (!_ready) return;
       final cutoff = DateTime.now().subtract(Duration(days: keepDays));
-      final cutName = 'ops-${cutoff.year}${_pad2(cutoff.month)}${_pad2(cutoff.day)}';
+      final cutName =
+          'ops-${cutoff.year}${_pad2(cutoff.month)}${_pad2(cutoff.day)}';
       for (final f in Directory(_dir).listSync().whereType<File>()) {
         final name = f.uri.pathSegments.last; // ops-YYYYMMDD.jsonl
-        if (name.startsWith('ops-') && name.length >= 12 && name.substring(4, 12).compareTo(cutName.substring(4, 12)) < 0) {
-          try { f.deleteSync(); } catch (_) {}
+        if (name.startsWith('ops-') &&
+            name.length >= 12 &&
+            name.substring(4, 12).compareTo(cutName.substring(4, 12)) < 0) {
+          try {
+            f.deleteSync();
+          } catch (_) {}
         }
       }
     } catch (_) {}
+  }
+
+  // ===== ㉖⑩ 异常条目自动上传服务器（网页端可见）：只传"异常"，按水位去重，失败静默下轮重试 =====
+  static Future<void> uploadErrs() async {
+    try {
+      if (!_ready) return;
+      final server = await AuthStore.serverUrl();
+      if (server.isEmpty) return;
+      final token = await AuthStore.token();
+      if (token.isEmpty) return;
+      final sp = await SharedPreferences.getInstance();
+      final since = sp.getString('errlog_up_to') ?? ''; // 水位=最后一条已传记录的 t 字符串
+      final files = Directory(_dir).listSync().whereType<File>().toList()
+        ..sort((a, b) => a.path.compareTo(b.path));
+      final items = <Map<String, String>>[];
+      var maxT = since;
+      for (final f in files) {
+        for (final line in f.readAsLinesSync()) {
+          if (line.trim().isEmpty) continue;
+          try {
+            final m = jsonDecode(line) as Map;
+            final t = m['t'].toString();
+            if (!m['e'].toString().contains('异常')) continue;
+            if (since.isNotEmpty && t.compareTo(since) <= 0)
+              continue; // 水位之前已传过
+            items.add({
+              't': t,
+              'e': m['e'].toString(),
+              'u': (m['u'] ?? '').toString(),
+              'd': (m['d'] ?? '').toString()
+            });
+            if (t.compareTo(maxT) > 0) maxT = t;
+          } catch (_) {}
+        }
+      }
+      if (items.isEmpty) return;
+      var dev = sp.getString('errlog_dev') ?? '';
+      if (dev.isEmpty) {
+        dev = 'PDA-' +
+            DateTime.now()
+                .millisecondsSinceEpoch
+                .remainder(100000)
+                .toString()
+                .padLeft(5, '0');
+        await sp.setString('errlog_dev', dev);
+      }
+      final r = await http
+          .post(Uri.parse('$server/api/errlog'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer $token'
+              },
+              body: jsonEncode({
+                'dev': dev,
+                'app': '${AppUpdater.localVersion}+${AppUpdater.localBuild}',
+                'items': items
+              }))
+          .timeout(const Duration(seconds: 10));
+      final j = jsonDecode(utf8.decode(r.bodyBytes)) as Map;
+      if (j['ok'] == true)
+        await sp.setString('errlog_up_to', maxT); // 仅成功推进水位，失败下轮重试
+    } catch (_) {} // 上传失败完全静默，不影响业务
   }
 }
 
 /// 审计日志查看页：展示最近操作流水，一键导出发开发排查。
 class AuditLogPage extends StatefulWidget {
   const AuditLogPage({super.key});
-  @override State<AuditLogPage> createState() => _AuditLogPageState();
+  @override
+  State<AuditLogPage> createState() => _AuditLogPageState();
 }
+
 class _AuditLogPageState extends State<AuditLogPage> {
   List<String> _lines = [];
   String _type = "全部";
   final _qCtrl = TextEditingController();
   @override
-  void initState() { super.initState(); _reload(); }
-  @override void dispose() { _qCtrl.dispose(); super.dispose(); }
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  @override
+  void dispose() {
+    _qCtrl.dispose();
+    super.dispose();
+  }
+
   void _reload() => setState(() => _lines = LocalLog.readRecent(300));
   bool _match(String raw) {
     try {
@@ -119,12 +199,16 @@ class _AuditLogPageState extends State<AuditLogPage> {
       if (_type == "异常" && !e.contains("异常")) return false;
       if (_type == "启动" && e != "启动") return false;
       if (_type == "登录" && e != "登录") return false;
-      if (_type == "操作" && (e.contains("异常") || e == "启动" || e == "登录")) return false;
+      if (_type == "操作" && (e.contains("异常") || e == "启动" || e == "登录"))
+        return false;
       final q = _qCtrl.text.trim();
       if (q.isNotEmpty && !raw.contains(q)) return false;
       return true;
-    } catch (_) { return _qCtrl.text.trim().isEmpty; }
+    } catch (_) {
+      return _qCtrl.text.trim().isEmpty;
+    }
   }
+
   List<String> get _shown => _lines.where(_match).toList();
 
   String _pretty(String raw) {
@@ -132,36 +216,78 @@ class _AuditLogPageState extends State<AuditLogPage> {
       final m = jsonDecode(raw) as Map;
       final t = (m['t'] ?? '').toString();
       return "${t.length >= 16 ? t.substring(5, 16).replaceFirst("T", " ") : t}  ${m['u'] ?? ''}  ${m['e'] ?? ''}${(m['d'] ?? '').toString().isNotEmpty ? "  · ${m['d']}" : ""}";
-    } catch (_) { return raw; }
+    } catch (_) {
+      return raw;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFF7F7FA),
-      appBar: AppBar(title: const Text("操作审计日志", style: TextStyle(fontSize: 16)), actions: [
-        IconButton(icon: const Icon(Icons.refresh), onPressed: _reload),
-        IconButton(icon: const Icon(Icons.ios_share), tooltip: "导出全部", onPressed: () async {
-          final p = await LocalLog.exportAll();
-          if (!context.mounted) return;
-          if (p == null) { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("暂无日志可导出"), backgroundColor: Colors.orange)); return; }
-          await Clipboard.setData(ClipboardData(text: p));
-          if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已导出并复制路径：\n$p"), backgroundColor: Colors.green, duration: const Duration(seconds: 6)));
-        }),
-      ]),
+      appBar: AppBar(
+          title: const Text("操作审计日志", style: TextStyle(fontSize: 16)),
+          actions: [
+            IconButton(icon: const Icon(Icons.refresh), onPressed: _reload),
+            IconButton(
+                icon: const Icon(Icons.ios_share),
+                tooltip: "导出全部",
+                onPressed: () async {
+                  final p = await LocalLog.exportAll();
+                  if (!context.mounted) return;
+                  if (p == null) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text("暂无日志可导出"),
+                        backgroundColor: Colors.orange));
+                    return;
+                  }
+                  await Clipboard.setData(ClipboardData(text: p));
+                  if (context.mounted)
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text("已导出并复制路径：\n$p"),
+                        backgroundColor: Colors.green,
+                        duration: const Duration(seconds: 6)));
+                }),
+          ]),
       body: Column(children: [
-        Padding(padding: const EdgeInsets.fromLTRB(10, 8, 10, 4), child: TextField(controller: _qCtrl, onChanged: (_) => setState(() => {}), decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "搜索标签/操作/人", contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 6), border: OutlineInputBorder()))),
-        Padding(padding: const EdgeInsets.symmetric(horizontal: 10), child: Wrap(spacing: 6, runSpacing: 4, children: ["全部", "操作", "登录", "启动", "异常"].map((t) => ChoiceChip(label: Text(t, style: const TextStyle(fontSize: 12)), selected: _type == t, onSelected: (_) => setState(() => _type = t))).toList())),
+        Padding(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+            child: TextField(
+                controller: _qCtrl,
+                onChanged: (_) => setState(() => {}),
+                decoration: const InputDecoration(
+                    isDense: true,
+                    prefixIcon: Icon(Icons.search, size: 18),
+                    hintText: "搜索标签/操作/人",
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    border: OutlineInputBorder()))),
+        Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            child: Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                children: ["全部", "操作", "登录", "启动", "异常"]
+                    .map((t) => ChoiceChip(
+                        label: Text(t, style: const TextStyle(fontSize: 12)),
+                        selected: _type == t,
+                        onSelected: (_) => setState(() => _type = t)))
+                    .toList())),
         const SizedBox(height: 4),
         Expanded(
           child: _shown.isEmpty
-              ? Center(child: Text(_lines.isEmpty ? "暂无审计记录" : "无匹配记录", style: const TextStyle(color: Colors.grey)))
+              ? Center(
+                  child: Text(_lines.isEmpty ? "暂无审计记录" : "无匹配记录",
+                      style: const TextStyle(color: Colors.grey)))
               : ListView.builder(
                   padding: const EdgeInsets.all(8),
                   itemCount: _shown.length,
                   itemBuilder: (_, i) => Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 6),
-                    child: Text(_pretty(_shown[i]), style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
+                    padding:
+                        const EdgeInsets.symmetric(vertical: 3, horizontal: 6),
+                    child: Text(_pretty(_shown[i]),
+                        style: const TextStyle(
+                            fontSize: 12, fontFamily: "monospace")),
                   ),
                 ),
         ),

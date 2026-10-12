@@ -54,6 +54,7 @@ function defaultDb() {
     stockAlert: {}, // ⑮断料告警去重 {零件号: 最近告警日}
     prefs: {}, // ㉕F5 个人偏好 {userId:{key:{v,at}}}（后写覆盖=方案"到达序新者胜"）
     prefTemplates: [], // ㉕F5 管理员配置模板 [{name,prefs,by,at}]
+    errLogs: [], // ㉖⑩ PDA异常日志自动上报 [{id,at,by,dev,app,items:[{t,e,d,u}]}]（180天/2000批滚动）
   };
 }
 // ---- ㉕F6 凭据静态加密（AES-256-GCM，密钥 data/secret.key 不进git）+ ㉕F5 偏好/㉕F9 归档工具 ----
@@ -95,6 +96,7 @@ function loadDb() {
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
   if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
+  if (!Array.isArray(d.errLogs)) { d.errLogs = []; added = true; } // ㉖ PDA异常上报表（旧库补齐）
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
   return d;
@@ -2402,6 +2404,22 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, count: db.outboundCount });
       }
       // ================= 领料单（登录即可访问，内部按角色+状态校验） =================
+      // ---- ㉖⑩ PDA异常日志自动上报：POST {dev,app,items:[{t,e,d,u}]}（每设备一批，180天/2000批滚动） ----
+      if (req.method === 'POST' && p === '/api/errlog') {
+        const b = await readBody(req);
+        const items = Array.isArray(b.items) ? b.items.slice(0, 300) : [];
+        if (!items.length) return send(res, 400, { ok: false, msg: 'items为空' });
+        const clean = items.map((x) => ({ t: String(x && x.t || '').slice(0, 32), e: String(x && x.e || '').slice(0, 60), u: String(x && x.u || '').slice(0, 30), d: String(x && x.d || '').slice(0, 600) }));
+        db.errLogs = db.errLogs || [];
+        db.errLogs.push({ id: newId('el'), at: Date.now(), by: u.name, dev: String(b.dev || '').slice(0, 40), app: String(b.app || '').slice(0, 20), items: clean });
+        const cut = Date.now() - 180 * 864e5;
+        db.errLogs = db.errLogs.filter((x) => (x.at || 0) > cut);
+        if (db.errLogs.length > 2000) db.errLogs = db.errLogs.slice(-2000);
+        save();
+        const nErr = clean.filter((x) => String(x.e).includes('异常')).length;
+        if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'car_alarm', ' PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常（' + clean.length + ' 条记录）'); }
+        return send(res, 200, { ok: true, count: clean.length });
+      }
       if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/notifications' || p.startsWith('/api/notifications/')) {
         const canReq = (db.features[u.role] || {}).requisition === true;
         const canRcv = (db.features[u.role] || {}).receive_confirm === true;
@@ -2923,6 +2941,26 @@ const server = http.createServer(async (req, res) => {
         const last = db.lastDrill || (hist.length ? { at: hist[0].t, by: hist[0].by, note: hist[0].det || '', snapshot: hist[0].obj || '' } : null);
         const due = last ? (Date.now() - (Number(last.at) || 0) > 180 * 864e5) : true;
         return send(res, 200, { ok: true, last, due, count: hist.length, history: hist.slice(0, 12) });
+      }
+      // ---- ㉖⑩ PDA异常日志：GET 批次列表（可按设备/人筛）/ 明细 / 删除 ----
+      if (req.method === 'GET' && p === '/api/admin/errlog') {
+        const dev = String(url.searchParams.get('dev') || '').trim();
+        const lim = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') || '100') || 100));
+        let list = (db.errLogs || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0));
+        if (dev) list = list.filter((x) => String(x.dev) === dev);
+        return send(res, 200, { ok: true, total: list.length, devices: [...new Set((db.errLogs || []).map((x) => x.dev))], list: list.slice(0, lim) });
+      }
+      if (req.method === 'GET' && p.startsWith('/api/admin/errlog/')) {
+        const rec = (db.errLogs || []).find((x) => x.id === p.slice('/api/admin/errlog/'.length));
+        return rec ? send(res, 200, { ok: true, rec }) : send(res, 404, { ok: false, msg: '批次不存在' });
+      }
+      if (req.method === 'DELETE' && p.startsWith('/api/admin/errlog/')) {
+        const id = p.slice('/api/admin/errlog/'.length);
+        const before = (db.errLogs || []).length;
+        db.errLogs = (db.errLogs || []).filter((x) => x.id !== id);
+        if (db.errLogs.length === before) return send(res, 404, { ok: false, msg: '批次不存在' });
+        save(); pushOps(u, '清理异常日志', id, '');
+        return send(res, 200, { ok: true, msg: '已删除' });
       }
 
       if (req.method === 'POST' && p === '/api/apk/upload') {

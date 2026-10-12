@@ -492,6 +492,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     AuthStore.markVerified();
     if (r["prefs"] != null)
       PrefsSync.applyFromServer(r["prefs"]); // ㉖B14 服务器偏好回写本地（不await，防心跳卡顿）
+    unawaited(LocalLog.uploadErrs()); // ㉖⑩ 心跳顺带补传本地异常日志（失败静默）
   }
 
   void _startBeat() {
