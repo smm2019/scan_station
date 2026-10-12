@@ -1321,6 +1321,13 @@ const server = http.createServer(async (req, res) => {
           if (!_fpOld[key] && !Object.keys(_fpOld).length && old && it.t > 0 && Number(old.t) > it.t) { skipped++; rejected.push(key); continue; } // 设备首推无指纹档案：保守回退旧规则（t更旧者拒），防服务重启窗口倒退
           _fpNew[key] = h; // 本轮该设备视图留档
           if (!old) { _seen[key] = { by: u.name, t: rec0, l: it.l, p: it.p || '' }; } // ㉖ 首次入账登记，永久防重
+          if (old) { // ㉖⑱ 多机字段保护：本机无该框采集流水时 mv 退化为默认"登记"、src/pid 缺失，不得抹掉别机写入的真值（"数据被覆盖"根因之一）
+            const _mvIn = String(it.mv || ''), _mvOld = String(old.mv || '');
+            if ((!_mvIn || _mvIn === '登记') && _mvOld && _mvOld !== '登记') it.mv = _mvOld;
+            if (!it.src && old.src) it.src = old.src;
+            if (!it.pid && old.pid) it.pid = old.pid;
+            if (!it.p && old.p) it.p = old.p; if (!it.n && old.n) it.n = old.n; if (!it.b && old.b) it.b = old.b; if (!it.q && old.q) it.q = old.q; if (!it.f && old.f) it.f = old.f;
+          }
           if (old) { updated++; const fl = []; for (const k of ['l', 'p', 'q', 'b', 'f', 'mv']) { const av = String(old[k] == null ? '' : old[k]), bv = String(it[k] == null ? '' : it[k]); if (av !== bv) fl.push(k + ':' + (av || '∅') + '→' + (bv || '∅')); } if (fl.length) _diffs.push(it.c + ' ' + fl.join(' ')); if (String(old.l) !== String(it.l)) _diffs.length === 0 && _diffs.push(it.c + ' l:' + old.l + '→' + it.l); } else { added++; seenNew.add(key); _diffs.push(it.c + ' 入账@' + it.l + (it.p ? '(' + it.p + ')' : '')); }
           ledgerPut(cur, key, { ...it, by: u.name, rec: rec0 }, old);
           if (tombT) tomb.delete(key); // 新到达=重新登记，复活
@@ -1420,6 +1427,11 @@ const server = http.createServer(async (req, res) => {
         if (!from || !to) return send(res, 400, { ok: false, msg: '缺少 from/to' });
         const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败（PDA设置→AGV调度系统）' });
         db.agvQueue = db.agvQueue || [];
+        // ㉖⑱ 统一搬运补两道基石校验：carry 绕过了 queue 端点校验，此前可重复叫车 / 叫走检验中的框
+        if (code) {
+          if (db.agvQueue.some((q) => String(q.code).toUpperCase() === code && ['排队', '下发中', '已下发', '到站'].includes(q.state))) return send(res, 200, { ok: false, msg: '框 ' + code + ' 已有在途搬运任务，请勿重复叫车' });
+          if (dir === 'out' && (db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['waitOut', 'toStation', 'atStation', 'waitBack', 'returning'].includes(q.state))) return send(res, 200, { ok: false, msg: '框 ' + code + ' 正在检验中，禁止出库叫车（请先完成检验归位）' });
+        }
         // 防重：同容器/同标签在途、同站台60秒内刚被叫车——与 claim 同口径
         if (b.container) {
           const cn = String(b.container).trim().toUpperCase();
