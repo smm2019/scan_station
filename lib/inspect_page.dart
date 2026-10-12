@@ -13,6 +13,12 @@ class _InspectPageState extends State<InspectPage>
   List<Map> _boxes = [];
   List<Map> _list = [];
   List<String> _free = [];
+  Map<String, String> _stnAlias = {}; // ㉖⑫ 站台→自定义别名（选台弹层显示）
+  String _stnLabel(String code) {
+    final a = _stnAlias[code] ?? "";
+    return a.isEmpty ? code : "$a(${code.split("-").last})";
+  }
+
   int _total = 0;
   bool _searching = false, _searched = false, _loading = false, _loaded = false;
   String _err = "", _serr = "";
@@ -72,6 +78,10 @@ class _InspectPageState extends State<InspectPage>
         _total = (r["total"] as num?)?.toInt() ?? _boxes.length;
         _free =
             ((r["freeStns"] as List?) ?? []).map((e) => e.toString()).toList();
+        final al = r["aliases"];
+        _stnAlias = al is Map
+            ? al.map((k, v) => MapEntry(k.toString(), v.toString()))
+            : {}; // ㉖⑫ 站台别名（选台弹层显示）
         _serr = "";
       } else {
         _boxes = [];
@@ -97,7 +107,7 @@ class _InspectPageState extends State<InspectPage>
               ..._free.map((st) => ListTile(
                   leading: const Icon(Icons.pin_drop_outlined,
                       color: Color(0xFF00897B)),
-                  title: Text(st),
+                  title: Text(_stnLabel(st)), // ㉖⑫ 别名优先显示
                   onTap: () => Navigator.pop(c2, st))),
               TextButton(
                   onPressed: () => Navigator.pop(c2), child: const Text("取消")),
@@ -469,7 +479,7 @@ class _InspectPageState extends State<InspectPage>
           const SizedBox(height: 4),
           Text(
               _free.isNotEmpty
-                  ? "空闲站台 ${_free.length} 个：${_free.join("、")}"
+                  ? "空闲站台 ${_free.length} 个：${_free.map(_stnLabel).join("、")}"
                   : (_searched && _serr.isEmpty
                       ? "⚠ 当前 12 个站台全部被占（有货/队列/检验），无法下架"
                       : "流程：搜零件号 → 选框下架到站台 → 现场检验 → 本页「检验完·归位」原样放回"),

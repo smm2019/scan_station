@@ -1370,8 +1370,10 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         children: all.map((n) {
           final code = "NB02-CK-$n";
           final s = m[code];
-          final st = s?["state"]?.toString() ?? "空闲";
-          final c = cOf(st);
+          final off = s?["off"] == true; // ㉖⑫ 停用台灰显
+          final alias = (s?["alias"] ?? "").toString();
+          final st = off ? "已停用" : (s?["state"]?.toString() ?? "空闲");
+          final c = off ? Colors.blueGrey : cOf(st);
           final tl = AgvApi.stationTimeline(s);
           return Container(
               padding: const EdgeInsets.all(9),
@@ -1383,10 +1385,11 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(children: [
-                      Icon(iOf(st), size: 15, color: c),
+                      Icon(off ? Icons.block : iOf(st), size: 15, color: c),
                       const SizedBox(width: 4),
                       Expanded(
-                          child: Text("CK-$n",
+                          child: Text(
+                              alias.isEmpty ? "CK-$n" : "$alias·$n号", // 别名优先
                               style: const TextStyle(
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13.5))),

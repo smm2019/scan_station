@@ -457,6 +457,8 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
   String? _station;
   Map<String, int> _busy = {};
   Map<String, String> _rcsSt = {}; // 站台→RCS状态（有货/占用中；空闲不入表），以RCS为准
+  Map<String, String> _alias = {}; // ㉖⑫ 站台→自定义别名
+  Map<String, bool> _off = {}; // ㉖⑫ 停用站台集合
   bool _loading = true;
   bool _sending = false;
 
@@ -489,12 +491,17 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
   Future<void> _loadRcs() async {
     final r = await AuthApi.rcsStations();
     if (!mounted || r["ok"] != true) return;
-    final m = <String, String>{};
+    final m = <String, String>{}, al = <String, String>{};
+    final off = <String, bool>{};
     for (final s in List<Map>.from(r["stations"] ?? [])) {
+      final code = s["station"]?.toString() ?? "";
       final st = s["state"]?.toString() ?? "";
-      if (st == "有货" || st == "占用中") m[s["station"]?.toString() ?? ""] = st;
+      if (st == "有货" || st == "占用中") m[code] = st;
+      final a = s["alias"]?.toString() ?? "";
+      if (a.isNotEmpty) al[code] = a;
+      if (s["off"] == true) off[code] = true; // ㉖⑫ 停用台叫车禁选
     }
-    setState(() => _rcsSt = m);
+    setState(() => {_rcsSt = m, _alias = al, _off = off});
   }
 
   Future<void> _submit() async {
@@ -563,7 +570,7 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
                     "标签 ${widget.label}${widget.containerType.isEmpty ? "" : " · ${widget.containerType}"}",
                     style: const TextStyle(fontSize: 12, color: Colors.grey)),
                 const SizedBox(height: 8),
-                const Text("站台（红色=RCS显示占用/有货，不可选；绿色=空闲）：",
+                const Text("站台（红色=占用/有货/停用，不可选；绿色=空闲）：",
                     style: TextStyle(fontSize: 12.5)),
                 const SizedBox(height: 4),
                 Wrap(
@@ -572,8 +579,12 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
                     children: stations.map((n) {
                       final code = "NB02-CK-$n";
                       final b = _busy[code] ?? 0;
-                      final rc = _rcsSt[code]; // RCS：有货/占用中 → 禁选
+                      final off = _off[code] == true; // ㉖⑫ 停用台禁选
+                      final rc = off ? "已停用" : _rcsSt[code]; // RCS：有货/占用中 → 禁选
                       final sel = _station == code;
+                      final nm = _alias[code]; // 别名优先，回退 CK-n
+                      final base =
+                          (nm == null || nm.isEmpty) ? "CK-$n" : "$nm·$n";
                       return ChoiceChip(
                         selected: sel,
                         onSelected: rc == null
@@ -581,8 +592,8 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
                             : null, // RCS占用台禁选
                         label: Text(
                             rc != null
-                                ? "CK-$n\n$rc"
-                                : (b > 0 ? "CK-$n\n在途$b" : "CK-$n"),
+                                ? "$base\n$rc"
+                                : (b > 0 ? "$base\n在途$b" : base),
                             style: const TextStyle(fontSize: 12)),
                         backgroundColor: sel
                             ? const Color(0xFF00897B)

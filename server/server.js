@@ -55,6 +55,7 @@ function defaultDb() {
     prefs: {}, // ㉕F5 个人偏好 {userId:{key:{v,at}}}（后写覆盖=方案"到达序新者胜"）
     prefTemplates: [], // ㉕F5 管理员配置模板 [{name,prefs,by,at}]
     errLogs: [], // ㉖⑩ PDA异常日志自动上报 [{id,at,by,dev,app,items:[{t,e,d,u}]}]（180天/2000批滚动）
+    stnMeta: {}, // ㉖⑫ 站台身份自定义 {编码:{alias:别名,role:any|out|in|insp,off:停用布尔,by,at}}
   };
 }
 // ---- ㉕F6 凭据静态加密（AES-256-GCM，密钥 data/secret.key 不进git）+ ㉕F5 偏好/㉕F9 归档工具 ----
@@ -97,6 +98,7 @@ function loadDb() {
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
   if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
   if (!Array.isArray(d.errLogs)) { d.errLogs = []; added = true; } // ㉖ PDA异常上报表（旧库补齐）
+  if (typeof d.stnMeta !== 'object' || d.stnMeta === null || Array.isArray(d.stnMeta)) { d.stnMeta = {}; added = true; } // ㉖⑫ 站台身份配置（旧库补齐）
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
   return d;
@@ -1454,9 +1456,45 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, cfgRev: _cr, msg: 'RCS配置已保存，服务器开始轮询' });
       }
       if (req.method === 'GET' && p === '/api/rcs/stations') {
-        const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station));
+        const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station)).map((s) => { const m = stnMetaOf(s.station); return { ...s, alias: m.alias || '', role: ['any', 'out', 'in', 'insp'].includes(m.role) ? m.role : 'any', off: m.off === true }; }); // ㉖⑫ 附站台身份（PDA 站台页/叫车/检验选台按此显示与过滤）
+        const aliases = {}; for (const c of AGV_STNS) { const a = stnAlias(c); if (a) aliases[c] = a; }
         const holdAvg = {}; for (const [k, v] of Object.entries(db.rcsHoldStat || {})) holdAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
-        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry', holdAvg, cfgRev: db.cfgRev || 0 });
+        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, cfgRev: db.cfgRev || 0 });
+      }
+      // ===== ㉖⑫ 站台看板：每台实时状态+身份(别名/用途/停用)+今日吞吐+在途占用明细（指挥舱新页签，全端共用） =====
+      if (req.method === 'GET' && p === '/api/agv/stboard') {
+        const nowMs = Date.now();
+        const _d0 = new Date(); const today0 = new Date(_d0.getFullYear(), _d0.getMonth(), _d0.getDate()).getTime();
+        const stn = db.rcsStations || {}, qAll = db.agvQueue || [], insp = db.inspects || [];
+        const tasks = Object.values(db.agvTasks || {});
+        const list = AGV_STNS.map((code) => {
+          const s = stn[code] || {}, meta = stnMetaOf(code);
+          const todayOut = tasks.filter((t) => t.ck === 'out' && (t.fin || 0) >= today0 && String(t.ep || '').toUpperCase() === code).length;
+          const todayIn = tasks.filter((t) => t.ck === 'in' && (t.fin || 0) >= today0 && String(t.sp || '').toUpperCase() === code).length;
+          const qs = qAll.filter((q) => (q.station || q.to) === code && ['排队', '下发中', '已下发'].includes(q.state)).map((q) => ({ code: q.code || '', by: q.by || '', reqNo: q.reqNo || '', state: q.state }));
+          const isp = insp.filter((q) => q.station === code && ['waitOut', 'toStation', 'atStation', 'waitBack', 'returning', 'waitReturn'].includes(q.state)).map((q) => ({ code: q.code, state: q.state, by: q.by || '' }));
+          const hold = (db.rcsHoldStat || {})[code];
+          return { code, alias: String(meta.alias || ''), role: ['any', 'out', 'in', 'insp'].includes(meta.role) ? meta.role : 'any', off: meta.off === true,
+            state: s.state || '空闲', label: s.label || '', goods: s.goods || '', dir: s.dir || '', codes: s.codes || [], since: s.since || '', manual: !!s.manual,
+            holdAvg: hold && hold.n ? Math.round(hold.sum / hold.n) : 0, todayOut, todayIn, queue: qs, insp: isp };
+        });
+        return send(res, 200, { ok: true, at: new Date().toISOString(), on: !!(db.rcsConfig && db.rcsConfig.host), list });
+      }
+      if (req.method === 'POST' && p === '/api/agv/stmeta') { // 站台身份：别名/用途/停用（仓管·管理员）
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
+        const b = await readBody(req);
+        const code = String(b.station || '').trim().toUpperCase();
+        if (!AGV_STNS.includes(code)) return send(res, 400, { ok: false, msg: '站台编码不在 CK-01~12 范围' });
+        db.stnMeta = db.stnMeta || {};
+        const m = db.stnMeta[code] = db.stnMeta[code] || {};
+        if (b.alias !== undefined) m.alias = String(b.alias).trim().slice(0, 12);
+        if (b.role !== undefined) m.role = ['any', 'out', 'in', 'insp'].includes(String(b.role)) ? String(b.role) : 'any';
+        if (b.off !== undefined) m.off = b.off === true;
+        m.by = u.name; m.at = Date.now();
+        const _cg = cfgGuard(b); if (_cg) return send(res, 409, { ok: false, code: 'conflict', cfgRev: _cg.cur, msg: _cg.msg });
+        cfgBump(); save();
+        pushOps(u, '站台设置', stnDisp(code), '别名:' + (m.alias || '-') + ' 用途:' + m.role + (m.off ? ' 已停用' : ''));
+        return send(res, 200, { ok: true, meta: m, cfgRev: db.cfgRev || 0 });
       }
       // ===== ① 2D实时地图快照：路网(缓存)+车辆(实时)+货架占用(账本)+站台(判定)+交管锁点 =====
       if (req.method === 'GET' && p === '/api/rcs/net') {
@@ -1665,7 +1703,7 @@ const server = http.createServer(async (req, res) => {
           else if (rr && rr.pickAt) stage = 4;                          // RCS已叉出货架、还没落进站台状态
           else if (q.state === '下发中' || q.state === '已下发') stage = rr ? 3 : 2; // 任务在RCS=叉取中；未同步到=AGV已接单
           else stage = 2;
-          stages[stage - 1].push({ code, from: q.fromLoc || q.from || '', to: q.station || (rr ? (rr.ep || '') : ''), car: rr ? 'AGV' + String(rr.car || '').padStart(2, '0') : '', waitMs: Math.max(0, nowMs - (q.at || nowMs)), reqNo: q.reqNo || '', state: q.state, rush: !!q.rush });
+          stages[stage - 1].push({ code, from: q.fromLoc || q.from || '', to: stnDisp(q.station || (rr ? (rr.ep || '') : '')), car: rr ? 'AGV' + String(rr.car || '').padStart(2, '0') : '', waitMs: Math.max(0, nowMs - (q.at || nowMs)), reqNo: q.reqNo || '', state: q.state, rush: !!q.rush });
         }
         let bn = 0; stages.forEach((s, i) => { if (s.length > stages[bn].length) bn = i; });
         const names = ['排队待派', 'AGV已接单', '在架叉取中', '载货在途', '到站待清台', '压站滞留'];
@@ -2027,7 +2065,7 @@ const server = http.createServer(async (req, res) => {
         const boxes = [...bm.values()].map((b2) => { const st = inspBoxState({ l: b2.loc, c: b2.codes[0] }); return { ...b2, shelf: st.isShelf, canDown: st.ok, why: st.why }; }).sort((a, x) => (x.canDown - a.canDown) || String(a.loc).localeCompare(String(x.loc)));
         const freeStns = AGV_STNS.filter((st) => inspStationFree(st, Date.now()));
         const busyStns = {}; for (const st of AGV_STNS) { const v = (db.rcsStations || {})[st]; busyStns[st] = v && v.state && v.state !== '空闲' ? v.state : (freeStns.includes(st) ? '' : '队列/检验占用'); }
-        return send(res, 200, { ok: true, boxes: boxes.slice(0, 80), total: boxes.length, freeStns, busyStns });
+        return send(res, 200, { ok: true, boxes: boxes.slice(0, 80), total: boxes.length, freeStns, busyStns, aliases: AGV_STNS.reduce((m, c) => { const a = stnAlias(c); if (a) m[c] = a; return m }, {}) });
       }
       // ---- ㉖④ 检验模式：下架到站台检验，看完备注后原样归位（复用 WMAS CARRY/transfer 通道）----
       if (req.method === 'POST' && p === '/api/inspect/start') {
@@ -2309,13 +2347,17 @@ const server = http.createServer(async (req, res) => {
         // 在库与站台
         const locs = new Set(db.ledger.map((x) => String(x.l).toUpperCase()));
         const stnBusy = Object.values(db.rcsStations || {}).filter((s) => s.state === '有货' || s.state === '占用中').length;
-        let stnTotal = Object.keys(NetMap.locLand || {}).filter((loc) => /-CK-/.test(loc)).length; if (!stnTotal) stnTotal = 12; // 分母=地图全量CK站台，路网未就绪时兜底
+        let stnOn = AGV_STNS.filter((c) => !stnOff(c)).length; // ㉖⑫ 分母=启用台数（停用台不再占名额）
+        const stnToday = {}; // ㉖⑫ 今日各台送达框数（站台看板与概览共用）
+        { const _d0 = new Date(); const t0 = new Date(_d0.getFullYear(), _d0.getMonth(), _d0.getDate()).getTime();
+          for (const t of Object.values(db.agvTasks || {})) { if (t.ck === 'out' && (t.fin || 0) >= t0) { const ep = String(t.ep || '').toUpperCase(); if (/^NB02-CK-\d+$/.test(ep)) stnToday[ep] = (stnToday[ep] || 0) + 1; } } }
+        const stnAliases = {}; for (const c of AGV_STNS) { const a = stnAlias(c); if (a) stnAliases[c] = a; }
         const queueNow = (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length;
         const inspWait = (db.inspects || []).filter((q) => ['waitOut', 'waitBack', 'waitReturn'].includes(q.state)).length;
         return send(res, 200, { ok: true, at: new Date().toISOString(),
           kpi: { inBoxes, inQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday, agvQueue: queueNow,
-            stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal, inspWait },
-          trend: Array.from({ length: 7 }, (_, i) => ({ d: dstr(todayStart + i * dayMs), in: trendIn[i], out: trendOut[i] })) });
+            stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal: stnOn, inspWait, stnToday, stnAliases },
+          trend: Array.from({ length: 7 }, (_, i) => ({ d: dstr(todayStart + i * dayMs), in: trendIn[i], out: trendOut[i], ds: new Date(todayStart + i * dayMs).toISOString().slice(0, 10) })) });
       }
       // ================= ⑦ AGV效率报表（只读聚合 db.agvTasks，登录可看；days=1~30） =================
       if (req.method === 'GET' && p === '/api/agv/report') {
@@ -2517,7 +2559,7 @@ const server = http.createServer(async (req, res) => {
           // 全部行到达终态（已转/已跳过）→ 已备齐，通知含短装明细
           const finalize = () => {
             if (!(r.status === 'accepted' && r.items.every(i => i.transferred || i.skipped))) return;
-            r.status = 'ready';
+            r.status = 'ready'; r.readyAt = Date.now(); // ㉖⑫ 精确"进入待签收"时刻（超30分判定不再被催单等后续事件污染）
             const shorts = [];
             for (const i of r.items) {
               if (i.skipped) shorts.push(`${i.partNo} 跳过(0件)`);
@@ -2651,7 +2693,7 @@ const server = http.createServer(async (req, res) => {
             else {
               const note = String(b.note || '').trim().slice(0, 60);
               if (!note) return send(res, 400, { ok: false, msg: `仍有 ${undone.length} 行未处理，强制备齐必须填写原因` });
-              r.status = 'ready';
+              r.status = 'ready'; r.readyAt = Date.now(); // ㉖⑫ 强制备齐同样记录待签收时刻
               hpush(`网页标记备齐（强制）：${note}；未处理 ${undone.length} 行：${undone.slice(0, 5).map(i => i.partNo + '×' + i.qty).join('、')}${undone.length > 5 ? ' 等' : ''}`);
               notify(r.by, 'req_ready', `领料单 ${r.no} 已被 ${u.name} 标记备齐（注意：${undone.length} 行未发齐，原因：${note}），请确认收货`, r.id);
               db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
@@ -3312,7 +3354,15 @@ startRcsTimer();
 // 下发走 WMAS（与人工叫车同通道同参数）；容器编码自动取该托盘类型下未被在途任务占用的第一个。
 // 模式 db.agvDispatchMode：'dry'(默认，只演算记 plan 不真发) / 'live'(真下发)。PDA 设置页切换。
 const AGV_STNS = Array.from({ length: 12 }, (_, i) => 'NB02-CK-' + String(i + 1).padStart(2, '0')); // ㉖ 启用一二三四号台：出库/检验站台白名单扩为 CK-01~12 全部12台
-function inspStationFree(stn, nowMs) { // 检验可用站台：无有货/占用、无出库/移库队列占用、无检验占用
+// ---- ㉖⑫ 站台身份：别名/用途/停用（网页指挥舱「站台看板」可编辑，全端按此显示与调度）----
+function stnMetaOf(stn) { return (db.stnMeta || {})[String(stn || '').toUpperCase()] || {}; }
+function stnAlias(stn) { return String(stnMetaOf(stn).alias || '').slice(0, 12); }
+function stnOff(stn) { return stnMetaOf(stn).off === true; }
+function stnRole(stn) { const r = String(stnMetaOf(stn).role || 'any'); return ['any', 'out', 'in', 'insp'].includes(r) ? r : 'any'; }
+function stnDisp(stn) { const a = stnAlias(stn); return a ? a + '(' + String(stn).split('-').pop() + ')' : String(stn); }
+function stnUsable(stn, need) { if (stnOff(stn)) return false; const r = stnRole(stn); return !need || r === 'any' || r === need; }
+function inspStationFree(stn, nowMs) { // 检验可用站台：未停用且用途允许检验 + 无有货/占用、无出库/移库队列占用、无检验占用
+  if (!stnUsable(stn, 'insp')) return false;
   const st = (db.rcsStations || {})[stn];
   if (st && st.state && st.state !== '空闲') return false;
   if ((db.agvQueue || []).some((q) => q.station === stn && ['排队', '下发中', '已下发'].includes(q.state))) return false;
@@ -3328,6 +3378,7 @@ function inspBoxState(x) { // 检验框可下架性：AGV货架位(非CK站台) 
   return { isShelf, ok: isShelf && !busyInsp && !busyOut, why: busyInsp ? '检验中' : busyOut ? '出库在途' : isShelf ? '' : '非AGV货架位（地面框人工搬运）' };
 }
 function agvStationFree(stn, nowMs, runT, assigned) {
+  if (!stnUsable(stn, 'out')) return false; // ㉖⑫ 停用台/检验·入库专用台不参与出库分配
   const s = (db.rcsStations || {})[stn];
   if (s && (s.state === '有货' || s.state === '占用中')) return false;
   if ((db.rcsManual || {})[stn] && nowMs - db.rcsManual[stn] < P().manualHoldMin * 60000) return false;
