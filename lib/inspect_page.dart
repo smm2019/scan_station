@@ -153,7 +153,9 @@ class _InspectPageState extends State<InspectPage>
     if (!mounted) return;
     if (r["ok"] == true) {
       final rec = Map.from(r["rec"] ?? {});
-      _toast("✅ 已下架 → ${rec["station"] ?? "站台"}，到台后通知归位");
+      _toast(r["queued"] == true
+          ? "✅ 已入队 → ${rec["station"] ?? ""}（站台空闲且真实下发模式时自动发车）"
+          : "✅ 已下架 → ${rec["station"] ?? "站台"}，到台后通知归位");
       _search();
       _load();
     } else {
@@ -191,9 +193,11 @@ class _InspectPageState extends State<InspectPage>
     final r = await AuthApi.inspectAssist(q["id"].toString(), station: station);
     if (!mounted) return;
     _toast(r["ok"] == true
-        ? (st == "waitOut"
-            ? "✅ 已协助下架 → ${((r["rec"] as Map?)?["station"]) ?? "站台"}，到台后通知检验员"
-            : "✅ 已协助归位，AGV 送回原货位后自动完成")
+        ? (r["queued"] == true
+            ? "✅ 已入队（${((r["rec"] as Map?)?["station"]) ?? ""}），站台空闲且真实下发模式时自动发车"
+            : (st == "waitOut"
+                ? "✅ 已协助下架 → ${((r["rec"] as Map?)?["station"]) ?? "站台"}，到台后通知检验员"
+                : "✅ 已协助归位，AGV 送回原货位后自动完成"))
         : "失败：${r["msg"]}");
     if (r["ok"] == true) _load();
   }
