@@ -1602,11 +1602,11 @@ const server = http.createServer(async (req, res) => {
           const s = stn[code] || {}, meta = stnMetaOf(code);
           const todayOut = tasks.filter((t) => t.ck === 'out' && (t.fin || 0) >= today0 && String(t.ep || '').toUpperCase() === code).length;
           const todayIn = tasks.filter((t) => t.ck === 'in' && (t.fin || 0) >= today0 && String(t.sp || '').toUpperCase() === code).length;
-          const qs = qAll.filter((q) => ((q.station || q.to) === code || (q.type === 'inbound' && String(q.fromLoc || '').toUpperCase() === code)) && ['排队', '下发中', '已下发'].includes(q.state)).map((q) => ({ code: q.code || '', by: q.by || '', reqNo: q.reqNo || '', state: q.state, dir: q.type === 'inbound' ? 'in' : 'out' })); // ㉖⑰ 入库任务起点=站台，也计入本台占用明细
+          const qs = qAll.filter((q) => ((q.station || q.to) === code || (q.type === 'inbound' && String(q.fromLoc || '').toUpperCase() === code)) && ['排队', '下发中', '已下发'].includes(q.state)).map((q) => ({ code: q.code || '', by: q.by || '', reqNo: q.reqNo || '', state: q.state, dir: q.type === 'inbound' ? 'in' : 'out', at: q.at || 0, sentAt: q.sentAt || 0 })); // ㉖⑰ 入库任务起点=站台，也计入本台占用明细
           const isp = insp.filter((q) => q.station === code && ['waitOut', 'toStation', 'atStation', 'waitBack', 'returning', 'waitReturn'].includes(q.state)).map((q) => ({ code: q.code, state: q.state, by: q.by || '' }));
           const hold = (db.rcsHoldStat || {})[code];
           return { code, alias: String(meta.alias || ''), role: ['any', 'out', 'in', 'insp'].includes(meta.role) ? meta.role : 'any', off: meta.off === true,
-            state: s.state || '空闲', label: s.label || '', goods: s.goods || '', dir: s.dir || '', via: s.via || '', pickAt: s.pickAt || 0, startAt: s.startAt || 0, codes: s.codes || [], since: s.since || '', manual: !!s.manual,
+            state: s.state || '空闲', label: s.label || '', goods: s.goods || '', dir: s.dir || '', via: s.via || '', pickAt: s.pickAt || 0, startAt: s.startAt || 0, buildAt: s.buildAt || 0, codes: s.codes || [], since: s.since || '', manual: !!s.manual,
             holdAvg: hold && hold.n ? Math.round(hold.sum / hold.n) : 0, todayOut, todayIn, queue: qs, insp: isp };
         });
         return send(res, 200, { ok: true, at: new Date().toISOString(), on: !!(db.rcsConfig && db.rcsConfig.host), list });
