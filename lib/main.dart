@@ -2252,7 +2252,9 @@ class _MainPageState extends State<MainPage>
               backgroundColor: Colors.orange));
         return; //保留输入内容，改正后可直接重扫标签再保存
       }
-      final ctype = _containerType ?? "";
+      final ctype = _containerType ??
+          _lastScanContainer ??
+          ""; // ㉖⑳ 修自动叫车不触发：本函数在保存清空 _containerType 之后才被调用，须回退扫码时捕获的容器（与手动「提交任务」同口径）
       final oper = Auth.user?.name ?? Auth.user?.username ?? "采集页";
       final codes = <String>{code.toUpperCase()};
       if (_palletMode &&
