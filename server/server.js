@@ -2502,8 +2502,10 @@ const server = http.createServer(async (req, res) => {
           inSeen.add(s.code + Math.floor(s.t / dayMs)); bucket(trendIn, s.t);
         }
         for (const tmb of db.ledgerTomb || []) { if (tmb.t) bucket(trendOut, tmb.t); }
-        // 今日AGV：领料单 agvCalled 时间戳在今天
-        let agvToday = 0;
+        // 今日AGV搬运：RCS 任务沉淀里完成时刻落在今日的任务数（一次真实搬运=1，含出库/入库/移库）
+        // ㉖ 旧口径统计领料单 agvCalled 登记次数：同框重复叫车/取消重叫会多算，PDA手动入库叫车不挂领料单会漏算
+        let agvToday = 0, agvDoneToday = 0;
+        for (const t of Object.values(db.agvTasks || {})) { if ((t.fin || 0) >= todayStart) agvDoneToday++; }
         const st = { pending: 0, accepted: 0, ready: 0 };
         for (const r of db.requisitions || []) {
           if (st[r.status] !== undefined) st[r.status]++;
@@ -2522,8 +2524,8 @@ const server = http.createServer(async (req, res) => {
         const queueNow = (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length;
         const inspWait = (db.inspects || []).filter((q) => ['waitOut', 'waitBack', 'waitReturn'].includes(q.state)).length;
         return send(res, 200, { ok: true, at: new Date().toISOString(),
-          kpi: { inBoxes, inQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday, agvQueue: queueNow,
-            stockBoxes: db.ledger.length, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal: stnOn, inspWait, stnToday, stnAliases },
+          kpi: { inBoxes, inQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday: agvDoneToday, agvQueue: queueNow,
+            stockBoxes: new Set(ledgerView().map((x) => boxKeyOf(x))).size, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal: stnOn, inspWait, stnToday, stnAliases }, // ㉖ 在库框数=按框聚合（同托多标签/同位同件=1框），与库存汇总D2同口径；此前误用标签条数(421)致与占位货位(412)不等
           trend: Array.from({ length: 7 }, (_, i) => ({ d: dstr(todayStart + i * dayMs), in: trendIn[i], out: trendOut[i], ds: new Date(todayStart + i * dayMs).toISOString().slice(0, 10) })) });
       }
       // ================= ⑦ AGV效率报表（只读聚合 db.agvTasks，登录可看；days=1~30） =================
