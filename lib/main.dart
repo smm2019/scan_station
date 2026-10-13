@@ -1410,32 +1410,27 @@ class _MainPageState extends State<MainPage>
                       _tabKeys.indexOf("req") >= 0
                           ? _tabKeys.indexOf("req")
                           : 0),
+                  onOpenAgv: () => _tabController.animateTo(
+                      _tabKeys.indexOf("agv") >= 0
+                          ? _tabKeys.indexOf("agv")
+                          : (_tabKeys.indexOf("req") >= 0
+                              ? _tabKeys.indexOf("req")
+                              : 0)),
                 )));
     _recountUnread();
   }
 
-  /// ㉖ 重算未读：拉一次未读接口（服务器会标read）→ 按分类已读时间戳算展示级未读
+  /// ㉖v50 重算未读：直接用服务端 read 标志的权威计数（只读接口，不消耗已读）
   Future<void> _recountUnread() async {
     try {
-      await AuthApi.notifications();
+      final r = await AuthApi.notificationsUnread();
+      if (r["ok"] == true && mounted) {
+        kUnreadMsgs.value = (r["unread"] as num?)?.toInt() ?? 0;
+      }
     } catch (_) {}
-    final sp = await SharedPreferences.getInstance();
-    final r = await AuthApi.notificationsHistory(limit: 100);
-    if (r["ok"] != true || !mounted) return;
-    int n = 0;
-    for (final m in List<Map>.from(r["notifications"] ?? [])) {
-      final tp = m["type"]?.toString() ?? "";
-      final gk = _hubGroupKey(tp);
-      final seen = sp.getInt("hubseen_" + gk) ?? 0;
-      final ts = DateTime.tryParse(m["time"]?.toString() ?? "")
-              ?.millisecondsSinceEpoch ??
-          0;
-      if (ts > seen) n++;
-    }
-    kUnreadMsgs.value = n;
   }
 
-  /// 领料通知轮询：每30秒拉一次，未读消息弹横幅，点击跳领料页
+  /// 领料通知轮询：每30秒拉一次（㉖v50 只读不消耗），未读消息弹横幅，点击跳领料页
   void _startNotifPolling() {
     _notifTimer?.cancel();
     _notifTimer = Timer.periodic(
@@ -1444,6 +1439,7 @@ class _MainPageState extends State<MainPage>
 
   int _srvFails = 0; // G1 服务器失联计数：连续10次轮询失败(约5分钟)报警一次，恢复复位
   bool _srvDownWarned = false;
+  Set<String> _bannerSeen = {}; // ㉖v50 已弹过横幅的消息 id（接口只读后防重复轰炸）
   Future<void> _pollNotifications() async {
     if (Auth.user == null) return;
     final r = await AuthApi.notifications();
@@ -1467,6 +1463,15 @@ class _MainPageState extends State<MainPage>
     if (!mounted) return;
     final list = List<Map>.from(r["notifications"] ?? []);
     if (list.isEmpty) return;
+    // ㉖v50 接口改只读后未读会常驻：按消息 id 本地去重，只对"本轮新出现"的弹横幅
+    list.removeWhere((m) => _bannerSeen.contains(m["id"]?.toString() ?? ""));
+    if (list.isEmpty) return;
+    for (final m in list) {
+      _bannerSeen.add(m["id"]?.toString() ?? "");
+    }
+    if (_bannerSeen.length > 600) {
+      _bannerSeen = _bannerSeen.skip(_bannerSeen.length - 400).toSet();
+    }
     final first = list.first;
     final text = first["text"]?.toString() ?? "领料单有新消息";
     // ⑭系统通知（悬浮横幅/锁屏/息屏可达）：按类别开关，点击直达领料页
@@ -1506,9 +1511,7 @@ class _MainPageState extends State<MainPage>
           label: "查看",
           textColor: Colors.amber,
           onPressed: () {
-            kUnreadMsgs.value += list.length;
-            final i = _tabKeys.indexOf('req');
-            _tabController.animateTo(i >= 0 ? i : 0);
+            _openHub(); // ㉖v50 直达消息中枢看详情；角标由服务端权威计数自动更新
           }),
     ));
   }
@@ -3669,6 +3672,10 @@ class _MainPageState extends State<MainPage>
                                       _tabKeys.indexOf('req') >= 0
                                           ? _tabKeys.indexOf('req')
                                           : 0),
+                                  onOpenAgv: () => _tabController.animateTo(
+                                      _tabKeys.indexOf('agv') >= 0
+                                          ? _tabKeys.indexOf('agv')
+                                          : 0),
                                 )));
                     // 已读时间戳落盘后重算未读（进页面看过即消，不再无脑清零）
                     _recountUnread();
@@ -5133,23 +5140,17 @@ const _kHubKnown = {
   "stock_out",
   "watch_in",
 };
-String _hubGroupKey(String type) {
-  for (final g in _kHubGroups) {
-    if ((g["types"] as List).contains(type)) return g["key"] as String;
-  }
-  return "other";
-}
 
 class MessageHubPage extends StatefulWidget {
   final VoidCallback onOpenReq;
-  const MessageHubPage({super.key, required this.onOpenReq});
+  final VoidCallback? onOpenAgv; // ㉖v50 车辆告警一键直达 AGV 看板
+  const MessageHubPage({super.key, required this.onOpenReq, this.onOpenAgv});
   @override
   State<MessageHubPage> createState() => _MessageHubPageState();
 }
 
 class _MessageHubPageState extends State<MessageHubPage> {
   List<Map> _msgs = [];
-  final Map<String, int> _seen = {};
   bool _loading = true;
   String _err = "";
 
@@ -5165,11 +5166,6 @@ class _MessageHubPageState extends State<MessageHubPage> {
         _loading = true;
         _err = "";
       });
-    final sp = await SharedPreferences.getInstance();
-    for (final g in _kHubGroups) {
-      _seen[g["key"] as String] =
-          sp.getInt("hubseen_" + (g["key"] as String)) ?? 0;
-    }
     final r = await AuthApi.notificationsHistory(limit: 100);
     if (!mounted) return;
     if (r["ok"] == true) {
@@ -5200,6 +5196,27 @@ class _MessageHubPageState extends State<MessageHubPage> {
       DateTime.tryParse(m["time"]?.toString() ?? "")?.millisecondsSinceEpoch ??
       0;
 
+  /// ㉖v50 未处理车辆告警：急停/红牌/升级且尚无"恢复/已认领"跟进 → 置顶提醒
+  bool _carUnresolved(Map m) {
+    if ((m["type"]?.toString() ?? "") != "car_alarm") return false;
+    final t = m["text"]?.toString() ?? "";
+    if (t.startsWith("✅") || t.contains("已恢复") || t.contains("已认领")) {
+      return false;
+    }
+    final mt = RegExp(r'AGV(\d+)').firstMatch(t)?.group(1);
+    for (final x in _msgs) {
+      if ((x["type"]?.toString() ?? "") != 'car_alarm') continue;
+      final xt = x["text"]?.toString() ?? '';
+      if (!(xt.startsWith('✅') || xt.contains('已恢复') || xt.contains('已认领'))) {
+        continue;
+      }
+      if (mt == null || mt.isEmpty || xt.contains('AGV$mt')) {
+        if (_tsOf(x) > _tsOf(m)) return false;
+      }
+    }
+    return true;
+  }
+
   String _rel(String t) {
     final d = DateTime.tryParse(t);
     if (d == null) return "";
@@ -5210,13 +5227,6 @@ class _MessageHubPageState extends State<MessageHubPage> {
     if (diff.inDays < 2) return "昨天";
     if (diff.inDays < 8) return "${diff.inDays}天前";
     return "${d.month}月${d.day}日";
-  }
-
-  Future<void> _markSeen(String key) async {
-    final sp = await SharedPreferences.getInstance();
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    await sp.setInt("hubseen_$key", nowMs);
-    _seen[key] = nowMs;
   }
 
   void _openGroup(Map g) async {
@@ -5233,16 +5243,91 @@ class _MessageHubPageState extends State<MessageHubPage> {
                   Navigator.of(context).pop();
                   widget.onOpenReq();
                 })));
-    await _markSeen(g["key"] as String);
-    if (mounted) setState(() {});
+    final ts = List<String>.from(g["types"] ?? []);
+    if (ts.isNotEmpty) unawaited(AuthApi.notificationsReadGroup(ts));
+    if (mounted) _load();
+  }
+
+  Future<void> _readAll() async {
+    await AuthApi.notificationsReadAll();
+    if (mounted) _load();
+  }
+
+  /// ㉖v50 未处理车辆告警置顶卡：不管下面堆了多少普通消息，急停/红牌永远第一屏可见
+  Widget _hubCarAlert(List<Map> alerts, VoidCallback onTap) {
+    final oldest = alerts
+        .map(_tsOf)
+        .reduce((a, b) => a < b ? a : b);
+    final waitMin =
+        ((DateTime.now().millisecondsSinceEpoch - oldest) / 60000).floor();
+    final waitTxt = waitMin < 1
+        ? '刚刚'
+        : waitMin < 60
+            ? '已等 ${waitMin} 分钟'
+            : '已等 ${(waitMin / 60).floor()} 小时';
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      color: const Color(0xFFFFEBEE),
+      shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+          side: const BorderSide(color: Color(0xFFD32F2F), width: 1.4)),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(children: [
+                const Icon(Icons.error, color: Color(0xFFD32F2F), size: 20),
+                const SizedBox(width: 6),
+                const Text("未处理车辆告警",
+                    style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFB71C1C))),
+                const SizedBox(width: 8),
+                Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+                    decoration: BoxDecoration(
+                        color: const Color(0xFFD32F2F),
+                        borderRadius: BorderRadius.circular(9)),
+                    child: Text("${alerts.length} 条 · $waitTxt",
+                        style: const TextStyle(
+                            fontSize: 10.5, color: Colors.white))),
+                const Spacer(),
+                const Icon(Icons.chevron_right,
+                    size: 18, color: Color(0xFFD32F2F)),
+              ]),
+              for (final m in alerts.take(3))
+                Padding(
+                  padding: const EdgeInsets.only(top: 5),
+                  child: Text(m["text"]?.toString() ?? "",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 12.5, color: Color(0xFF7f1d1d))),
+                ),
+              if (alerts.length > 3)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text("…另有 ${alerts.length - 3} 条，点此查看全部",
+                      style: const TextStyle(
+                          fontSize: 11, color: Color(0xFF9a3412))),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final totalUnread = _msgs
-        .where((m) =>
-            _tsOf(m) > (_seen[_hubGroupKey(m["type"]?.toString() ?? "")] ?? 0))
-        .length;
+    final totalUnread =
+        _msgs.where((m) => m["read"] != true).length;
     return Scaffold(
       backgroundColor: const Color(0xFFF7F7FA),
       appBar: AppBar(
@@ -5264,6 +5349,11 @@ class _MessageHubPageState extends State<MessageHubPage> {
           backgroundColor: const Color(0xFF515BD4),
           foregroundColor: Colors.white,
           actions: [
+            if (totalUnread > 0)
+              TextButton(
+                  onPressed: _readAll,
+                  child: const Text("清未读",
+                      style: TextStyle(color: Colors.white, fontSize: 13))),
             IconButton(
                 tooltip: "刷新",
                 icon: const Icon(Icons.refresh),
@@ -5280,15 +5370,21 @@ class _MessageHubPageState extends State<MessageHubPage> {
                   : ListView(
                       padding: const EdgeInsets.symmetric(vertical: 6),
                       children: [
+                          // ㉖v50 未处理车辆告警永远置顶：再多的普通消息也不许淹没它
+                          if (_of(_kHubGroups[4]).any(_carUnresolved))
+                            _hubCarAlert(
+                                _of(_kHubGroups[4])
+                                    .where(_carUnresolved)
+                                    .toList(),
+                                _openCarAlarm),
                           for (final g in _kHubGroups)
                             if (_of(g).isNotEmpty)
                               Builder(builder: (_) {
                                 final ms = _of(g);
                                 final key = g["key"] as String;
                                 final color = g["color"] as Color;
-                                final un = ms
-                                    .where((m) => _tsOf(m) > (_seen[key] ?? 0))
-                                    .length;
+                                final un =
+                                    ms.where((m) => m["read"] != true).length;
                                 final latest = ms.first;
                                 return Card(
                                   margin: const EdgeInsets.symmetric(
@@ -5367,11 +5463,17 @@ class _MessageHubPageState extends State<MessageHubPage> {
                               }),
                           const SizedBox(height: 6),
                           const Center(
-                              child: Text("进入分类看过后，红点即消失；带单号消息可跳转领料页",
+                              child: Text(
+                                  "急停/红牌等未处理车辆告警自动置顶；进入分类看过或点右上「清未读」，红点即消失",
                                   style: TextStyle(
                                       fontSize: 11, color: Colors.grey))),
                         ]),
     );
+  }
+
+  void _openCarAlarm() {
+    Navigator.of(context).pop();
+    (widget.onOpenAgv ?? widget.onOpenReq)(); // 与系统通知点击同路由：car_alarm→agv
   }
 }
 

@@ -2368,12 +2368,30 @@ class _MsgCenterPageState extends State<MsgCenterPage> {
     });
     final r = await AuthApi.notificationsHistory(limit: 50);
     if (!mounted) return;
-    if (r["ok"] == true)
+    if (r["ok"] == true) {
+      // ㉖v50 三级排序：未处理车辆告警 > 未读 > 普通已读；组内时间倒序
+      final list = List<Map>.from(r["notifications"] ?? []);
+      int rank(Map m) {
+        final t = m["type"]?.toString() ?? "";
+        final txt = m["text"]?.toString() ?? "";
+        final resolved = txt.startsWith("✅") ||
+            txt.contains("已恢复") ||
+            txt.contains("已认领");
+        if (t == "car_alarm" && !resolved) return 0;
+        return m["read"] != true ? 1 : 2;
+      }
+
+      list.sort((a, b) {
+        final ra = rank(a), rb = rank(b);
+        if (ra != rb) return ra - rb;
+        return (b["time"] ?? "").toString()
+            .compareTo((a["time"] ?? "").toString());
+      });
       setState(() {
-        _msgs = List<Map>.from(r["notifications"] ?? []);
+        _msgs = list;
         _loading = false;
       });
-    else
+    } else
       setState(() {
         _loading = false;
         _err = (r["msg"] ?? "加载失败").toString();
@@ -2394,6 +2412,19 @@ class _MsgCenterPageState extends State<MsgCenterPage> {
     "req_urge": Icons.alarm,
     "car_alarm": Icons.error,
   };
+
+  String _dayOf(String t) {
+    final d = DateTime.tryParse(t);
+    if (d == null) return "";
+    final now = DateTime.now();
+    final day0 = DateTime(now.year, now.month, now.day);
+    final dd = DateTime(d.year, d.month, d.day);
+    final diff = day0.difference(dd).inDays;
+    if (diff <= 0) return "今天";
+    if (diff == 1) return "昨天";
+    if (diff < 7) return "${diff}天前";
+    return "${d.month}月${d.day}日";
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2419,27 +2450,86 @@ class _MsgCenterPageState extends State<MsgCenterPage> {
                         final m = _msgs[i];
                         final tp = m["type"]?.toString() ?? "";
                         final t = (m["time"] ?? "").toString();
-                        return Card(
-                            margin: const EdgeInsets.symmetric(vertical: 4),
-                            child: ListTile(
-                              leading: CircleAvatar(
-                                  backgroundColor: tp == 'req_arrive'
-                                      ? Colors.orange.shade100
-                                      : const Color(0xFFE8EAF6),
-                                  child: Icon(
-                                      _typeIcon[tp] ?? Icons.notifications_none,
-                                      size: 20,
-                                      color: tp == 'req_arrive'
-                                          ? Colors.deepOrange
-                                          : const Color(0xFF3949AB))),
-                              title: Text(m["text"]?.toString() ?? "",
-                                  style: const TextStyle(fontSize: 13)),
-                              subtitle: Text(reqTimeLocal(t),
-                                  style: const TextStyle(
-                                      fontSize: 11, color: Colors.grey)),
-                              isThreeLine: false,
-                              dense: true,
-                            ));
+                        final urgent = i == 0 &&
+                            tp == 'car_alarm' &&
+                            !(m["text"]?.toString() ?? "")
+                                    .startsWith("✅");
+                        final unread = m["read"] != true;
+                        String dayHdr = "";
+                        if (i == 0 ||
+                            _dayOf(t) != _dayOf((_msgs[i - 1]["time"] ?? "")
+                                .toString())) {
+                          dayHdr = _dayOf(t);
+                        }
+                        return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              if (dayHdr.isNotEmpty)
+                                Padding(
+                                  padding:
+                                      const EdgeInsets.fromLTRB(4, 10, 4, 2),
+                                  child: Text(dayHdr,
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.blueGrey)),
+                                ),
+                              Card(
+                                  margin: const EdgeInsets.symmetric(vertical: 4),
+                                  color: urgent
+                                      ? const Color(0xFFFFEBEE)
+                                      : null,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                      side: urgent
+                                          ? const BorderSide(
+                                              color: Color(0xFFD32F2F),
+                                              width: 1.2)
+                                          : BorderSide.none),
+                                  child: ListTile(
+                                    leading: CircleAvatar(
+                                        backgroundColor: urgent
+                                            ? const Color(0xFFD32F2F)
+                                                .withOpacity(0.15)
+                                            : tp == 'req_arrive'
+                                                ? Colors.orange.shade100
+                                                : const Color(0xFFE8EAF6),
+                                        child: Icon(
+                                            _typeIcon[tp] ??
+                                                Icons.notifications_none,
+                                            size: 20,
+                                            color: urgent
+                                                ? const Color(0xFFD32F2F)
+                                                : tp == 'req_arrive'
+                                                    ? Colors.deepOrange
+                                                    : const Color(0xFF3949AB))),
+                                    title: Text(m["text"]?.toString() ?? "",
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            fontWeight: unread
+                                                ? FontWeight.w600
+                                                : FontWeight.normal,
+                                            color: unread
+                                                ? Colors.black87
+                                                : Colors.black54)),
+                                    subtitle: Text(reqTimeLocal(t),
+                                        style: const TextStyle(
+                                            fontSize: 11, color: Colors.grey)),
+                                    trailing: unread
+                                        ? Container(
+                                            width: 8,
+                                            height: 8,
+                                            decoration: BoxDecoration(
+                                                color: urgent
+                                                    ? const Color(0xFFD32F2F)
+                                                    : Colors.blueAccent,
+                                                borderRadius:
+                                                    BorderRadius.circular(4)))
+                                        : null,
+                                    isThreeLine: false,
+                                    dense: true,
+                                  )),
+                            ]);
                       }),
     );
   }

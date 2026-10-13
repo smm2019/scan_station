@@ -234,9 +234,27 @@ async function openMsgs(){window._msgOpen=1;
  let j;try{j=await api('/api/notifications/history?limit=80')}catch(_){$('#dw_b').innerHTML='<div style="color:var(--warn)">加载失败</div>';return}
  const L=j.notifications||[];window._msgs=L;const un=L.filter(n=>!n.read).length;const ue=$('#msgun');if(ue)ue.textContent=un?('· '+un+' 条未读'):'· 全部已读';
  const byG={};L.forEach((n,i)=>{const g=ngrpOf(n.type);(byG[g]=byG[g]||[]).push(n)});
+ // ㉖v50 未处理车辆告警置顶：急停/红牌/升级且无"恢复/认领"跟进的一律排最前，解决完自动收起
+ const carAll=byG.car||[];const isDone=(t)=>/^✅/.test(t)||/已恢复|已认领/.test(t);
+ const openCar=carAll.filter(n=>!isDone(n.text||''));
+ const resolvedAt=(n)=>{const mt=(String(n.text||'').match(/AGV(\d+)/)||[])[1];let mx=0;for(const x of carAll){if(x===n||!isDone(x.text||''))continue;if(!mt||String(x.text||'').includes('AGV'+mt)){const t=+new Date(x.time||0);if(t>+new Date(n.time||0)&&t>mx)mx=t}}return mx};
+ const openList=openCar.filter(n=>!resolvedAt(n));
  let h='';
  if(!L.length)h='<div style="color:var(--sub);padding:30px 0;text-align:center">还没有任何消息通知</div>';
- NGRP.forEach(g=>{const arr=byG[g[0]];if(!arr||!arr.length)return;const gu=arr.filter(n=>!n.read).length;
+ if(openList.length){
+   const oldest=Math.min(...openList.map(n=>+new Date(n.time||0)));
+   const wm=Math.floor((Date.now()-oldest)/60000);
+   const wt=wm<1?'刚刚':wm<60?('已等 '+wm+' 分钟'):('已等 '+Math.floor(wm/60)+' 小时');
+   h+='<div style="border:1.5px solid #D32F2F;background:#FFF1F0;border-radius:10px;padding:10px 12px;margin:8px 0">';
+   h+='<div style="display:flex;align-items:center;gap:7px;margin-bottom:6px"><span style="font-size:16px">🚨</span><b style="font-size:13.5px;color:#B71C1C">未处理车辆告警</b><span class="tag" style="background:#D32F2F;color:#fff;font-size:10.5px">'+openList.length+' 条 · '+wt+'</span></div>';
+   h+=openList.slice(0,4).map((n)=>{const i=L.indexOf(n);return '<div style="padding:6px 8px;border-radius:7px;margin:3px 0;cursor:pointer;background:rgba(211,47,47,.07);display:flex;align-items:center;gap:6px" onclick="notifRoute(window._msgs['+i+'])"><span style="flex:1;font-size:12.5px;color:#7f1d1d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+_esc(n.text||'')+'</span><span style="font-size:10.5px;color:#9a3412;white-space:nowrap">'+new Date(n.time||Date.now()).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+'</span></div>'}).join('');
+   if(openList.length>4)h+='<div style="font-size:11px;color:#9a3412;padding:2px 8px">…另有 '+(openList.length-4)+' 条，点上方任意一条进入 AGV 页查看</div>';
+   h+='</div>';
+ }
+ NGRP.forEach(g=>{if(g[0]==='car'){const rest=carAll.filter(n=>!openList.includes(n));if(!rest.length)return;
+   const gu=rest.filter(n=>!n.read).length;
+   h+='<div style="margin:14px 0 6px;display:flex;align-items:center;gap:7px"><span style="font-size:16px">'+g[1]+'</span><b style="font-size:13.5px;color:'+g[4]+'">'+g[2]+'</b>'+(gu?'<span class="tag t-p" style="font-size:10.5px">'+gu+' 新</span>':'')+'</div>';
+   h+=rest.map((n)=>{const i=L.indexOf(n);return '<div style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin:4px 0;cursor:pointer;'+(n.read?'opacity:.6':'background:rgba(81,91,212,.09)')+'" onclick="notifRoute(window._msgs['+i+'])"><div style="display:flex;align-items:center;gap:6px"><span style="flex:1;font-size:12.5px;'+(n.read?'':'font-weight:600')+'">'+_esc(n.text||'')+'</span><span style="font-size:10.5px;color:var(--sub);white-space:nowrap">'+new Date(n.time||Date.now()).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+'</span></div></div>'}).join('');return}
   h+='<div style="margin:14px 0 6px;display:flex;align-items:center;gap:7px"><span style="font-size:16px">'+g[1]+'</span><b style="font-size:13.5px;color:'+g[4]+'">'+g[2]+'</b>'+(gu?'<span class="tag t-p" style="font-size:10.5px">'+gu+' 新</span>':'')+'</div>';
   h+=arr.map((n)=>{const i=L.indexOf(n);return '<div style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin:4px 0;cursor:pointer;'+(n.read?'opacity:.6':'background:rgba(81,91,212,.09)')+'" onclick="notifRoute(window._msgs['+i+'])"><div style="display:flex;align-items:center;gap:6px"><span style="flex:1;font-size:12.5px;'+(n.read?'':'font-weight:600')+'">'+_esc(n.text||'')+'</span><span style="font-size:10.5px;color:var(--sub);white-space:nowrap">'+new Date(n.time||Date.now()).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+'</span></div></div>'}).join('');});
  h+='<div class="row" style="margin-top:16px;gap:8px"><button class="pill g" style="flex:1" onclick="msgReadAll()">✓ 全部标记已读</button><button class="pill q" style="flex:1" onclick="closeDrawer()">关闭</button></div>';

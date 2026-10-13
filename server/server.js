@@ -2832,12 +2832,11 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, users: wh, lastAssigneeId });
         }
 
-        // 通知拉取（取回即标记已读）
+        // 通知拉取（㉖v50 改只读：read 标志仅由消息中枢"进分类看过/清未读"或网页"全部已读"清除；
+        // 旧版"取回即已读"会被 30 秒轮询悄悄清空，红点永远显示不出来）
         if (req.method === 'GET' && p === '/api/notifications') {
           sweepAssignOpen();
-          const mine = db.notifications.filter(n => n.to === u.id && !n.read);
-          mine.forEach(n => n.read = true);
-          if (mine.length) save();
+          const mine = db.notifications.filter(n => n.to === u.id && !n.read).slice(-50);
           return send(res, 200, { ok: true, notifications: mine });
         }
 
@@ -2857,6 +2856,16 @@ const server = http.createServer(async (req, res) => {
         // ㉖⑯ 网页消息中心：显式全部已读（用户点按钮才清，非轮询）
         if (req.method === 'POST' && p === '/api/notifications/readall') {
           let n = 0; db.notifications.forEach((x) => { if (x.to === u.id && !x.read) { x.read = true; n++; } });
+          if (n) save();
+          return send(res, 200, { ok: true, marked: n });
+        }
+        // ㉖v50 消息中枢二级页：按分类标记已读（只清本人该类，红点精准消失）
+        if (req.method === 'POST' && p === '/api/notifications/readgroup') {
+          const b = await readBody(req);
+          const types = Array.isArray(b.types) ? b.types.map(String).slice(0, 30) : [];
+          if (!types.length) return send(res, 400, { ok: false, msg: '缺 types' });
+          let n = 0;
+          db.notifications.forEach((x) => { if (x.to === u.id && !x.read && types.includes(String(x.type))) { x.read = true; n++; } });
           if (n) save();
           return send(res, 200, { ok: true, marked: n });
         }

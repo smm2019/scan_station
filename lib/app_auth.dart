@@ -216,10 +216,25 @@ class AuthApi {
   static Future<Map> notifications() async =>
       _req("GET", "/api/notifications", token: await AuthStore.token());
 
+  /// ㉖v50 角标专用：服务端权威未读数（只读，绝不消耗已读）
+  static Future<Map> notificationsUnread({int limit = 50}) async =>
+      _req("GET", "/api/notifications/unread?limit=$limit",
+          token: await AuthStore.token());
+
   /// 消息中心：本人最近历史通知（只读，不消耗未读）
   static Future<Map> notificationsHistory({int limit = 30}) async =>
       _req("GET", "/api/notifications/history?limit=$limit",
           token: await AuthStore.token());
+
+  /// ㉖v50 消息中枢二级页：看完该分类 → 服务端标记该类已读（红点精准消失）
+  static Future<Map> notificationsReadGroup(List<String> types) async =>
+      _req("POST", "/api/notifications/readgroup",
+          body: {"types": types}, token: await AuthStore.token());
+
+  /// ㉖v50 消息中枢"清未读"按钮：本人全部通知标记已读
+  static Future<Map> notificationsReadAll() async =>
+      _req("POST", "/api/notifications/readall",
+          body: {}, token: await AuthStore.token());
 
   // ---- 货位账本同步（PDA ↔ 电脑服务器，增量合并：新者胜+墓碑删除） ----
   /// items: [{c:标签, l:货位, f:料框, t:毫秒, pid:托号}]；del: [{c:标签, t:删除时间}] 墓碑
