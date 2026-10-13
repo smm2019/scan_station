@@ -1658,6 +1658,72 @@ const server = http.createServer(async (req, res) => {
           jam: Object.entries(owners).map(([land, car]) => ({ land, car })).filter((j) => NetMap.lands[j.land]),
         });
       }
+      // ===== ㉖ 指挥舱 RCS 代理（PDA AGV模块糅合进网页：任务/车辆/交管 + 操作） =====
+      if (req.method === 'GET' && p === '/api/rcs/tasks') { // 进行中+最近历史（RCS原生任务，含PDA直连建的）
+        const run = await rcsReq2('/task/getTaskInfo');
+        const dn = await rcsReq2('/task/getDoneTaskList');
+        const parse = (r) => { try { return typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || []); } catch (_) { return []; } };
+        const row = (t) => { const { sp, ep } = parsePts(t); const nt = nodeTimes(t); return { no: String(t.dispatchNo || ''), st: Number(t.taskState), pri: Number(t.taskPriority || 0), car: t.exeAgvId == null ? null : Number(t.exeAgvId), sp, ep, pal: String(t.palletType || ''), type: String(t.taskType || ''), build: nt.buildAt, exe: nt.startAt, pick: nt.pickAt, put: nt.putAt, det: (t.taskDetailList || []).length }; };
+        const runA = run.ok ? parse(run).map(row) : [];
+        const doneA = dn.ok ? parse(dn).map(row).sort((a, b) => (b.put || b.exe || 0) - (a.put || a.exe || 0)).slice(0, 80) : [];
+        return send(res, 200, { ok: run.ok || dn.ok, live: run.ok, err: run.ok ? '' : run.msg, running: runA, done: doneA, at: new Date().toISOString() });
+      }
+      if (req.method === 'GET' && p === '/api/rcs/cars') { // 车辆列表（基础+点位/任务号合并+被交管集合）
+        const a = await rcsReq2('/uds/car/getCarInfoList');
+        const b = await rcsReq2('/agv/debug/getCarListForStatus');
+        const tr = await rcsReq2('/agv/debug/getLockResourceListForStatus');
+        const parse = (r) => { try { return typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || []); } catch (_) { return []; } };
+        const site = {}; if (b.ok) for (const e of parse(b)) site[e.agvId] = e;
+        const blocked = new Set();
+        if (tr.ok) { try { const t = typeof tr.data === 'string' ? JSON.parse(tr.data) : (tr.data || {}); for (const z of (((t.zoneLocks || {}).zoneList) || [])) for (const x of (z.blockedCars || [])) blocked.add(Number(x)); } catch (_) {} }
+        const cars = a.ok ? parse(a).map((c) => { const s = site[c.agvId] || {}; return { id: c.agvId, name: c.carName || ('AGV' + c.agvId), ip: String(c.carIp || ''), online: c.communicationBreak !== true && c.enable === 1, state: c.carState, auto: c.autoMode === true, model: c.carModel || '-', fork: Number(c.forkHeight) || 0, power: Number(c.power) || 0, speed: Number(c.speed) || 0, x: c.x, y: c.y, site: s.currentSite != null ? String(s.currentSite) : (c.currentSite != null ? String(c.currentSite) : ''), task: String(s.executeTaskNo || c.executeTaskNo || ''), locks: (c.routeLockLands || []).slice(0, 16), emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, lock: c.lock === true, err: String(c.errorMessage || ''), blocked: blocked.has(Number(c.agvId)) }; }) : [];
+        return send(res, 200, { ok: a.ok, err: a.ok ? '' : a.msg, cars, at: new Date().toISOString() });
+      }
+      if (req.method === 'GET' && p === '/api/rcs/traffic') { // 交管：拦停车辆+点位占用+交管区配置
+        const tr = await rcsReq2('/agv/debug/getLockResourceListForStatus');
+        const ca = await rcsReq2('/uds/car/getCarInfoList');
+        const parse = (r) => { try { return typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || {}); } catch (_) { return {}; } };
+        if (!tr.ok) return send(res, 200, { ok: false, msg: tr.msg });
+        const t = parse(tr);
+        const owners = (t.landmarkLocks || {}).landmarkOwners || {};
+        const zones = ((t.zoneLocks || {}).zoneList) || [];
+        const blocked = new Set(); for (const z of zones) for (const x of (z.blockedCars || [])) blocked.add(String(x));
+        let carList = []; try { carList = (typeof ca.data === 'string' ? JSON.parse(ca.data) : (ca.data || [])); } catch (_) {}
+        const jam = carList.filter((c) => blocked.has(String(c.agvId)) || (c.enable === 1 && c.communicationBreak !== true && (c.carState === 'pause' || c.lock === true))).map((c) => ({ id: c.agvId, name: c.carName || ('AGV' + c.agvId), state: c.carState, lock: c.lock === true, site: String(c.currentSite != null ? c.currentSite : (c.routeLockLands && c.routeLockLands[0]) || ''), locks: (c.routeLockLands || []).filter((l) => owners[String(l)] != null && String(owners[String(l)]) !== String(c.agvId)).slice(0, 8) }));
+        return send(res, 200, { ok: true, owners, totalLocked: (t.landmarkLocks || {}).totalLocked || Object.keys(owners).length, zones: zones.map((z) => ({ id: z.zoneId, rm: z.remarks || '', carNumber: z.carNumber, lands: (z.landmarkCodesStr || z.landList || '').toString().split(',').filter(Boolean).slice(0, 40) })), jam, at: new Date().toISOString() });
+      }
+      if (req.method === 'POST' && p === '/api/rcs/taskAct') { // 任务操作：resetPick/resetPut/recoverPick/recoverPut/top/cancelTop/delete
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
+        const b = await readBody(req);
+        const op = String(b.op || ''), no = String(b.dispatchNo || '').trim();
+        if (!no) return send(res, 400, { ok: false, msg: '缺少任务号' });
+        const M = { resetPick: ['GET', '/task/resetTask?dispatchNo=', 0], resetPut: ['GET', '/task/resetTask?dispatchNo=', 1], recoverPick: ['GET', '/task/recoverTask?dispatchNo=', 0], recoverPut: ['GET', '/task/recoverTask?dispatchNo=', 1], top: ['DELETE', '/task/taskToTop?dispatchNo=', null], cancelTop: ['DELETE', '/task/taskToCancelTop?dispatchNo=', null], delete: ['DELETE', '/task/deleteByDispatchNo?dispatchNo=', null] };
+        const m = M[op]; if (!m) return send(res, 400, { ok: false, msg: '未知操作' });
+        const path = m[1] + encodeURIComponent(no) + (m[2] === null ? '' : ('&detailId=' + m[2]));
+        const r = await rcsReq2(path, m[0], m[0] === 'DELETE' ? no : null);
+        pushOps(u, 'RCS任务操作', no, op + (r.ok ? ' ✅' : ' ❌' + r.msg));
+        return send(res, 200, r);
+      }
+      if (req.method === 'POST' && p === '/api/rcs/carAct') { // 车辆操作：charge/standby/reset/stop/start（参数=车辆IP）
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
+        const b = await readBody(req);
+        const act = String(b.action || ''), ip = String(b.ip || '').trim();
+        if (!ip) return send(res, 400, { ok: false, msg: '缺少车辆IP' });
+        const P = { charge: '/agv/carToCharge', standby: '/agv/carToStandby', reset: '/agv/resetCar', stop: '/agv/stopAgv', start: '/agv/startAgv' };
+        const path = P[act]; if (!path) return send(res, 400, { ok: false, msg: '未知操作' });
+        const r = await rcsReq2(path + '?ip=' + encodeURIComponent(ip), 'PUT');
+        pushOps(u, 'RCS车辆操作', ip, act + (r.ok ? ' ✅' : ' ❌' + r.msg));
+        return send(res, 200, r);
+      }
+      if (req.method === 'POST' && p === '/api/rcs/unlock') { // 解除交管：强制释放点位交管锁（碰撞风险操作，红色二次确认在前端）
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
+        const b = await readBody(req);
+        const land = String(b.landmarkCode || '').trim();
+        if (!land) return send(res, 400, { ok: false, msg: '缺少点位号' });
+        const r = await rcsReq2('/agv/debug/unlockStation?landmarkCode=' + encodeURIComponent(land));
+        pushOps(u, '解除交管', land, r.ok ? '✅ 已释放' : '❌' + r.msg);
+        return send(res, 200, r);
+      }
       // ===== AGV 出库排队队列（一键叫车） =====
       if (req.method === 'POST' && p === '/api/agv/queue') { // 批量入队：items=[{code,fromLoc,palletType,partNo,stationManual?}]；入队即登记叫车标记防重复
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
@@ -3250,6 +3316,30 @@ async function rcsLogin() {
       req.write(body); req.end();
     } catch (_) { resolve(null); }
   });
+}
+// ㉖ 指挥舱 RCS 读写通道：token 失效自动重登重试一次；plain=DELETE 裸文本 body（置顶/删除任务与门户同款形态）
+async function rcsReq2(path, method = 'GET', plainBody = null) {
+  if (!db.rcsConfig || !db.rcsConfig.host) return { ok: false, msg: 'RCS 未配置（控制后台→RCS连接）' };
+  const getTk = async () => ((db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin());
+  const call = async () => { const tk = await getTk(); if (!tk) return null; return rcsReq(path, method, tk) || { code: -1, msg: 'RCS无响应' }; };
+  let r = await call();
+  if (!r) return { ok: false, msg: 'RCS 登录失败或无响应' };
+  const authBad = r.code !== 0 && /未登录|过期|token|Token/.test(String(r.msg || ''));
+  if (authBad) { db.rcsToken = ''; db.rcsTokenExp = 0; r = await call(); if (!r) return { ok: false, msg: 'RCS 重登失败' }; }
+  if (plainBody !== null && r.code !== 0) { // 裸文本 body 重试（部分环境需 body 回显任务号）
+    r = await new Promise((resolve) => {
+      try {
+        const [host, port] = String((db.rcsConfig || {}).host || '').split(':');
+        const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : '';
+        const rq = http.request({ host, port: parseInt(port || '80'), path, method, timeout: 8000, headers: Object.assign({ 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': Buffer.byteLength(plainBody) }, tk ? { token: tk } : {}) },
+          (rs) => { let s = ''; rs.on('data', (c) => s += c); rs.on('end', () => { try { resolve(JSON.parse(s)); } catch (_) { resolve({ code: -1, msg: s.slice(0, 80) }); } }); });
+        rq.on('error', () => resolve({ code: -1, msg: 'RCS请求失败' })); rq.on('timeout', () => { rq.destroy(); resolve({ code: -1, msg: 'RCS超时' }); });
+        rq.write(plainBody); rq.end();
+      } catch (_) { resolve({ code: -1, msg: 'RCS请求异常' }); }
+    });
+  }
+  if (r.code === 0) return { ok: true, data: r.data };
+  return { ok: false, msg: String(r.msg || ('RCS返回 code=' + r.code)) };
 }
 function seenInBackfill() { // ㉖ 首次升级：现存账本+采集流水的标签一次性登记进 seenIn（幂等）
   try {
