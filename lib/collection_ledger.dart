@@ -59,7 +59,9 @@ extension CollectionLedgerExt on _MainPageState {
               ifAbsent: () => codes);
         });
       }
-    } catch (_) {} // 服务器不可达：降级本机口径
+    } catch (e) {
+      LocalLog.err('自动分配空位·服务器不可达降级本机', e); // ㉖ 降级留痕
+    } // 服务器不可达：降级本机口径
     final free = nb02MasterAll().where((l) => !byLoc.containsKey(l)).toList();
     if (free.isEmpty) return null;
     if (partNo.isNotEmpty) {
@@ -249,7 +251,9 @@ extension CollectionLedgerExt on _MainPageState {
         _myQueueCnt = cnt;
         _queueMode = r["mode"]?.toString() ?? "dry";
       });
-    } catch (_) {}
+    } catch (e) {
+      LocalLog.err('队列状态刷新', e); // ㉖ 静默失败留痕：自动上报控制后台"设备异常"
+    }
   }
 
   /// ㉖ 我的AGV任务面板：每框 起点→目的地/状态/等待时长/失败原因，排队与失败可取消
@@ -1090,7 +1094,9 @@ Future<void> pullGroundSlots() async {
     if (r["ok"] == true)
       CollectionLedgerExt._gSlots = Map<String, int>.from((r["slots"] as Map)
           .map((k, v) => MapEntry(k.toString(), (v as num).toInt())));
-  } catch (_) {}
+  } catch (e) {
+    LocalLog.err('拉取地面排格数', e); // ㉖ 静默失败留痕
+  }
 }
 
 int _ledgerPullAtMs = 0; // ㉖ 上次【成功】拉取合并的毫秒时刻（跨页面共享，防多页重复打服务器）
@@ -1190,6 +1196,7 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
       "total": items.length
     };
   } catch (e) {
+    LocalLog.err('账本拉取合并', e); // ㉖ 静默自动刷新的失败也留痕（返回值 ok:false 供调用方提示）
     return {"ok": false, "msg": "$e"};
   }
 }

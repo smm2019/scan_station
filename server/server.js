@@ -137,7 +137,7 @@ function backupDb() {
     fs.writeFileSync(p + '.tmp', JSON.stringify(_bk)); fs.renameSync(p + '.tmp', p);
     const all = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).sort();
     while (all.length > 72) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
-  } catch (e) { console.log('[backup] 失败：', e.message); }
+  } catch (e) { console.log('[backup] 失败：', e.message); logErr('backupDb', e); }
 }
 setInterval(backupDb, 30 * 60 * 1000).unref();
 // ---- G3 数据归档：每日18:00把超期数据（默认180天）挪入 data/archive/YYYY-MM-*.json 再从主库移除；先写档成功才删，档案可回捞 ----
@@ -171,7 +171,7 @@ function archiveOld() {
     move('outbound', db.outbound, (v) => Date.parse(v && v.at || v && v.time || '') || 0);
     if ((db.notifications || []).length > 2000) { const old = db.notifications.filter((x) => Date.parse(x.time) < cut); if (old.length) { db.notifications = db.notifications.filter((x) => Date.parse(x.time) >= cut); moved += old.length; } }
     if (moved) { save(); console.log(`[archive] 归档 ${moved} 条超${days}天数据 → data/archive/${mon}-*（${day}）`); }
-  } catch (e) { console.log('[archive] 失败：', e.message); }
+  } catch (e) { console.log('[archive] 失败：', e.message); logErr('archiveOld', e); }
 }
 setInterval(archiveOld, 30 * 60 * 1000).unref();
 // ---- ㉒G7 物料字典：零件号→名称，由采集流水/出库单自动沉淀 ----
@@ -355,7 +355,7 @@ function sseTick(nowMs) {
         const cars = cr && cr.data ? (typeof cr.data === 'string' ? JSON.parse(cr.data) : cr.data) : [];
         db.trail = db.trail || [];
         for (const c of cars) { if (c && c.agvId !== undefined && Number.isFinite(c.x) && Number.isFinite(c.y)) db.trail.push({ ts: nowMs, id: c.agvId, x: Math.round(c.x * 10) / 10, y: Math.round(c.y * 10) / 10, yaw: Math.round((Number(c.yaw) || 0) * 100) / 100 }); }
-        const cut = nowMs - 24 * 3600 * 1000;
+        const cut = nowMs - P().trailMin * 60 * 1000; // ㉖ 轨迹回放保留时长可调
         db.trail = db.trail.filter((p) => p.ts >= cut);
         if (db.trail.length > 20000) db.trail = db.trail.slice(-20000);
       } catch (_) {}
@@ -381,7 +381,7 @@ function dailySnap() {
     const all = fs.readdirSync(dir).filter((x) => /^ledger-\d{8}\.json$/.test(x)).sort();
     while (all.length > 90) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
     console.log('[snap] 每日账本快照 ' + key + '（' + db.ledger.length + ' 条）');
-  } catch (e) { console.log('[snap] 失败：', e.message); }
+  } catch (e) { console.log('[snap] 失败：', e.message); logErr('dailySnap', e); }
 }
 setInterval(dailySnap, 30 * 60 * 1000).unref();
 // ---- ㉔每日自动导出：18点后落 D1库位表+D2库存汇总 到 data/exports/daily（留90天，对账免手工）----
@@ -401,7 +401,7 @@ function dailyExport() {
     const all = fs.readdirSync(dir).filter((x) => /-\d{8}\.xls$/.test(x)).sort();
     while (all.length > 180) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
     console.log('[export-daily] ' + key + ' 库位表+库存汇总 已归档');
-  } catch (e) { console.log('[export-daily] 失败：', e.message); }
+  } catch (e) { console.log('[export-daily] 失败：', e.message); logErr('dailyExport', e); }
 }
 setInterval(dailyExport, 30 * 60 * 1000).unref();
 
@@ -485,26 +485,44 @@ function reqItemsSuggestText(r) {
 }
 // ---- ㉖B8 运营参数：调度/通知/告警阈值集中可调，服务器端统一取值（改完即时生效）----
 const PARAMS = {
-  pollSec:        { name: 'RCS轮询间隔', unit: '秒', min: 5, max: 300, d: 20, tip: '站台/车辆/任务刷新频率，越小越实时但越吃RCS负载' },
-  uiRefreshSec:   { name: '指挥舱页面刷新', unit: '秒', min: 5, max: 600, d: 30, tip: '网页指挥舱各页(车辆/交管/队列/看板等)自动拉取间隔；数据新鲜度受RCS轮询节律限制，设小于轮询间隔时以轮询为准' },
-  assignMin:      { name: '指定单超时放开', unit: '分钟', min: 1, max: 240, d: 30, tip: '指定仓管员下单后，超时未接单自动放开给全员' },
-  urgeMin:        { name: '催单最小间隔', unit: '分钟', min: 1, max: 120, d: 10, tip: '同一张领料单两次催单的最小间隔，防轰炸' },
-  pushMin:        { name: '急料到站催扫', unit: '分钟', min: 1, max: 60, d: 5, tip: '急料框到站台超此时长未扫码→广播全体仓管' },
-  urgeScanMin:    { name: '普通到站催扫', unit: '分钟', min: 1, max: 120, d: 10, tip: '普通框到站台超此时长未扫码→催叫车人' },
-  jamMin:         { name: '交管堵点告警', unit: '分钟', min: 1, max: 60, d: 3, tip: '车辆被交管卡住超此时长→通知在线仓管' },
-  lowBatPct:      { name: '低电阈值', unit: '%', min: 5, max: 80, d: 25, tip: '电量低于此值计入低电观察' },
-  lowBatMin:      { name: '低电未回充告警', unit: '分钟', min: 5, max: 240, d: 20, tip: '低电且空闲超此时长未回充→提醒安排充电' },
-  batch:          { name: '单轮最多下发', unit: '单', min: 1, max: 8, d: 4, tip: '排队调度器每轮最多真实下发几单（保守节奏）' },
-  agingMin:       { name: '排队防饿死升级', unit: '分钟', min: 2, max: 120, d: 10, tip: '普通队列项等待超此时长自动按急料优先级调度' },
-  sendTimeoutMin: { name: '下发无回执判失败', unit: '分钟', min: 1, max: 30, d: 5, tip: '下发中超此时长无回执→判失败可重试，防站台封死' },
-  staleMin:       { name: '在途超时判定', unit: '分钟', min: 5, max: 240, d: 40, tip: '已下发/移库超此时长未完成→判失败并通知' },
-  manualHoldMin:  { name: '人工占台压制', unit: '分钟', min: 1, max: 240, d: 30, tip: '人工标记站台占用后的压制时长，防误叫车撞台' },
-  aggMin:         { name: '同类通知聚合窗', unit: '分钟', min: 0, max: 60, d: 5, tip: '同类型通知在此窗口内合并为"等N条"（0=不聚合）' },
-  rateMax:        { name: '每人每分钟条数上限', unit: '条', min: 1, max: 50, d: 5, tip: '单人单分钟超此条数→跨类型强制合并防风暴刷屏' },
-  nStart:         { name: '夜间静默起(时)', unit: '点', min: 0, max: 23, d: 22, tip: '从该点起非急停类通知进按人缓冲（车辆告警豁免）' },
-  nEnd:           { name: '夜间静默止(时)', unit: '点', min: 0, max: 23, d: 6, tip: '到该点发送各自夜间汇总（带原单号可跳转）' },
+  pollSec:        { grp: '调度节奏', name: 'RCS轮询间隔', unit: '秒', min: 5, max: 300, d: 20, tip: '站台/车辆/任务刷新频率，越小越实时但越吃RCS负载' },
+  uiRefreshSec:   { grp: '界面刷新', name: '指挥舱页面刷新', unit: '秒', min: 5, max: 600, d: 30, tip: '网页指挥舱各页(车辆/交管/队列/看板等)自动拉取间隔；数据新鲜度受RCS轮询节律限制，设小于轮询间隔时以轮询为准' },
+  assignMin:      { grp: '调度节奏', name: '指定单超时放开', unit: '分钟', min: 1, max: 240, d: 30, tip: '指定仓管员下单后，超时未接单自动放开给全员' },
+  urgeMin:        { grp: '通知治理', name: '催单最小间隔', unit: '分钟', min: 1, max: 120, d: 10, tip: '同一张领料单两次催单的最小间隔，防轰炸' },
+  pushMin:        { grp: '通知治理', name: '急料到站催扫', unit: '分钟', min: 1, max: 60, d: 5, tip: '急料框到站台超此时长未扫码→广播全体仓管' },
+  urgeScanMin:    { grp: '通知治理', name: '普通到站催扫', unit: '分钟', min: 1, max: 120, d: 10, tip: '普通框到站台超此时长未扫码→催叫车人' },
+  inspUrgeMin:    { grp: '通知治理', name: '检验协助催办', unit: '分钟', min: 1, max: 120, d: 10, tip: '检验工单等待下架/归位超此时长未处理→催办全体协助人' },
+  retUrgeMin:     { grp: '通知治理', name: '退货出账催办', unit: '分钟', min: 5, max: 240, d: 30, tip: '判退货的框压站台超此时长未走出库通道→催办仓管' },
+  jamMin:         { grp: '告警阈值', name: '交管堵点告警', unit: '分钟', min: 1, max: 60, d: 3, tip: '车辆被交管卡住超此时长→通知在线仓管' },
+  lowBatPct:      { grp: '告警阈值', name: '低电阈值', unit: '%', min: 5, max: 80, d: 25, tip: '电量低于此值计入低电观察' },
+  lowBatMin:      { grp: '告警阈值', name: '低电未回充告警', unit: '分钟', min: 5, max: 240, d: 20, tip: '低电且空闲超此时长未回充→提醒安排充电' },
+  batch:          { grp: '调度节奏', name: '单轮最多下发', unit: '单', min: 1, max: 8, d: 4, tip: '排队调度器每轮最多真实下发几单（保守节奏）' },
+  agingMin:       { grp: '调度节奏', name: '排队防饿死升级', unit: '分钟', min: 2, max: 120, d: 10, tip: '普通队列项等待超此时长自动按急料优先级调度' },
+  sendTimeoutMin: { grp: '调度节奏', name: '下发无回执判失败', unit: '分钟', min: 1, max: 30, d: 5, tip: '下发中超此时长无回执→判失败可重试，防站台封死' },
+  staleMin:       { grp: '调度节奏', name: '在途超时判定', unit: '分钟', min: 5, max: 240, d: 40, tip: '已下发/移库超此时长未完成→判失败并通知' },
+  manualHoldMin:  { grp: '调度节奏', name: '人工占台压制', unit: '分钟', min: 1, max: 240, d: 30, tip: '人工标记站台占用后的压制时长，防误叫车撞台' },
+  aggMin:         { grp: '通知治理', name: '同类通知聚合窗', unit: '分钟', min: 0, max: 60, d: 5, tip: '同类型通知在此窗口内合并为"等N条"（0=不聚合）' },
+  rateMax:        { grp: '通知治理', name: '每人每分钟条数上限', unit: '条', min: 1, max: 50, d: 5, tip: '单人单分钟超此条数→跨类型强制合并防风暴刷屏' },
+  nStart:         { grp: '通知治理', name: '夜间静默起(时)', unit: '点', min: 0, max: 23, d: 22, tip: '从该点起非急停类通知进按人缓冲（车辆告警豁免）' },
+  nEnd:           { grp: '通知治理', name: '夜间静默止(时)', unit: '点', min: 0, max: 23, d: 6, tip: '到该点发送各自夜间汇总（带原单号可跳转）' },
+  ganttH:         { grp: '数据保留', name: '站台甘特时间窗', unit: '小时', min: 1, max: 24, d: 8, tip: '站台甘特图/状态时间线显示最近几小时；无历史的站台补满窗空闲' },
+  queueKeepMin:   { grp: '数据保留', name: '完成队列项保留', unit: '分钟', min: 10, max: 1440, d: 120, tip: '队列控制台"最近任务(终态)"里完成/取消项保留时长' },
+  failKeepMin:    { grp: '数据保留', name: '失败队列项保留', unit: '分钟', min: 5, max: 720, d: 30, tip: '失败项在队列里保留多久供查看原因后自动出队' },
+  trailMin:       { grp: '数据保留', name: '轨迹回放保留', unit: '分钟', min: 30, max: 2880, d: 1440, tip: '车辆轨迹采样点保留时长（轨迹回放可选窗口上限）' },
+  notifKeep:      { grp: '数据保留', name: '通知保留条数', unit: '条', min: 100, max: 5000, d: 500, tip: '消息中心滚动保留最近多少条通知（超出丢弃最旧）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
+
+// ---- ㉖ 系统错误环形日志：服务器自身异常（请求500/后台任务吞错/未捕获）统一留痕，控制后台"系统错误"页可查、凭栈定位 ----
+let SYS_ERR_MAX = 500;
+function logErr(where, e, extra) {
+  try {
+    db.sysErr = db.sysErr || [];
+    const stack = e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : '';
+    db.sysErr.push({ id: newId('se'), at: Date.now(), where: String(where).slice(0, 60), msg: String((e && e.message) || e || '').slice(0, 400), stack: stack.slice(0, 600), extra: extra ? String(extra).slice(0, 200) : '' });
+    if (db.sysErr.length > SYS_ERR_MAX) db.sysErr = db.sysErr.slice(-SYS_ERR_MAX);
+  } catch (_) {}
+}
 
 // ---- ㉕T1 通知治理：同类5分钟静默聚合（并入原条"等N条"）/ 每人每分钟超5条跨类型强制聚合 / 夜间22-6点非急停类按人缓冲，早6点各自一条汇总 ----
 const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
@@ -551,7 +569,7 @@ function notify(toUserId, type, text, reqId) {
     const id = newId('n');
     db.notifications.push({ id, to: toUserId, type, text, reqId: reqId || '', time: new Date().toISOString(), read: false });
     _nq.set(key, { id, at: now, at2: now, n: 0 });
-    if (db.notifications.length > 500) db.notifications = db.notifications.slice(-500); // 只留最近500条防膨胀
+    if (db.notifications.length > P().notifKeep) db.notifications = db.notifications.slice(-P().notifKeep); // ㉖ 保留条数可调（原硬编码500）
     try { const uu = db.users.find((x) => x.id === toUserId); sseSend({ t: 'notif', to: toUserId, who: uu ? uu.name : toUserId, type, text, reqId: reqId || '' }); } catch (_) {}
   } catch (_) {}
 }
@@ -570,7 +588,7 @@ function nightDigest() {
       const uu = db.users.find((x) => x.id === uid); if (!uu || !uu.enabled) continue;
       const line = '🌙 夜间静默汇总（' + arr.length + ' 条）：' + arr.slice(0, 15).map((b) => b.at + ' ' + b.text).join('；');
       db.notifications.push({ id: newId('n'), to: uid, type: 'night_digest', text: line.slice(0, 300), reqId: arr[0].reqId || '', time: new Date().toISOString(), read: false });
-      if (db.notifications.length > 500) db.notifications = db.notifications.slice(-500);
+      if (db.notifications.length > P().notifKeep) db.notifications = db.notifications.slice(-P().notifKeep);
       n++;
     }
     if (n) { save(); console.log('[notify] 夜间汇总按人下发 ' + n + ' 份'); }
@@ -642,7 +660,7 @@ function stockWatchScan(pre, byName) {
       console.log('[stock-out] ' + p);
     }
     save();
-  } catch (e) { console.log('[stock] 检测异常：', e.message); }
+  } catch (e) { console.log('[stock] 检测异常：', e.message); logErr('stockCheck', e); }
 }
 
 function boxKeyOf(x) {
@@ -2119,7 +2137,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, list: buildEvents() });
       }
       if (req.method === 'GET' && p === '/api/agv/stntl') { // ㉔站台状态时间线（甘特数据源，近8h）
-        const nowMs = Date.now(), cut = nowMs - 8 * 3600 * 1000;
+        const nowMs = Date.now(), cut = nowMs - P().ganttH * 3600 * 1000; // ㉖ 甘特窗可调（原8h）
         const out = {}; for (const [k, a] of Object.entries(db.stnTl || {})) { const seg = a.filter((x) => x.t >= cut); if (seg.length) out[k] = seg; }
         for (const k of AGV_STNS) { if (!out[k]) out[k] = [{ s: '空闲', t: cut }]; } // ㉖ 全 12 台都出：无采样历史的补满窗空闲，甘特不再"只显示有动过的台"
         return send(res, 200, { ok: true, tl: out, all: AGV_STNS, at: new Date(nowMs).toISOString() });
@@ -3128,8 +3146,19 @@ const server = http.createServer(async (req, res) => {
       // ---- ㉖B8 运营参数配置：GET 定义+当前值，POST 校验范围/乐观锁/留痕，保存即时生效 ----
       if (req.method === 'GET' && p === '/api/admin/params') {
         const cur = P();
-        const items = Object.entries(PARAMS).map(([k, d]) => ({ k, name: d.name, unit: d.unit, min: d.min, max: d.max, def: d.d, val: cur[k], tip: d.tip, set: (db.params || {})[k] !== undefined }));
+        const items = Object.entries(PARAMS).map(([k, d]) => ({ k, grp: d.grp || '其他', name: d.name, unit: d.unit, min: d.min, max: d.max, def: d.d, val: cur[k], tip: d.tip, set: (db.params || {})[k] !== undefined }));
         return send(res, 200, { ok: true, items, cfgRev: db.cfgRev || 0 });
+      }
+      // ---- ㉖ 系统错误日志：服务器自身异常留痕（请求500/后台任务/未捕获），供控制后台定位 ----
+      if (req.method === 'GET' && p === '/api/admin/syserr') {
+        const lim = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') || '200') || 200));
+        const list = (db.sysErr || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0));
+        const wheres = {}; for (const x of (db.sysErr || [])) wheres[x.where] = (wheres[x.where] || 0) + 1;
+        return send(res, 200, { ok: true, total: list.length, list: list.slice(0, lim), byWhere: Object.entries(wheres).sort((a, b) => b[1] - a[1]).slice(0, 12) });
+      }
+      if (req.method === 'DELETE' && p === '/api/admin/syserr') {
+        const n = (db.sysErr || []).length; db.sysErr = []; save(); pushOps(u, '清理系统错误日志', '', n + ' 条');
+        return send(res, 200, { ok: true, msg: '已清理 ' + n + ' 条系统错误记录' });
       }
       if (req.method === 'POST' && p === '/api/admin/params') {
         const b = await readBody(req);
@@ -3326,6 +3355,7 @@ const server = http.createServer(async (req, res) => {
     }
     return send(res, 404, { ok: false, msg: '接口不存在' });
   } catch (e) {
+    try { logErr('REQ ' + (req.method || '') + ' ' + (p || url && url.pathname || '?'), e); } catch (_) {}
     return send(res, 500, { ok: false, msg: '服务器错误：' + e.message });
   }
 });
@@ -3411,9 +3441,10 @@ function updateInspects(nowMs) {
       const _qi = (st) => (db.agvQueue || []).find((x) => x.inspId === q.id && ['下发中', '已下发', '到站', '完成'].includes(x.state) && (!st || x.type === st));
       if (q.state === 'waitOut' && q.outQueued) { const it = _qi('insp'); if (it) { q.state = 'toStation'; q.taskNo = it.wmsTask || ''; q.station = it.station || q.station; q.at = Date.now(); q.outQueued = 0; dirty = true; } }
       else if (q.state === 'waitBack' && q.backQueued) { const it = _qi('inspback'); if (it) { q.state = 'returning'; q.taskNo2 = it.wmsTask || ''; q.retAt = Date.now(); q.backQueued = 0; dirty = true; } }
-      if (q.state === 'waitOut' && !q.outQueued && !q.notified && nowMs - (q.at || 0) > 10 * 60000) { q.notified = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🤝 检验协助催办：' + q.code + '（' + (q.nm || q.part) + '）等待下架已超10分钟，请协助', '')); }
-      else if (q.state === 'waitBack' && !q.backQueued && !q.notified2 && nowMs - (q.verdictAt || q.at || 0) > 10 * 60000) { q.notified2 = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🤝 检验协助催办：' + q.code + ' 检验已出结论，等待归位超10分钟，请协助归位', '')); }
-      else if (q.state === 'waitReturn' && !q.notified3 && nowMs - (q.verdictAt || q.at || 0) > 30 * 60000) { q.notified3 = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🔁 退货催办：' + q.code + ' 判退货已超30分钟仍压站台 ' + q.station + '，请走出库通道出账', '')); }
+      const _iu = P().inspUrgeMin, _ru = P().retUrgeMin; // ㉖ 检验催办间隔可调（原硬编码10/10/30分钟）
+      if (q.state === 'waitOut' && !q.outQueued && !q.notified && nowMs - (q.at || 0) > _iu * 60000) { q.notified = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🤝 检验协助催办：' + q.code + '（' + (q.nm || q.part) + '）等待下架已超' + _iu + '分钟，请协助', '')); }
+      else if (q.state === 'waitBack' && !q.backQueued && !q.notified2 && nowMs - (q.verdictAt || q.at || 0) > _iu * 60000) { q.notified2 = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🤝 检验协助催办：' + q.code + ' 检验已出结论，等待归位超' + _iu + '分钟，请协助归位', '')); }
+      else if (q.state === 'waitReturn' && !q.notified3 && nowMs - (q.verdictAt || q.at || 0) > _ru * 60000) { q.notified3 = true; dirty = true; assist().forEach((x) => notify(x.id, 'inspect', '🔁 退货催办：' + q.code + ' 判退货已超' + _ru + '分钟仍压站台 ' + q.station + '，请走出库通道出账', '')); }
       if (q.state === 'waitReturn') { // ㉖⑦ 闭环：标签已不在账本 = 已经出库/直调出账
         const still = led.some((x) => String(x.c || '').toUpperCase() === String(q.code || '').toUpperCase());
         if (!still) { q.state = 'returned'; q.doneAt = nowMs; dirty = true; db.users.filter((x) => x.id === q.uid && x.enabled).forEach((x) => notify(x.id, 'req_flow', '✅ 退货框 ' + q.code + ' 已出库出账，检验单闭环（原因：' + (q.retReason || '') + '）', '')); }
@@ -3855,8 +3886,8 @@ async function agvDispatch(nowMs, runT) {
   // 失败项保留30分钟供查看原因后自动出队（重新一键叫车即可再入队）；完成/取消保留2小时
   db.agvQueue = queue.filter((q) => {
     const age = nowMs - (q.updAt || q.at);
-    if (q.state === '失败') { if (age >= 30 * 60 * 1000) clearQueueCall(q.reqId, q.code); return age < 30 * 60 * 1000; }
-    if (['完成', '取消'].includes(q.state)) return age < 2 * 3600 * 1000;
+    if (q.state === '失败') { if (age >= P().failKeepMin * 60 * 1000) clearQueueCall(q.reqId, q.code); return age < P().failKeepMin * 60 * 1000; } // ㉖ 失败项保留可调
+    if (['完成', '取消'].includes(q.state)) return age < P().queueKeepMin * 60 * 1000; // ㉖ 终态项保留可调
     return true;
   });
   const waiting = db.agvQueue.filter((q) => q.state === '排队');
@@ -4010,5 +4041,8 @@ function buildFunnel(days) {
   const stat = (key) => { const a = samples.map((s) => s[key]).filter((v) => v > 0 && v < 720); return { avg: a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length * 10) / 10 : 0, n: a.length }; };
   return { call: stat('call'), queue: stat('queue'), dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
 }
+
+process.on('uncaughtException', (e) => { try { logErr('uncaughtException', e); save(); } catch (_) {} console.error('[FATAL] 未捕获异常：', e); }); // ㉖ 崩溃前留痕（不退出：调度循环中断比报错更糟）
+process.on('unhandledRejection', (e) => { try { logErr('unhandledRejection', e instanceof Error ? e : { message: String(e) }); } catch (_) {} console.error('[REJECT] 未处理 Promise 拒绝：', e); });
 
 server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); } catch (_) {} backupDb(); archiveOld(); });
