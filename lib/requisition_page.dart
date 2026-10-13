@@ -249,24 +249,7 @@ class _RequisitionPageState extends State<RequisitionPage>
         title: const Text("领料单"),
         toolbarHeight: 44,
         actions: [
-          IconButton(icon: const Icon(Icons.refresh), onPressed: _load),
-          ValueListenableBuilder<int>(
-              valueListenable: kUnreadMsgs,
-              builder: (_, n, __) => IconButton(
-                  icon: n > 0
-                      ? Badge.count(
-                          count: n,
-                          backgroundColor: Colors.red,
-                          child: const Icon(Icons.notifications_none))
-                      : const Icon(Icons.notifications_none),
-                  tooltip: "消息中心",
-                  onPressed: () async {
-                    await Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                            builder: (_) => const MsgCenterPage()));
-                    kUnreadMsgs.value = 0; // 打开消息中心即视为已阅
-                  })),
+          IconButton(icon: const Icon(Icons.refresh), onPressed: _load), // ㉖ 顶栏铃铛按用户要求移除（消息入口保留在底部"消息"页签）
         ],
       ),
       floatingActionButton: canOrder
