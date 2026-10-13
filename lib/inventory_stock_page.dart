@@ -902,7 +902,8 @@ Future<_PPData> loadPartProfile(String partNo) async {
     final ex = extras[r.goodsCode];
     if (ex != null) {
       b.itemName = ex.mesItemName;
-      b.lot = ex.mesLotNo;
+      // ㉖ 批次口径：MES标签打印日期优先，缺失回退原LOT_NO
+      b.lot = lotFromPrintDate(r.mesCreateTime ?? "", ex.mesLotNo);
       b.pallet = ex.palletId;
       b.inOperator = ex.operator;
     }
@@ -955,7 +956,8 @@ Future<_PPData> loadPartProfile(String partNo) async {
       ..barcode = p.goodsCode
       ..qty = info.qty
       ..itemName = info.itemName
-      ..lot = info.lotNo
+      // ㉖ 批次口径：MES标签打印日期优先，缺失回退缓存LOT_NO
+      ..lot = lotFromPrintDate(info.createTime, info.lotNo)
       ..curLoc = p.loc
       ..inLoc = p.loc
       ..inOperator = p.operator;

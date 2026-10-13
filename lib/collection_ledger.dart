@@ -927,7 +927,11 @@ Future<Map> ledgerPushNow() async {
       if ((r.mesQty ?? 0) > 0) qMap[up] = r.mesQty!;
       final ex = exMap[up];
       if ((ex?.mesItemName ?? "").isNotEmpty) nmMap[up] = ex!.mesItemName;
-      if ((ex?.mesLotNo ?? "").isNotEmpty) lotMap[up] = ex!.mesLotNo;
+      // ㉖ 批次口径：优先用本机已存的 MES 标签打印时间派生（存量记录重推即自动改新口径，无需重查MES）
+      final _ml = r.mesCreateTime ?? "";
+      if (_ml.isNotEmpty || (ex?.mesLotNo ?? "").isNotEmpty) {
+        lotMap[up] = lotFromPrintDate(_ml, ex?.mesLotNo ?? "");
+      }
     }
     final items = all.map((p) {
       final up = p.goodsCode.toUpperCase();
@@ -941,7 +945,9 @@ Future<Map> ledgerPushNow() async {
       final pn =
           _ok && (i.partNo as String).isNotEmpty ? i.partNo : (pnMap[up] ?? "");
       final nm = _ok && i.itemName.isNotEmpty ? i.itemName : (nmMap[up] ?? "");
-      final lot = _ok && i.lotNo.isNotEmpty ? i.lotNo : (lotMap[up] ?? "");
+      final lot = (lotMap[up] ?? "").isNotEmpty
+          ? lotMap[up]!
+          : (_ok ? lotFromPrintDate(i.createTime, i.lotNo) : "");
       final qty = _ok && i.qty > 0 ? i.qty : (qMap[up] ?? 0);
       return {
         "c": p.goodsCode,
@@ -1295,7 +1301,8 @@ Future<void> scanPushNow() async {
         "mk": r.mesCreateTime ?? "",
         "op": x?.operator ?? "",
         "nm": x?.mesItemName ?? "",
-        "lot": x?.mesLotNo ?? "",
+        // ㉖ 批次口径：按 MES 标签打印时间派生，缺失回退原 LOT_NO
+        "lot": lotFromPrintDate(r.mesCreateTime ?? "", x?.mesLotNo ?? ""),
         "pid": x?.palletId ?? "",
       };
     }).toList();

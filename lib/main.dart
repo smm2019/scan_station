@@ -974,6 +974,19 @@ Future<bool> mesSilentLogin() async {
 }
 
 // ===================== MES单码查询（采集页/盘点页共用；失效自动静默重登并重试一次） =====================
+/// ㉖ 批次口径：以 MES 标签打印时间(DATETIME_CREATED)的日期为准。
+/// 例 "2026-10-13T08:56:55" → "2026-10-13"。解析不出则回退 [fallback]（原 LOT_NO），绝不返回空。
+String lotFromPrintDate(String printTime, String fallback) {
+  final s = printTime.trim();
+  final p = (int n) => n.toString().padLeft(2, '0');
+  final m = RegExp(r'^(\d{4})[-/](\d{1,2})[-/](\d{1,2})').firstMatch(s);
+  if (m != null) return '${m.group(1)}-${p(int.parse(m.group(2)!))}-${p(int.parse(m.group(3)!))}';
+  if (s.isNotEmpty) {
+    final dt = DateTime.tryParse(s);
+    if (dt != null) return '${dt.year}-${p(dt.month)}-${p(dt.day)}';
+  }
+  return fallback;
+}
 /// 返回：成功 {ok:true, partNo, qty, createTime, itemName, lotNo[, relogin:true 表示本次经历了自动重登]}
 ///      失败 {ok:false, msg}；Token失效 msg 以"MES登录已失效"开头。
 Future<Map<String, dynamic>> mesQueryLabel(String labelNo) async {
@@ -1067,15 +1080,19 @@ Future<Map<String, dynamic>> _mesQueryOnce(String labelNo) async {
               'MES查询结果为空(recordsTotal=${decoded["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确'
         };
       final row = rows.first as Map;
+      final String _ct = row["DATETIME_CREATED"]?.toString() ?? '';
       return {
         'ok': true,
         'partNo': (row["PartCode"] ?? row["MITEM_CODE"])?.toString() ?? '',
         'qty': (row["QTY"] as num?)?.toDouble() ?? 0,
-        'createTime': row["DATETIME_CREATED"]?.toString() ?? '',
+        'createTime': _ct,
         'itemName':
             (row["MITEM_NAME"] ?? row["MitemName"] ?? row["mitemName"] ?? "")
                 .toString(),
-        'lotNo': (row["LOT_NO"] ?? row["lotNo"] ?? "").toString(),
+        // ㉖ 批次口径（用户拍板）：以 MES 标签打印日期为准（2026-10-13T08:56:55 → 2026-10-13）；
+        // 打印时间缺失或不可解析时回退原 LOT_NO，绝不返回空。
+        'lotNo': lotFromPrintDate(_ct,
+            (row["LOT_NO"] ?? row["lotNo"] ?? "").toString()),
       };
     }
     final String msg = decoded["message"]?.toString() ?? '';
@@ -4287,8 +4304,11 @@ class _ScanRecordDetailPageState extends State<ScanRecordDetailPage> {
                         ),
                       if ((e.mesItemName ?? "").isNotEmpty)
                         _detailItem("物料名称", e.mesItemName),
-                      if ((e.mesLotNo ?? "").isNotEmpty)
-                        _detailItem("批次", e.mesLotNo),
+                      if (lotFromPrintDate(r.mesCreateTime ?? "", e.mesLotNo)
+                          .isNotEmpty)
+                        _detailItem(
+                            "批次",
+                            lotFromPrintDate(r.mesCreateTime ?? "", e.mesLotNo)),
                       if ((e.operator ?? "").isNotEmpty)
                         _detailItem("采集人", e.operator),
                     ]);
