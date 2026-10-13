@@ -1229,10 +1229,23 @@ class _MainPageState extends State<MainPage>
   String? _lastScanContainer; // ㉖ 容器类型同左
   String? _selectedGroundLoc;
   String? _containerType;
+  // ㉖ 容器类型可配置：默认5项兜底，登录后从服务器拉取覆盖
+  final List<Map<String, String>> _containers = [
+    {"db": "1800*1200_2", "show": "1.8米铁框"},
+    {"db": "1600*1100", "show": "1.6米铁框"},
+    {"db": "2.4米铁框", "show": "2.4米铁框"},
+    {"db": "华强铁框", "show": "华强铁框"},
+    {"db": "托盘", "show": "托盘"},
+  ];
   final TextEditingController _ledgerLocCtrl =
       TextEditingController(); //采集页顺手登记：货位账本编码（选填）
   Timer? _ledgerSyncTimer; //账本同步防抖：连扫攒一批再全量推
   String _autoCallTip = ""; // ㉒自动叫车结果状态条（常驻，防SnackBar被"采集保存成功"顶掉）
+  // ㉖ 采集页 AGV 队列：本账号活跃任务计数与明细（叫车结果/在途位置可见，与领料页同交互）
+  List<Map> _myQueue = [];
+  Map<String, int> _myQueueCnt = {};
+  String _queueMode = "dry";
+  Timer? _myQueueTimer;
 
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
@@ -1319,7 +1332,13 @@ class _MainPageState extends State<MainPage>
     kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
     _startNotifPolling();
     _restoreWorkMode(); // ②按登录账号恢复上次工作模式（AGV站台/人工地面）
+    _loadContainers(); // ㉖ 容器类型从服务器拉取（新增框型免发版）
     _applyDefaultPallet(); // 第3档 按偏好预填默认框型（减少每托重复点选）
+    // ㉖ 我的AGV任务：进页拉一次 + 叫车成功广播即时刷 + 30秒轮询跟进排队→在途→到站
+    _loadMyQueue();
+    kAgvQueueTick.addListener(_loadMyQueue);
+    _myQueueTimer =
+        Timer.periodic(const Duration(seconds: 30), (_) => _loadMyQueue());
     PrefsSync.changed.addListener(_onPrefsChanged); // ㉖B14 服务器偏好回写后刷新工作模式
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
@@ -1481,6 +1500,8 @@ class _MainPageState extends State<MainPage>
   void dispose() {
     kNotifTap.removeListener(_onNotifTap);
     PrefsSync.changed.removeListener(_onPrefsChanged); // ㉖B14
+    kAgvQueueTick.removeListener(_loadMyQueue); // ㉖ 队列刷新监听释放
+    _myQueueTimer?.cancel();
     _notifTimer?.cancel();
     _tabController.dispose();
     _goodsFocusNode.dispose(); //【新增】释放焦点资源
@@ -3404,20 +3425,36 @@ class _MainPageState extends State<MainPage>
                             scrollDirection: Axis.horizontal,
                             child: Row(
                               children: [
-                                _buildContainerButton(
-                                    showText: "1.8米铁框", dbValue: "1800*1200_2"),
-                                const SizedBox(width: 8),
-                                _buildContainerButton(
-                                    showText: "1.6米铁框", dbValue: "1600*1100"),
-                                const SizedBox(width: 8),
-                                _buildContainerButton(
-                                    showText: "2.4米铁框", dbValue: "2.4米铁框"),
-                                const SizedBox(width: 8),
-                                _buildContainerButton(
-                                    showText: "华强铁框", dbValue: "华强铁框"),
-                                const SizedBox(width: 8),
-                                _buildContainerButton(
-                                    showText: "托盘", dbValue: "托盘"),
+                                for (final m in _containers) ...[
+                                  _buildContainerButton(
+                                      showText: m["show"] ?? "",
+                                      dbValue: m["db"] ?? ""),
+                                  const SizedBox(width: 8),
+                                ],
+                                if (Auth.can(
+                                    "location_reg")) // ㉖ 容器类型管理（新增框型免发版）
+                                  SizedBox(
+                                    height: 48,
+                                    child: OutlinedButton(
+                                      onPressed: _manageContainers,
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: Colors.blueGrey,
+                                        side: BorderSide(
+                                            color: Colors.grey.shade400),
+                                        shape: RoundedRectangleBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(12)),
+                                      ),
+                                      child: const Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(Icons.tune, size: 18),
+                                            SizedBox(width: 4),
+                                            Text("管理",
+                                                style: TextStyle(fontSize: 14)),
+                                          ]),
+                                    ),
+                                  ),
                               ],
                             ),
                           ),
@@ -3665,6 +3702,156 @@ class _MainPageState extends State<MainPage>
     );
   }
 
+  /// ㉖ 容器类型从服务器拉取（失败静默保留默认5项）
+  Future<void> _loadContainers() async {
+    final r = await AuthApi.containersGet();
+    if (!mounted || r["ok"] != true) return;
+    final ts = List<Map>.from(r["types"] ?? []);
+    if (ts.isEmpty) return;
+    setState(() {
+      _containers
+        ..clear()
+        ..addAll(ts
+            .map((t) => {
+                  "db": t["db"]?.toString() ?? "",
+                  "show": t["show"]?.toString() ?? ""
+                })
+            .where((m) => m["db"]!.isNotEmpty && m["show"]!.isNotEmpty));
+    });
+    _applyDefaultPallet(); // 配置到手后补跑默认框型（防 initState 竞态：新框型设为默认时首轮列表还是兜底值）
+  }
+
+  /// ㉖ 容器类型管理弹层（仓管/管理员）：增删改，保存全端生效
+  Future<void> _manageContainers() async {
+    final edit = _containers.map((m) => Map<String, String>.of(m)).toList();
+    // 每行两个 controller（显示名/落库值）：一次建好并随行增删同步维护，避免重建丢焦点与泄漏
+    final ctrls = <List<TextEditingController>>[
+      for (final m in edit)
+        [
+          TextEditingController(text: m["show"]),
+          TextEditingController(text: m["db"]),
+        ]
+    ];
+    void addRow() {
+      edit.add({"db": "", "show": ""});
+      ctrls.add([TextEditingController(), TextEditingController()]);
+    }
+
+    void rmRow(int i) {
+      for (final c in ctrls[i]) {
+        c.dispose();
+      }
+      ctrls.removeAt(i);
+      edit.removeAt(i);
+    }
+
+    final saved = await showModalBottomSheet<List<Map<String, String>>>(
+        context: context,
+        isScrollControlled: true,
+        builder: (mc) => StatefulBuilder(
+            builder: (mc2, setSt) => SafeArea(
+                child: Padding(
+                    padding: EdgeInsets.fromLTRB(
+                        14, 12, 14, MediaQuery.of(mc2).viewInsets.bottom + 12),
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      const Text("容器类型管理（保存后全端生效）",
+                          style: TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.bold)),
+                      const SizedBox(height: 4),
+                      const Text("落库值同时用于 WMAS 容器编码匹配（容器编码包含该关键字即命中），请与主档命名对齐",
+                          style: TextStyle(fontSize: 11, color: Colors.grey)),
+                      const SizedBox(height: 8),
+                      Flexible(
+                          child: ListView(
+                              shrinkWrap: true,
+                              children: List.generate(edit.length, (i) {
+                                final m = edit[i];
+                                return Row(children: [
+                                  Expanded(
+                                      child: TextField(
+                                    controller: ctrls[i][0],
+                                    onChanged: (v) => m["show"] = v,
+                                    decoration: const InputDecoration(
+                                        labelText: "显示名",
+                                        isDense: true,
+                                        border: OutlineInputBorder()),
+                                  )),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                      flex: 2,
+                                      child: TextField(
+                                        controller: ctrls[i][1],
+                                        onChanged: (v) => m["db"] = v,
+                                        decoration: const InputDecoration(
+                                            labelText: "落库值/匹配关键字",
+                                            isDense: true,
+                                            border: OutlineInputBorder()),
+                                      )),
+                                  IconButton(
+                                      onPressed: () => setSt(() => rmRow(i)),
+                                      icon: const Icon(
+                                          Icons.remove_circle_outline,
+                                          color: Colors.red)),
+                                ]);
+                              }))),
+                      Row(children: [
+                        TextButton.icon(
+                            onPressed: () => setSt(addRow),
+                            icon: const Icon(Icons.add, size: 18),
+                            label: const Text("加一项")),
+                        const Spacer(),
+                        TextButton(
+                            onPressed: () => Navigator.pop(mc2),
+                            child: const Text("取消")),
+                        FilledButton(
+                            onPressed: () {
+                              final ok = <Map<String, String>>[];
+                              final seen = <String>{};
+                              for (final m in edit) {
+                                final dbv = (m["db"] ?? "").trim(),
+                                    sh = (m["show"] ?? "").trim();
+                                if (dbv.isEmpty || sh.isEmpty) continue;
+                                if (!seen.add(dbv.toUpperCase())) continue;
+                                ok.add({"db": dbv, "show": sh});
+                              }
+                              if (ok.isEmpty) {
+                                ScaffoldMessenger.of(mc2).showSnackBar(
+                                    const SnackBar(
+                                        content: Text("至少保留一项且显示名/落库值不能留空")));
+                                return;
+                              }
+                              Navigator.pop(mc2, ok);
+                            },
+                            child: const Text("保存")),
+                      ]),
+                    ])))));
+    for (final pair in ctrls) {
+      for (final c in pair) {
+        c.dispose();
+      }
+    } // 弹层关闭统一释放（含保存/取消/下滑关闭所有路径）
+    if (saved == null || saved.isEmpty || !mounted) return;
+    final r = await AuthApi.containersSet(saved);
+    if (!mounted) return;
+    if (r["ok"] == true) {
+      setState(() {
+        _containers
+          ..clear()
+          ..addAll(saved);
+        if (!_containers.any((m) => m["db"] == _containerType)) {
+          _containerType = null; // 原选中项被删：清空防脏值
+        }
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("容器类型已保存，全端下次进入采集页生效"),
+          backgroundColor: Color(0xFF2E7D32)));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("保存失败：${r["msg"] ?? "?"}"),
+          backgroundColor: Colors.red));
+    }
+  }
+
   /// ②按登录账号记住/恢复工作模式（0=AGV站台 1=人工地面）
   Future<void> _restoreWorkMode() async {
     final sp = await SharedPreferences.getInstance();
@@ -3672,17 +3859,13 @@ class _MainPageState extends State<MainPage>
     if (v == 1 && mounted) setState(() => _workType = 1);
   }
 
-  /// 第3档 按偏好预填默认框型（仅在尚未选择时；全机偏好）
+  /// 第3档 按偏好预填默认框型（仅在尚未选择时；全机偏好）㉖ 合法值跟随服务器容器类型配置
   Future<void> _applyDefaultPallet() async {
     final sp = await SharedPreferences.getInstance();
     final p = sp.getString("pd_defPallet") ?? "";
-    const legal = ["1800*1200_2", "1600*1100", "2.4米铁框", "华强铁框", "托盘"];
-    if (p.isNotEmpty &&
-        legal.contains(p) &&
-        mounted &&
-        _containerType == null) {
+    if (p.isEmpty || _containerType != null || !mounted) return;
+    if (_containers.any((m) => m["db"] == p))
       setState(() => _containerType = p);
-    }
   }
 
   void _saveWorkMode(int type) {

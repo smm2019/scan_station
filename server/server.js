@@ -56,6 +56,9 @@ function defaultDb() {
     prefTemplates: [], // ㉕F5 管理员配置模板 [{name,prefs,by,at}]
     errLogs: [], // ㉖⑩ PDA异常日志自动上报 [{id,at,by,dev,app,items:[{t,e,d,u}]}]（180天/2000批滚动）
     stnMeta: {}, // ㉖⑫ 站台身份自定义 {编码:{alias:别名,role:any|out|in|insp,off:停用布尔,by,at}}
+    containerTypes: [ // ㉖⑳ 容器类型可配置（采集页按钮动态生成；db=落库值=WMAS主档匹配关键字）
+      { db: '1800*1200_2', show: '1.8米铁框' }, { db: '1600*1100', show: '1.6米铁框' }, { db: '2.4米铁框', show: '2.4米铁框' }, { db: '华强铁框', show: '华强铁框' }, { db: '托盘', show: '托盘' },
+    ],
   };
 }
 // ---- ㉕F6 凭据静态加密（AES-256-GCM，密钥 data/secret.key 不进git）+ ㉕F5 偏好/㉕F9 归档工具 ----
@@ -99,6 +102,7 @@ function loadDb() {
   if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
   if (!Array.isArray(d.errLogs)) { d.errLogs = []; added = true; } // ㉖ PDA异常上报表（旧库补齐）
   if (typeof d.stnMeta !== 'object' || d.stnMeta === null || Array.isArray(d.stnMeta)) { d.stnMeta = {}; added = true; } // ㉖⑫ 站台身份配置（旧库补齐）
+  if (!Array.isArray(d.containerTypes) || !d.containerTypes.length) { d.containerTypes = defaultDb().containerTypes; added = true; } // ㉖ 容器类型配置（旧库补齐默认5项）
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
   return d;
@@ -1307,8 +1311,8 @@ const server = http.createServer(async (req, res) => {
         const dels = Array.isArray(b.del) ? b.del : [];
         const _fpAll = (db.syncFp = db.syncFp || {}); const _fpOld = _fpAll[u.id] || {}; const _fpNew = {};
         const _hash = ledgerHash;
-        let added = 0, updated = 0, skipped = 0, kept = 0, delApplied = 0, delSkipped = 0; const rejected = []; // ⑲被更新的服务器数据压回的标签（冲突提示用）
-        for (const it of clean) {
+        let added = 0, updated = 0, skipped = 0, kept = 0, delApplied = 0, delSkipped = 0, locConflict = 0; const rejected = []; // ⑲被更新的服务器数据压回的标签（冲突提示用）
+        pushLoop: for (const it of clean) {
           const key = it.c;
           const old = cur.get(key);
           const tm = tomb.get(key);
@@ -1320,6 +1324,19 @@ const server = http.createServer(async (req, res) => {
           if (tombT && it.t > 0 && it.t < tombT) { skipped++; rejected.push(key); continue; } // 早于墓碑的真改动重登：作废（不记指纹，持续提示冲突待拉取）
           if (!_fpOld[key] && !Object.keys(_fpOld).length && old && it.t > 0 && Number(old.t) > it.t) { skipped++; rejected.push(key); continue; } // 设备首推无指纹档案：保守回退旧规则（t更旧者拒），防服务重启窗口倒退
           _fpNew[key] = h; // 本轮该设备视图留档
+          // ㉖ 货位互斥闸：同一货位不允许被不同框同时占用（多PDA并发登记、过期副本回填都会撞位）；同框兄弟码（同托号）豁免
+          if (it.l) {
+            const _bk = boxKeyOf(it);
+            for (const [oc, orow] of cur) {
+              if (oc === key || String(orow.l || '').toUpperCase() !== it.l) continue;
+              // 同框豁免：框键一致，或同零件号（与库存"同货位+同零件号=同框"口径一致；一框先无托号后补托号时两键不同但确属同框）
+              if (boxKeyOf(orow) === _bk || (it.p && String(orow.p || '').toUpperCase() === it.p)) continue;
+              rejected.push(key + '（目标货位 ' + it.l + ' 已被框 ' + oc + ' 占用）'); skipped++; locConflict++;
+              delete _fpNew[key]; // 不记指纹：下次推送仍会再撞再提示，绝不静默吞掉
+              _diffs.push(key + ' 货位冲突(' + it.l + '=' + oc + ')');
+              continue pushLoop;
+            }
+          }
           if (!old) { _seen[key] = { by: u.name, t: rec0, l: it.l, p: it.p || '' }; } // ㉖ 首次入账登记，永久防重
           if (old) { // ㉖⑱ 多机字段保护：本机无该框采集流水时 mv 退化为默认"登记"、src/pid 缺失，不得抹掉别机写入的真值（"数据被覆盖"根因之一）
             const _mvIn = String(it.mv || ''), _mvOld = String(old.mv || '');
@@ -1378,8 +1395,8 @@ const server = http.createServer(async (req, res) => {
           }
         } catch (e) { console.log('[urgent-in] 异常：', e.message); }
         // ㉖diff 汇总进活动流：单次合并一条（样例40条+计数，防刷爆滚窗）
-        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${rejected.length ? ' 拒墓碑' + rejected.length : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
-        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, rejected: rejected.slice(0, 50) });
+        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${locConflict ? ' 货位冲突' + locConflict : ''}${rejected.length ? ' 拒回' + rejected.length : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
+        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, locConflict, rejected: rejected.slice(0, 50) });
       }
 
       // ================= 采集流水 / 出库单同步（PDA 全量推送，仓管/管理员） =================
@@ -2092,6 +2109,26 @@ const server = http.createServer(async (req, res) => {
         }
         save();
         return send(res, 200, { ok: true });
+      }
+      // ===== ㉖ 容器类型可配置：GET 登录即可读（采集页按钮数据源）；POST 仓管/管理员整表保存（留痕） =====
+      if (req.method === 'GET' && p === '/api/containers') {
+        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes });
+      }
+      if (req.method === 'POST' && p === '/api/containers') {
+        if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
+        const b = await readBody(req);
+        const raw = Array.isArray(b.types) ? b.types : [];
+        if (!raw.length || raw.length > 20) return send(res, 400, { ok: false, msg: 'types 需1~20项' });
+        const seen = new Set(); const clean = [];
+        for (const t of raw) {
+          const dbv = String((t && t.db) || '').trim().slice(0, 40), show = String((t && t.show) || '').trim().slice(0, 12);
+          if (!dbv || !show || seen.has(dbv.toUpperCase())) continue;
+          seen.add(dbv.toUpperCase()); clean.push({ db: dbv, show });
+        }
+        if (!clean.length) return send(res, 400, { ok: false, msg: '无有效条目（需 db 落库值 + show 显示名）' });
+        db.containerTypes = clean; cfgBump(); save();
+        pushOps(u, '容器类型配置', clean.length + ' 项', clean.map((x) => x.show).join('、'));
+        return send(res, 200, { ok: true, types: clean, msg: '已保存，全端下次进入采集页生效' });
       }
       if (req.method === 'GET' && p === '/api/ground-slots') {
         return send(res, 200, { ok: true, slots: db.groundSlots || {} });

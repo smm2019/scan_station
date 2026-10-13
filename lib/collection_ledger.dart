@@ -4,6 +4,7 @@ part of 'main.dart';
 // 主档不建表：NB02 由编码规则生成（8区×16架×4层=512），空位 = 主档 − 账本占用；
 // NB03 按"每排12格位"规划渲染，A-11/C-11 两排带手动加的第13格位。
 final Set<String> _colCalled = {}; // 本会话已叫车的货位（防重复叫车）
+final ValueNotifier<int> kAgvQueueTick = ValueNotifier(0); // ㉖ 叫车成功后广播刷新采集页队列
 
 extension CollectionLedgerExt on _MainPageState {
   static const List<String> _lz = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
@@ -46,8 +47,19 @@ extension CollectionLedgerExt on _MainPageState {
 
   ///AGV 目标货位自动分配：①同零件已占的架内空位（同件同架，AGV整架取放最优）
   ///②同零件所在区的空架空位 ③全局顺序兜底（A-01-1F 起集满靠前）。无可分配返回 null。
+  ///㉖ 占用判定=本机账本 ∪ 服务器权威账本（多PDA并发不撞位；断网回退本机）
   Future<String?> nb02AutoAssign(String partNo) async {
     final byLoc = await _ledgerByLoc();
+    try {
+      final lv = await AuthApi.ledgerLocs();
+      if (lv["ok"] == true && lv["byLoc"] is Map) {
+        (lv["byLoc"] as Map).forEach((k, v) {
+          final codes = (v as List).map((e) => e.toString()).toList();
+          byLoc.update(k.toString(), (l) => [...l, ...codes],
+              ifAbsent: () => codes);
+        });
+      }
+    } catch (_) {} // 服务器不可达：降级本机口径
     final free = nb02MasterAll().where((l) => !byLoc.containsKey(l)).toList();
     if (free.isEmpty) return null;
     if (partNo.isNotEmpty) {
@@ -177,8 +189,196 @@ extension CollectionLedgerExt on _MainPageState {
                                 ? Colors.orange.shade900
                                 : Colors.blueGrey))),
               )),
+        // ㉖ 我的AGV任务统计行（AGV模式且有活跃任务时显示；点开面板看每框状态与在途位置，与领料页同交互）
+        if (isAgv && _myQueue.isNotEmpty)
+          Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: InkWell(
+                  onTap: _showMyQueueSheet,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 7),
+                      decoration: BoxDecoration(
+                          color: const Color(0xFFE8F0FE),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFB3C7F0))),
+                      child: Row(children: [
+                        const Text("🚛", style: TextStyle(fontSize: 14)),
+                        const SizedBox(width: 6),
+                        Expanded(
+                            child: Text(
+                                "我的AGV任务：${_qSeg("排队")}排 · ${_qSeg("下发中") + _qSeg("已下发")}在途 · ${_qSeg("到站")}到站${_qSeg("失败") > 0 ? " · ${_qSeg("失败")}失败" : ""}",
+                                style: const TextStyle(
+                                    fontSize: 12.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF1A237E)))),
+                        Text(_queueMode == "live" ? "真实下发" : "演算模式",
+                            style: TextStyle(
+                                fontSize: 10.5,
+                                color: _queueMode == "live"
+                                    ? Colors.green.shade700
+                                    : Colors.grey)),
+                        const Icon(Icons.chevron_right,
+                            size: 18, color: Color(0xFF1A237E)),
+                      ])))),
       ],
     );
+  }
+
+  int _qSeg(String st) => _myQueueCnt[st] ?? 0;
+
+  /// ㉖ 拉取本账号活跃AGV任务（叫车结果与在途位置在采集页可见）
+  Future<void> _loadMyQueue() async {
+    final me = Auth.user?.name ?? "";
+    if (me.isEmpty) return;
+    try {
+      final r = await AuthApi.rcsStations();
+      if (!mounted || r["ok"] != true) return;
+      final mine = List<Map>.from(r["queue"] ?? [])
+          .where((q) => q["by"]?.toString() == me)
+          .toList();
+      final cnt = <String, int>{};
+      for (final q in mine) {
+        final s = q["state"]?.toString() ?? "?";
+        cnt[s] = (cnt[s] ?? 0) + 1;
+      }
+      setState(() {
+        _myQueue = mine;
+        _myQueueCnt = cnt;
+        _queueMode = r["mode"]?.toString() ?? "dry";
+      });
+    } catch (_) {}
+  }
+
+  /// ㉖ 我的AGV任务面板：每框 起点→目的地/状态/等待时长/失败原因，排队与失败可取消
+  void _showMyQueueSheet() {
+    _loadMyQueue();
+    showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (mctx) => StatefulBuilder(
+            builder: (mctx2, setSt) => SafeArea(
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 12, 4, 0),
+                      child: Row(children: [
+                        const Expanded(
+                            child: Text("我的 AGV 任务",
+                                style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15))),
+                        Text(_queueMode == "live" ? "真实下发" : "演算模式（不发车）",
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: _queueMode == "live"
+                                    ? Colors.green.shade700
+                                    : Colors.orange.shade800)),
+                        TextButton(
+                            onPressed: () async {
+                              await _loadMyQueue();
+                              setSt(() {});
+                            },
+                            child: const Text("刷新")),
+                      ])),
+                  Flexible(
+                    child: ListView(
+                        shrinkWrap: true,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        children: [
+                          for (final q in _myQueue)
+                            ListTile(
+                              dense: true,
+                              leading: CircleAvatar(
+                                  radius: 15,
+                                  backgroundColor: switch (
+                                      q["state"]?.toString()) {
+                                    "排队" => const Color(0xFFE3F2FD),
+                                    "下发中" || "已下发" => const Color(0xFFFFF3E0),
+                                    "到站" => const Color(0xFFE8F5E9),
+                                    "失败" => const Color(0xFFFFEBEE),
+                                    _ => const Color(0xFFFAFAFA)
+                                  },
+                                  child: Text(
+                                      switch (q["state"]?.toString()) {
+                                        "排队" => "排",
+                                        "下发中" || "已下发" => "途",
+                                        "到站" => "站",
+                                        "失败" => "✕",
+                                        _ => "·"
+                                      },
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold))),
+                              title: Text(
+                                  "${q["code"] ?? "?"}  ${q["fromLoc"] ?? q["from"] ?? "?"} → ${(() {
+                                    final s0 = (q["station"] ?? "").toString();
+                                    final s1 =
+                                        (q["stationManual"] ?? "").toString();
+                                    final t = s0.isNotEmpty ? s0 : s1;
+                                    return t.isEmpty
+                                        ? "待分配"
+                                        : (t.contains("-CK-")
+                                            ? t.split("-").last + "号台"
+                                            : t);
+                                  })()}",
+                                  style: const TextStyle(
+                                      fontSize: 13, fontFamily: "monospace")),
+                              subtitle: Text(
+                                  "${q["state"] ?? ""} · 等 ${_qWaitOf(q)}${(q["err"] ?? "").toString().isNotEmpty ? " · ${q["err"]}" : ""}${(q["reqNo"] ?? "").toString().isNotEmpty ? " · 单${q["reqNo"]}" : ""}",
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color:
+                                          (q["err"] ?? "").toString().isNotEmpty
+                                              ? Colors.red.shade600
+                                              : Colors.grey)),
+                              trailing: (q["state"] == "排队" ||
+                                      q["state"] == "失败")
+                                  ? TextButton(
+                                      onPressed: () async {
+                                        final r = await AuthApi.agvQueueCancel(
+                                            [(q["code"] ?? "").toString()]);
+                                        if (!mctx2.mounted) return;
+                                        ScaffoldMessenger.of(mctx2)
+                                            .showSnackBar(SnackBar(
+                                                content: Text(r["ok"] == true
+                                                    ? "已取消排队 ${q["code"]}"
+                                                    : "取消失败：${r["msg"]}")));
+                                        await _loadMyQueue();
+                                        setSt(() {});
+                                      },
+                                      child: const Text("取消",
+                                          style: TextStyle(
+                                              fontSize: 12,
+                                              color: Colors.redAccent)))
+                                  : null,
+                            ),
+                          if (_myQueue.isEmpty)
+                            const Padding(
+                                padding: EdgeInsets.all(24),
+                                child: Center(
+                                    child: Text(
+                                        "暂无进行中的AGV任务\n叫车后这里实时显示排队/在途/到站",
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(color: Colors.grey)))),
+                        ]),
+                  ),
+                  TextButton(
+                      onPressed: () => Navigator.pop(mctx2),
+                      child: const Text("关闭")),
+                ]))));
+  }
+
+  /// 等待时长人性化（秒→分→时），按每条任务各自的入队时刻
+  String _qWaitOf(Map q) {
+    final at = q["at"];
+    final s = (DateTime.now().millisecondsSinceEpoch -
+            (at is num ? at.toInt() : 0)) ~/
+        1000;
+    if (s < 60) return "${s < 0 ? 0 : s}秒";
+    if (s < 3600) return "${(s / 60).round()}分";
+    return "${(s / 3600).round()}时";
   }
 
   /// 地面区内自动分配格位：zone 形如 "B13"；返回该排第一个空位编码，满则 null
@@ -442,6 +642,7 @@ extension CollectionLedgerExt on _MainPageState {
           container: cn); // ㉖⑰ 统一走服务器入队下发：队列/流水线/链路全可见
       if (r["ok"] == true) {
         _colCalled.add(loc);
+        kAgvQueueTick.value++; // ㉖ 叫车成功→采集页队列统计即时刷新
         LocalLog.op('自动入库叫车', "$st→$loc 容器$cn");
         if (mounted)
           setState(() => _autoCallTip = "🚗 自动叫车成功：$st → $loc（容器 $cn）");
@@ -560,6 +761,7 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
         duration: const Duration(seconds: 4)));
     if (r["ok"] == true) {
       _colCalled.add(widget.endPoint);
+      kAgvQueueTick.value++; // ㉖ 叫车成功→采集页队列统计即时刷新
       Navigator.pop(context);
     }
   }
@@ -752,7 +954,7 @@ Future<Map> ledgerPushNow() async {
                       color: Colors.orange, size: 34),
                   title: const Text("货位登记冲突"),
                   content: Text(
-                      "${rej.length} 个标签的登记被其他设备更新的数据覆盖（你推送前它已被别台改过）：\n${rej.take(8).join("、")}${rej.length > 8 ? " …" : ""}\n\n请到「位置登记」重新登记这些框的实际货位，并和同事对齐现场。"),
+                      "${rej.length} 个标签的登记未生效（被其他设备更新的数据覆盖，或目标货位已被别的框占用）：\n${rej.take(8).join("\n")}${rej.length > 8 ? " …" : ""}\n\n请到「位置登记」重新登记这些框的实际货位（先拉取对齐），并和同事核对现场。"),
                   actions: [
                     FilledButton(
                         onPressed: () => Navigator.pop(dc),

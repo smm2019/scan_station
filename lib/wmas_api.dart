@@ -545,7 +545,10 @@ class _AgvCallDialogState extends State<AgvCallDialog> {
             ? "AGV出库：${r["queued"] == true ? "已排入队列" : "已下发"}（$stn ← ${widget.fromLoc}）"
             : "叫车失败：${r["msg"]}",
         err: r["ok"] != true);
-    if (r["ok"] == true) Navigator.pop(context, stn); // 回传站台：调用方登记"已叫AGV"
+    if (r["ok"] == true) {
+      kAgvQueueTick.value++; // ㉖ 叫车成功→采集页队列统计即时刷新
+      Navigator.pop(context, stn); // 回传站台：调用方登记"已叫AGV"
+    }
   }
 
   @override

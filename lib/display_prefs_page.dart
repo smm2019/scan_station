@@ -14,14 +14,14 @@ class _DisplayPrefsPageState extends State<DisplayPrefsPage> {
   bool _focus = true, _defAssignee = true;
   String _pallet = "";
   int _offset = 0;
-  static const _pallets = [
+  List<List<String>> _pallets = const [
     ["", "不预填（每托手选）"],
     ["1800*1200_2", "1.8米铁框"],
     ["1600*1100", "1.6米铁框"],
     ["2.4米铁框", "2.4米铁框"],
     ["华强铁框", "华强铁框"],
     ["托盘", "托盘"],
-  ];
+  ]; // ㉖ 默认从服务器容器类型配置动态生成（拉取失败保留默认）
   static const _fonts = [
     ["std", "标准"],
     ["lg", "大"],
@@ -52,6 +52,23 @@ class _DisplayPrefsPageState extends State<DisplayPrefsPage> {
       _pallet = sp.getString("pd_defPallet") ?? "";
       _offset = sp.getInt("pd_dateOffset") ?? 0;
     });
+    _loadPallets(); // ㉖ 框型选项跟服务器容器类型配置走
+  }
+
+  Future<void> _loadPallets() async {
+    try {
+      final r = await AuthApi.containersGet();
+      if (!mounted || r["ok"] != true) return;
+      final ts = List<Map>.from(r["types"] ?? []);
+      if (ts.isEmpty) return;
+      setState(() {
+        _pallets = [
+          ["", "不预填（每托手选）"],
+          ...ts.map(
+              (t) => [t["db"]?.toString() ?? "", t["show"]?.toString() ?? ""]),
+        ];
+      });
+    } catch (_) {}
   }
 
   Future<void> _set(String key, dynamic v) async {
