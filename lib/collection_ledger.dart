@@ -1093,8 +1093,14 @@ Future<void> pullGroundSlots() async {
   } catch (_) {}
 }
 
-Future<Map> ledgerPullMerge() async {
+int _ledgerPullAtMs = 0; // ㉖ 上次【成功】拉取合并的毫秒时刻（跨页面共享，防多页重复打服务器）
+DateTime? ledgerLastSyncAt; // 上次成功同步时刻（库存页头展示）
+Future<Map> ledgerPullMerge({bool force = false}) async {
   try {
+    final _nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (!force && _nowMs - _ledgerPullAtMs < 20000) {
+      return {"ok": true, "skipped": 1, "added": 0, "updated": 0, "deleted": 0, "total": -1}; // 20秒内刚拉过：静默跳过
+    }
     final r = await AuthApi.ledgerGet();
     if (r["ok"] != true)
       return {"ok": false, "msg": (r["msg"] ?? "拉取失败").toString()};
@@ -1174,6 +1180,8 @@ Future<Map> ledgerPullMerge() async {
       await _saveTombs(m);
     }
     unawaited(pullGroundSlots()); // ⑮顺带刷新地面排格数
+    _ledgerPullAtMs = DateTime.now().millisecondsSinceEpoch;
+    ledgerLastSyncAt = DateTime.now();
     return {
       "ok": true,
       "added": added,

@@ -4491,7 +4491,7 @@ class SettingsMenuPage extends StatelessWidget {
               title: "拉取货位账本",
               subtitle: "从电脑服务器合并最新账本（库存/领料选件用）",
               onTap: () async {
-                final r = await ledgerPullMerge();
+                final r = await ledgerPullMerge(force: true); // ㉖ 手动入口强制拉，不受20秒节流跳过
                 if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                     content: Text(r["ok"] == true

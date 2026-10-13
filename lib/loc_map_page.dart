@@ -20,6 +20,7 @@ class _LocMapPageState extends State<LocMapPage> {
   Future<void> _reload() async {
     setState(() { _loading = true; _err = ""; });
     try {
+      await ledgerPullMerge(force: true); // ㉖ 先对齐服务器账本（别台入库/拣下），否则占用图停留在本机旧快照
       final agg = await computeStock();
       if (!mounted) return;
       setState(() { _agg = agg; _loading = false; });

@@ -250,8 +250,6 @@ class _InventoryStockPageState extends State<InventoryStockPage>
   _StockAgg? _agg;
   bool _loading = true;
   String _search = "";
-  static DateTime _lastPull = DateTime(2000); // 拉取节流：进页超过5分钟才向服务器增量拉取
-
   @override
   void initState() {
     super.initState();
@@ -262,10 +260,8 @@ class _InventoryStockPageState extends State<InventoryStockPage>
   }
 
   Future<void> _autoPullThenReload() async {
-    if (DateTime.now().difference(_lastPull) > const Duration(minutes: 5)) {
-      _lastPull = DateTime.now();
-      await ledgerPullMerge(); // 静默合并电脑账本（本机无采集/别台已拣下的变化都会同步进来）
-    }
+    // ㉖ 进页强制与服务器账本对齐（旧5分钟节流致"别台刚入库的框本机看不到"）；函数内20秒全局节流防重复
+    await ledgerPullMerge(force: true);
     await _reload();
   }
 
@@ -292,6 +288,7 @@ class _InventoryStockPageState extends State<InventoryStockPage>
 
   /// 静默重算：不转圈（keep-alive 后台也跑，切回即最新）
   Future<void> _reloadSilent() async {
+    await ledgerPullMerge(); // ㉖ 先对齐服务器账本（20秒内刚拉过自动跳过），再重算——45秒周期即最迟45秒看到别台入库
     final agg = await computeStock();
     if (!mounted) return;
     setState(() => _agg = agg);
@@ -319,14 +316,21 @@ class _InventoryStockPageState extends State<InventoryStockPage>
               Tab(text: "我的预约")
             ],
           )),
+          if (ledgerLastSyncAt != null)
+            Padding(
+                padding: const EdgeInsets.only(right: 2),
+                child: Text(
+                    '同步 ${TimeOfDay.fromDateTime(ledgerLastSyncAt!).format(context)}',
+                    style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey))),
           if (Auth.can("agv_control"))
             IconButton(
                 tooltip: "货架移库（AGV整架搬位）",
                 icon: const Icon(Icons.swap_horiz, color: Color(0xFFEF6C00)),
                 onPressed: () => showTransferDialog(context)),
           IconButton(
+              tooltip: "刷新（与电脑账本对齐）",
               icon: const Icon(Icons.refresh, color: Color(0xFF515BD4)),
-              onPressed: _reload),
+              onPressed: _autoPullThenReload),
         ]),
       ),
       Expanded(
@@ -584,7 +588,7 @@ class _FlowTabState extends State<_FlowTab> {
 /// 口径与库存页完全一致：账面=在库框数量合计（零库存零件不入基准，扫到即账外料）；货位=各货位在库框按零件号合计。
 /// 只覆盖 baselineBooks/baselineLocs 两张盘点基准表（与CSV导入同样的整表替换），不触碰采集/发料/账本数据。
 Future<Map<String, dynamic>> buildLiveBaseline() async {
-  await ledgerPullMerge(); // 先与电脑账本合并：多台PDA的在库状态对齐
+  await ledgerPullMerge(force: true); // 先与电脑账本合并：多台PDA的在库状态对齐（盘点基准必须最新，强制拉）
   final agg = await computeStock();
   final key = "LIVE@${DateTime.now().millisecondsSinceEpoch}";
   final books = <BaselineBook>[];
