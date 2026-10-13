@@ -286,6 +286,10 @@ class AuthApi {
       _req("POST", "/api/agv/queue/cancel",
           body: reqId.isEmpty ? {"codes": codes} : {"reqId": reqId},
           token: await AuthStore.token());
+  static Future<Map> agvQueuePrio(String code, {bool off = false}) async =>
+      _req("POST", "/api/agv/queue/prio",
+          body: {"code": code, "off": off},
+          token: await AuthStore.token()); // ㉖ 排队项置顶/取消置顶（与网页队列控制台同款）
   static Future<Map> agvSetMode(String mode) async =>
       _req("POST", "/api/agv/mode",
           body: {"mode": mode}, token: await AuthStore.token());

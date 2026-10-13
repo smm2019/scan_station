@@ -1815,10 +1815,23 @@ const server = http.createServer(async (req, res) => {
           save();
           return send(res, 200, { ok: true, cancelled: n, msg: n ? `已取消 ${n} 框排队${dispatched ? `；另有 ${dispatched} 框已下发AGV，请到RCS调度界面取消任务` : ''}` : (dispatched ? `${dispatched} 框已下发AGV，需在RCS界面取消任务` : '本单没有排队项') });
         }
-        let n = 0;
-        for (const q of db.agvQueue || []) { if (codes.has(q.code) && (q.state === '排队' || q.state === '失败')) { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); inspQueueRollback(q, u); n++; } } // ㉖ 检验队列项取消→工单回退待协助
+        let n = 0, denied = [];
+        for (const q of db.agvQueue || []) {
+          if (!codes.has(String(q.code).toUpperCase())) continue;
+          if (q.state === '排队' || q.state === '失败') { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); inspQueueRollback(q, u); n++; continue; } // ㉖ 检验队列项取消→工单回退待协助
+          if (q.state === '到站') { denied.push(q.code + '（已到站台，请扫码发料/入库清台，不能取消）'); continue; }
+          if (['下发中', '已下发'].includes(q.state)) { // ㉖ 撤销已下发：先撤 WMAS 任务，撤得掉（未叉出）才取消
+            const tn = q.wmsTask || '';
+            if (!tn) { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); inspQueueRollback(q, u); n++; continue; }
+            const tk = await wmasToken();
+            const cr = tk ? await wmasHttp('POST', '/api/logistics/agv-task/cancel', tk, { taskNos: [tn] }) : null;
+            if (wmasOk(cr)) { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); inspQueueRollback(q, u); n++; }
+            else denied.push(q.code + '（AGV 任务撤销被拒，可能已叉出货，需人工处理）');
+            continue;
+          }
+        }
         save();
-        return send(res, 200, { ok: true, cancelled: n });
+        return send(res, 200, { ok: true, cancelled: n, denied, msg: n ? `已取消 ${n} 项${denied.length ? '；' + denied.join('；') : ''}` : (denied.length ? denied.join('；') : '未找到可取消的排队项') });
       }
       if (req.method === 'POST' && p === '/api/agv/queue/prio') { // ㉔队列置顶：给排队项打 prio 标记，调度出队优先
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });

@@ -775,124 +775,147 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     });
   }
 
-  /// 队列管理面板：查看每框分配与状态，"排队/失败"可取消，支持整单清空
+  /// 队列管理面板：按项状态糅合 RCS 任务同款操作——排队=置顶/取消，失败=取消（重叫即再入队），
+  /// 下发中/已下发=撤销任务（服务器先撤 WMAS，未叉出才撤得掉），到站=提示扫码清台；整单清空与关闭移底部拇指区
   void _showQueueSheet() {
     showModalBottomSheet(
         context: context,
         isScrollControlled: true,
         builder: (mctx) => SafeArea(
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 4, 0),
-                  child: Row(children: [
-                    const Expanded(
-                        child: Text("AGV 排队队列",
-                            style: TextStyle(
-                                fontWeight: FontWeight.bold, fontSize: 15))),
-                    if (Auth.can("agv_control"))
-                      TextButton.icon(
-                          style: TextButton.styleFrom(
-                              foregroundColor: Colors.red.shade700),
-                          onPressed: _queueItems.isEmpty
-                              ? null
-                              : () async {
-                                  final yes = await showDialog<bool>(
-                                      context: mctx,
-                                      builder: (c2) => AlertDialog(
-                                            title: const Text("清空本单队列"),
-                                            content: const Text(
-                                                "取消本单全部未下发的排队项（已下发给AGV的任务不受影响，需到RCS界面取消）。确认？"),
-                                            actions: [
-                                              TextButton(
-                                                  onPressed: () =>
-                                                      Navigator.pop(c2, false),
-                                                  child: const Text("取消")),
-                                              FilledButton(
-                                                  style: FilledButton.styleFrom(
-                                                      backgroundColor:
-                                                          Colors.red),
-                                                  onPressed: () =>
-                                                      Navigator.pop(c2, true),
-                                                  child: const Text("清空"))
-                                            ],
-                                          ));
-                                  if (yes != true || !mctx.mounted) return;
-                                  final r = await AuthApi.agvQueueCancel(
-                                      const [],
-                                      reqId: _r["id"].toString());
-                                  widget.toast(
-                                      r["ok"] == true
-                                          ? r["msg"].toString()
-                                          : "清空失败：${r["msg"]}",
-                                      err: r["ok"] != true);
-                                  if (mctx.mounted) Navigator.pop(mctx);
-                                  await _loadQueue();
-                                },
-                          icon:
-                              const Icon(Icons.delete_sweep_outlined, size: 16),
-                          label: const Text("清空本单",
-                              style: TextStyle(fontSize: 12))),
-                  ])),
-              Flexible(
-                  child: ListView(children: [
-                for (final q in _queueItems)
-                  ListTile(
-                    dense: true,
-                    leading: CircleAvatar(
-                        radius: 15,
-                        backgroundColor: switch (q["state"]?.toString()) {
-                          "排队" => const Color(0xFFE3F2FD),
-                          "下发中" => const Color(0xFFFFF3E0),
-                          "已下发" => const Color(0xFFFFF3E0),
-                          "到站" => const Color(0xFFE8F5E9),
-                          _ => const Color(0xFFFAFAFA)
-                        },
-                        child: Text(
-                            switch (q["state"]?.toString()) {
-                              "排队" => "排",
-                              "下发中" => "运",
-                              "已下发" => "运",
-                              "到站" => "达",
-                              _ => "其"
-                            },
-                            style: const TextStyle(fontSize: 12))),
-                    title: Text(
-                        "${q["code"]}  ${q["fromLoc"]}${(q["station"] ?? "").toString().isNotEmpty ? " → ${q["station"]}" : ((q["plan"] ?? "").toString().isNotEmpty ? " → ${q["plan"]}（计划）" : "")}",
-                        style: const TextStyle(
-                            fontSize: 12, fontFamily: "monospace")),
-                    subtitle: Text(
-                        "${q["state"]}${(q["err"] ?? "").toString().isNotEmpty ? " · ${q["err"]}" : ""}${(q["palletType"] ?? "").toString().isNotEmpty ? " · ${q["palletType"]}" : ""}",
-                        style: const TextStyle(fontSize: 11)),
-                    trailing: Auth.can("agv_control") &&
-                            (q["state"] == "排队" || q["state"] == "失败")
-                        ? TextButton(
-                            style: TextButton.styleFrom(
-                                foregroundColor: Colors.red),
-                            onPressed: () =>
-                                _cancelQueued(q["code"].toString()),
-                            child: const Text("取消",
-                                style: TextStyle(fontSize: 12)))
-                        : null,
-                  ),
-                if (_queueItems.isEmpty)
-                  const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Center(
-                          child: Text("本单暂无队列（点行内「一键叫车」入队）",
-                              style: TextStyle(color: Colors.grey)))),
-              ])),
-              TextButton(
-                  onPressed: () => Navigator.pop(mctx),
-                  child: const Text("关闭")),
-            ])));
-  }
-
-  Future<void> _cancelQueued(String code) async {
-    final r = await AuthApi.agvQueueCancel([code]);
-    if (!mounted) return;
-    widget.toast(r["ok"] == true ? "已取消排队 $code" : "取消失败：${r["msg"]}",
-        err: r["ok"] != true);
-    await _loadQueue();
+                child: StatefulBuilder(builder: (mctx, setSt) {
+              Future<void> _reload() async {
+                await _loadQueue();
+                if (mctx.mounted) setSt(() {}); // ㉖ 弹层独立 context：外层 setState 不会重建它，操作后必须手动刷新
+              }
+              Future<void> _doPrio(Map q) async {
+                final off = (q["prio"] ?? 0) != 0;
+                final r = await AuthApi.agvQueuePrio(q["code"].toString(), off: off);
+                if (!mctx.mounted) return;
+                widget.toast(r["ok"] == true ? r["msg"].toString() : "失败：${r["msg"]}", err: r["ok"] != true);
+                await _reload();
+              }
+              Future<void> _doCancel(Map q, {bool task = false}) async {
+                final yes = await showDialog<bool>(
+                    context: mctx,
+                    builder: (c2) => AlertDialog(
+                            title: Text(task ? "撤销 AGV 任务" : "取消排队"),
+                            content: Text(task
+                                ? "${q["code"]} 已下发给 AGV。撤销会先请求 WMAS 停单：车还没叉货则撤销成功、任务取消；已叉出会被拒绝（货不能悬半路）。确认撤销？"
+                                : "取消 ${q["code"]} 的排队任务？"),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("返回")),
+                              FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(c2, true), child: const Text("确定"))
+                            ]));
+                if (yes != true) return;
+                final r = await AuthApi.agvQueueCancel([q["code"].toString()]);
+                if (!mctx.mounted) return;
+                widget.toast(r["ok"] == true ? (r["msg"].toString().isEmpty ? "已取消" : r["msg"].toString()) : "取消失败：${r["msg"]}", err: r["ok"] != true);
+                await _reload();
+              }
+              Future<void> _clearAll() async {
+                final yes = await showDialog<bool>(
+                    context: mctx,
+                    builder: (c2) => AlertDialog(
+                          title: const Text("清空本单队列"),
+                          content: const Text("取消本单全部未下发的排队项（已下发给AGV的任务不受影响，需逐条点「撤销任务」）。确认？"),
+                          actions: [
+                            TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消")),
+                            FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(c2, true), child: const Text("清空"))
+                          ],
+                        ));
+                if (yes != true || !mctx.mounted) return;
+                final r = await AuthApi.agvQueueCancel(const [], reqId: _r["id"].toString());
+                widget.toast(r["ok"] == true ? r["msg"].toString() : "清空失败：${r["msg"]}", err: r["ok"] != true);
+                if (r["ok"] == true && mctx.mounted) Navigator.pop(mctx);
+                else await _reload();
+              }
+              final canCtl = Auth.can("agv_control");
+              return Column(mainAxisSize: MainAxisSize.min, children: [
+                Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                    child: Row(children: [
+                      const Expanded(
+                          child: Text("AGV 排队队列",
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+                      Text(_queueItems.isEmpty ? "" : "共${_queueItems.length}项", style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+                    ])),
+                Flexible(
+                    child: ListView(padding: const EdgeInsets.only(bottom: 4), children: [
+                  for (final q in _queueItems)
+                    ListTile(
+                      dense: true,
+                      leading: CircleAvatar(
+                          radius: 15,
+                          backgroundColor: switch (q["state"]?.toString()) {
+                            "排队" => const Color(0xFFE3F2FD),
+                            "下发中" => const Color(0xFFFFF3E0),
+                            "已下发" => const Color(0xFFFFF3E0),
+                            "到站" => const Color(0xFFE8F5E9),
+                            _ => const Color(0xFFFAFAFA)
+                          },
+                          child: Text(
+                              switch (q["state"]?.toString()) {
+                                "排队" => "排",
+                                "下发中" => "运",
+                                "已下发" => "运",
+                                "到站" => "达",
+                                _ => "其"
+                              },
+                              style: const TextStyle(fontSize: 12))),
+                      title: Text(
+                          "${(q["prio"] ?? 0) != 0 ? "📌 " : ""}${q["code"]}  ${q["fromLoc"]}${(q["station"] ?? "").toString().isNotEmpty ? " → ${q["station"]}" : ((q["plan"] ?? "").toString().isNotEmpty ? " → ${q["plan"]}（计划）" : "")}",
+                          style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
+                      subtitle: Text(
+                          "${q["state"]}${(q["err"] ?? "").toString().isNotEmpty ? " · ${q["err"]}" : ""}${(q["palletType"] ?? "").toString().isNotEmpty ? " · ${q["palletType"]}" : ""}${q["state"] == "到站" ? " · 已到站台，请扫码发料/入库清台" : ""}",
+                          style: TextStyle(fontSize: 11, color: q["state"] == "到站" ? Colors.teal : null)),
+                      trailing: !canCtl
+                          ? null
+                          : Wrap(
+                              spacing: 2,
+                              children: [
+                                if (q["state"] == "排队")
+                                  TextButton(
+                                      style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact, minimumSize: Size.zero),
+                                      onPressed: () => _doPrio(q),
+                                      child: Text((q["prio"] ?? 0) != 0 ? "取消置顶" : "置顶", style: const TextStyle(fontSize: 12, color: Color(0xFF515BD4)))),
+                                if (q["state"] == "排队" || q["state"] == "失败")
+                                  TextButton(
+                                      style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact, foregroundColor: Colors.red),
+                                      onPressed: () => _doCancel(q),
+                                      child: const Text("取消", style: TextStyle(fontSize: 12))),
+                                if (q["state"] == "下发中" || q["state"] == "已下发")
+                                  TextButton(
+                                      style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact, foregroundColor: Colors.red.shade800),
+                                      onPressed: () => _doCancel(q, task: true),
+                                      child: const Text("撤销任务", style: TextStyle(fontSize: 12))),
+                              ]),
+                    ),
+                  if (_queueItems.isEmpty)
+                    const Padding(
+                        padding: EdgeInsets.all(24),
+                        child: Center(
+                            child: Text("本单暂无队列（点行内「一键叫车」入队）",
+                                style: TextStyle(color: Colors.grey)))),
+                ])),
+                Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                    child: Row(children: [
+                      if (canCtl)
+                        Expanded(
+                            child: OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(foregroundColor: Colors.red.shade700, side: BorderSide(color: Colors.red.shade200), padding: const EdgeInsets.symmetric(vertical: 12)),
+                                onPressed: _queueItems.isEmpty ? null : _clearAll,
+                                icon: const Icon(Icons.delete_sweep_outlined, size: 18),
+                                label: const Text("清空本单"))),
+                      if (canCtl) const SizedBox(width: 10),
+                      Expanded(
+                          child: FilledButton(
+                              style: FilledButton.styleFrom(backgroundColor: const Color(0xFF515BD4), padding: const EdgeInsets.symmetric(vertical: 12)),
+                              onPressed: () => Navigator.pop(mctx),
+                              child: const Text("关闭"))),
+                    ])),
+              ]);
+            })));
   }
 
   /// 一键叫车：本行全部货架框入服务器队列，自动分配空闲站台排队下发
