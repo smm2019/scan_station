@@ -37,8 +37,11 @@ class AuthUser {
         "role": role,
         "mustChangePw": mustChangePw
       };
-  String get roleName =>
-      role == "admin" ? "管理员" : (role == "warehouse" ? "仓管员" : "物料员");
+  String get roleName => role == "admin"
+      ? "管理员"
+      : (role == "warehouse"
+          ? "仓管员"
+          : (role == "inspector" ? "检验员" : "物料员"));
 }
 
 /// 会话持久化（SharedPreferences）
@@ -1068,6 +1071,8 @@ class _UserManagePageState extends State<UserManagePage> {
                               DropdownMenuItem(
                                   value: "warehouse", child: Text("仓管员")),
                               DropdownMenuItem(
+                                  value: "inspector", child: Text("检验员")),
+                              DropdownMenuItem(
                                   value: "admin", child: Text("管理员"))
                             ],
                             onChanged: (v) =>
@@ -1148,6 +1153,7 @@ class _UserManagePageState extends State<UserManagePage> {
               const roleNames = {
                 "material": "物料员",
                 "warehouse": "仓管员",
+                "inspector": "检验员",
                 "admin": "管理员"
               };
               return Padding(

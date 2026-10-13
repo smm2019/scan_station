@@ -1589,7 +1589,7 @@ const server = http.createServer(async (req, res) => {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station)).map((s) => { const m = stnMetaOf(s.station); return { ...s, alias: m.alias || '', role: ['any', 'out', 'in', 'insp'].includes(m.role) ? m.role : 'any', off: m.off === true }; }); // ㉖⑫ 附站台身份（PDA 站台页/叫车/检验选台按此显示与过滤）
         const aliases = {}; for (const c of AGV_STNS) { const a = stnAlias(c); if (a) aliases[c] = a; }
         const holdAvg = {}; for (const [k, v] of Object.entries(db.rcsHoldStat || {})) holdAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
-        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, cfgRev: db.cfgRev || 0 });
+        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), recent: (db.agvQueue || []).filter((q) => ['完成', '取消'].includes(q.state)).sort((a, b) => (b.updAt || 0) - (a.updAt || 0)).slice(0, 60), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, cfgRev: db.cfgRev || 0 }); // ㉖ recent=完成/取消终态（留2小时；失败项仍在 queue 活跃表带原因展示），队列控制台"最近任务"卡片数据源
       }
       // ===== ㉖⑫ 站台看板：每台实时状态+身份(别名/用途/停用)+今日吞吐+在途占用明细（指挥舱新页签，全端共用） =====
       if (req.method === 'GET' && p === '/api/agv/stboard') {
@@ -1681,7 +1681,7 @@ const server = http.createServer(async (req, res) => {
           added++;
         }
         save(); rcsPoll(); // 立即调度一轮
-        return send(res, 200, { ok: true, added, dup, conflict, msg: `已排队 ${added} 框${dup ? `（${dup} 框已在队列跳过）` : ''}${conflict ? `（${conflict} 框因移库占用跳过）` : ''}` });
+        return send(res, 200, { ok: true, added, dup, conflict, mode: db.agvDispatchMode || 'dry', msg: `已排队 ${added} 框${dup ? `（${dup} 框已在队列跳过）` : ''}${conflict ? `（${conflict} 框因移库占用跳过）` : ''}` });
       }
       if (req.method === 'GET' && p === '/api/agv/funnel') {
         const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '7') || 7));
