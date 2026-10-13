@@ -176,8 +176,8 @@ class _RequisitionPageState extends State<RequisitionPage>
         _ => Colors.grey,
       };
 
-  Future<void> _create() async {
-    // 从库存选零件号下单：多行 items
+  Future<void> _create({Map<String, String>? prefill}) async {
+    // 从库存选零件号下单：多行 items；prefill=再来一单（原单零件号+数量带入，可改）
     final agg = await computeStock();
     if (!mounted) return;
     final parts = agg.parts.values.where((p) => p.inStockQty > 0).toList()
@@ -185,6 +185,12 @@ class _RequisitionPageState extends State<RequisitionPage>
     if (parts.isEmpty) {
       _toast("当前库存为空，无法下单");
       return;
+    }
+    if (prefill != null && prefill.isNotEmpty) {
+      final miss = prefill.keys
+          .where((pn) => !parts.any((p) => p.partNo == pn))
+          .toList();
+      if (miss.isNotEmpty) _toast("原单零件 ${miss.join("、")} 当前无在库，未预填", err: false);
     }
     // ⑰该零件最近领用记录（从可见领料单聚合，最新在前）
     final hist = <String, List<String>>{};
@@ -200,7 +206,7 @@ class _RequisitionPageState extends State<RequisitionPage>
     final res = await showModalBottomSheet<Map<String, dynamic>>(
         context: context,
         isScrollControlled: true,
-        builder: (ctx) => _ReqCreateSheet(parts: parts, hist: hist));
+        builder: (ctx) => _ReqCreateSheet(parts: parts, hist: hist, prefill: prefill));
     if (res == null || !mounted) return;
     final r = await AuthApi.reqCreate(
         res["items"] as List<Map>, res["remark"]?.toString() ?? "",
@@ -224,9 +230,27 @@ class _RequisitionPageState extends State<RequisitionPage>
     final changed = await showModalBottomSheet<bool>(
         context: context,
         isScrollControlled: true,
-        builder: (ctx) =>
-            _ReqDetailSheet(rq: rq, toast: _toast, statusColor: _statusColor));
+        builder: (ctx) => _ReqDetailSheet(
+            rq: rq,
+            toast: _toast,
+            statusColor: _statusColor,
+            onAgain: _again));
     if (changed == true) _load();
+  }
+
+  /// ㉖ 再来一单：把原单零件号+数量带入新建弹层（可改），下单人为当前账号
+  void _again(Map rq) {
+    final pf = <String, String>{};
+    for (final e in List<Map>.from(rq["items"] ?? [])) {
+      final pn = e["partNo"]?.toString() ?? "";
+      if (pn.isEmpty) continue;
+      pf[pn] = (e["qty"] ?? "").toString();
+    }
+    if (pf.isEmpty) {
+      _toast("原单无有效零件行");
+      return;
+    }
+    _create(prefill: pf);
   }
 
   @override
@@ -254,7 +278,7 @@ class _RequisitionPageState extends State<RequisitionPage>
       ),
       floatingActionButton: canOrder
           ? FloatingActionButton.extended(
-              onPressed: _create,
+              onPressed: () => _create(),
               backgroundColor: const Color(0xFF515BD4),
               foregroundColor: Colors.white,
               icon: const Icon(Icons.add),
@@ -383,8 +407,9 @@ IconData _stIcon(String s) => switch (s) {
 // ---------- 新建领料单弹层：从库存选零件号+数量，可多行 ----------
 class _ReqCreateSheet extends StatefulWidget {
   final List<_StockPartRow> parts;
-  final Map<String, List<String>> hist; // ⑰零件号→最近领用记录
-  const _ReqCreateSheet({required this.parts, this.hist = const {}});
+  final Map<String, List<String>> hist; // 零件号→最近领用记录
+  final Map<String, String>? prefill; // 再来一单：原单零件号→数量预填（可改）
+  const _ReqCreateSheet({required this.parts, this.hist = const {}, this.prefill});
   @override
   State<_ReqCreateSheet> createState() => _ReqCreateSheetState();
 }
@@ -403,6 +428,14 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   @override
   void initState() {
     super.initState();
+    // ㉖ 再来一单：预填原单零件号数量（在库有才填，用户可改可清空）
+    final pf = widget.prefill;
+    if (pf != null && pf.isNotEmpty) {
+      for (final p in widget.parts) {
+        final q = pf[p.partNo];
+        if (q != null && q.isNotEmpty) _qtyCtrl[p.partNo] = TextEditingController(text: q);
+      }
+    }
     SharedPreferences.getInstance().then((sp) {
       final off = sp.getInt("pd_dateOffset") ?? 0;
       final d = DateTime.now().add(Duration(days: off));
@@ -675,8 +708,9 @@ class _ReqDetailSheet extends StatefulWidget {
   final Map rq;
   final void Function(String, {bool err}) toast;
   final Color Function(String) statusColor;
+  final void Function(Map rq)? onAgain; // ㉖ 再来一单：零件号+数量预填新建（下单人=当前账号）
   const _ReqDetailSheet(
-      {required this.rq, required this.toast, required this.statusColor});
+      {required this.rq, required this.toast, required this.statusColor, this.onAgain});
   @override
   State<_ReqDetailSheet> createState() => _ReqDetailSheetState();
 }
@@ -2257,6 +2291,20 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                             },
                       icon: const Icon(Icons.done_all),
                       label: const Text("确认收到货物"))),
+            if (widget.onAgain != null &&
+                List<Map>.from(_r["items"] ?? []).isNotEmpty)
+              ConstrainedBox(
+                  constraints: const BoxConstraints(minWidth: 110),
+                  child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFF00897B)),
+                      onPressed: () {
+                        final rq = _r;
+                        Navigator.pop(context, false);
+                        widget.onAgain!.call(rq); // 先关详情再开预填新建，避免双层弹层
+                      },
+                      icon: const Icon(Icons.replay, size: 16),
+                      label: const Text("再来一单"))),
             ConstrainedBox(
                 constraints: const BoxConstraints(minWidth: 92),
                 child: OutlinedButton(

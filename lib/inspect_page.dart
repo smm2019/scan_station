@@ -492,9 +492,20 @@ class _InspectPageState extends State<InspectPage>
                       padding: const EdgeInsets.symmetric(horizontal: 10))),
             ],
             if (st == "waitReturn")
-              Text(_assist ? "🔁 请按直调/领料出库出账" : "等待仓管出库出账",
-                  style:
-                      const TextStyle(fontSize: 11, color: Color(0xFFB26A00))),
+              if (_assist)
+                FilledButton.icon(
+                    onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => _InspectReturnPage(q: q, onDone: _load))),
+                    icon: const Icon(Icons.outbox, size: 18),
+                    label: const Text("退库出账"),
+                    style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFB26A00),
+                        padding: const EdgeInsets.symmetric(horizontal: 14)))
+              else
+                Text("等待仓管出库出账",
+                    style: const TextStyle(fontSize: 11, color: Color(0xFFB26A00))),
           ]),
         ]),
       ),
@@ -601,5 +612,274 @@ class _InspectPageState extends State<InspectPage>
         ),
       ),
     ]);
+  }
+}
+
+// ===================== ㉖ 检验退库出账页：判退货的框（waitReturn，压站台不回原货位）→ 扫转入货位 + 扫标签强核对一致 → MES直调出账 =====================
+// 逻辑：①扫/输转入货位（复用 mesLocInfo 大小写兜底）②扫货物标签，与工单标签不一致直接拒绝（防错框）③一致后查 MES 在库拿真实数量
+// ④点退库：SaveTRBarcodes 出账（同直调通道）→ createOutboundOrder 落出库台账并自动整框消账（库存减、库位清空）→ 服务器检测该框已不在账本，工单自动转「已退货出账」闭环
+class _InspectReturnPage extends StatefulWidget {
+  final Map q;
+  final VoidCallback? onDone;
+  const _InspectReturnPage({required this.q, this.onDone});
+  @override
+  State<_InspectReturnPage> createState() => _InspectReturnPageState();
+}
+
+class _InspectReturnPageState extends State<_InspectReturnPage> {
+  final _locCtrl = TextEditingController();
+  final _locFocus = FocusNode();
+  final _labelCtrl = TextEditingController();
+  final _labelFocus = FocusNode();
+  Map<String, String> _to = {};
+  Map<String, dynamic>? _label; // 核对通过并查到在库的 MES 标签数据
+  double _qty = 0;
+  bool _busy = false, _submitting = false;
+
+  String get _woCode => (widget.q["code"] ?? "").toString().toUpperCase();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _locFocus.requestFocus());
+  }
+
+  @override
+  void dispose() {
+    _locCtrl.dispose();
+    _locFocus.dispose();
+    _labelCtrl.dispose();
+    _labelFocus.dispose();
+    super.dispose();
+  }
+
+  void _toast(String m, {bool err = true}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(m),
+        backgroundColor: err ? Colors.red : Colors.green));
+  }
+
+  void _refocus(FocusNode f) {
+    f.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) f.requestFocus();
+    });
+  }
+
+  Future<void> _scanLoc() async {
+    final code = _locCtrl.text.trim();
+    if (code.isEmpty) return;
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final d = await mesLocInfo(code); // 大小写兜底（MES 主档可能小写货位码）
+      if (d == null) {
+        _toast("货位查询无信息：$code");
+        _refocus(_locFocus);
+        return;
+      }
+      setState(() {
+        _to = {
+          "WAREHOUSE_CODE": d["WAREHOUSE_CODE"]?.toString() ?? "",
+          "WAREHOUSE_NAME": d["WAREHOUSE_NAME"]?.toString() ?? "",
+          "DISTRICT_CODE": d["DISTRICT_CODE"]?.toString() ?? "",
+          "DISTRICT_NAME": d["DISTRICT_NAME"]?.toString() ?? "",
+          "LOC_CODE": d["LOC_CODE"]?.toString() ?? "",
+          "LOC_NAME": d["LOC_NAME"]?.toString() ?? "",
+        };
+        _label = null; // 换货位清空已扫标签（防串单）
+        _qty = 0;
+      });
+      _refocus(_labelFocus);
+    } catch (e) {
+      _toast("货位查询失败：${e.toString().replaceFirst("Exception: ", "")}");
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _scanLabel() async {
+    final code = _labelCtrl.text.trim().toUpperCase();
+    _labelCtrl.clear();
+    if (code.isEmpty) return;
+    if ((_to["LOC_CODE"] ?? "").isEmpty) {
+      _toast("请先扫描转入货位");
+      _refocus(_locFocus);
+      return;
+    }
+    if (_busy) return;
+    // 强核对：扫的标签必须就是本工单要退库的标签
+    if (code != _woCode) {
+      _toast("标签不符：扫入 $code，本工单退库标签应为 $_woCode");
+      _refocus(_labelFocus);
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final d = await mesGetData(
+          "/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
+        "barcode": code,
+        "warehouseCode": _to["WAREHOUSE_CODE"] ?? "",
+        "districtCode": _to["DISTRICT_CODE"] ?? "",
+        "locCode": _to["LOC_CODE"] ?? "",
+      });
+      if (d == null) {
+        _toast("MES 查无该标签在库信息，无法退库：$code");
+        _refocus(_labelFocus);
+        return;
+      }
+      setState(() {
+        _label = Map<String, dynamic>.from(d);
+        _qty = (d["QTY"] as num?)?.toDouble() ?? 0;
+      });
+    } catch (e) {
+      _toast("标签查询失败：${e.toString().replaceFirst("Exception: ", "")}");
+    } finally {
+      if (mounted) setState(() => _busy = false);
+      _refocus(_labelFocus);
+    }
+  }
+
+  bool get _ready =>
+      (_to["LOC_CODE"] ?? "").isNotEmpty && _label != null && _woCode.isNotEmpty;
+
+  Future<void> _submit() async {
+    if (_submitting || !_ready) return;
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (c2) => AlertDialog(
+              title: const Text("确认退库出账"),
+              content: Text(
+                  "标签 $_woCode（${widget.q["part"] ?? ""}）\n退往：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}\n数量：${_qty} 件\n\n提交后：MES 直调出账 → 库存扣减、该框库位清空 → 检验工单自动「已退货出账」闭环。不可撤销，确认？"),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消")),
+                FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: const Color(0xFFB26A00)),
+                    onPressed: () => Navigator.pop(c2, true),
+                    child: const Text("确认退库")),
+              ],
+            ));
+    if (yes != true || !mounted) return;
+    setState(() => _submitting = true);
+    try {
+      final labelNo = (_label!["SCAN_BARCODE"] ?? _label!["LABEL_NO"] ?? _woCode).toString();
+      final label = Map<String, dynamic>.from(_label!)..["SCAN_BARCODE"] = labelNo;
+      final row = <String, dynamic>{
+        "PART_NO": (widget.q["part"] ?? "").toString(),
+        "MITEM_ID": _label!["MITEM_ID"],
+        "MITEM_CODE": _label!["MITEM_CODE"],
+        "MITEM_NAME": _label!["MITEM_DESC"] ?? _label!["MITEM_NAME"] ?? "",
+        "UOM": _label!["UOM"] ?? "",
+        "REQ_QTY": _qty,
+        "Barcodes": [label],
+      };
+      final detail = Map<String, dynamic>.from(row)..remove("PART_NO");
+      detail["TO_WAREHOUSE_CODE"] = _to["WAREHOUSE_CODE"];
+      detail["TO_DISTRICT_CODE"] = _to["DISTRICT_CODE"];
+      detail["TO_LOC_CODE"] = _to["LOC_CODE"];
+      detail["isCheckSap"] = false;
+      // ① MES 直调出账（同直调通道，失败抛异常进 catch，不落本地账）
+      await mesReq("POST", "/api/v1/rawtransfer/SaveTRBarcodes", body: {"details": [detail]});
+      // ② 落出库台账 + 自动整框消账（库存减、库位清空、同步电脑）；失败不回滚 MES（已真实出账），仅提示
+      try {
+        final ob = await createOutboundOrder([row], Map<String, String>.from(_to));
+        _toast("退库成功，已生成出库单 ${ob.orderNo}，工单将转「已退货出账」", err: false);
+      } catch (e) {
+        _toast("MES 已出账，但出库台账落库失败：$e");
+      }
+      widget.onDone?.call();
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      _toast("退库失败：${e.toString().replaceFirst("Exception: ", "")}");
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF7F7FA),
+      appBar: AppBar(
+        title: Text("退库出账 · $_woCode", style: const TextStyle(fontSize: 16)),
+        backgroundColor: const Color(0xFFB26A00),
+        foregroundColor: Colors.white,
+      ),
+      body: ListView(padding: const EdgeInsets.all(12), children: [
+        Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: Colors.white, borderRadius: BorderRadius.circular(10)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text("检验工单：${widget.q["part"] ?? ""}${(widget.q["nm"] ?? "").toString().isNotEmpty ? " · ${widget.q["nm"]}" : ""}",
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+              const SizedBox(height: 4),
+              Text("原货位 ${widget.q["from"] ?? ""} → 现压站台 ${widget.q["station"] ?? ""}",
+                  style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+              if ((widget.q["retReason"] ?? "").toString().isNotEmpty)
+                Text("退货原因：${widget.q["retReason"]}",
+                    style: const TextStyle(fontSize: 12, color: Color(0xFFB26A00))),
+            ])),
+        const SizedBox(height: 12),
+        // 第一步：转入货位
+        Row(children: [
+          Expanded(
+              child: TextField(
+                  controller: _locCtrl,
+                  focusNode: _locFocus,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _scanLoc(),
+                  decoration: const InputDecoration(
+                      labelText: "① 扫描/输入转入货位 *",
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      prefixIcon: Icon(Icons.location_searching, size: 20)))),
+          const SizedBox(width: 8),
+          ElevatedButton(
+              onPressed: _busy ? null : _scanLoc,
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
+              child: const Text("查询")),
+        ]),
+        if ((_to["LOC_CODE"] ?? "").isNotEmpty)
+          Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text("转入：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}（${_to["LOC_CODE"]}）",
+                  style: const TextStyle(fontSize: 12.5, color: Color(0xFF00897B), fontWeight: FontWeight.w600))),
+        const SizedBox(height: 12),
+        // 第二步：扫标签核对
+        TextField(
+            controller: _labelCtrl,
+            focusNode: _labelFocus,
+            textInputAction: TextInputAction.done,
+            onSubmitted: (_) => _scanLabel(),
+            decoration: InputDecoration(
+                labelText: "② 扫描该框货物标签（须为 $_woCode）",
+                isDense: true,
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.qr_code_scanner, size: 20))),
+        if (_label != null)
+          Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text("✓ 标签核对一致 · 在库 $_qty 件（${_label!["MITEM_DESC"] ?? _label!["MITEM_NAME"] ?? ""}）",
+                  style: const TextStyle(fontSize: 12.5, color: Colors.green, fontWeight: FontWeight.w600))),
+        const SizedBox(height: 18),
+        ElevatedButton.icon(
+            onPressed: (_ready && !_submitting) ? _submit : null,
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFB26A00),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                disabledBackgroundColor: Colors.grey.shade300),
+            icon: const Icon(Icons.outbox),
+            label: Text(_submitting ? "退库中…" : "③ 退库出账（库存减·库位清空）")),
+        if (!_ready)
+          Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text("需先查询转入货位并扫描核对标签一致后方可退库",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 11.5, color: Colors.grey))),
+      ]),
+    );
   }
 }
