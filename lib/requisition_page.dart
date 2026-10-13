@@ -1570,9 +1570,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      final d = await mesGetData(
-          "/api/v1/invwarehousetransfer/getwarehousemodelinfo",
-          {"loccode": code});
+      final d = await mesLocInfo(code); // ㉖ 与直调同款共用助手：MES 主档大小写不一，查不到自动互换大小写重试
       if (d == null) {
         widget.toast("货位查询无信息：$code");
         return;

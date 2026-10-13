@@ -71,7 +71,7 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
     if (_busy) return;
     setState(() => _busy = true);
     try {
-      final d = await _getData("/api/v1/invwarehousetransfer/getwarehousemodelinfo", {"loccode": code});
+      final d = await mesLocInfo(code); // ㉖ 共用助手：大小写兜底
       if (d == null) { _toast("货位查询无信息：$code"); return; }
       setState(() {
         _to = {
@@ -424,4 +424,20 @@ Future<Map?> mesGetData(String path, Map<String, String> query) async {
     if (d == null && j["success"] == true) return null;
   }
   return null;
+}
+
+/// ㉖ 转入货位查询（领料/直调共用）：MES 主档存在小写货位码（如 a109-1），
+/// 单大小写必漏——原样查不到时自动按大小写互换再试一次，两端行为一致。
+Future<Map?> mesLocInfo(String code) async {
+  const p = "/api/v1/invwarehousetransfer/getwarehousemodelinfo";
+  var d = await mesGetData(p, {"loccode": code});
+  if (d == null && code.isNotEmpty) {
+    final alt = code.contains(RegExp('[A-Z]')) && code.contains(RegExp('[a-z]'))
+        ? "" // 已有大小写混合，不再试
+        : code.contains(RegExp('[A-Z]'))
+            ? code.toLowerCase()
+            : code.toUpperCase();
+    if (alt.isNotEmpty) d = await mesGetData(p, {"loccode": alt});
+  }
+  return d;
 }
