@@ -279,7 +279,7 @@ function buildExport(ds, fRaw) {
   const CAP = 20000;
   const mk = (label, headers, types, rows, src) => ({ label, headers, types, rows: rows.slice(0, CAP), total: rows.length, src, f, caliber: EXP_CAL[label] || [] });
   if (ds === 'D1') return mk('库位表', ['货位', '标签号', '零件号', '物料名称', '数量', '批次', '料框', '登记人', '登记时间', '搬运方式', '来源'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], ledgerView().map((x) => [x.l, x.c, x.p || '', x.n || '', x.q || 0, x.b || '', x.f || '', x.by || '', expTs(x.t), x.mv || '', x.src || '']).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), '货位账本（服务器合并快照；批次=MES标签打印日期）');
-  if (ds === 'D2') { const m = {}; for (const x of db.ledger) { const pn = String(x.p || '').toUpperCase() || '(无零件号)'; const k = boxKeyOf(x); const e = (m[pn] = m[pn] || { b: {}, locs: {}, nm: '' }); e.b[k] = Math.max(e.b[k] || 0, Number(x.q) || 0); e.locs[String(x.l).toUpperCase()] = (e.locs[String(x.l).toUpperCase()] || 0) + 1; if (!e.nm && x.n) e.nm = x.n; }
+  if (ds === 'D2') { const m = {}; for (const x of db.ledger) { const pn = String(x.p || '').toUpperCase() || '(无零件号)'; const k = boxKeyOf(x); const e = (m[pn] = m[pn] || { b: {}, locs: {}, nm: '' }); e.b[k] = (e.b[k] || 0) + (Number(x.q) || 0); e.locs[String(x.l).toUpperCase()] = (e.locs[String(x.l).toUpperCase()] || 0) + 1; if (!e.nm && x.n) e.nm = x.n; } // ㉖ 框数量=框内各标签之和
     // ㉕B12 最近出入动向：入库=采集流水最大t；出库=出库单明细最大createdAt
     const lastIn = {}, lastOut = {};
     for (const s of Object.values(db.scanlog || {})) { if (s.cx) continue; const pn = String(s.pn || '').toUpperCase(); if (!pn) continue; lastIn[pn] = Math.max(lastIn[pn] || 0, s.t || 0); }
@@ -598,7 +598,6 @@ function sweepAssignOpen() {
 }
 // 框键：有托号按托号合并（整托多码=1框）；无托号按"同货位+同零件号"合并（与PDA库存口径一致）；都缺才一码一框
 // ===== ⑮ 库存事件检测：预约到料 + 断料预警（账本合并后调用） =====
-const _wseen = new Set(); // 到料通知10分钟聚合去重（内存级，重启即清可接受）
 function partBoxCounts() {
   const m = {}, seen = {}; // 按框计（同托多码=1框）
   for (const x of db.ledger || []) {
@@ -617,16 +616,17 @@ function stockWatchScan(pre, byName) {
     if (wl.length) {
       const arrived = {}, _abseen = {};
       for (const x of db.ledger || []) { if ((x.t || 0) < t0.getTime()) continue; const p = String(x.p || '').toUpperCase(); if (!p) continue; const kk = p + '|' + boxKeyOf(x); if (_abseen[kk]) continue; _abseen[kk] = 1; arrived[p] = (arrived[p] || 0) + 1; }
-      const slot = Math.floor(Date.now() / 600000); // 10分钟窗口
+      const dayKey = new Date().toISOString().slice(0, 10); // ㉖ 预约到料=每零件每天一次（旧10分钟窗口：当天只要持续入库就反复轰炸）
+      db.watchSeen = (db.watchSeen && typeof db.watchSeen === 'object' && !Array.isArray(db.watchSeen)) ? db.watchSeen : {};
+      for (const k of Object.keys(db.watchSeen)) if (!k.endsWith('|' + dayKey)) delete db.watchSeen[k]; // 跨天自动清
       for (const w of wl) {
         const p = String(w.partNo || '').toUpperCase();
         if (!p || !arrived[p]) continue;
-        const lk = p + '|' + w.userId + '|' + slot;
-        if (_wseen.has(lk)) continue; _wseen.add(lk);
-        if (_wseen.size > 8000) _wseen.clear();
+        const lk = p + '|' + w.userId + '|' + dayKey;
+        if (db.watchSeen[lk]) continue; db.watchSeen[lk] = 1; save();
         const user = db.users.find((x) => x.id === w.userId);
         if (!user || !user.enabled) continue;
-        notify(w.userId, 'watch_in', `🛒 预约到料：零件 ${p} 今日入库 ${arrived[p]} 框，当前在架 ${post[p] || 0} 框`, '');
+        notify(w.userId, 'watch_in', `🛒 预约到料（今日首次）：零件 ${p} 今日已入库 ${arrived[p]} 框，当前在架 ${post[p] || 0} 框`, '');
       }
     }
     // 断料预警：合并前有、合并后清零；每零件每天最多一次
@@ -669,7 +669,7 @@ function groupLedgerBoxes(list) {
     if (!g.has(k)) g.set(k, { codes: [], items: [], l: x.l, q: 0, b: String(x.b || ''), f: String(x.f || ''), pid: String(x.pid || '') });
     const box = g.get(k);
     box.codes.push(x.c); box.items.push({ c: x.c, q: Number(x.q) || 0 });
-    box.q = Math.max(box.q, Number(x.q) || 0); // MES每码数量都是整框数→取单码值不取和，同框多码不翻倍
+    box.q += Number(x.q) || 0; // ㉖ 框数量=框内各标签之和（一筐两标签各25→50；旧"每码都是整框数取max"假设作废）
     if (x.b && (!box.b || String(x.b) < box.b)) box.b = String(x.b); // 批次取最早
   }
   return [...g.values()].sort((a, b) => (a.b || '9999').localeCompare(b.b || '9999') || String(a.l).localeCompare(String(b.l))); // 批次早优先
@@ -1852,7 +1852,7 @@ const server = http.createServer(async (req, res) => {
         for (const x of ledgerView()) { // ㉖ 回填视图：旧版PDA推的空零件行按流水零件号归队（否则档案"在架框"漏框）
           if (String(x.p || '').toUpperCase() !== pn) continue;
           const k = boxKeyOf(x); const e = (bm[k] = bm[k] || { tags: [], locs: {}, q: 0, nm: '', last: 0 });
-          e.tags.push(x.c); e.locs[String(x.l || '').toUpperCase()] = 1; e.q = Math.max(e.q, Number(x.q) || 0); e.last = Math.max(e.last, Number(x.t) || 0);
+          e.tags.push(x.c); e.locs[String(x.l || '').toUpperCase()] = 1; e.q += Number(x.q) || 0; e.last = Math.max(e.last, Number(x.t) || 0); // ㉖ 框数量=框内各标签之和（一筐两标签各25→50；旧 max 假设作废）
           if (!e.nm && x.n) e.nm = String(x.n).slice(0, 80);
         }
         const boxes = Object.values(bm).map((b) => ({ loc: Object.keys(b.locs)[0] || '', tags: b.tags, q: b.q, last: b.last })).sort((a, x) => x.last - a.last);
@@ -2106,9 +2106,10 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, list: buildEvents() });
       }
       if (req.method === 'GET' && p === '/api/agv/stntl') { // ㉔站台状态时间线（甘特数据源，近8h）
-        const cut = Date.now() - 8 * 3600 * 1000;
+        const nowMs = Date.now(), cut = nowMs - 8 * 3600 * 1000;
         const out = {}; for (const [k, a] of Object.entries(db.stnTl || {})) { const seg = a.filter((x) => x.t >= cut); if (seg.length) out[k] = seg; }
-        return send(res, 200, { ok: true, tl: out });
+        for (const k of AGV_STNS) { if (!out[k]) out[k] = [{ s: '空闲', t: cut }]; } // ㉖ 全 12 台都出：无采样历史的补满窗空闲，甘特不再"只显示有动过的台"
+        return send(res, 200, { ok: true, tl: out, all: AGV_STNS, at: new Date(nowMs).toISOString() });
       }
       if (req.method === 'GET' && p === '/api/agv/trail') {
         const mins = Math.min(1440, Math.max(5, parseInt(url.searchParams.get('mins') || '360') || 360));

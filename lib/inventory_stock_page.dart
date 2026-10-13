@@ -136,13 +136,14 @@ Future<_StockAgg> computeStock() async {
     if (old == null) {
       boxesByKey[key] = box;
     } else {
-      if (box.qty > old.qty) old.qty = box.qty; // 框数量取框内标签最大值（防个别码缺失误计）
+      old.qty += box.qty; // ㉖ 框数量=框内各标签之和（一筐两标签各25→50；采集有防重+作废墓碑，同码仅一条有效不会双算）
       old.inStock = old.inStock && box.inStock; // 框内任一标签已发→整框已出库（一框一发）
       if (old.loc.isEmpty && box.loc.isNotEmpty)
         old.loc = box.loc; // 流水先建框、账本后带位时补货位
     }
   }
 
+  final _boxSeen = <String>{}; // ㉖ sum 口径防护：同码多条有效采集记录只计一次（流水行仍全量展示）
   for (final r in records) {
     final cancelled = r.isCancel;
     final partNo = r.mesPartNo ?? "";
@@ -162,6 +163,7 @@ Future<_StockAgg> computeStock() async {
       ..operator = oper
       ..cancelled = cancelled);
     if (cancelled || partNo.isEmpty) continue;
+    if (!_boxSeen.add(r.goodsCode.toUpperCase())) continue; // 同码已计过框→跳过
     final p = placedMap[r.goodsCode];
     final pid = extraMap[r.goodsCode]?.palletId ?? "";
     addBox(
