@@ -1057,11 +1057,13 @@ function ledgerPut(cur, code, row, prev) { const hist = ((prev && prev.hist) || 
 // 打印时间缺失/不可解析时回退原 LOT_NO，绝不返回空（避免网页批次列变空白）。
 function printLot(mk, fallback) { const s = String(mk || '').trim(); const p = (n) => String(n).padStart(2, '0'); const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/); if (m) return m[1] + '-' + p(+m[2]) + '-' + p(+m[3]); if (s) { const d = new Date(s); if (!isNaN(d.getTime())) return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); } return String(fallback || ''); }
 // 标签号 → MES打印时间 映射（账本行不存打印时间，统一从采集流水取；带条数+时间戳失效，防无界增长）
-let _mkMap = null, _mkKey = '';
-function mkMapOf() { const key = (db.scanlogCount || 0) + '|' + (db.scanlogAt || ''); if (_mkMap && _mkKey === key) return _mkMap; const m = {}; for (const s of Object.values(db.scanlog || {})) { const c = String(s.code || '').toUpperCase(); if (c && s.mk && !m[c]) m[c] = String(s.mk); } _mkMap = m; _mkKey = key; return m; }
-// 账本只读视图（批次派生）：仅供查询出口/看板/导出/取货建议使用；
-// 绝不用于写路径——ledgerHash 依赖库内原 b 值做增量同步仲裁，改派生值会触发全量重推。
-function ledgerView() { const mm = mkMapOf(); return (db.ledger || []).map((x) => { const mk = mm[String(x.c || '').toUpperCase()]; return mk ? Object.assign({}, x, { b: printLot(mk, x.b) }) : x; }); }
+let _metaMap = null, _metaKey = '';
+// 标签号 → 采集流水元信息（MES打印时间 + 最新有效一条的零件号/物料名/数量）：
+// 旧版 PDA 推的账本行零件字段可能为空——统一从流水回填
+function scanMetaOf() { const key = (db.scanlogCount || 0) + '|' + (db.scanlogAt || ''); if (_metaMap && _metaKey === key) return _metaMap; const m = {}; for (const s of Object.values(db.scanlog || {})) { const c = String(s.code || '').toUpperCase(); if (!c) continue; const e = m[c] = m[c] || { mk: '', pn: '', nm: '', q: 0, t: -1 }; if (!e.mk && s.mk) e.mk = String(s.mk); const t = Number(s.t) || 0; if (!s.cx && t >= e.t) { e.t = t; e.pn = String(s.pn || ''); e.nm = String(s.nm || ''); e.q = Number(s.q) || 0; } } _metaMap = m; _metaKey = key; return m; }
+// 账本只读视图（批次派生 + 空零件字段回填）：仅供查询出口/看板/导出/取货建议/零件档案使用；
+// 绝不用于写路径——ledgerHash 依赖库内原值做增量同步仲裁，改派生值会触发全量重推。
+function ledgerView() { const mm = scanMetaOf(); return (db.ledger || []).map((x) => { const mt = mm[String(x.c || '').toUpperCase()]; if (!mt) return x; const patch = {}; if (mt.mk) patch.b = printLot(mt.mk, x.b); if (!(x.p || '') && mt.pn) patch.p = mt.pn; if (!(x.n || '') && mt.nm) patch.n = mt.nm; if (!(Number(x.q) > 0) && mt.q) patch.q = mt.q; return Object.keys(patch).length ? Object.assign({}, x, patch) : x; }); }
 // ---- ㉕A1 导出角色门禁（方案6.6）：D9活动流=仅管理员；D8领料台账/D10盘点=仓管+管理员；其余登录即可 ----
 function expRoleOk(u, label) { label = String(label || ''); if (label === '活动流审计') return u.role === 'admin'; if (label === '领料台账' || label.indexOf('盘点结果') === 0) return u.role === 'warehouse' || u.role === 'admin'; return true; }
 // ---- ㉕B1 ops活动流：关键操作全景留痕（谁/何时/动作/对象/详情），滚动5000条，供控制后台与D9审计导出 ----
@@ -1205,14 +1207,11 @@ const server = http.createServer(async (req, res) => {
       const fc = (url.searchParams.get('c') || '').trim().toUpperCase();
       const fl = (url.searchParams.get('l') || '').trim().toUpperCase();
       const fz = (url.searchParams.get('fz') || '').trim().toUpperCase();
-      let list = db.ledger;
+      let list = ledgerView(); // ㉖ 统一视图：批次派生 + 旧版PDA推的空零件字段从流水回填（零件号搜索因此能命中回填行）
       if (fz) list = list.filter(x => String(x.c).toUpperCase().includes(fz) || String(x.l).toUpperCase().includes(fz) || String(x.p || '').toUpperCase().includes(fz) || String(x.n || '').toUpperCase().includes(fz));
       if (fc) list = list.filter(x => String(x.c).toUpperCase().startsWith(fc));
       if (fl) list = list.filter(x => String(x.l).toUpperCase().startsWith(fl));
-      // ㉖ 批次口径统一：账本行不含打印时间，按标签号从采集流水映射派生（浅拷贝，不回写 db.ledger）
-      const _mm = mkMapOf();
-      const _led = list.map((x) => { const mk = _mm[String(x.c || '').toUpperCase()]; return mk ? Object.assign({}, x, { b: printLot(mk, x.b) }) : x; });
-      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, items: _led, tomb: db.ledgerTomb || [] });
+      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, items: list, tomb: db.ledgerTomb || [] });
     }
 
     // ---- 货位账本：电脑查询页（表格地图式：按货位排序，同位多标签并排显示）----
@@ -1693,12 +1692,18 @@ const server = http.createServer(async (req, res) => {
         const code = String(url.searchParams.get('c') || '').trim().toUpperCase();
         if (!code) return send(res, 400, { ok: false, msg: '缺少 c' });
         const q = (db.agvQueue || []).filter((x) => String(x.code).toUpperCase() === code).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
-        const spKey = q ? String(q.fromLoc).toUpperCase() : '';
+        let spKey = q ? String(q.fromLoc).toUpperCase() : '';
+        let wantCk = q && q.type === 'inbound' ? 'in' : (q && q.type === 'outbound' ? 'out' : ''); // ㉖⑰ 入库搬运链路：按队列项方向匹配沉淀任务（原来只匹配出库，入库详情永远查不到）
+        if (!spKey) { // ㉖ 队列项已出队（失败项仅留30分钟/完成项2小时）→ 从流水/账本回退初始站台锚点，否则AGV节点全丢
+          const sl0 = Object.values(db.scanlog || {}).find((s) => String(s.code || '').toUpperCase() === code && !s.cx && Number(s.wt) === 0);
+          const led0 = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code && String(x.mv || '') === 'AGV');
+          spKey = String((sl0 && sl0.st) || (led0 && led0.src) || '').toUpperCase();
+          if (spKey && !wantCk) wantCk = /-CK-/.test(spKey) ? 'in' : 'out'; // 起点是站台→入库回架任务；起点是货架→出库任务
+        }
         let task = null;
         if (q && q.wmsTask && db.agvTasks && db.agvTasks[q.wmsTask]) task = { ...db.agvTasks[q.wmsTask], no: q.wmsTask };
         if (!task) { // 时间窗+起点匹配最近一条出库任务
           const lo = q ? (q.at || 0) - 3600000 : Date.now() - 2 * 86400000;
-          const wantCk = q && q.type === 'inbound' ? 'in' : (q && q.type === 'outbound' ? 'out' : ''); // ㉖⑰ 入库搬运链路：按队列项方向匹配沉淀任务（原来只匹配出库，入库详情永远查不到）
           for (const [no, t] of Object.entries(db.agvTasks || {})) { if ((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey && t.fin >= lo && (!task || t.fin > task.fin)) task = { ...t, no }; }
         }
         if (!task && spKey) { // 在途任务（未沉淀）
@@ -1722,7 +1727,7 @@ const server = http.createServer(async (req, res) => {
           chain.call = Date.parse((ce && ce.t) || '') || 0;
         }
         chain.enqueue = q ? (q.at || 0) : 0;
-        chain.dispatch = q ? (q.sentAt || 0) : 0;
+        chain.dispatch = q ? (q.sentAt || 0) : (task ? (task.ex || 0) : 0); // ㉖ 出队后用RCS接令时刻兜底（接令必在下发后一刻内）
         if (task) { chain.exe = task.ex || 0; chain.pick = task.pick || 0; chain.arrive = task.fin || 0; }
         if (q && q.state === '完成') chain.cleared = q.updAt || 0;
         return send(res, 200, { ok: true, task: task ? { no: task.no, sp: task.sp, ep: task.ep, car: task.car || null, stateText: stText, tl } : null, queueState: q ? q.state : '', queueErr: q ? (q.err || '') : '', qType: q ? (q.type || '') : '', chain });
@@ -1776,7 +1781,7 @@ const server = http.createServer(async (req, res) => {
         const pn = String(url.searchParams.get('pn') || '').trim().toUpperCase();
         if (!pn) return send(res, 400, { ok: false, msg: '缺少 pn' });
         const bm = {};
-        for (const x of db.ledger || []) {
+        for (const x of ledgerView()) { // ㉖ 回填视图：旧版PDA推的空零件行按流水零件号归队（否则档案"在架框"漏框）
           if (String(x.p || '').toUpperCase() !== pn) continue;
           const k = boxKeyOf(x); const e = (bm[k] = bm[k] || { tags: [], locs: {}, q: 0, nm: '', last: 0 });
           e.tags.push(x.c); e.locs[String(x.l || '').toUpperCase()] = 1; e.q = Math.max(e.q, Number(x.q) || 0); e.last = Math.max(e.last, Number(x.t) || 0);
