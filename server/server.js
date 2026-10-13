@@ -486,6 +486,7 @@ function reqItemsSuggestText(r) {
 // ---- ㉖B8 运营参数：调度/通知/告警阈值集中可调，服务器端统一取值（改完即时生效）----
 const PARAMS = {
   pollSec:        { name: 'RCS轮询间隔', unit: '秒', min: 5, max: 300, d: 20, tip: '站台/车辆/任务刷新频率，越小越实时但越吃RCS负载' },
+  uiRefreshSec:   { name: '指挥舱页面刷新', unit: '秒', min: 5, max: 600, d: 30, tip: '网页指挥舱各页(车辆/交管/队列/看板等)自动拉取间隔；数据新鲜度受RCS轮询节律限制，设小于轮询间隔时以轮询为准' },
   assignMin:      { name: '指定单超时放开', unit: '分钟', min: 1, max: 240, d: 30, tip: '指定仓管员下单后，超时未接单自动放开给全员' },
   urgeMin:        { name: '催单最小间隔', unit: '分钟', min: 1, max: 120, d: 10, tip: '同一张领料单两次催单的最小间隔，防轰炸' },
   pushMin:        { name: '急料到站催扫', unit: '分钟', min: 1, max: 60, d: 5, tip: '急料框到站台超此时长未扫码→广播全体仓管' },
@@ -1277,7 +1278,7 @@ const server = http.createServer(async (req, res) => {
 
       // 心跳/取当前身份+功能开关（App 前台恢复与定时轮询调用；停用即时生效靠它）
       if (req.method === 'GET' && p === '/api/me') {
-        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), serverTime: new Date().toISOString() });
+        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, serverTime: new Date().toISOString() });
       }
 
       // 修改自己的密码
@@ -1663,7 +1664,8 @@ const server = http.createServer(async (req, res) => {
         const run = await rcsReq2('/task/getTaskInfo');
         const dn = await rcsReq2('/task/getDoneTaskList');
         const parse = (r) => { try { return typeof r.data === 'string' ? JSON.parse(r.data) : (r.data || []); } catch (_) { return []; } };
-        const row = (t) => { const { sp, ep } = parsePts(t); const nt = nodeTimes(t); return { no: String(t.dispatchNo || ''), st: Number(t.taskState), pri: Number(t.taskPriority || 0), car: t.exeAgvId == null ? null : Number(t.exeAgvId), sp, ep, pal: String(t.palletType || ''), type: String(t.taskType || ''), build: nt.buildAt, exe: nt.startAt, pick: nt.pickAt, put: nt.putAt, det: (t.taskDetailList || []).length }; };
+        const NAV_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-/; // 与 PDA 同款判定：调度号为 UUID=车辆自主导航(回待命/去充电)，业务任务号是 LL/AGV- 单号
+        const row = (t) => { const { sp, ep } = parsePts(t); const nt = nodeTimes(t); const no = String(t.dispatchNo || ''); const ty = String(t.taskType || ''); return { no, nav: NAV_RE.test(no) || ty === 'CHARGE' || ty === 'STANDBY', st: Number(t.taskState), pri: Number(t.taskPriority || 0), car: t.exeAgvId == null ? null : Number(t.exeAgvId), sp, ep, pal: String(t.palletType || ''), type: ty, build: nt.buildAt, exe: nt.startAt, pick: nt.pickAt, put: nt.putAt, det: (t.taskDetailList || []).length }; };
         const runA = run.ok ? parse(run).map(row) : [];
         const doneA = dn.ok ? parse(dn).map(row).sort((a, b) => (b.put || b.exe || 0) - (a.put || a.exe || 0)).slice(0, 80) : [];
         return send(res, 200, { ok: run.ok || dn.ok, live: run.ok, err: run.ok ? '' : run.msg, running: runA, done: doneA, at: new Date().toISOString() });
