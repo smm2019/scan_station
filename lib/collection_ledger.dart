@@ -899,12 +899,20 @@ Future<Map> ledgerPushNow() async {
     };
     final pids = {
       for (final e in await _globalIsar.recordExtras.where().findAll())
-        e.goodsCode: e.palletId
-    }; // 托号：整托多码同框
+        e.goodsCode.toUpperCase(): e.palletId
+    }; // 托号：整托多码同框（㉖ 键统一大写：扩展表存扫码原样，账本存大写，此前大小写不一致致托号丢失）
     // 入库搬运方式：采集流水 workType 0=AGV站台(来站=stationNo) 1=人工地面(来源=groundLocation)；无流水=手工登记
     final mvMap = <String, String>{}, srcMap = <String, String>{};
+    final pnMap = <String, String>{},
+        nmMap = <String, String>{},
+        lotMap = <String, String>{},
+        qMap = <String, double>{}; // ㉖ 零件信息回退源（LabelInfo 未缓存时用）
     final recs = await _globalIsar.scanRecords.where().findAll();
     recs.sort((a, b) => a.scanTime.compareTo(b.scanTime));
+    final exMap = {
+      for (final e in await _globalIsar.recordExtras.where().findAll())
+        e.goodsCode.toUpperCase(): e
+    }; // ㉖ 键统一大写（与 pids 同源同因）
     for (final r in recs) {
       if (r.isCancel) continue;
       final up = r.goodsCode.toUpperCase();
@@ -915,13 +923,26 @@ Future<Map> ledgerPushNow() async {
         mvMap[up] = "人工";
         srcMap[up] = r.groundLocation ?? "";
       }
+      if ((r.mesPartNo ?? "").isNotEmpty) pnMap[up] = r.mesPartNo!;
+      if ((r.mesQty ?? 0) > 0) qMap[up] = r.mesQty!;
+      final ex = exMap[up];
+      if ((ex?.mesItemName ?? "").isNotEmpty) nmMap[up] = ex!.mesItemName;
+      if ((ex?.mesLotNo ?? "").isNotEmpty) lotMap[up] = ex!.mesLotNo;
     }
     final items = all.map((p) {
-      final i = infos[p.goodsCode];
-      final pid = pids[p.goodsCode] ?? "";
       final up = p.goodsCode.toUpperCase();
+      final i = infos[up];
+      final pid = pids[up] ?? "";
       final mv = mvMap[up] ?? "登记";
       final src = srcMap[up] ?? "";
+      // ㉖ 零件信息回退：LabelInfo 缓存仅由"服务器拉取合并"填充，本机新扫的框还没有缓存 →
+      // 必须回退本机采集流水/扩展表的 MES 结果，否则网页货位账本零件号/物料/数量全空（看似"没显示该货位有货"）
+      final _ok = i != null && !i.missing;
+      final pn =
+          _ok && (i.partNo as String).isNotEmpty ? i.partNo : (pnMap[up] ?? "");
+      final nm = _ok && i.itemName.isNotEmpty ? i.itemName : (nmMap[up] ?? "");
+      final lot = _ok && i.lotNo.isNotEmpty ? i.lotNo : (lotMap[up] ?? "");
+      final qty = _ok && i.qty > 0 ? i.qty : (qMap[up] ?? 0);
       return {
         "c": p.goodsCode,
         "l": p.loc,
@@ -930,12 +951,10 @@ Future<Map> ledgerPushNow() async {
         "mv": mv,
         if (src.isNotEmpty) "src": src,
         if (pid.isNotEmpty) "pid": pid,
-        if (i != null && !i.missing) ...{
-          "p": i.partNo,
-          "n": i.itemName,
-          "q": i.qty,
-          "b": i.lotNo
-        },
+        if (pn.isNotEmpty) "p": pn,
+        if (nm.isNotEmpty) "n": nm,
+        if (qty > 0) "q": qty,
+        if (lot.isNotEmpty) "b": lot,
       };
     }).toList();
     final del = await ledgerTombs();
