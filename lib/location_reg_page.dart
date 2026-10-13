@@ -53,24 +53,58 @@ class _LocationRegPageState extends State<LocationRegPage> {
       }
     }
     final ctrl = TextEditingController();
+    final batchCtrl = TextEditingController(text: "12"); // 批量设置目标格数
+    Future<int?> _askNum(BuildContext c2, String title, int init) async {
+      final e = TextEditingController(text: "$init");
+      final v = await showDialog<int>(context: c2, builder: (d2) => AlertDialog(
+          title: Text(title, style: const TextStyle(fontSize: 15)),
+          content: SizedBox(width: 240, child: TextField(controller: e, autofocus: true, keyboardType: TextInputType.number, maxLength: 2, decoration: const InputDecoration(hintText: "1~60", counterText: "", border: OutlineInputBorder()))),
+          actions: [TextButton(onPressed: () => Navigator.pop(d2), child: const Text("取消")), FilledButton(onPressed: () => Navigator.pop(d2, int.tryParse(e.text.trim())), child: const Text("确定"))]));
+      e.dispose();
+      if (v == null) return null;
+      if (v < 1 || v > 60) { if (c2.mounted) ScaffoldMessenger.of(c2).showSnackBar(const SnackBar(content: Text("格数需 1~60"), backgroundColor: Colors.red)); return null; }
+      return v;
+    }
     await showDialog<void>(context: context, builder: (dctx) => StatefulBuilder(builder: (bctx, setSt) {
+      List<String> visibleKeys() {
+        final q = ctrl.text.trim().toUpperCase().replaceAll('-', '');
+        return rows.keys.where((k) => q.isEmpty || k.replaceAll('-', '').contains(q) || k.contains(ctrl.text.trim().toUpperCase())).toList();
+      }
       return AlertDialog(
         title: const Text("地面排格数设置"),
-        content: SizedBox(width: 360, height: 440, child: Column(children: [
-          TextField(controller: ctrl, textCapitalization: TextCapitalization.characters, onChanged: (v) { setState(() {}); setSt(() {}); },
+        content: SizedBox(width: 360, height: 460, child: Column(children: [
+          TextField(controller: ctrl, textCapitalization: TextCapitalization.characters, onChanged: (v) => setSt(() {}),
               decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "筛选排号，如 A-11 / B13", border: OutlineInputBorder())),
           const SizedBox(height: 6),
-          const Text("默认每排 12 格；改后自动分配空位与选位网格立即生效", style: TextStyle(fontSize: 11, color: Colors.blueGrey)),
-          const SizedBox(height: 4),
-          Expanded(child: ListView(children: rows.entries.where((e) {
-            final q = ctrl.text.trim().toUpperCase().replaceAll('-', '');
-            if (q.isEmpty) return true;
-            return e.key.replaceAll('-', '').contains(q) || e.key.contains(ctrl.text.trim().toUpperCase());
-          }).map((e) => Padding(padding: const EdgeInsets.symmetric(horizontal: 4), child: Row(children: [
-            SizedBox(width: 110, child: Text(e.key, style: const TextStyle(fontSize: 12.5, fontFamily: "monospace", fontWeight: FontWeight.w600))),
-            Expanded(child: Slider(value: e.value.toDouble().clamp(1, 60), min: 1, max: 60, divisions: 59, label: "${e.value}格",
-                activeColor: const Color(0xFF00897B), onChanged: (v) => setSt(() => rows[e.key] = v.round()))),
-            SizedBox(width: 40, child: Text("${e.value}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF00897B)))),
+          Row(children: [
+            const Text("默认每排 12 格；点数字可直接输入", style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+            const Spacer(),
+            SizedBox(width: 52, child: TextField(controller: batchCtrl, keyboardType: TextInputType.number, maxLength: 2, style: const TextStyle(fontSize: 12.5), decoration: const InputDecoration(counterText: "", isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6), border: OutlineInputBorder()))),
+            TextButton(style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact),
+                onPressed: () async {
+                  final v = int.tryParse(batchCtrl.text.trim());
+                  if (v == null || v < 1 || v > 60) { _toast("批量格数需 1~60"); return; }
+                  final ks = visibleKeys();
+                  if (ks.isEmpty) { _toast("当前筛选没有排"); return; }
+                  final yes = await showDialog<bool>(context: bctx, builder: (d3) => AlertDialog(title: const Text("批量设置"), content: Text("把筛选出的 ${ks.length} 排全部设为 $v 格？"), actions: [TextButton(onPressed: () => Navigator.pop(d3, false), child: const Text("取消")), FilledButton(onPressed: () => Navigator.pop(d3, true), child: const Text("确定"))]));
+                  if (yes != true) return;
+                  setSt(() { for (final k in ks) { rows[k] = v; } });
+                }, child: const Text("批量应用", style: TextStyle(fontSize: 12))),
+            TextButton(style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6), visualDensity: VisualDensity.compact),
+                onPressed: () => setSt(() { for (final k in visibleKeys()) { rows[k] = 12; } }),
+                child: const Text("恢复12", style: TextStyle(fontSize: 12, color: Colors.blueGrey))),
+          ]),
+          const SizedBox(height: 2),
+          Expanded(child: ListView(children: visibleKeys().map((k) => Padding(padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1), child: Row(children: [
+            SizedBox(width: 104, child: Text(k, style: const TextStyle(fontSize: 12.5, fontFamily: "monospace", fontWeight: FontWeight.w600))),
+            IconButton.filledTonal(visualDensity: VisualDensity.compact, constraints: const BoxConstraints(minWidth: 34, minHeight: 34), padding: EdgeInsets.zero, iconSize: 18, icon: const Icon(Icons.remove), onPressed: () => setSt(() { if (rows[k]! > 1) rows[k] = rows[k]! - 1; })),
+            const SizedBox(width: 6),
+            InkWell(onTap: () async { final v = await _askNum(bctx, "$k 格数", rows[k]!); if (v != null) setSt(() => rows[k] = v); },
+                child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    child: Text("${rows[k]}", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF00897B))))),
+            const SizedBox(width: 6),
+            IconButton.filledTonal(visualDensity: VisualDensity.compact, constraints: const BoxConstraints(minWidth: 34, minHeight: 34), padding: EdgeInsets.zero, iconSize: 18, icon: const Icon(Icons.add), onPressed: () => setSt(() { if (rows[k]! < 60) rows[k] = rows[k]! + 1; })),
+            Expanded(child: Text(rows[k] == 12 ? "" : "已改（默认12）", textAlign: TextAlign.right, style: const TextStyle(fontSize: 10.5, color: Colors.orange))),
           ]))).toList())),
         ])),
         actions: [
@@ -86,6 +120,8 @@ class _LocationRegPageState extends State<LocationRegPage> {
         ],
       );
     }));
+    ctrl.dispose();
+    batchCtrl.dispose();
   }
 
   void _toast(String m, {bool err = true}) {
