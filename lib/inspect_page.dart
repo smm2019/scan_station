@@ -51,6 +51,13 @@ class _InspectPageState extends State<InspectPage>
       _loaded = true;
       if (r["ok"] == true) {
         _list = List<Map>.from(r["list"] ?? []);
+        _free = ((r["freeStns"] as List?) ?? [])
+            .map((e) => e.toString())
+            .toList(); // ㉖ 列表自带空闲台：不搜索也能选台
+        final al = r["aliases"];
+        if (al is Map)
+          _stnAlias =
+              al.map((k, v) => MapEntry(k.toString(), v.toString()));
         _err = "";
       } else if (!silent) {
         _err = (r["msg"] ?? "加载失败").toString();
@@ -250,6 +257,40 @@ class _InspectPageState extends State<InspectPage>
     return res;
   }
 
+  bool _canCancel(Map q, String st) {
+    if (!['waitOut', 'toStation', 'returning'].contains(st)) return false; // 框已在站台/待退货须走归位或退货通道
+    return _assist || q["uid"] == Auth.user?.id; // 本人发起或仓管/管理员可取消
+  }
+
+  Future<void> _cancelWo(Map q) async {
+    final st = (q["state"] ?? "").toString();
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (c2) => AlertDialog(
+                title: Text(st == "returning" ? "取消归位任务" : "取消检验工单"),
+                content: Text(st == "waitOut"
+                    ? "取消 ${q["code"] ?? ""} 的下架工单？尚未派车，直接作废。"
+                    : (st == "returning"
+                        ? "撤销 ${q["code"] ?? ""} 的归位任务？框尚未叉出则可撤，工单退回「站台待检」可再操作。"
+                        : "取消 ${q["code"] ?? ""}？将同步撤销已下发的 AGV 任务；若 AGV 已叉出货则撤销会被拒，需人工处理。")),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2, false),
+                      child: const Text("返回")),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(c2, true),
+                      child: Text("取消工单",
+                          style: TextStyle(color: Colors.red.shade50))),
+                ]));
+    if (yes != true || !mounted) return;
+    final r = await AuthApi.inspectCancel(q["id"].toString());
+    if (!mounted) return;
+    _toast(r["ok"] == true
+        ? "✅ ${r["msg"] ?? "工单已取消"}"
+        : "取消失败：${r["msg"]}");
+    _load();
+  }
+
   void _toast(String s) {
     if (mounted)
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -436,6 +477,16 @@ class _InspectPageState extends State<InspectPage>
             if ((st == "waitOut" || st == "waitBack") && !_assist)
               Text(st == "waitOut" ? "等待仓管协助下架" : "等待仓管协助归位",
                   style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            if (_canCancel(q, st)) ...[
+              const SizedBox(width: 6),
+              OutlinedButton.icon(
+                  onPressed: () => _cancelWo(q),
+                  icon: const Icon(Icons.cancel_outlined, size: 16),
+                  label: const Text("取消工单"),
+                  style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red.shade700,
+                      padding: const EdgeInsets.symmetric(horizontal: 10))),
+            ],
             if (st == "waitReturn")
               Text(_assist ? "🔁 请按直调/领料出库出账" : "等待仓管出库出账",
                   style:

@@ -2364,8 +2364,8 @@ const server = http.createServer(async (req, res) => {
         const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
         if (rec.state === 'waitOut') {
           let to = String(b.station || '').trim().toUpperCase() || rec.station;
-          if (!to) { for (const st of AGV_STNS) { if (inspStationFree(st, Date.now())) { to = st; break; } } }
-          else if (!AGV_STNS.includes(to) || !inspStationFree(to, Date.now())) return send(res, 400, { ok: false, msg: '站台不可用（范围外或被占用），请改选' });
+          if (!to) { for (const st of AGV_STNS) { if (inspStationFree(st, Date.now(), rec.id)) { to = st; break; } } }
+          else if (!AGV_STNS.includes(to) || !inspStationFree(to, Date.now(), rec.id)) return send(res, 400, { ok: false, msg: '站台不可用（范围外或被占用），请改选' });
           if (!to) return send(res, 400, { ok: false, msg: '暂无空闲站台，请稍后再试' });
           const r = await wmasDispatchOne({ fromLoc: rec.from, palletType: rec.palletType }, tk, { from: rec.from, to, pallet: rec.palletType, ref: 'JC-' + rec.code });
           if (!r.ok) return send(res, 400, { ok: false, msg: '下架任务下发失败：' + r.msg });
@@ -2383,6 +2383,33 @@ const server = http.createServer(async (req, res) => {
           return send(res, 200, { ok: true, rec });
         }
         return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']无需协助（仅待协助下架/待协助归位可操作）' });
+      }
+      // ㉖ 取消检验工单：waitOut 未派车可直接作废；toStation/returning 先撤 WMAS 任务（已叉出则拒绝，避免货悬空）
+      if (req.method === 'POST' && p === '/api/inspect/cancel') {
+        const b = await readBody(req);
+        const rec = (db.inspects || []).find((x) => x.id === String(b.id || ''));
+        if (!rec) return send(res, 400, { ok: false, msg: '检验工单不存在' });
+        const ctl = canFeature(u, 'insp_assist') || u.role === 'admin';
+        if (!(rec.uid === u.id || ctl)) return send(res, 403, { ok: false, msg: '只能取消本人发起的工单（仓管/管理员可取消任意工单）' });
+        const st0 = rec.state;
+        if (!['waitOut', 'toStation', 'returning'].includes(st0)) return send(res, 400, { ok: false, msg: '当前状态[' + st0 + ']不可取消：站台在检/待归位/待退货请走归位或退货通道，已结束无需取消' });
+        const tn = st0 === 'returning' ? (rec.taskNo2 || '') : (rec.taskNo || '');
+        if (tn) {
+          const tk = await wmasToken();
+          if (!tk) return send(res, 400, { ok: false, msg: 'WMAS 未配置/登录失败，无法撤销已派 AGV 任务' });
+          const cr = await wmasHttp('POST', '/api/logistics/agv-task/cancel', tk, { taskNos: [tn] }); // wmasHttp 失败返回 null（不抛异常）
+          if (!wmasOk(cr)) return send(res, 400, { ok: false, msg: 'AGV 任务撤销未成功（可能已叉出，需人工处理）：' + ((cr && (cr.message || cr.code)) || 'WMAS无响应') });
+        }
+        if (st0 === 'returning') { // ㉖ 归位途中撤单=框仍在站台（未叉出才撤得掉）→ 退回待检态，工单继续有效，可再次协助归位
+          rec.state = 'atStation'; rec.taskNo2 = ''; rec.arriveAt = rec.arriveAt || Date.now(); rec.updAt = Date.now(); rec.cancelBy = u.name;
+          save(); pushOps(u, '取消检验归位', rec.code, '归位任务已撤，退回站台待检 ' + (rec.station || ''));
+          if (rec.uid !== u.id) notify(rec.uid, 'inspect', '⚠ ' + u.name + ' 撤销了 ' + rec.code + ' 的归位任务，框仍在 ' + rec.station + ' 待检', '');
+          return send(res, 200, { ok: true, msg: '归位任务已撤销，工单退回「站台待检」' });
+        }
+        rec.state = 'cancel'; rec.cancelAt = Date.now(); rec.cancelBy = u.name; rec.updAt = Date.now();
+        save(); pushOps(u, '取消检验工单', rec.code, rec.from + '→' + (rec.station || '') + '（原状态 ' + st0 + '）');
+        if (rec.uid !== u.id) notify(rec.uid, 'inspect', '⚠ ' + u.name + ' 已取消你的检验工单 ' + rec.code + '（' + st0 + '），货仍在 ' + rec.from, '');
+        return send(res, 200, { ok: true, msg: tn ? '已撤销 AGV 任务并取消工单，货仍在原货位' : '工单已取消' });
       }
       // ㉖ 检验员填结论（通过/不合格/需复检）：atStation→waitBack 请协助归位；stuck 也可补结论
       if (req.method === 'POST' && p === '/api/inspect/verdict') {
@@ -2479,7 +2506,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/inspect/list') {
         const only = url.searchParams.get('mine') === '1' ? u.id : '';
         const list = (db.inspects || []).filter((q) => !only || q.uid === only).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 200);
-        return send(res, 200, { ok: true, list });
+        return send(res, 200, { ok: true, list, freeStns: AGV_STNS.filter((st) => inspStationFree(st, Date.now())), aliases: AGV_STNS.reduce((m, c) => { const a = stnAlias(c); if (a) m[c] = a; return m }, {}) }); // ㉖ 附空闲台：PDA 协助下架选台不再依赖先搜索
       }
       if (req.method === 'GET' && p === '/api/prefs') {
         return send(res, 200, { ok: true, prefs: prefsFor(u.id), templates: (db.prefTemplates || []).map((t) => ({ name: t.name, by: t.by })) });
@@ -3634,12 +3661,12 @@ function stnOff(stn) { return stnMetaOf(stn).off === true; }
 function stnRole(stn) { const r = String(stnMetaOf(stn).role || 'any'); return ['any', 'out', 'in', 'insp'].includes(r) ? r : 'any'; }
 function stnDisp(stn) { const a = stnAlias(stn); return a ? a + '(' + String(stn).split('-').pop() + ')' : String(stn); }
 function stnUsable(stn, need) { if (stnOff(stn)) return false; const r = stnRole(stn); return !need || r === 'any' || r === need; }
-function inspStationFree(stn, nowMs) { // 检验可用站台：未停用且用途允许检验 + 无有货/占用、无出库/移库队列占用、无检验占用
+function inspStationFree(stn, nowMs, selfId) { // 检验可用站台：未停用且用途允许检验 + 无有货/占用、无出库/移库队列占用、无检验占用（㉖ selfId=协助本工单时：waitOut 尚未叉货，其预订站台不算被自己占用）
   if (!stnUsable(stn, 'insp')) return false;
   const st = (db.rcsStations || {})[stn];
   if (st && st.state && st.state !== '空闲') return false;
   if ((db.agvQueue || []).some((q) => q.station === stn && ['排队', '下发中', '已下发'].includes(q.state))) return false;
-  if ((db.inspects || []).some((q) => q.station === stn && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state))) return false; // waitReturn=待退货框仍压站台
+  if ((db.inspects || []).some((q) => q.id !== selfId && q.station === stn && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state))) return false; // waitReturn=待退货框仍压站台
   return true;
 }
 function inspBoxState(x) { // 检验框可下架性：AGV货架位(非CK站台) + 无进行中检验 + 无在途出库

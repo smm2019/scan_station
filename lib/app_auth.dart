@@ -363,6 +363,9 @@ class AuthApi {
       _req("POST", "/api/inspect/assist",
           body: {"id": id, if (station.isNotEmpty) "station": station},
           token: await AuthStore.token());
+  static Future<Map> inspectCancel(String id) async =>
+      _req("POST", "/api/inspect/cancel",
+          body: {"id": id}, token: await AuthStore.token()); // ㉖ 取消检验工单（未叉货直接作废；途中先撤AGV任务）
   static Future<Map> inspectVerdict(String id, String verdict, String note,
           {String retReason = ""}) async =>
       _req("POST", "/api/inspect/verdict",
