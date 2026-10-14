@@ -35,6 +35,9 @@ class _StockAgg {
   final List<_StockOutRow> outRows = []; // 出库流水
   final Map<String, List<_StockBox>> byLoc = {}; // 货架库位 -> 框
   final List<_StockBox> unplaced = []; // 在库未分配货架
+  int todayIn = 0, todayOut = 0; // ㉖v52 今日入/出库框数（自然日）
+  int staleBoxes = 0; // 滞留 7 天+ 在库框
+  int freshBoxes = 0; // 3 天内新入在库框
 }
 
 class _StockPartRow {
@@ -43,6 +46,8 @@ class _StockPartRow {
   double opening = 0, inQty = 0, outQty = 0;
   double inStockQty = 0; // 在库标签数量合计（未作废且未出库）
   int inBoxes = 0; // 在库框数
+  final Map<String, int> byLocDist = {}; // ㉖v52 在库框按货位分布（前缀归并，同网页零件档案）
+  int staleBoxes = 0; // ㉖v52 滞留 7 天+ 框数
   double get perBoxQty =>
       inBoxes > 0 ? inStockQty / inBoxes : 0; // 平均件/框（发料最小单位=1框）
   double get stock => opening + inStockQty; // 标签台账法：库存=在库框合计(+可选期初)
@@ -80,6 +85,7 @@ class _StockBox {
       loc = "";
   double qty = 0;
   bool inStock = true; // 未出库（框内任一标签在库即整框在库）
+  int ageH = -1; // ㉖v52 在库滞留小时（登记时刻起算；-1=时刻缺失）
 }
 
 /// 全量聚合（数据量万级以内，内存计算毫秒级）
@@ -126,21 +132,13 @@ Future<_StockAgg> computeStock() async {
 
   // 统一按"框"聚合后再算库存：MES 标签数量是整框数（同托每码都回整框值），
   // 框键=托号优先，其次"货位+零件号"（同位同件视为同框），都缺才一码一框。
-  final boxesByKey = <String, _StockBox>{};
+  final boxesByKey = <String, _StockBox>{}; // ㉖v52 键改标签号：同托多码仍各自留框（分布/滞留需要），下方汇总处再按框键合并
   String boxKey(String pid, String loc, String partNo, String code) => pid
           .isNotEmpty
       ? "P|$pid"
       : (loc.isNotEmpty && partNo.isNotEmpty ? "L|$loc|$partNo" : "C|$code");
   void addBox(String key, _StockBox box) {
-    final old = boxesByKey[key];
-    if (old == null) {
-      boxesByKey[key] = box;
-    } else {
-      old.qty += box.qty; // ㉖ 框数量=框内各标签之和（一筐两标签各25→50；采集有防重+作废墓碑，同码仅一条有效不会双算）
-      old.inStock = old.inStock && box.inStock; // 框内任一标签已发→整框已出库（一框一发）
-      if (old.loc.isEmpty && box.loc.isNotEmpty)
-        old.loc = box.loc; // 流水先建框、账本后带位时补货位
-    }
+    boxesByKey[key] = box;
   }
 
   final _boxSeen = <String>{}; // ㉖ sum 口径防护：同码多条有效采集记录只计一次（流水行仍全量展示）
@@ -167,15 +165,16 @@ Future<_StockAgg> computeStock() async {
     final p = placedMap[r.goodsCode];
     final pid = extraMap[r.goodsCode]?.palletId ?? "";
     addBox(
-        boxKey(pid, p?.loc ?? "", partNo, r.goodsCode),
+        r.goodsCode.toUpperCase(),
         _StockBox()
           ..barcode = r.goodsCode
           ..partNo = partNo
           ..itemName = name
           ..qty = qty
-          ..container = p?.container ?? r.containerType ?? ""
-          ..operator = p?.operator ?? ""
-          ..loc = p?.loc ?? ""
+          ..container = r.containerType ?? ""
+          ..operator = oper
+          ..loc = loc
+          ..ageH = ((DateTime.now()).difference(r.scanTime).inMinutes / 60).floor()
           ..inStock = !outCodes.contains(r.goodsCode));
   }
 
@@ -194,21 +193,45 @@ Future<_StockAgg> computeStock() async {
     if (flowCodes.contains(p.goodsCode)) continue;
     final info = infoMap[p.goodsCode];
     if (info == null || info.missing || info.partNo.isEmpty) continue;
-    addBox(
-        boxKey("", p.loc, info.partNo, p.goodsCode),
-        _StockBox()
-          ..barcode = p.goodsCode
-          ..partNo = info.partNo
-          ..itemName = info.itemName
-          ..qty = info.qty
-          ..container = p.container
-          ..operator = p.operator
-          ..loc = p.loc
-          ..inStock = !outCodes.contains(p.goodsCode));
+    final b = boxesByKey[p.goodsCode.toUpperCase()];
+    if (b != null) {
+      // 账本带权威信息补全流水框：容器/操作人/货位以账本为准；滞留取更早入账时刻（流水扫描 vs 账本登记）
+      if ((p.container ?? "").isNotEmpty) b.container = p.container;
+      if ((p.operator ?? "").isNotEmpty && b.operator.isEmpty) b.operator = p.operator;
+      if (b.loc.isEmpty && p.loc.isNotEmpty) b.loc = p.loc;
+      final age2 = ((DateTime.now()).difference(DateTime.fromMillisecondsSinceEpoch(p.assignedAt)).inMinutes / 60).floor();
+      if (b.ageH < 0 || age2 > b.ageH) b.ageH = age2; // assignedAt 是登记入账时刻，取更大滞留
+    } else {
+      addBox(
+          p.goodsCode.toUpperCase(),
+          _StockBox()
+            ..barcode = p.goodsCode
+            ..partNo = info.partNo
+            ..itemName = info.itemName
+            ..qty = info.qty
+            ..container = p.container
+            ..operator = p.operator
+            ..loc = p.loc
+            ..ageH = ((DateTime.now()).difference(DateTime.fromMillisecondsSinceEpoch(p.assignedAt)).inMinutes / 60).floor()
+            ..inStock = !outCodes.contains(p.goodsCode));
+    }
   }
 
-  // 零件汇总与货架分布：全部从框集合派生，天然不双算
-  for (final box in boxesByKey.values) {
+  // 零件汇总与货架分布：先按"框键"合并标签级框（同托多码=1框，数量求和、任一已发整框出库），再派生统计
+  final merged = <String, _StockBox>{};
+  for (final b in boxesByKey.values) {
+    final k = boxKey(extraMap[b.barcode]?.palletId ?? "", b.loc, b.partNo, b.barcode);
+    final old = merged[k];
+    if (old == null) {
+      merged[k] = b;
+    } else {
+      old.qty += b.qty; // ㉖ 框数量=框内各标签之和（一筐两标签各25→50）
+      old.inStock = old.inStock && b.inStock; // 框内任一标签已发→整框已出库（一框一发）
+      if (old.loc.isEmpty && b.loc.isNotEmpty) old.loc = b.loc;
+      if (old.ageH < 0 || (b.ageH >= 0 && b.ageH > old.ageH)) old.ageH = b.ageH; // 同托取最早入账（最大滞留）
+    }
+  }
+  for (final box in merged.values) {
     final row = agg.parts
         .putIfAbsent(box.partNo, () => _StockPartRow()..partNo = box.partNo);
     if (row.itemName.isEmpty) row.itemName = box.itemName;
@@ -216,12 +239,23 @@ Future<_StockAgg> computeStock() async {
     if (!box.inStock) continue;
     row.inBoxes++;
     row.inStockQty += box.qty;
+    if (box.ageH >= 168) { row.staleBoxes++; agg.staleBoxes++; }
+    else if (box.ageH >= 0 && box.ageH < 72) agg.freshBoxes++;
     if (box.loc.isNotEmpty) {
       agg.byLoc.putIfAbsent(box.loc, () => []).add(box);
+      // 货位前两段归并做分布展示（NB02-A-05-2F → NB02-A · 2F 太碎，聚到巷道级）
+      final parts = box.loc.split("-");
+      final distKey = parts.length >= 2 ? "${parts[0]}-${parts[1]}" : box.loc;
+      row.byLocDist[distKey] = (row.byLocDist[distKey] ?? 0) + 1;
     } else {
       agg.unplaced.add(box);
     }
   }
+
+  // ㉖v52 今日出入库框数（自然日）：入库=今日扫描有效流水去重标签，出库=今日出库单去重标签
+  final _day0 = DateTime.now().copyWith(hour: 0, minute: 0, second: 0, millisecond: 0);
+  agg.todayIn = agg.inRows.where((r) => !r.cancelled && r.time.isAfter(_day0)).map((r) => r.barcode.toUpperCase()).toSet().length;
+  agg.todayOut = agg.outRows.where((r) => r.time.isAfter(_day0)).map((r) => r.barcode.toUpperCase()).toSet().length;
 
   // 期初
   for (final op in openings) {
@@ -358,7 +392,7 @@ class _InventoryStockPageState extends State<InventoryStockPage>
 }
 
 // ---------- Tab1 库存汇总 ----------
-class _StockSummaryTab extends StatelessWidget {
+class _StockSummaryTab extends StatefulWidget {
   final _StockAgg agg;
   final String search;
   final ValueChanged<String> onSearch;
@@ -369,9 +403,16 @@ class _StockSummaryTab extends StatelessWidget {
       required this.onSearch,
       required this.onReload});
 
+  @override
+  State<_StockSummaryTab> createState() => _StockSummaryTabState();
+}
+
+class _StockSummaryTabState extends State<_StockSummaryTab> {
+  String _flt = ""; // ""全部 / stale滞留7天+ / zero断料 / loc按货位分布排序
+
   Future<void> _export(BuildContext ctx) async {
     final b = StringBuffer("零件号,物料名字,在库框数,在库数量,期初(可选),历史入库合计,历史出库合计\n");
-    final rows = agg.parts.values.toList()
+    final rows = widget.agg.parts.values.toList()
       ..sort((x, y) => x.partNo.compareTo(y.partNo));
     for (final r in rows) {
       b.writeln(
@@ -387,25 +428,82 @@ class _StockSummaryTab extends StatelessWidget {
           content: Text("已保存：${f.path}"), backgroundColor: Colors.green));
   }
 
+  Color _ageColor(int ageH) =>
+      ageH >= 168 ? const Color(0xFFE53935) : (ageH >= 72 ? const Color(0xFFFB8C00) : const Color(0xFF43A047));
+
   @override
   Widget build(BuildContext context) {
-    var rows = agg.parts.values.toList()
-      ..sort((x, y) => x.partNo.compareTo(y.partNo));
-    if (search.trim().isNotEmpty) {
-      final k = search.trim().toLowerCase();
+    final agg = widget.agg;
+    var rows = agg.parts.values.toList();
+    final k = widget.search.trim().toLowerCase();
+    if (k.isNotEmpty) {
       rows = rows
           .where((r) =>
               r.partNo.toLowerCase().contains(k) ||
               r.itemName.toLowerCase().contains(k))
           .toList();
     }
+    if (_flt == "stale") {
+      rows = rows.where((r) => r.staleBoxes > 0).toList();
+    } else if (_flt == "zero") {
+      rows = rows.where((r) => r.inBoxes == 0 && r.stock <= 0).toList();
+    }
+    rows.sort(_flt == "loc"
+        ? (x, y) => y.byLocDist.length.compareTo(x.byLocDist.length)
+        : (x, y) => x.partNo.compareTo(y.partNo));
+    // ㉖v52 新鲜度点/分布摘要一次预计算（列表逐帧不重复扫 byLoc）
+    final dots = <String, List<Widget>>{};
+    final dotSeen = <String>{}; // 同托多码只画一点（与"框数"口径一致）
+    for (final e in agg.byLoc.entries) {
+      for (final b in e.value) {
+        final dk = "${b.partNo}|${b.barcode}";
+        if (!dotSeen.add(dk)) continue;
+        (dots[b.partNo] ??= []).add(Container(
+            width: 7,
+            height: 7,
+            margin: const EdgeInsets.only(right: 2),
+            decoration: BoxDecoration(
+                color: _ageColor(b.ageH),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: .5))));
+      }
+    }
+    final distOf = <String, List<MapEntry<String, int>>>{};
+    for (final r in rows) {
+      final d = r.byLocDist.entries.toList()
+        ..sort((a, b) => b.value.compareTo(a.value));
+      distOf[r.partNo] = d;
+    }
+    final totalBoxes = agg.parts.values.fold<int>(0, (s, r) => s + r.inBoxes);
+    final totalQty = agg.parts.values.fold<double>(0, (s, r) => s + r.inStockQty);
+    chip(String key, String txt, Color c) => ChoiceChip(
+        label: Text(txt, style: TextStyle(fontSize: 11.5, color: _flt == key ? Colors.white : c)),
+        selected: _flt == key,
+        showCheckmark: false,
+        selectedColor: c,
+        labelPadding: const EdgeInsets.symmetric(horizontal: 6),
+        onSelected: (_) => setState(() => _flt = _flt == key ? "" : key));
     return Column(children: [
+      // ㉖v52 顶部 KPI 条（借鉴网页概览/容器管理：一眼看清家底与健康度）
+      Container(
+          width: double.infinity,
+          color: Colors.white,
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
+          child: Wrap(spacing: 8, runSpacing: 6, children: [
+            _kpiCard('零件种类', '${agg.parts.length}', const Color(0xFF515BD4)),
+            _kpiCard('在库框数', '$totalBoxes', const Color(0xFF00897B)),
+            _kpiCard('在库数量', _fmtInvNum(totalQty), const Color(0xFF3949AB)),
+            _kpiCard('今日入库', '${agg.todayIn}框', const Color(0xFF43A047)),
+            _kpiCard('今日出库', '${agg.todayOut}框', const Color(0xFFEF6C00)),
+            if (agg.staleBoxes > 0)
+              _kpiCard('滞留7天+', '${agg.staleBoxes}框', const Color(0xFFE53935)),
+          ])),
       Padding(
-          padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+          padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
           child: Row(children: [
             Expanded(
                 child: TextField(
-              onChanged: onSearch,
+              onChanged: widget.onSearch,
               decoration: InputDecoration(
                   hintText: "搜索零件号/物料名字",
                   isDense: true,
@@ -420,6 +518,20 @@ class _StockSummaryTab extends StatelessWidget {
                 onPressed: () => _export(context),
                 icon: const Icon(Icons.download, color: Color(0xFF515BD4))),
           ])),
+      Padding(
+          padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
+          child: Row(children: [
+            chip("", '全部', Colors.blueGrey),
+            const SizedBox(width: 6),
+            chip('stale', '🧊有滞留', const Color(0xFFE53935)),
+            const SizedBox(width: 6),
+            chip('zero', '⛔零库存', const Color(0xFF757575)),
+            const SizedBox(width: 6),
+            chip('loc', '📍按分散度', const Color(0xFF00897B)),
+            const Spacer(),
+            Text('${rows.length} 项',
+                style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+          ])),
       Expanded(
           child: rows.isEmpty
               ? const Center(
@@ -429,6 +541,13 @@ class _StockSummaryTab extends StatelessWidget {
                   itemCount: rows.length,
                   itemBuilder: (ctx, i) {
                     final r = rows[i];
+                    final empty = r.inBoxes == 0;
+                    // 分布摘要：NB02-A×3 · NB03-B×2（巷道级，最多列 3 处）
+                    final dist = distOf[r.partNo] ?? const [];
+                    final distTxt = dist
+                        .take(3)
+                        .map((e) => '${e.key.replaceFirst("NB0", "").replaceFirst("-0", "-")}×${e.value}')
+                        .join(' · ');
                     return Card(
                       margin: const EdgeInsets.symmetric(vertical: 4),
                       child: ListTile(
@@ -438,18 +557,58 @@ class _StockSummaryTab extends StatelessWidget {
                             MaterialPageRoute(
                                 builder: (_) =>
                                     PartProfilePage(partNo: r.partNo))),
-                        title: Text("${r.partNo}  ${r.itemName}",
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w500)),
-                        subtitle: Text(
-                            "在库 ${r.inBoxes} 框 · 数量 ${_fmtInvNum(r.inStockQty)}${r.opening > 0 ? "（另有期初 ${_fmtInvNum(r.opening)}）" : ""} · 点击查看每框出入库全链路",
-                            style: const TextStyle(
-                                fontSize: 11, color: Colors.grey)),
-                        trailing: Text(_fmtInvNum(r.stock),
-                            style: const TextStyle(
+                        title: Row(children: [
+                          Flexible(
+                              child: Text("${r.partNo}  ${r.itemName}",
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w500))),
+                          if (r.staleBoxes > 0)
+                            Container(
+                                margin: const EdgeInsets.only(left: 6),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 5, vertical: 1),
+                                decoration: BoxDecoration(
+                                    color: const Color(0xFFFFEBEE),
+                                    borderRadius: BorderRadius.circular(8)),
+                                child: Text('🧊${r.staleBoxes}',
+                                    style: const TextStyle(
+                                        fontSize: 10, color: Color(0xFFE53935)))),
+                        ]),
+                        subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                  empty
+                                      ? "⛔ 无在库框${r.opening > 0 ? "（仅期初 ${_fmtInvNum(r.opening)}）" : ""} · 点击查看全链路"
+                                      : "在库 ${r.inBoxes} 框 · ${_fmtInvNum(r.inStockQty)} 件${r.opening > 0 ? " · 另有期初" : ""}${distTxt.isNotEmpty ? " · $distTxt${dist.length > 3 ? " 等${dist.length}处" : ""}" : ""}",
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: empty
+                                          ? const Color(0xFF9E9E9E)
+                                          : Colors.blueGrey)),
+                              if (!empty)
+                                Padding(
+                                    padding: const EdgeInsets.only(top: 3),
+                                    child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Text("新鲜度 ",
+                                              style: TextStyle(
+                                                  fontSize: 10.5,
+                                                  color: Colors.grey.shade500)),
+                                          ...dots[r.partNo]!.take(24),
+                                        ])),
+                            ]),
+                        trailing: Text(
+                            empty ? "—" : _fmtInvNum(r.stock),
+                            style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
-                                color: Color(0xFF2E7D32))),
+                                color: empty
+                                    ? const Color(0xFFBDBDBD)
+                                    : const Color(0xFF2E7D32))),
                       ),
                     );
                   },
@@ -457,6 +616,19 @@ class _StockSummaryTab extends StatelessWidget {
     ]);
   }
 }
+
+Widget _kpiCard(String t, String v, Color c) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(
+        color: c.withOpacity(.07),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: c.withOpacity(.25))),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(v,
+          style: TextStyle(
+              fontSize: 15, fontWeight: FontWeight.w800, color: c)),
+      Text(t, style: const TextStyle(fontSize: 10, color: Colors.black54)),
+    ]));
 
 // ---------- Tab2 货架库位（预留：现阶段人工 Excel 维护，本页只读展示） ----------
 class _ShelfTab extends StatelessWidget {
