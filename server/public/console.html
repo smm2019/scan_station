@@ -439,7 +439,7 @@ function ctList(silent){
  const q=(TM.ctq||'').trim().toUpperCase();
  const bm={};
  CTN.boxes.forEach(b=>{if(q&&!(b.codes.join(' ')+' '+b.l+' '+(b.p||'')+' '+(b.n||'')).toUpperCase().includes(q))return;bm[b.codes[0]]=b});
- const items=Object.values(bm);
+ let items=Object.values(bm);
  // 全量统计（KPI/类型卡/区域热力均按框计，不受筛选影响；明细筛选在下方）
  const all=CTN.boxes;const f=TM.ctf||'';
  let stale=0,byF={},byZ={};
