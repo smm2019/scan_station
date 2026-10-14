@@ -382,6 +382,9 @@ Map<String, String> _mesBaseHeaders(Map cfg) {
 /// 命中任一即静默重登并原样重试一次；重登后仍失败才抛给用户。
 Future<dynamic> mesReq(String method, String path, {Map<String, String>? query, Map? body, bool retried = false}) async {
   final cfg = await MesConfig.getConfig();
+  // ㉖v52 照抄直调页的会话预热并上移到共用通道：冷启动未进过直调页时内存缓存为空，
+  // OrgId 请求头缺失 → MES 按空组织范围查询返回"无信息"（退库出账/领料转单同样中招的根因）
+  if (_mesCachedModuleId.isEmpty || _mesCachedOrgId.isEmpty) await mesRefreshCfgCache();
   final base = "http://${cfg["host"]}:${cfg["port"]}";
   var uri = Uri.parse("$base$path");
   if (query != null) uri = uri.replace(queryParameters: query);
