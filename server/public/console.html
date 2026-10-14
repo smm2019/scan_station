@@ -410,19 +410,22 @@ async function pgCtn(){
 function ctSearch(){TM.ctq=$('#ctq').value;if(TM.cs)TM.cs.pg=1;ctList()}
 function ctFilter(k){TM.ctf=(TM.ctf===k)?'':k;if(TM.cs)TM.cs.pg=1;ctList()}
 async function ctList(silent){
- const j=await api('/api/ledger');let items=j.items||[];
- // 库区码（货位首段，如 NB01）+ 滞留小时 预派生，供排序筛选
+ const j=await api('/api/ledger');const raw=j.items||[];
+ // ㉖v50 框口径：框=托，同托多标签合并为一框（boxKey 与服务器 boxKeyOf 逐字同源）；数量=框内标签之和；滞留取框内最早入账时刻
  const _D0=new Date();_D0.setHours(0,0,0,0);
- items.forEach(x=>{x._z=String(x.l||'').split('-')[0]||'未知区';x._fl=ctLabel(x.f);x._h=ctHour(x);const _td=new Date(Number(x.t)||Date.now());_td.setHours(0,0,0,0);x._d=Math.max(0,Math.round((_D0-_td)/864e5))});
+ const boxKey=(x)=>{const pid=String(x.pid||'').toUpperCase();if(pid)return 'P|'+pid;const l=String(x.l||'').toUpperCase(),p=String(x.p||'').toUpperCase();return (l&&p)?'L|'+l+'|'+p:'C|'+String(x.c).toUpperCase()};
+ const totalBoxes=new Set(raw.map(boxKey)).size;
  const q=(TM.ctq||'').trim().toUpperCase();
- if(q)items=items.filter(x=>(x.c+' '+x.l+' '+(x.p||'')+' '+(x.n||'')).toUpperCase().includes(q));
- // 全量统计（KPI/类型卡/区域热力不受筛选影响，筛选只作用明细）
+ const bm={};
+ raw.forEach(x=>{if(q&&!(x.c+' '+x.l+' '+(x.p||'')+' '+(x.n||'')).toUpperCase().includes(q))return;const k=boxKey(x);const b=bm[k]=bm[k]||{codes:[],l:x.l,_fl:ctLabel(x.f),p:x.p||'',n:x.n||'',q:0,t:0,by:x.by||''};b.codes.push(String(x.c).toUpperCase());b.q+=(Number(x.q)||0);const t=Number(x.t)||0;if(t&&(!b.t||t<b.t))b.t=t;if(!b.p&&x.p)b.p=String(x.p);if(!b.n&&x.n)b.n=String(x.n);if((!b._fl||b._fl==='未标注类型')&&x.f)b._fl=ctLabel(x.f)});
+ const items=Object.values(bm).map(b=>{b.c=b.codes[0];b.lc=b.codes.length;b._z=String(b.l||'').split('-')[0]||'未知区';b._h=ctHour(b);const _td=new Date(b.t||Date.now());_td.setHours(0,0,0,0);b._d=Math.max(0,Math.round((_D0-_td)/864e5));return b});
+ // 全量统计（KPI/类型卡/区域热力均按框计，筛选只作用明细）
  const all=items;const f=TM.ctf||'';
- let stale=0,freshN=0,byF={},byZ={};
- all.forEach(x=>{const g=byF[x._fl]=byF[x._fl]||{n:0,stale:0,maxH:0};g.n++;if(x._h>=168){g.stale++;stale++}if(x._h<72)freshN++;if(x._h>g.maxH)g.maxH=x._h;byZ[x._z]=(byZ[x._z]||0)+1});
+ let stale=0,byF={},byZ={};
+ all.forEach(x=>{const g=byF[x._fl]=byF[x._fl]||{n:0,stale:0,maxH:0};g.n++;if(x._h>=168){g.stale++;stale++}if(x._h>g.maxH)g.maxH=x._h;byZ[x._z]=(byZ[x._z]||0)+1});
  const today=all.filter(x=>x._d===0).length;
  $('#ctkpi').innerHTML=`<div class="row" style="gap:10px">${[
-  ['📦','在库容器',all.length+' 只','每只框都在账上',null],
+  ['📦','在库容器(框)',all.length+' 只','框=托，同托多标签合并计1框',null],
   ['🗂','类型覆盖',Object.keys(byF).length+' 类','框型种类一目了然',null],
   ['🌱','今日新入库',today+' 只','新来的伙伴',f!=='new'?'今日入库':'已显示今日入库',f!=='new'?'new':''],
   ['🧊','滞留 7 天+',stale+' 只',stale?'该想想它们去哪了':'全部新鲜，状态满分',f!=='stale'?'只看滞留':'已显示滞留清单',stale?(f!=='stale'?'stale':''):null],
@@ -449,8 +452,8 @@ async function ctList(silent){
  if(!TM.cs)TM.cs={k:'t',d:1,sz:100,pg:1};
  items=sortArr(items,TM.cs);
  const pgItems=items.slice((TM.cs.pg-1)*TM.cs.sz,TM.cs.pg*TM.cs.sz);
- const _lc=$('#ctc');if(_lc)_lc.textContent=`筛选后 ${items.length} / 在库 ${all.length} 只 · 账本v${j.rev} ${(j.at||'').slice(5,16).replace('T',' ')}${silent?' · 自动刷新':''}`;
- $('#ctlist').innerHTML=`<div style="overflow:auto;max-height:60vh"><table><thead><tr>${sTh(TM.cs,'l','货位',0,'csT')}${sTh(TM.cs,'c','标签号',0,'csT')}${sTh(TM.cs,'_fl','容器类型',0,'csT')}${sTh(TM.cs,'p','零件号',0,'csT')}${sTh(TM.cs,'n','物料',0,'csT')}${sTh(TM.cs,'q','数量',1,'csT')}${sTh(TM.cs,'t','滞留时长',1,'csT')}${sTh(TM.cs,'_d','入库日',1,'csT')}</tr></thead><tbody>${pgItems.map((x,ix)=>{const badge=x._h>=168?'<span class="tag" style="background:rgba(198,40,40,.1);color:var(--bad)">🧊 滞留</span>':x._h>=72?'<span class="tag" style="background:rgba(230,81,0,.1);color:var(--warn)">满 3 天</span>':x._d===0?'<span class="tag" style="background:rgba(46,125,50,.12);color:var(--ok)">今日新到</span>':'';return `<tr class="fin" style="animation-delay:${Math.min(ix*14,350)}ms"><td class="mono">${_esc(x.l)}</td><td class="mono"><a href="javascript:void 0" style="color:var(--pri)" title="标签全链路" onclick="traceBox('${_esc(x.c)}')">${_esc(x.c)}</a></td><td>${_esc(x._fl)}</td><td class="mono">${x.p||''}</td><td>${_esc(x.n||'')}</td><td>${x.q||''}</td><td style="white-space:nowrap">${ctAgeTxt(x._h)} ${badge}</td><td style="color:var(--sub);font-size:12px">${x.t?new Date(x.t).toLocaleString('zh-CN',{hour12:false}).slice(5,16):''} ${x.by||''}</td></tr>`}).join('')||'<tr><td colspan=8 style="color:var(--sub)">没有符合条件的容器——换个筛选试试</td></tr>'}</tbody></table></div>${pgBar(TM.cs,items.length,'ct')}`;
+ const _lc=$('#ctc');if(_lc)_lc.textContent=`筛选后 ${items.length} 框 / 在库 ${all.length} 框（全库 ${totalBoxes} 框 · ${raw.length} 标签）· 账本v${j.rev} ${(j.at||'').slice(5,16).replace('T',' ')}${silent?' · 自动刷新':''}`;
+ $('#ctlist').innerHTML=`<div style="overflow:auto;max-height:60vh"><table><thead><tr>${sTh(TM.cs,'l','货位',0,'csT')}${sTh(TM.cs,'c','标签号',0,'csT')}${sTh(TM.cs,'_fl','容器类型',0,'csT')}${sTh(TM.cs,'p','零件号',0,'csT')}${sTh(TM.cs,'n','物料',0,'csT')}${sTh(TM.cs,'q','数量',1,'csT')}${sTh(TM.cs,'t','滞留时长',1,'csT')}${sTh(TM.cs,'_d','入库日',1,'csT')}</tr></thead><tbody>${pgItems.map((x,ix)=>{const badge=x._h>=168?'<span class="tag" style="background:rgba(198,40,40,.1);color:var(--bad)">🧊 滞留</span>':x._h>=72?'<span class="tag" style="background:rgba(230,81,0,.1);color:var(--warn)">满 3 天</span>':x._d===0?'<span class="tag" style="background:rgba(46,125,50,.12);color:var(--ok)">今日新到</span>':'';return `<tr class="fin" style="animation-delay:${Math.min(ix*14,350)}ms"><td class="mono">${_esc(x.l)}</td><td class="mono"><a href="javascript:void 0" style="color:var(--pri)" title="标签全链路" onclick="traceBox('${_esc(x.c)}')">${_esc(x.c)}</a>${x.lc>1?` <span class="tag" style="background:rgba(81,91,212,.1);color:var(--pri);font-size:10.5px" title="同托共 ${x.lc} 个标签：${_esc(x.codes.join('、'))}">共${x.lc}码</span>`:''}</td><td>${_esc(x._fl)}</td><td class="mono">${x.p||''}</td><td>${_esc(x.n||'')}</td><td>${x.q||''}</td><td style="white-space:nowrap">${ctAgeTxt(x._h)} ${badge}</td><td style="color:var(--sub);font-size:12px">${x.t?new Date(x.t).toLocaleString('zh-CN',{hour12:false}).slice(5,16):''} ${x.by||''}</td></tr>`}).join('')||'<tr><td colspan=8 style="color:var(--sub)">没有符合条件的容器——换个筛选试试</td></tr>'}</tbody></table></div>${pgBar(TM.cs,items.length,'ct')}`;
 }
 function csT(k,num){if(!TM.cs)TM.cs={k:'t',d:1,sz:100,pg:1};if(TM.cs.k==k)TM.cs.d*=-1;else{TM.cs.k=k;TM.cs.d=num?-1:1}TM.cs.pg=1;ctList()}
 function ctPg(d){TM.cs.pg+=d;ctList(1)}
