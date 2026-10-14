@@ -395,32 +395,53 @@ function lsT(k,num){if(!TM.ls)TM.ls={k:'t',d:-1,sz:100,pg:1};if(TM.ls.k==k)TM.ls
 function lsPg(d){TM.ls.pg+=d;ledList(1)}
 function lsSz(v){TM.ls.sz=+v||1e9;TM.ls.pg=1;ledList(1)}
 // ===== ㉖v50 容器管理：让每只框"自我介绍"——类型健康度、滞留预警、区域热力，一屏看全 =====
-let CTN={items:[],types:{},timer:0,load:0};
+let CTN={types:{},timer:0};
+let _ctv='ov';        // 当前视图：ov=概览清单 / map=库位地图
 async function ctTypes(){try{const j=await api('/api/containers');if(j.ok)CTN.types={};(j.types||[]).forEach(t=>{CTN.types[String(t.db).toUpperCase()]=t.show||t.db})}catch(_){}}
 function ctLabel(f){f=String(f||'').trim();if(!f)return '未标注类型';return CTN.types[f.toUpperCase()]||f}
 function ctHour(x){const t=Number(x&&x.t)||0;return t?Math.max(0,Math.floor((Date.now()-t)/3600e3)):-1}
 function ctAgeTxt(h){if(h<0)return '<span style="color:var(--sub)">时刻缺失</span>';if(h<1)return '刚刚入库';if(h<24)return h+' 小时';const d=Math.floor(h/24);return d+' 天'+(h%24?' '+(h%24)+' 小时':'')}
 async function pgCtn(){
- $('#main').innerHTML=`<div class="card"><div class="row"><input id="ctq" placeholder="标签号 / 货位 / 零件号 / 物料名" value="${TM.ctq||''}" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ctSearch()"><button class="pill" onclick="ctSearch()">查询</button><button class="pill q" title="清空搜索与筛选" onclick="TM.ctq='';TM.ctf='';pgCtn()">↺ 重置</button><span id="ctc" style="color:var(--sub);font-size:12px"></span></div><div id="ctkpi"></div><div id="ctcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px"></div><div id="ctzone" style="margin:10px 0"></div><div id="ctlist">加载中…</div></div>`;
+ $('#main').innerHTML=`<div class="card"><div class="row"><input id="ctq" placeholder="标签号 / 货位 / 零件号 / 物料名" value="${TM.ctq||''}" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ctSearch()"><button class="pill" onclick="ctSearch()">查询</button><button class="pill q" title="清空搜索与筛选" onclick="TM.ctq='';TM.ctf='';TM.ctmE=0;ctSearch()">↺ 重置</button><button class="pill" style="${_ctv==='map'?'':'background:#78909c'}" title="库区×巷道×格的真实形状——框住在哪一格，空位在哪" onclick="ctSeg('map')">🗺 库位地图</button><button class="pill" style="${_ctv==='ov'?'':'background:#78909c'}" title="KPI·类型健康卡·明细清单" onclick="ctSeg('ov')">📋 概览清单</button><span id="ctc" style="color:var(--sub);font-size:12px"></span></div><div id="ctbody">加载中…</div></div>`;
+ if(!CTN.style)document.head.insertAdjacentHTML('beforeend','<style id="ctgs">.ctg{display:inline-flex;align-items:center;justify-content:center;width:27px;height:21px;border-radius:4px;font-size:10px;font-weight:700;color:#fff;cursor:pointer;margin:1px;position:relative}.ctg:hover{transform:scale(1.35);z-index:3;box-shadow:0 2px 8px rgba(0,0,0,.3)}.ctg-g{background:#43a047}.ctg-o{background:#fb8c00}.ctg-r{background:#e53935;animation:ctPulse 1.6s infinite}.cte{background:transparent;border:1.5px dashed #b6c2d4;color:#a5b3c8;font-weight:400}.cte:hover{border-color:#26a69a}.ctg-em{background:#26a69a;border:none;color:#fff;animation:ctPulse 1.6s infinite}.cte.em{border-color:#26a69a;border-style:solid;background:rgba(38,166,154,.16);color:#00897b}.ctg-em:hover,.cte:hover{transform:scale(1.35)}.cth{outline:2.5px solid #1a237e;box-shadow:0 0 8px 2px rgba(48,63,159,.6);z-index:2}.dimc{opacity:.22}@keyframes ctPulse{50%{box-shadow:0 0 0 3px rgba(229,57,53,.35)}}</style>');
+ CTN.style=1;
  if(!Object.keys(CTN.types).length)await ctTypes();
- await ctList();
+ await ctData();
+ ctRender();
  if(CTN.timer)clearInterval(CTN.timer);
- CTN.timer=setInterval(()=>{if(TAB=='ctn'&&document.visibilityState=='visible')ctList(1).catch(()=>{})},30000);
+ CTN.timer=setInterval(()=>{if(TAB=='ctn'&&document.visibilityState=='visible')ctTick().catch(()=>{})},30000);
 }
-function ctSearch(){TM.ctq=$('#ctq').value;if(TM.cs)TM.cs.pg=1;ctList()}
-function ctFilter(k){TM.ctf=(TM.ctf===k)?'':k;if(TM.cs)TM.cs.pg=1;ctList()}
-async function ctList(silent){
- const j=await api('/api/ledger');const raw=j.items||[];
- // ㉖v50 框口径：框=托，同托多标签合并为一框（boxKey 与服务器 boxKeyOf 逐字同源）；数量=框内标签之和；滞留取框内最早入账时刻
+async function ctTick(){await ctData(1);ctRender(1)}
+function ctRender(silent){const b=$('#ctbody');if(!b)return;if(_ctv==='ov'){b.innerHTML=`<div id="ctkpi"></div><div id="ctcards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px"></div><div id="ctzone" style="margin:10px 0"></div><div id="ctlist"></div>`;ctList(silent)}else{b.innerHTML=`<div id="ctbar"></div><div id="ctmap"></div>`;ctMap()}}
+function ctSearch(){TM.ctq=$('#ctq').value;if(TM.cs)TM.cs.pg=1;ctRender()}
+function ctSeg(v){_ctv=v;if(v==='ov')TM.ctmE=0;ctRender()}
+function ctFilter(k){if(k==='free'){TM.ctmE=TM.ctmE?0:1;_ctv='map';ctRender();return}TM.ctf=(TM.ctf===k)?'':k;if(TM.cs)TM.cs.pg=1;ctList()}
+// 共用数据层：拉账本→按框聚合（boxKey 与服务器 boxKeyOf 逐字同源）；数量=框内标签之和；滞留取框内最早入账时刻
+async function ctData(silent){
+ const j=await api('/api/ledger');
+ CTN.rev=j.rev;CTN.at=j.at;
+ if(!CTN.gslots){try{const gs=await api('/api/ground-slots');CTN.gslots=gs.ok?(gs.slots||{}):{}}catch(_){CTN.gslots={}}}
  const _D0=new Date();_D0.setHours(0,0,0,0);
  const boxKey=(x)=>{const pid=String(x.pid||'').toUpperCase();if(pid)return 'P|'+pid;const l=String(x.l||'').toUpperCase(),p=String(x.p||'').toUpperCase();return (l&&p)?'L|'+l+'|'+p:'C|'+String(x.c).toUpperCase()};
- const totalBoxes=new Set(raw.map(boxKey)).size;
+ CTN.raw=j.items||[];
+ CTN.totalBoxes=new Set(CTN.raw.map(boxKey)).size;
+ const bm={};
+ CTN.raw.forEach(x=>{const k=boxKey(x);const b=bm[k]=bm[k]||{codes:[],l:x.l,_fl:ctLabel(x.f),p:x.p||'',n:x.n||'',q:0,t:0,by:x.by||''};b.codes.push(String(x.c).toUpperCase());b.q+=(Number(x.q)||0);const t=Number(x.t)||0;if(t&&(!b.t||t<b.t))b.t=t;if(!b.p&&x.p)b.p=String(x.p);if(!b.n&&x.n)b.n=String(x.n);if((!b._fl||b._fl==='未标注类型')&&x.f)b._fl=ctLabel(x.f)});
+ CTN.boxes=Object.values(bm).map(b=>{b.c=b.codes[0];b.lc=b.codes.length;b._z=String(b.l||'').split('-')[0]||'未知区';b._h=ctHour(b);const _td=new Date(b.t||Date.now());_td.setHours(0,0,0,0);b._d=Math.max(0,Math.round((_D0-_td)/864e5));return b});
+ // 地图索引：同一货位可能停多框（地面格），byBox 按完整货位聚合
+ const byBox={},slotOf=(l)=>String(l||'').toUpperCase();
+ CTN.boxes.forEach(b=>{const k=slotOf(b.l);(byBox[k]=byBox[k]||[]).push(b)});
+ CTN.byBox=byBox;
+}
+function ctList(silent){
+ const j={rev:CTN.rev,at:CTN.at};const raw=CTN.raw;
+ const _st=ctSlotStats();const _free=Math.max(0,_st.total-_st.used);
  const q=(TM.ctq||'').trim().toUpperCase();
  const bm={};
- raw.forEach(x=>{if(q&&!(x.c+' '+x.l+' '+(x.p||'')+' '+(x.n||'')).toUpperCase().includes(q))return;const k=boxKey(x);const b=bm[k]=bm[k]||{codes:[],l:x.l,_fl:ctLabel(x.f),p:x.p||'',n:x.n||'',q:0,t:0,by:x.by||''};b.codes.push(String(x.c).toUpperCase());b.q+=(Number(x.q)||0);const t=Number(x.t)||0;if(t&&(!b.t||t<b.t))b.t=t;if(!b.p&&x.p)b.p=String(x.p);if(!b.n&&x.n)b.n=String(x.n);if((!b._fl||b._fl==='未标注类型')&&x.f)b._fl=ctLabel(x.f)});
- const items=Object.values(bm).map(b=>{b.c=b.codes[0];b.lc=b.codes.length;b._z=String(b.l||'').split('-')[0]||'未知区';b._h=ctHour(b);const _td=new Date(b.t||Date.now());_td.setHours(0,0,0,0);b._d=Math.max(0,Math.round((_D0-_td)/864e5));return b});
- // 全量统计（KPI/类型卡/区域热力均按框计，筛选只作用明细）
- const all=items;const f=TM.ctf||'';
+ CTN.boxes.forEach(b=>{if(q&&!(b.codes.join(' ')+' '+b.l+' '+(b.p||'')+' '+(b.n||'')).toUpperCase().includes(q))return;bm[b.codes[0]]=b});
+ const items=Object.values(bm);
+ // 全量统计（KPI/类型卡/区域热力均按框计，不受筛选影响；明细筛选在下方）
+ const all=CTN.boxes;const f=TM.ctf||'';
  let stale=0,byF={},byZ={};
  all.forEach(x=>{const g=byF[x._fl]=byF[x._fl]||{n:0,stale:0,maxH:0};g.n++;if(x._h>=168){g.stale++;stale++}if(x._h>g.maxH)g.maxH=x._h;byZ[x._z]=(byZ[x._z]||0)+1});
  const today=all.filter(x=>x._d===0).length;
@@ -429,7 +450,8 @@ async function ctList(silent){
   ['🗂','类型覆盖',Object.keys(byF).length+' 类','框型种类一目了然',null],
   ['🌱','今日新入库',today+' 只','新来的伙伴',f!=='new'?'今日入库':'已显示今日入库',f!=='new'?'new':''],
   ['🧊','滞留 7 天+',stale+' 只',stale?'该想想它们去哪了':'全部新鲜，状态满分',f!=='stale'?'只看滞留':'已显示滞留清单',stale?(f!=='stale'?'stale':''):null],
- ].map(([ic,t,v,tip,hint,val])=>`<div class="card kpi" ${val!=null&&val!==''?`style="cursor:pointer;border-color:${f===val?'var(--pri)':'var(--line)'}" title="${tip}（${hint}）" onclick="ctFilter('${val}')"`:`style="cursor:default" title="${tip}"`}><div class="row" style="margin:0"><span style="font-size:18px">${ic}</span><div><div class="n">${v}</div><div class="t">${t}</div></div></div></div>`).join('')}</div>`;
+  ['🟩','空闲格位',_free+' 格',_free?('库区还能放这么多框（空'+Math.round(_free/_st.total*100)+'%）'):(_st.total?'格位已放满':'暂无格位数据'),TM.ctmE?'寻宝中·点击退出':'去地图看空位在哪',(_free||TM.ctmE)?'free':''],
+ ].map(([ic,t,v,tip,hint,val])=>`<div class="card kpi" ${val!=null&&val!==''?`style="cursor:pointer;border-color:${(val==='free'?TM.ctmE:f===val)?'var(--pri)':'var(--line)'}" title="${tip}（${hint}）" onclick="ctFilter('${val}')"`:`style="cursor:default" title="${tip}"`}><div class="row" style="margin:0"><span style="font-size:18px">${ic}</span><div><div class="n">${v}</div><div class="t">${t}</div></div></div></div>`).join('')}</div>`;
  // 类型健康卡
  const maxN=Math.max(1,...Object.values(byF).map(g=>g.n));
  $('#ctcards').innerHTML=Object.entries(byF).sort((a,b)=>b[1].n-a[1].n).map(([name,g])=>{
@@ -452,12 +474,74 @@ async function ctList(silent){
  if(!TM.cs)TM.cs={k:'t',d:1,sz:100,pg:1};
  items=sortArr(items,TM.cs);
  const pgItems=items.slice((TM.cs.pg-1)*TM.cs.sz,TM.cs.pg*TM.cs.sz);
- const _lc=$('#ctc');if(_lc)_lc.textContent=`筛选后 ${items.length} 框 / 在库 ${all.length} 框（全库 ${totalBoxes} 框 · ${raw.length} 标签）· 账本v${j.rev} ${(j.at||'').slice(5,16).replace('T',' ')}${silent?' · 自动刷新':''}`;
+ const _lc=$('#ctc');if(_lc)_lc.textContent=`筛选后 ${items.length} 框 / 在库 ${all.length} 框（全库 ${CTN.totalBoxes} 框 · ${raw.length} 标签）· 账本v${j.rev} ${(j.at||'').slice(5,16).replace('T',' ')}${silent?' · 自动刷新':''}`;
  $('#ctlist').innerHTML=`<div style="overflow:auto;max-height:60vh"><table><thead><tr>${sTh(TM.cs,'l','货位',0,'csT')}${sTh(TM.cs,'c','标签号',0,'csT')}${sTh(TM.cs,'_fl','容器类型',0,'csT')}${sTh(TM.cs,'p','零件号',0,'csT')}${sTh(TM.cs,'n','物料',0,'csT')}${sTh(TM.cs,'q','数量',1,'csT')}${sTh(TM.cs,'t','滞留时长',1,'csT')}${sTh(TM.cs,'_d','入库日',1,'csT')}</tr></thead><tbody>${pgItems.map((x,ix)=>{const badge=x._h>=168?'<span class="tag" style="background:rgba(198,40,40,.1);color:var(--bad)">🧊 滞留</span>':x._h>=72?'<span class="tag" style="background:rgba(230,81,0,.1);color:var(--warn)">满 3 天</span>':x._d===0?'<span class="tag" style="background:rgba(46,125,50,.12);color:var(--ok)">今日新到</span>':'';return `<tr class="fin" style="animation-delay:${Math.min(ix*14,350)}ms"><td class="mono">${_esc(x.l)}</td><td class="mono"><a href="javascript:void 0" style="color:var(--pri)" title="标签全链路" onclick="traceBox('${_esc(x.c)}')">${_esc(x.c)}</a>${x.lc>1?` <span class="tag" style="background:rgba(81,91,212,.1);color:var(--pri);font-size:10.5px" title="同托共 ${x.lc} 个标签：${_esc(x.codes.join('、'))}">共${x.lc}码</span>`:''}</td><td>${_esc(x._fl)}</td><td class="mono">${x.p||''}</td><td>${_esc(x.n||'')}</td><td>${x.q||''}</td><td style="white-space:nowrap">${ctAgeTxt(x._h)} ${badge}</td><td style="color:var(--sub);font-size:12px">${x.t?new Date(x.t).toLocaleString('zh-CN',{hour12:false}).slice(5,16):''} ${x.by||''}</td></tr>`}).join('')||'<tr><td colspan=8 style="color:var(--sub)">没有符合条件的容器——换个筛选试试</td></tr>'}</tbody></table></div>${pgBar(TM.cs,items.length,'ct')}`;
 }
 function csT(k,num){if(!TM.cs)TM.cs={k:'t',d:1,sz:100,pg:1};if(TM.cs.k==k)TM.cs.d*=-1;else{TM.cs.k=k;TM.cs.d=num?-1:1}TM.cs.pg=1;ctList()}
 function ctPg(d){TM.cs.pg+=d;ctList(1)}
 function ctSz(v){TM.cs.sz=+v||1e9;TM.cs.pg=1;ctList(1)}
+// 行构建与空格统计（KPI/地图共用）：货架列按已用最大列推断，地面按格数配置（缺省12）
+function ctSlotStats(){
+ if(!CTN.gslots)CTN.gslots={};
+ const rows={};let miscN=0,miscB=0;
+ Object.entries(CTN.byBox).forEach(([loc,boxes])=>{
+  const p=String(loc).split('-');
+  if(p.length<4){miscN++;miscB+=boxes.length;return}
+  const tier=p.slice(3).join('-'),rack=/\dF$/.test(tier);
+  const rowid=rack?p[0]+'-'+p[1]:p.slice(0,3).join('-');
+  const label=rack?rowid+' · '+tier:rowid+' 排';
+  const col=rack?(Number(p[2])||0):(Number(tier)||0);
+  const R=rows[label]=rows[label]||{zone:p[0],rack,rowid,tier,cells:{},max:0};
+  R.cells[col]={loc:String(boxes[0]&&boxes[0].l).toUpperCase(),boxes};
+  if(col>R.max)R.max=col;
+ });
+ const zoneSt={};let total=0,used=0;
+ Object.keys(rows).forEach(k=>{const R=rows[k];
+  R.hi=R.rack?R.max:Math.max(R.max,Number(CTN.gslots[R.rowid])||12);
+  const n=R.hi,o=Object.keys(R.cells).length;total+=n;used+=o;
+  const z=zoneSt[R.zone]=zoneSt[R.zone]||{t:0,u:0};z.t+=n;z.u+=o;});
+ return {rows,zoneSt,total,used,miscN,miscB};
+}
+// ===== ㉖v50 库位地图：容器×货位融合视图——按"库区-巷道-格"的真实形状看每只框住哪一格、空位在哪 =====
+async function ctMap(){
+ if(!CTN.gslots){try{const g=await api('/api/ground-slots');CTN.gslots=(g&&g.slots)||{}}catch(_){CTN.gslots={}}}
+ const q=(TM.ctq||'').trim().toUpperCase();
+ const {rows,zoneSt,total,used,miscN,miscB}=ctSlotStats();
+ const zf=CTN.zf||'';const hunt=!!TM.ctmE;
+ $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+ ▢ 空格(点击看编号) 数字=同格多框 ｜ 货架列按已用最大列推断，地面按格数配置(缺省12)'}</span></div>`;
+ let h='',lastZ='';
+ Object.keys(rows).sort().filter((k)=>!zf||rows[k].zone===zf).forEach((k)=>{const R=rows[k];
+  if(R.zone!==lastZ){lastZ=R.zone;h+=`<div style="margin:12px 0 4px;font-size:13px;font-weight:800;color:var(--pri)">${R.zone} 库区</div>`}
+  let cells='';
+  const rowTxt=q?(String(k)+' '+Object.values(R.cells).flatMap(x=>x.boxes.map(b=>b.codes.join(' ')+' '+b.l+' '+(b.p||'')+(b.n||''))).join(' ')).toUpperCase():'';
+  const rowHit=q&&rowTxt.includes(q);
+  for(let c=1;c<=R.hi;c++){
+   const hit=R.cells[c];
+   const full=hit?hit.loc:R.rowid+'-'+String(c).padStart(2,'0')+(R.rack?'-'+R.tier:'');
+   const locHit=q&&String(full).toUpperCase().includes(q);
+   if(!hit){cells+=`<span class="ctg ${hunt?'ctg-em':'cte'}${locHit?' em':''}" title="${_esc(full)} · 空格位${hunt?'（可停放新框）':''}" onclick="ctFreeSlot('${_esc(full)}')">${(locHit||hunt)?'·':'&nbsp;'}</span>`;continue}
+   const bs=hit.boxes,worst=bs.some(b=>b._h>=168)?'r':(bs.some(b=>b._h>=72)?'o':'g');
+   const mk=rowHit||locHit;
+   const tip=_esc(full+'｜'+bs.length+'框 '+bs.reduce((s,b)=>s+b.lc,0)+'标签｜'+bs.map(b=>(b.p||b._fl)+'×'+b.q+' '+ctAgeTxt(b._h).replace(/<[^>]+>/g,'')).join('；').slice(0,120));
+   cells+=`<span class="ctg ctg-${worst}${mk?' cth':''}${(hunt&&!mk)?' dimc':''}" ${mk?'':'style="opacity:'+(hunt?'.22':'.85')+'"'} title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;
+  }
+  const uo=Object.keys(R.cells).length;
+  h+=`<div style="display:flex;align-items:center;gap:6px;margin:1px 0"><span class="mono" style="font-size:11px;width:104px;color:${uo?'var(--ink)':'var(--sub)'};text-align:right;white-space:nowrap">${k}${uo?'':' 全空'}</span><div style="display:flex;flex-wrap:wrap">${cells}</div></div>`;
+ });
+ $('#ctmap').innerHTML=h||'<div style="color:var(--sub);padding:20px">账本为空——地图无格可画</div>';
+}
+function ctZone(z){CTN.zf=(CTN.zf===z)?'':z;ctMap()}
+function ctCell(loc){const bs=CTN.byBox[String(loc).toUpperCase()]||[];
+ if(!bs.length){ctFreeSlot(loc);return}
+ dlg(`<h3>📍 ${_esc(loc)} <button class="pill q" style="padding:2px 8px;font-size:11px;vertical-align:middle" title="复制货位编号" onclick="ctCopy('${_esc(loc)}')">⧉ 复制编号</button></h3>`+bs.map((b)=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0"><b style="font-size:13px">${_esc(b._fl)}</b>${b.lc>1?` <span class="tag" style="background:rgba(81,91,212,.1);color:var(--pri);font-size:10.5px">${b.lc} 码同托</span>`:''}<span style="float:right;font-size:12px;color:${b._h>=168?'var(--bad)':b._h>=72?'var(--warn)':'var(--ok)'}">${ctAgeTxt(b._h)}</span><div style="clear:both;font-size:12px;color:var(--sub);margin-top:2px">${_esc(b.p||'')} ${_esc(b.n||'')} · 数量 ${b.q}${b.t?' · '+b.by+' '+new Date(b.t).toLocaleString('zh-CN',{hour12:false}).slice(5,16):''}</div><div class="mono" style="font-size:11.5px;margin-top:3px">${b.codes.map((c)=>`<a href="javascript:void 0" style="color:var(--pri)" onclick="$('#mask').classList.add('hide');traceBox('${_esc(c)}')">${_esc(c)}</a>`).join('　')}</div></div>`).join('')+
+ `<div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="ctLocate('${_esc(loc)}')" title="切到概览清单并筛出该货位">在清单中查看</button><button class="pill" onclick="$('#mask').classList.add('hide')">关闭</button></div>`)}
+function ctFreeSlot(loc){dlg(`<h3>📍 ${_esc(loc)} <button class="pill q" style="padding:2px 8px;font-size:11px;vertical-align:middle" title="复制货位编号" onclick="ctCopy('${_esc(loc)}')">⧉ 复制编号</button></h3><div style="font-size:13px;color:var(--sub);line-height:1.8">该格位当前<b style="color:var(--ok)">无框停放</b>。<br>入库路径：PDA 采集页扫码入账 → 叫车入位；若实物在这但账上没有，可到修正页补登记。</div><div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">关闭</button><button class="pill" onclick="$('#mask').classList.add('hide');go('fix')">去修正与返架</button></div>`)}
+function ctLocate(loc){$('#mask').classList.add('hide');TM.ctq=String(loc).toUpperCase();TM.ctf='';TM.cs={k:'l',d:1,sz:100,pg:1};_ctv='ov';ctRender()}
+// 复制编号到剪贴板：http 局域网非安全上下文时 navigator.clipboard 不可用，回退临时 textarea+execCommand
+function ctCopy(txt){const s=String(txt||'');if(!s)return;let done=false;
+ try{if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(s).then(()=>{},()=>{});done=true}}catch(_){}
+ if(!done){try{const ta=document.createElement('textarea');ta.value=s;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.focus();ta.select();done=document.execCommand('copy');document.body.removeChild(ta)}catch(_){}}
+ T(done?'已复制 '+s:'复制失败，请手动选中：'+s)}
 function dlg(h,wide){const d=$('#dlg');d.className='dlg'+(wide?' wide':'');d.innerHTML=h;$('#mask').classList.remove('hide')}
 $('#mask')&&$('#mask').addEventListener('click',e=>{if(e.target.id=='mask')$('#mask').classList.add('hide')});
 let FXB={};
