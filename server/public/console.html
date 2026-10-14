@@ -533,8 +533,10 @@ function ctSlotStats(){
   if(col>R.max)R.max=col;
  });
  const zoneSt={};let total=0,used=0;
+ // ㉖v52 货架巷道：同一货架各层物理列数相同→按巷道最大列对齐（立面成矩形，统计口径与渲染一致）
+ const rackMax={};Object.values(rows).forEach(R=>{if(R.rack)rackMax[R.rowid]=Math.max(rackMax[R.rowid]||0,R.max)});
  Object.keys(rows).forEach(k=>{const R=rows[k];
-  R.hi=R.rack?R.max:Math.max(R.max,Number(CTN.gslots[R.rowid])||12);
+  R.hi=R.rack?(rackMax[R.rowid]||R.max):Math.max(R.max,Number(CTN.gslots[R.rowid])||12);
   const n=R.hi,o=Object.keys(R.cells).length;total+=n;used+=o;
   const z=zoneSt[R.zone]=zoneSt[R.zone]||{t:0,u:0};z.t+=n;z.u+=o;});
  return {rows,zoneSt,total,used,miscN,miscB};
@@ -545,25 +547,46 @@ async function ctMap(){
  const q=(TM.ctq||'').trim().toUpperCase();
  const {rows,zoneSt,total,used,miscN,miscB}=ctSlotStats();
  const zf=CTN.zf||'';const hunt=!!TM.ctmE;
- $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+ ▢ 空格(点击看编号) 数字=同格多框 ｜ 货架列按已用最大列推断，地面按格数配置(缺省12)'}</span></div>`;
- let h='',lastZ='';
- Object.keys(rows).sort().filter((k)=>!zf||rows[k].zone===zf).forEach((k)=>{const R=rows[k];
-  if(R.zone!==lastZ){lastZ=R.zone;h+=`<div style="margin:12px 0 4px;font-size:13px;font-weight:800;color:var(--pri)">${R.zone} 库区</div>`}
-  let cells='';
-  const rowTxt=q?(String(k)+' '+Object.values(R.cells).flatMap(x=>x.boxes.map(b=>b.codes.join(' ')+' '+b.l+' '+(b.p||'')+(b.n||''))).join(' ')).toUpperCase():'';
-  const rowHit=q&&rowTxt.includes(q);
-  for(let c=1;c<=R.hi;c++){
-   const hit=R.cells[c];
-   const full=hit?hit.loc:R.rowid+'-'+String(c).padStart(2,'0')+(R.rack?'-'+R.tier:'');
-   const locHit=q&&String(full).toUpperCase().includes(q);
-   if(!hit){cells+=`<span class="ctg ${hunt?'ctg-em':'cte'}${locHit?' em':''}" title="${_esc(full)} · 空格位${hunt?'（可停放新框）':''}" onclick="ctFreeSlot('${_esc(full)}')">${(locHit||hunt)?'·':'&nbsp;'}</span>`;continue}
-   const bs=hit.boxes,worst=bs.some(b=>b._h>=168)?'r':(bs.some(b=>b._h>=72)?'o':'g');
-   const mk=rowHit||locHit;
-   const tip=_esc(full+'｜'+bs.length+'框 '+bs.reduce((s,b)=>s+b.lc,0)+'标签｜'+bs.map(b=>(b.p||b._fl)+'×'+b.q+' '+ctAgeTxt(b._h).replace(/<[^>]+>/g,'')).join('；').slice(0,120));
-   cells+=`<span class="ctg ctg-${worst}${mk?' cth':''}${(hunt&&!mk)?' dimc':''}" ${mk?'':'style="opacity:'+(hunt?'.22':'.85')+'"'} title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;
-  }
-  const uo=Object.keys(R.cells).length;
-  h+=`<div style="display:flex;align-items:center;gap:6px;margin:1px 0"><span class="mono" style="font-size:11px;width:104px;color:${uo?'var(--ink)':'var(--sub)'};text-align:right;white-space:nowrap">${k}${uo?'':' 全空'}</span><div style="display:flex;flex-wrap:wrap">${cells}</div></div>`;
+ $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+ ▢ 空格(点击看编号) 数字=同格多框 ｜ NB02 高位货架=巷道立面(3F顶→1F底) · NB03 地面=巷道平面(按排铺格)'}</span></div>`;
+ // 单格渲染（两区共用）：空格/占格、寻宝高亮、搜索命中
+ const renderCells=(R,maxHi)=>{
+   let s='';
+   const rowTxt=q?(String(R.rowid)+(R.rack?' '+R.tier:'')+' '+Object.values(R.cells).flatMap(x=>x.boxes.map(b=>b.codes.join(' ')+' '+b.l+' '+(b.p||'')+(b.n||''))).join(' ')).toUpperCase():'';
+   const rowHit=q&&rowTxt.includes(q);
+   for(let c=1;c<=maxHi;c++){
+     const hit=R.cells[c];
+     const full=hit?hit.loc:R.rowid+'-'+String(c).padStart(2,'0')+(R.rack?'-'+R.tier:'');
+     const locHit=q&&String(full).toUpperCase().includes(q);
+     if(!hit){s+=`<span class="ctg ${hunt?'ctg-em':'cte'}${locHit?' em':''}" title="${_esc(full)} · 空格位${hunt?'（可停放新框）':''}" onclick="ctFreeSlot('${_esc(full)}')">${(locHit||hunt)?'·':'&nbsp;'}</span>`;continue}
+     const bs=hit.boxes,worst=bs.some(b=>b._h>=168)?'r':(bs.some(b=>b._h>=72)?'o':'g');
+     const mk=rowHit||locHit;
+     const tip=_esc(full+'｜'+bs.length+'框 '+bs.reduce((a,b)=>a+b.lc,0)+'标签｜'+bs.map(b=>(b.p||b._fl)+'×'+b.q+' '+ctAgeTxt(b._h).replace(/<[^>]+>/g,'')).join('；').slice(0,120));
+     s+=`<span class="ctg ctg-${worst}${mk?' cth':''}${(hunt&&!mk)?' dimc':''}" ${mk?'':'style="opacity:'+(hunt?'.22':'.85')+'"'} title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;
+   }
+   return s;
+ };
+ const rowLine=(lab,R,maxHi,used)=>`<div style="display:flex;align-items:center;gap:6px;margin:1px 0"><span class="mono" style="font-size:11px;width:66px;color:${used?'var(--ink)':'var(--sub)'};text-align:right;white-space:nowrap">${lab}</span><div style="display:flex;flex-wrap:wrap">${renderCells(R,maxHi)}</div></div>`;
+ const zrows=Object.keys(rows).filter(k=>!zf||rows[k].zone===zf).map(k=>rows[k]);
+ const rack=zrows.filter(R=>R.rack), gnd=zrows.filter(R=>!R.rack);
+ let h='';
+ // NB02 高位货架：按巷道分组，层从上到下 3F→1F（站在货架正面看的立面图），各层列对齐成矩形
+ const byA={};rack.forEach(R=>{(byA[R.rowid]=byA[R.rowid]||[]).push(R)});
+ Object.keys(byA).sort().forEach((a,ai)=>{
+   const tiers=byA[a].sort((x,y)=>(parseInt(y.tier)||0)-(parseInt(x.tier)||0)); // ㉖v52 层号"3F"用 parseInt（Number 得 NaN 排序失效）
+   const maxCol=Math.max(0,...tiers.map(R=>R.hi||0));
+   const u=tiers.reduce((s,R)=>s+Object.keys(R.cells).length,0);
+   h+=`<div style="margin:${ai?14:6}px 0 3px;font-size:12.5px;font-weight:800;color:var(--pri)">${a} 巷道 <span style="font-weight:400;color:var(--sub);font-size:11px">高位货架 ${tiers.length}层×${maxCol}列 · 存 ${u}/${maxCol*tiers.length}</span></div>`;
+   h+='<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px 7px;background:linear-gradient(180deg,rgba(81,91,212,.05),transparent)">';
+   tiers.forEach(R=>{const o=Object.keys(R.cells).length;h+=rowLine(R.tier+(o?'':' 空'),R,maxCol,o)});
+   h+='</div>';
+ });
+ // NB03 地面：按巷道字母分组，排按号升序，每排横铺格位（编码即地面物理布局）
+ const gA={};gnd.forEach(R=>{const a=R.rowid.split('-').slice(0,2).join('-');(gA[a]=gA[a]||[]).push(R)});
+ Object.keys(gA).sort().forEach((a,ai)=>{
+   const rs=gA[a].sort((x,y)=>(Number(x.rowid.split('-').pop())||0)-(Number(y.rowid.split('-').pop())||0));
+   const u=rs.reduce((s,R)=>s+Object.keys(R.cells).length,0);
+   h+=`<div style="margin:${ai?14:10}px 0 3px;font-size:12.5px;font-weight:800;color:#00897b">${a} 区 <span style="font-weight:400;color:var(--sub);font-size:11px">地面 ${rs.length} 排 · 存 ${u} 框</span></div>`;
+   rs.forEach(R=>{const rn=R.rowid.split('-').pop(),o=Object.keys(R.cells).length;h+=rowLine('第'+rn+'排'+(o?'':' 空'),R,R.hi,o)});
  });
  $('#ctmap').innerHTML=h||'<div style="color:var(--sub);padding:20px">账本为空——地图无格可画</div>';
 }
