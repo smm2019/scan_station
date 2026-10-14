@@ -107,8 +107,8 @@ function showApp(){try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#logi
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
-const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['rpt','📈 工作量'],['exp','📤 导出中心'],['dict','🔤 字典'],['admin','⚙️ 控制后台']];
-function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;$('#nav').innerHTML=TABS.filter(([k])=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material')).map(([k,n])=>`<button class="${k==TAB?'on':''}" onclick="go('${k}')">${n}</button>`).join('');navBadge(window._lastRed||0);const _p=({dash:pgDash,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,exp:pgExp,dict:pgDict,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
+const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['rpt','📈 工作量'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['admin','⚙️ 控制后台']];
+function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;$('#nav').innerHTML=TABS.filter(([k])=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material')).map(([k,n])=>`<button class="${k==TAB?'on':''}" onclick="go('${k}')">${n}</button>`).join('');navBadge(window._lastRed||0);const _p=({dash:pgDash,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
 function navBadge(n){const b=document.querySelector('#nav button');if(!b)return;let bd=b.querySelector('.navbd');if(n>0){if(!bd){bd=document.createElement('span');bd.className='navbd';b.appendChild(bd)}bd.textContent=n>9?'9+':n}else if(bd)bd.remove()}
 // ===== ㉖v52 静默刷新调度器：后台照常取数，前台不打扰 =====
 // 规则：①你正在输入/选中文字/弹窗开着/刚有过鼠标键盘动作(3秒内) → 本轮直接跳过，不取数也不改画面
@@ -739,6 +739,47 @@ async function rptDl(){const f=$('#rf')?$('#rf').value:'',t=$('#rt')?$('#rt').va
   if(!r.ok){const j=await r.json().catch(()=>({}));T('❌ '+(j.msg||('HTTP '+r.status)));return}
   const cd=r.headers.get('Content-Disposition')||'';let nm='';const m=/filename\*=UTF-8''([^;]+)/i.exec(cd);if(m)nm=decodeURIComponent(m[1]);else nm='工作量报表.xls';
   const u=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=u;a.download=nm;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);T('✅ 已下载 '+nm,1)}catch(e){T('下载失败')}}
+// ===== ㉖v52 分析报告：日/周/月三层（日快照固化→周月现场聚合），环比+趋势+测试数据提示 =====
+let ANA={g:'day',end:''};
+function pgAna(){if(U.role!=='admin'&&U.role!=='warehouse'){$('#main').innerHTML='<div class="card" style="color:var(--sub)">分析报表仅管理员/仓管员可见</div>';return}
+ const d=new Date();ANA.end=ANA.end||d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+ $('#main').innerHTML=`<div class="card"><h3 style="margin-bottom:4px">📊 分析报告（日 / 周 / 月）</h3><p style="color:var(--sub);font-size:12.5px;margin-bottom:10px">每天 18 点后自动固化当日快照（历史不随数据滚动丢失），周/月由日快照聚合。含环比、趋势与测试数据占比提示。</p>
+<div class="row" style="align-items:center">${['day','week','month'].map((g)=>`<button class="pill ${ANA.g==g?'':'q'}" onclick="ANA.g='${g}';anaGo()">${g=='day'?'日报':g=='week'?'周报':'月报'}</button>`).join('')}
+<input id="ae" type="date" value="${ANA.end}" style="margin-left:8px" onchange="ANA.end=this.value;anaGo()">
+<button class="pill" onclick="anaGo()">查询</button>
+${U.role=='admin'?'<button class="pill q" title="把服务停机期间缺失的日快照补算回来（量类指标可补，库存快照为当前值）" onclick="anaBackfill()">⛏ 回填缺口</button>':''}
+<span class="sp"></span><span style="font-size:11px;color:var(--sub)">数据保留：日快照 400 天</span></div><div id="anabody" style="margin-top:10px">加载中…</div></div>`;
+ anaGo()}
+async function anaGo(){if(!ANA.end)return;$('#anabody').innerHTML='加载中…';
+ try{const j=await api('/api/report/analytics?g='+ANA.g+'&end='+ANA.end);anaRender(j)}catch(e){$('#anabody').innerHTML='<span style="color:var(--bad)">加载失败：服务需重启加载新代码</span>'}}
+function anaRender(j){const c=j.cur||{},p=j.prev;
+ const W=c,R=c,A={n:c.agvN,dur:c.agvDur,durN:c.agvDurN},S=c.stock||{};
+ const pct=(x,y)=>y?Math.round(x/y*100):null;
+ const mom=(k,label,fmt)=>{if(!p)return '';const a=c[k],b=p[k];if(a==null||b==null)return '';const d=a-b;return `<span style="font-size:10.5px;color:${d>0?'var(--ok)':d<0?'var(--bad)':'var(--sub)'};margin-left:4px">${label}${d>0?'▲':d<0?'▼':'＝'}${fmt?fmt(Math.abs(d)):Math.abs(d)}</span>`};
+ const kpi=(v,t,hint,chg)=>`<div class="card kpi" ${hint?`title="${hint}"`:''} style="min-width:104px"><div class="n" style="font-size:19px">${v}${chg||''}</div><div class="t">${t}</div></div>`;
+ const accAvg=R.accC?Math.round(R.accS/R.accC):null, rdyAvg=R.rdyC?Math.round(R.rdyS/R.rdyC):null, finAvg=R.finC?Math.round(R.finS/R.finC):null;
+ const accP=p&&p.reqs&&p.reqs.accC?Math.round(p.reqs.accS/p.reqs.accC):null;
+ let evs=Object.entries(c.evs||{}).sort((a,b)=>b[1]-a[1]);
+ const persons=Object.values(c.persons||{}).sort((a,b)=>(b.inB+b.outB)-(a.inB+a.outB));
+ const cars=Object.entries(c.cars||{}).map(([k,v])=>({car:k,n:v.n,avg:v.dn?Math.round(v.dur/v.dn/1000):0})).sort((a,b)=>b.n-a.n);
+ const stns=Object.entries(c.stnUse||{}).map(([k,v])=>({k,v})).sort((a,b)=>b.v-a.v);
+ // 趋势小柱（周/月）
+ let trend='';if(j.trend&&j.trend.length){const mx=Math.max(1,...j.trend.map((d)=>Math.max(d.inB,d.outB)));
+  trend=`<b style="font-size:13px">日趋势（入库框/出库框/领料单/AGV/异常）</b><div style="display:flex;gap:2px;align-items:flex-end;height:74px;margin:6px 0 2px;overflow-x:auto">${j.trend.map((d)=>`<div title="${d.day} 入${d.inB} 出${d.outB} 单${d.created} AGV${d.agv} 异常${d.ev}" style="flex:0 0 26px;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end"><div style="display:flex;gap:1px;align-items:flex-end;width:100%;justify-content:center"><i style="width:8px;height:${d.inB/mx*52}px;background:#43a047;display:inline-block;border-radius:2px 2px 0 0"></i><i style="width:8px;height:${d.outB/mx*52}px;background:#fb8c00;display:inline-block;border-radius:2px 2px 0 0"></i></div><span style="font-size:8.5px;color:var(--sub);transform:rotate(-40deg);margin-top:8px;white-space:nowrap">${d.day.slice(5)}</span></div>`).join('')}</div>`} const miss=j.missing&&j.missing.length?`<div style="margin:6px 0;padding:7px 10px;border:1px solid var(--warn);border-radius:8px;font-size:12px;color:var(--warn)">⚠ 缺 ${j.missing.length} 天快照（${j.missing.slice(0,6).join('、')}${j.missing.length>6?'…':''}）——服务停机期间未固化，量类指标可${U.role=='admin'?'点上方「回填缺口」补算':'请管理员回填'}；库存快照为当前值</div>`:'';
+ const testN=R.testN||0, warn=testN?`<div style="margin:6px 0;font-size:12px;color:var(--warn)">🧪 本期含 ${testN} 张测试单（下单人/备注带"测试"），指标解读请酌情剔除</div>`:'';
+ $('#anabody').innerHTML=miss+warn+trend+
+ `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(112px,1fr));margin:8px 0">${kpi(W.inB,'入库框','采集流水按托/框去重',mom('inB','环比'))}${kpi(W.outB,'出库框','出库单标签去重',mom('outB','环比'))}${kpi(W.outQ,'出库件','件数合计',mom('outQ','环比'))}${kpi(R.created,'领料单','新建',mom('created','环比'))}${kpi(R.done,'已签收','下单→签收闭环',mom('done','环比'))}${kpi(A.n,'AGV任务','完成数',mom('agvN','环比'))}${kpi(c.evTot||0,'AGV异常','事件总数',p?mom('evTot','环比'):'')}${kpi(S.boxes||'-','在库框','快照固化时刻值'+(j.g!='day'?'（取期末日）':''))}${kpi(S.stale7||0,'滞留7天+','在架超一周的框')}</div>`+
+ `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));margin-bottom:8px">
+  <div class="card" style="font-size:12px"><b>领料漏斗</b><div style="color:var(--sub);line-height:1.9">创建 ${R.created} → 接单 ${R.accepted}（${pct(R.accepted,R.created)??'-'}%）→ 签收 ${R.done}<br>拒单 ${R.rejected} · 取消 ${R.cancelled} · 短装收尾 ${R.shortN||0}</div></div>
+  <div class="card" style="font-size:12px"><b>时效均值</b><div style="color:var(--sub);line-height:1.9">接单 ${accAvg??'-'} 分${accAvg!=null&&accP!=null?`（上期 ${accP}）`:''}<br>备齐 ${rdyAvg??'-'} 分 · 全程 ${finAvg??'-'} 分<br>超 30 分未接：${R.lateAcc||0} 单</div></div>
+  <div class="card" style="font-size:12px"><b>AGV 效率</b><div style="color:var(--sub);line-height:1.9">任务 ${A.n} · 平均 ${(A.durN?Math.round(A.dur/A.durN/1000):'-')} 秒/趟<br>设备异常 ${c.evTot||0} 条${evs.length?'：'+evs.slice(0,3).map(([k,v])=>k+v).join(' · '):''}</div></div>
+  <div class="card" style="font-size:12px"><b>库存快照</b><div style="color:var(--sub);line-height:1.9">在库 ${S.boxes??'-'} 框 / ${S.locs??'-'} 货位<br>滞留7天+ ${S.stale7||0} 框${S.staleTop&&S.staleTop.length?'<br>最久：'+S.staleTop.slice(0,3).map(x=>x.c+'（'+x.h+'时）').join('、'):''}</div></div></div>`+
+ (persons.length?`<b style="font-size:13px">按人（入库框/出库框/件/接单/修正/返架）</b><div style="overflow:auto;max-height:30vh"><table><thead><tr><th>姓名</th><th>入库框</th><th>出库框</th><th>出库件</th><th>接单</th><th>修正</th><th>返架</th></tr></thead><tbody>${persons.map((x)=>`<tr><td><b>${x.name}</b></td><td>${x.inB}</td><td>${x.outB}</td><td>${x.outQ}</td><td>${x.acc}</td><td>${x.fix}</td><td>${x.ret}</td></tr>`).join('')}</tbody></table></div>`:'')+
+ (cars.length?`<div style="margin-top:8px"><b style="font-size:13px">AGV 按车</b> <span style="font-size:11px;color:var(--sub)">${cars.map((x)=>`${x.car} ${x.n}趟${x.avg?'·'+x.avg+'s':''}`).join('　')}</span></div>`:'')+
+ (stns.length?`<div style="margin-top:6px"><b style="font-size:13px">站台忙时占比（本期日均）</b> <span style="font-size:11px;color:var(--sub)">${stns.map((x)=>`${x.k.split('-').pop()}号台 ${x.v}%`).join('　')}</span></div>`:'')+
+ `<div style="font-size:11px;color:var(--sub);margin-top:10px">范围 ${j.range} · 快照 ${j.days} 天${j.prev?' · 环比基期 '+j.prevDays+' 天':' · 无环比基期数据'} · 生成于 ${new Date().toLocaleString('zh-CN',{hour12:false})}</div>`}
+async function anaBackfill(){const b=prompt('回填起止日期（YYYY-MM-DD ~ YYYY-MM-DD）：','2026-10-01 ~ '+ANA.end);if(!b)return;const [f,t]=b.split(/[~～]/).map((x)=>x.trim());if(!f||!t){T('格式不对');return}
+ try{const j=await api('/api/report/backfill',{method:'POST',body:{from:f,to:t}});T(j.ok?`✅ 回填完成：新增 ${j.created}/${j.total} 天`:'❌ '+(j.msg||'失败'));anaGo()}catch(_){T('回填失败（需管理员）')}}
 const DSLS=[['D1','库位表（货位账本快照）'],['D2','库存汇总（按框口径，可勾零库存）'],['D3','入库流水（全厂采集）'],['D4','出库流水（领料+直调）'],['D5','AGV任务（近30天六节点）'],['D6','AGV异常事件（180天持久表）'],['D7','工作量报表（按人/按日/按车）'],['D8','领料台账（全节点时刻）'],['D9','活动流审计（180天留痕+每日断链）'],['D10','盘点结果（差异三表）'],['PACK','月度对账包（四表+口径sheet）']];
 const dsVisible=(k)=>U.role=='admin'?true:k=='D9'?false:U.role=='warehouse'?true:!(k=='D8'||k=='D10'); // ㉕A1 与服务器expRoleOk同口径
 // ===== ㉕批次四 控制后台：活动流 / 用户管理 / 权限矩阵 / 系统健康 / 发布台 =====

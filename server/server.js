@@ -405,6 +405,110 @@ function dailyExport() {
 }
 setInterval(dailyExport, 30 * 60 * 1000).unref();
 
+// ---- ㉖v52 分析报表：每日 18 点后固化当天指标快照（agvTasks 只留30天、队列终态只留2h，不当天固化月报就缺数）；周/月由日快照现场聚合 ----
+// 测试数据识别：下单人/首行零件号含「测试」计入 testN（报告端橙色提示，不静默剔除——透明可查）
+const RPT_DIR = () => { const p = path.join(DATA_DIR, 'reports'); try { fs.mkdirSync(p, { recursive: true }); } catch (_) {} return p; };
+function rptDayKey(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function rptKeys(s) { const a = String(s).split('-').map(Number); return new Date(a[0], a[1] - 1, a[2]).getTime(); }
+function buildDayReport(dayKey) {
+  const F = Date.parse(dayKey + 'T00:00:00'), T = F + 86399999;
+  const w = buildWork(F, T);
+  const dd = w.days[dayKey] || { inB: 0, outB: 0, outQ: 0, fix: 0, ret: 0, acc: 0, done: 0, rej: 0, agv: 0 };
+  const persons = Object.values(w.persons).map((p) => ({ name: p.name, inB: p.inB, outB: p.outB, outQ: p.outQ, acc: p.acc, fix: p.fix, ret: p.ret }));
+  const mins = (a, b) => (a && b ? Math.max(0, (b - a) / 60000) : 0);
+  const iqty = (i) => (i.issued || []).reduce((s, e) => s + (typeof e === 'object' ? (Number(e.q) || 0) : 0), 0);
+  let created = 0, accepted = 0, doneN = 0, rejected = 0, cancelled = 0, testN = 0, lateAcc = 0, shortN = 0;
+  let accS = 0, accC = 0, rdyS = 0, rdyC = 0, finS = 0, finC = 0;
+  for (const r of db.requisitions || []) {
+    const cAt = Date.parse(r.createdAt) || 0;
+    if (cAt >= F && cAt <= T && (/测试/.test(String(r.byName || '')) || /测试|ceshi/i.test(String(r.remark || '')))) testN++; // ㉖ 仅计本期新单
+    const accEv = (r.history || []).find((h) => /^接单/.test(h.text));
+    const rAt = Number(r.readyAt) || 0; // 备齐时刻用专用字段（㉖起双路径写入），不依赖文案匹配
+    const finEv = (r.history || []).find((h) => /^签收/.test(h.text));
+    const aAt = accEv ? Date.parse(accEv.time) : 0, fAt = finEv ? Date.parse(finEv.time) : 0;
+    if (cAt >= F && cAt <= T) { created++; if (aAt) { const m = mins(cAt, aAt); accS += m; accC++; if (m > P().assignMin) lateAcc++; } }
+    if (aAt >= F && aAt <= T) { accepted++; if (rAt > aAt) { rdyS += mins(aAt, rAt); rdyC++; } }
+    if (fAt >= F && fAt <= T) { doneN++; finS += mins(cAt, fAt); finC++; if ((r.items || []).some((i) => i.transferred && iqty(i) < (Number(i.qty) || 0))) shortN++; }
+    const lastEv = (r.history || []).slice(-1)[0]; const uAt = lastEv ? (Date.parse(lastEv.time) || 0) : 0;
+    if (r.status === 'rejected' && !finEv && uAt >= F && uAt <= T) rejected++;
+    if (r.status === 'cancelled' && uAt >= F && uAt <= T) cancelled++;
+  }
+  const evs = {}; let evTot = 0;
+  for (const e of db.carEvents || []) { if (e.ts >= F && e.ts <= T) { evs[e.kind] = (evs[e.kind] || 0) + 1; evTot++; } }
+  let agvN = 0, agvDur = 0, agvDurN = 0; const cars = {};
+  for (const t of Object.values(db.agvTasks || {})) {
+    if (!(t.fin >= F && t.fin <= T)) continue; agvN++;
+    const du = t.ex ? t.fin - t.ex : 0;
+    const ck = 'AGV' + String(t.car || 0).padStart(2, '0'); (cars[ck] = cars[ck] || { n: 0, dur: 0, dn: 0 }); cars[ck].n++;
+    if (du > 0 && du < 4 * 3600e3) { agvDur += du; agvDurN++; cars[ck].dur += du; cars[ck].dn++; }
+  }
+  // 库存快照：调用时刻的在架状态（历史日回填时此段为"当前值"，量类指标不受影响；注释明示）
+  const boxSet = new Set(), locSet = new Set(); let stale7 = 0; const staleTop = [];
+  for (const x of ledgerView()) {
+    boxSet.add(boxKeyOf(x)); locSet.add(String(x.l || '').toUpperCase());
+    const h = (T - (Number(x.t) || T)) / 3600e3;
+    if (h >= 168) { stale7++; staleTop.push({ c: String(x.c), p: String(x.p || ''), l: String(x.l || ''), h: Math.floor(h) }); }
+  }
+  staleTop.sort((a, b) => b.h - a.h);
+  const stnUse = {};
+  for (const [k, tl] of Object.entries(db.stnTl || {})) {
+    const seg = (tl || []).slice().sort((a, b) => a.t - b.t); let busy = 0;
+    for (let i = 0; i < seg.length; i++) {
+      if (seg[i].t > T || seg[i].s === '空闲') continue;
+      const nx = i + 1 < seg.length ? seg[i + 1].t : T + 1;
+      const t0 = Math.max(seg[i].t, F), t1 = Math.min(nx, T + 1);
+      if (t1 > t0) busy += t1 - t0;
+    }
+    stnUse[k] = Math.round(busy / 864e5 * 100);
+  }
+  let errs = 0; for (const e of db.errLogs || []) if ((e.at || 0) >= F && e.at <= T) errs++;
+  return {
+    day: dayKey, work: dd, persons,
+    reqs: { created, accepted, done: doneN, rejected, cancelled, lateAcc, shortN, testN, accS, accC, rdyS, rdyC, finS, finC },
+    events: evs, eventsTotal: evTot,
+    agv: { n: agvN, dur: agvDur, durN: agvDurN }, cars,
+    stock: { boxes: boxSet.size, locs: locSet.size, stale7, staleTop: staleTop.slice(0, 5) },
+    stnUse, errs, params: P(),
+  };
+}
+let _rptLast = '';
+function dailyReport() {
+  try {
+    const d = new Date(); if (d.getHours() < 18) return;
+    const key = rptDayKey(d); if (_rptLast === key) return;
+    const f = path.join(RPT_DIR(), 'daily-' + key + '.json');
+    if (!fs.existsSync(f)) { fs.writeFileSync(f + '.tmp', JSON.stringify(buildDayReport(key))); fs.renameSync(f + '.tmp', f); console.log('[report] 日快照 ' + key + ' 已固化'); }
+    _rptLast = key;
+    const all = fs.readdirSync(RPT_DIR()).filter((x) => /^daily-\d{4}-\d{2}-\d{2}\.json$/.test(x)).sort();
+    while (all.length > 400) { const old = all.shift(); try { fs.unlinkSync(path.join(RPT_DIR(), old)); } catch (_) {} }
+  } catch (e) { console.log('[report] 日快照失败：' + e.message); logErr('dailyReport', e); }
+}
+setInterval(dailyReport, 30 * 60 * 1000).unref();
+(function rptBackfill() { // 服务曾停机的补快照（量类指标按时间窗可补算；库存快照段为当前值）
+  try {
+    for (let i = 3; i >= 1; i--) {
+      const key = rptDayKey(new Date(Date.now() - i * 864e5));
+      const f = path.join(RPT_DIR(), 'daily-' + key + '.json');
+      if (!fs.existsSync(f)) { fs.writeFileSync(f, JSON.stringify(buildDayReport(key))); console.log('[report] 补快照 ' + key); }
+    }
+  } catch (_) {}
+})();
+function rptAggregate(list) {
+  const agg = { inB: 0, outB: 0, outQ: 0, fix: 0, ret: 0, created: 0, accepted: 0, done: 0, rejected: 0, cancelled: 0, lateAcc: 0, shortN: 0, testN: 0, accS: 0, accC: 0, rdyS: 0, rdyC: 0, finS: 0, finC: 0, agvN: 0, agvDur: 0, agvDurN: 0, evTot: 0, errs: 0, evs: {}, persons: {}, cars: {}, stnUse: {} };
+  for (const r of list) {
+    agg.inB += r.work.inB; agg.outB += r.work.outB; agg.outQ += r.work.outQ; agg.fix += r.work.fix; agg.ret += r.work.ret;
+    for (const k of ['created', 'accepted', 'done', 'rejected', 'cancelled', 'lateAcc', 'shortN', 'testN', 'accS', 'accC', 'rdyS', 'rdyC', 'finS', 'finC']) agg[k] += (r.reqs || {})[k] || 0;
+    agg.agvN += r.agv.n; agg.agvDur += r.agv.dur; agg.agvDurN += r.agv.durN; agg.evTot += r.eventsTotal || 0; agg.errs += r.errs || 0;
+    for (const [k, v] of Object.entries(r.events || {})) agg.evs[k] = (agg.evs[k] || 0) + v;
+    for (const p of r.persons || []) { const t = agg.persons[p.name] = agg.persons[p.name] || { name: p.name, inB: 0, outB: 0, outQ: 0, acc: 0, fix: 0, ret: 0 }; t.inB += p.inB; t.outB += p.outB; t.outQ += p.outQ; t.acc += p.acc; t.fix += p.fix; t.ret += p.ret; }
+    for (const [k, c] of Object.entries(r.cars || {})) { const t = agg.cars[k] = agg.cars[k] || { n: 0, dur: 0, dn: 0 }; t.n += c.n; t.dur += c.dur || 0; t.dn += c.dn || 0; }
+    for (const [k, v] of Object.entries(r.stnUse || {})) { const s = agg.stnUse[k] = agg.stnUse[k] || { sum: 0, n: 0 }; s.sum += v; s.n++; }
+  }
+  const last = list[list.length - 1];
+  if (last) { agg.stock = last.stock; for (const k of Object.keys(agg.stnUse)) agg.stnUse[k] = Math.round(agg.stnUse[k].sum / agg.stnUse[k].n); }
+  return agg;
+}
+
 // ---- ㉔AGV异常事件统一聚合（车辆告警/堵点/低电/出库超时/改位冲突/认领） ----
 // ---- ㉖异常事件统一持久表 db.carEvents：告警/恢复/认领/升级/红牌/堵点/堵点解除/低电/低电恢复/出库超时/改位冲突/FIFO违反（180天滚动归档，恢复不丢历史）----
 function pushEvent(kind, who, msg, ts) { try { db.carEvents = db.carEvents || []; db.carEvents.push({ ts: ts || Date.now(), kind, who: String(who || '').slice(0, 30), msg: String(msg || '').slice(0, 160) }); if (db.carEvents.length > 20000) db.carEvents = db.carEvents.slice(-20000); } catch (_) {} }
@@ -2271,6 +2375,40 @@ const server = http.createServer(async (req, res) => {
         const ds = Object.keys(w.days).sort().map((k) => ({ day: k, ...w.days[k] }));
         const cs = Object.keys(w.cars).sort().map((k) => ({ car: k, ...w.cars[k], avgDur: w.cars[k].n ? Math.round(w.cars[k].dur / w.cars[k].n) : 0, dur: undefined }));
         return send(res, 200, { ok: true, from: wdstr(F), to: wdstr(T), persons: ps, days: ds, cars: cs });
+      }
+      // ===== ㉖v52 分析报表：日/周/月（日=当天快照；周/月=日快照现场聚合；缺日标 missing，支持回填）=====
+      if (req.method === 'GET' && p === '/api/report/analytics') {
+        if (u.role !== 'admin' && u.role !== 'warehouse') return send(res, 403, { ok: false, msg: '分析报表仅管理员/仓管员可见' });
+        const g = String(url.searchParams.get('g') || 'day'), end = String(url.searchParams.get('end') || rptDayKey(new Date()));
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(end) || rptDayKey(new Date(rptKeys(end))) !== end) return send(res, 400, { ok: false, msg: 'end 需为存在的日期 YYYY-MM-DD' });
+        const load = (key) => { try { return JSON.parse(fs.readFileSync(path.join(RPT_DIR(), 'daily-' + key + '.json'), 'utf8')); } catch (_) { return null; } }
+        const days = []; const endMs = rptKeys(end);
+        if (g === 'week') { const dow = (new Date(endMs).getDay() + 6) % 7; for (let i = 0; i < 7; i++) days.push(rptDayKey(new Date(endMs + (i - dow) * 864e5))); } // 周一为一周起点
+        else if (g === 'month') { const [y, m] = end.split('-').map(Number); const last = new Date(y, m, 0).getDate(); for (let d = 1; d <= last; d++) days.push(y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0')); }
+        else days.push(end);
+        const missing = [];
+        let snaps = days.map((k) => { const r = load(k); if (!r) missing.push(k); return r; }).filter(Boolean);
+        if (g === 'day' && !snaps.length) { try { snaps = [buildDayReport(end)]; } catch (_) {} } // 当天实时预览（未固化）
+        const prevDays = g === 'day' ? [rptDayKey(new Date(endMs - 864e5))] : g === 'week' ? days.map((k) => rptDayKey(new Date(rptKeys(k) - 7 * 864e5))) : (() => { const out = []; const [y, m] = end.split('-').map(Number); const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1; const last = new Date(py, pm, 0).getDate(); for (let d = 1; d <= last; d++) out.push(py + '-' + String(pm).padStart(2, '0') + '-' + String(d).padStart(2, '0')); return out; })();
+        const prev = prevDays.map(load).filter(Boolean);
+        const cur = rptAggregate(snaps), pv = rptAggregate(prev);
+        const rng = days[0] === days[days.length - 1] ? days[0] : days[0] + ' ~ ' + days[days.length - 1];
+        return send(res, 200, { ok: true, g, range: rng, days: days.length, loaded: snaps.length, missing, cur, prev: prev.length ? pv : null, prevDays: prev.length, trend: g === 'day' ? null : snaps.map((r) => ({ day: r.day, inB: r.work.inB, outB: r.work.outB, created: (r.reqs || {}).created || 0, agv: r.agv.n, ev: r.eventsTotal || 0 })) });
+      }
+      if (req.method === 'POST' && p === '/api/report/backfill') {
+        if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可回填快照' });
+        const b = await readBody(req);
+        const from = String(b.from || ''), to = String(b.to || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) return send(res, 400, { ok: false, msg: 'from/to 需为 YYYY-MM-DD' });
+        let n = 0, done = 0;
+        for (let ms = rptKeys(from); ms <= rptKeys(to); ms += 864e5) {
+          n++; const key = rptDayKey(new Date(ms));
+          const f = path.join(RPT_DIR(), 'daily-' + key + '.json');
+          if (fs.existsSync(f)) continue;
+          try { fs.writeFileSync(f, JSON.stringify(buildDayReport(key))); done++; } catch (_) {}
+        }
+        pushOps(u, '报表回填', from + '~' + to, '新增 ' + done + '/' + n + ' 天快照');
+        return send(res, 200, { ok: true, total: n, created: done });
       }
       if (req.method === 'POST' && p === '/api/watchlist') {
         const b = await readBody(req);
