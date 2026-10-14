@@ -376,7 +376,10 @@ Map<String, String> _mesBaseHeaders(Map cfg) {
   };
 }
 
-/// 带 Token 失效静默重登重试一次的 MES 请求通道；success=false 抛异常（含 message）
+/// 带 Token/会话失效静默重登重试一次的 MES 请求通道。
+/// 失效形态实测两种：HTTP 401/403；以及 HTTP 200 但 success=false 且为鉴权类错误
+/// （如 message.code="022"/content="非法客户端"，或 token/session/过期/失效/未登录 等文案）。
+/// 命中任一即静默重登并原样重试一次；重登后仍失败才抛给用户。
 Future<dynamic> mesReq(String method, String path, {Map<String, String>? query, Map? body, bool retried = false}) async {
   final cfg = await MesConfig.getConfig();
   final base = "http://${cfg["host"]}:${cfg["port"]}";
@@ -398,21 +401,41 @@ Future<dynamic> mesReq(String method, String path, {Map<String, String>? query, 
     throw Exception("网络请求失败：$e");
   }
   final bodyStr = await resp.transform(utf8.decoder).join();
-  if ((resp.statusCode == 401 || resp.statusCode == 403) && !retried) {
+  dynamic j;
+  try { j = jsonDecode(bodyStr); } catch (_) { j = null; }
+  final bool httpAuth = resp.statusCode == 401 || resp.statusCode == 403;
+  final bool bodyAuth = j is Map && j["success"] == false && _mesIsAuthFail(j["message"]);
+  if ((httpAuth || bodyAuth) && !retried) {
     if (await mesSilentLogin()) {
       await mesRefreshCfgCache();
       return mesReq(method, path, query: query, body: body, retried: true);
     }
     throw Exception("MES登录已失效，自动续期失败，请到设置页重新登录");
   }
-  dynamic j;
-  try { j = jsonDecode(bodyStr); } catch (_) { throw Exception("服务器返回异常(${resp.statusCode})"); }
+  if (j == null) throw Exception("服务器返回异常(${resp.statusCode})");
   if (j is Map && j["success"] == false) {
     final m = j["message"];
     String msg = m is Map ? (m["content"]?.toString() ?? "") : (m?.toString() ?? "");
     throw Exception(msg.isEmpty ? "接口返回失败" : msg);
   }
   return j;
+}
+
+/// 判定 MES 业务失败体是否为鉴权/会话失效（需重登）：优先看 message.code（实测 022=非法客户端，
+/// token 缺失/失效/过期统一码），兜底看文案关键词。刻意不含裸「非法」二字，避免"非法条码/非法货位"等业务错误判触发无谓重登。
+bool _mesIsAuthFail(dynamic message) {
+  String code = "", content = "";
+  if (message is Map) {
+    code = (message["code"] ?? "").toString().trim();
+    content = (message["content"] ?? "").toString();
+  } else {
+    content = (message ?? "").toString();
+  }
+  if (code == "022") return true;
+  return RegExp(
+        r"token|session|unauthor|forbidden|invalid|expire|过期|失效|未授权|未登录|重新登录|非法客户端|会话",
+        caseSensitive: false)
+      .hasMatch(content);
 }
 
 /// 解包 {success,data} 的 data
