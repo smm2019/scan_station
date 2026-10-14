@@ -2810,7 +2810,9 @@ const server = http.createServer(async (req, res) => {
           }
           save();
           console.log(`[req] ${u.name} 下单 ${r.no}${assignee ? ' → 指定 ' + assignee.name : ''}`);
-          return send(res, 200, { ok: true, req: reqView(r) });
+          // ㉖v51 排队位次：比本单更早、仍在等仓管处理（待接单/备料中）的单数——下单即知前面压了几张
+          const ahead = db.requisitions.filter((x) => x !== r && ['pending', 'accepted'].includes(x.status) && String(x.createdAt || '') < String(r.createdAt || '')).length;
+          return send(res, 200, { ok: true, req: reqView(r), queueAhead: ahead });
         }
 
         // 列表：物料员看自己的，仓管/管理员看全部；scope=todo 只看待办

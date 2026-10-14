@@ -216,10 +216,16 @@ class _RequisitionPageState extends State<RequisitionPage>
     if (!mounted) return;
     if (r["ok"] == true) {
       final aName = res["assigneeName"]?.toString() ?? "";
+      // ㉖v51 排队位次：服务器回执 queueAhead=本单之前仍在等仓管处理的单数（旧服务器无此字段则不显示）
+      final ahead = (r["queueAhead"] as num?)?.toInt();
+      final qTxt = ahead == null
+          ? ""
+          : ahead == 0
+              ? "，当前无单排队，仓管接单最快"
+              : "，前面还有 $ahead 张单在排队";
       _toast(
-          aName.isNotEmpty
-              ? "领料单已提交：${r["req"]["no"]}，已指定 ${aName} 备料（30分钟未接自动放开）"
-              : "领料单已提交：${r["req"]["no"]}",
+          "领料单已提交：${r["req"]["no"]}"
+          "${aName.isNotEmpty ? "，已指定 $aName 备料（30分钟未接自动放开）" : ""}$qTxt",
           err: false);
       _load();
     } else
