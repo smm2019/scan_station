@@ -723,15 +723,27 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                     onPressed: chosen.isEmpty
                         ? null
                         : () {
-                            final items = chosen.map((e) {
-                              final p = widget.parts
-                                  .firstWhere((x) => x.partNo == e.key);
-                              return {
-                                "partNo": p.partNo,
-                                "itemName": p.itemName,
-                                "qty": int.parse(e.value.text.trim())
-                              };
-                            }).toList();
+                            final items = chosen
+                                .map((e) {
+                                  final found = widget.parts
+                                      .where((x) => x.partNo == e.key)
+                                      .toList();
+                                  if (found.isEmpty)
+                                    return null; // ㉖v53 填数后零件中途清零/下架：跳过该行防崩
+                                  final p = found.first;
+                                  return {
+                                    "partNo": p.partNo,
+                                    "itemName": p.itemName,
+                                    "qty": int.parse(e.value.text.trim())
+                                  };
+                                })
+                                .whereType<Map>()
+                                .toList();
+                            if (items.isEmpty) {
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                                  content: Text("所选零件行已无库存，请重新选择")));
+                              return;
+                            }
                             Navigator.pop(context, {
                               "items": items,
                               "remark": _remarkCtrl.text.trim(),
