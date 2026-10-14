@@ -2139,8 +2139,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/agv/stntl') { // ㉔站台状态时间线（甘特数据源，近8h）
         const nowMs = Date.now(), cut = nowMs - P().ganttH * 3600 * 1000; // ㉖ 甘特窗可调（原8h）
         const out = {}; for (const [k, a] of Object.entries(db.stnTl || {})) { const seg = a.filter((x) => x.t >= cut); if (seg.length) out[k] = seg; }
-        for (const k of AGV_STNS) { if (!out[k]) out[k] = [{ s: '空闲', t: cut }]; } // ㉖ 全 12 台都出：无采样历史的补满窗空闲，甘特不再"只显示有动过的台"
-        return send(res, 200, { ok: true, tl: out, all: AGV_STNS, at: new Date(nowMs).toISOString() });
+        for (const k of AGV_STNS) { if (!out[k]) out[k] = [{ s: '空闲', t: cut }]; else if (Number(out[k][0].t) > cut) out[k] = [{ s: '空闲', t: cut }].concat(out[k]); } // ㉖ 全 12 台都出：窗口内无记录的时段补空闲（含"有部分历史"的台），甘特不再留灰空白
+        return send(res, 200, { ok: true, tl: out, all: AGV_STNS, winMs: nowMs - cut, at: new Date(nowMs).toISOString() });
       }
       if (req.method === 'GET' && p === '/api/agv/trail') {
         const mins = Math.min(1440, Math.max(5, parseInt(url.searchParams.get('mins') || '360') || 360));
