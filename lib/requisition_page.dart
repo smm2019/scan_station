@@ -2600,6 +2600,7 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
   Map? _q;
   bool _loading = true;
   String _err = "";
+  bool _expandAll = false; // ㉖v52 长队列默认折叠（前3+我的附近），点头部芯片展开
 
   @override
   void initState() {
@@ -2632,8 +2633,12 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
     if (m == null) return "—";
     if (m < 1) return "刚刚";
     if (m < 60) return "$m 分钟";
-    final h = (m / 60).floor(), mm = m % 60;
-    return mm == 0 ? "$h 小时" : "$h 小时 $mm 分";
+    if (m < 1440) {
+      final h = (m / 60).floor(), mm = m % 60;
+      return mm == 0 ? "$h 小时" : "$h 小时 $mm 分";
+    }
+    final d = (m / 1440).floor(), h = ((m % 1440) / 60).floor();
+    return h == 0 ? "$d 天" : "$d 天 $h 小时"; // ㉖v52 超一天按"天 小时"，不再显示 405 小时
   }
 
   @override
@@ -2641,7 +2646,7 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
     return Padding(
       padding: EdgeInsets.only(top: MediaQuery.of(context).viewInsets.top),
       child: Container(
-        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.82),
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.94),
         decoration: const BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
@@ -2731,18 +2736,15 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
             ),
           if (serving.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(
-                  "🔧 仓管正在给 ${serving.map((s) => "${s["byName"]}（${s["acceptedBy"]}已备 ${_dur(s["acceptedMin"])}）").join("、")} 备料",
-                  style: const TextStyle(
-                      fontSize: 12.5, color: Color(0xFF2E7D32))),
+              padding: const EdgeInsets.only(top: 6),
+              child: _servingLine(serving),
             )
           else if (total > 0)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
+              padding: const EdgeInsets.only(top: 6),
               child: const Text("🕐 暂无仓管接单，稍候或催单提醒",
                   style: TextStyle(
-                      fontSize: 12.5, color: Color(0xFFE65100))),
+                      fontSize: 13.5, color: Color(0xFFE65100))),
             ),
           Padding(
             padding: const EdgeInsets.only(top: 4),
@@ -2752,6 +2754,23 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
         ],
       ),
     );
+  }
+
+  // ㉖v52 一句话摘要：我的单正在被备料时优先播报，否则只报"几人几单在备"，不再罗列全队列
+  Widget _servingLine(List<Map> serving) {
+    final mine = serving.firstWhere((s) => s["mine"] == true, orElse: () => const {});
+    if (mine.isNotEmpty) {
+      return Text(
+          "🔧 好消息：你的单正在备料！${mine["acceptedBy"]} 已备 ${_dur(mine["acceptedMin"])}",
+          style: const TextStyle(
+              fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF2E7D32)));
+    }
+    final who = serving.map((s) => (s["acceptedBy"] ?? "?").toString()).toSet().toList();
+    final head = who.take(2).join("、");
+    return Text(
+        "🔧 ${who.length} 位仓管在备料 · 共 ${serving.length} 单进行中"
+        "${head.isEmpty ? "" : "（$head${who.length > 2 ? " 等" : ""}）"}",
+        style: const TextStyle(fontSize: 13.5, color: Color(0xFF2E7D32)));
   }
 
   List<Widget> _rows() {
@@ -2765,26 +2784,55 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
                     style: TextStyle(color: Colors.grey))))
       ];
     final rank = (_q?["rank"] as num?)?.toInt();
+    final myPos = rank ?? (_q?["total"] as num?)?.toInt() ?? 0;
+    // ㉖v52 默认折叠：前 3 单 + 我的单附近（±2）+ 备料中/下一个 永远可见
+    final show = <int>{};
+    for (final x in items) {
+      final pos = (x["pos"] as num).toInt();
+      if (!_expandAll &&
+          pos > 3 &&
+          (rank == null || (pos - myPos).abs() > 2) &&
+          x["status"] != "accepted" &&
+          x["mine"] != true &&
+          !(rank != null && pos == rank + 1 && x["status"] == "pending")) continue;
+      show.add(pos);
+    }
+    final hidden = items.length - show.length;
     final out = <Widget>[
-      const Padding(
-          padding: EdgeInsets.fromLTRB(4, 6, 4, 4),
-          child: Text("完整排队序列（按下单先后）",
-              style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blueGrey)))
+      Padding(
+          padding: const EdgeInsets.fromLTRB(4, 6, 4, 4),
+          child: Row(children: [
+            Text(_expandAll ? "完整排队序列（按下单先后）" : "关键队列（前3 + 我的附近）",
+                style: const TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blueGrey)),
+            const Spacer(),
+            if (hidden > 0 || _expandAll)
+              InkWell(
+                  onTap: () => setState(() => _expandAll = !_expandAll),
+                  child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      child: Text(_expandAll ? "收起 ▴" : "展开全部 ${items.length} 单 ▾",
+                          style: const TextStyle(
+                              fontSize: 12.5,
+                              color: Color(0xFF1565C0),
+                              fontWeight: FontWeight.bold))))
+          ]))
     ];
     for (final x in items) {
+      final pos = (x["pos"] as num).toInt();
+      if (!show.contains(pos)) continue;
       final me = x["mine"] == true;
       final isNext = rank != null && x["pos"] == rank + 1 && x["status"] == "pending";
       final serving = x["status"] == "accepted";
       out.add(Card(
-        margin: const EdgeInsets.symmetric(vertical: 3),
+        margin: const EdgeInsets.symmetric(vertical: 4),
         color: me ? const Color(0xFFE8EAF6) : null,
         child: ListTile(
           dense: true,
           leading: CircleAvatar(
-            radius: 16,
+            radius: 18,
             backgroundColor: serving
                 ? const Color(0xFF2E7D32)
                 : (x["rush"] == true ? const Color(0xFFE65100) : Colors.blueGrey),
@@ -2800,20 +2848,20 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
                   "${x["byName"]}${me ? "（我）" : ""} · ${x["no"]}",
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                      fontSize: 14,
+                      fontSize: 15,
                       fontWeight: me ? FontWeight.bold : FontWeight.normal)),
             ),
             if (x["rush"] == true)
               const Padding(
                   padding: EdgeInsets.only(left: 4),
                   child: Text("🔥急",
-                      style: TextStyle(fontSize: 11, color: Color(0xFFE65100)))),
+                      style: TextStyle(fontSize: 12, color: Color(0xFFE65100)))),
             if (isNext)
               const Padding(
                   padding: EdgeInsets.only(left: 4),
                   child: Text("← 下一个",
                       style: TextStyle(
-                          fontSize: 11,
+                          fontSize: 12,
                           color: Color(0xFF1565C0),
                           fontWeight: FontWeight.bold))),
           ]),
@@ -2821,14 +2869,14 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
             serving
                 ? "🔧 ${x["acceptedBy"]} 备料中 · 已 ${_dur(x["acceptedMin"])}"
                 : "🕐 等待接单 ${_dur(x["waitMin"])}",
-            style: const TextStyle(fontSize: 12),
+            style: const TextStyle(fontSize: 13),
           ),
           trailing: Text(
               serving
                   ? "备料中"
                   : (x["rush"] == true ? "急料待接" : "待接单"),
               style: TextStyle(
-                  fontSize: 11.5,
+                  fontSize: 12.5,
                   color: serving ? const Color(0xFF2E7D32) : Colors.orange)),
         ),
       ));
