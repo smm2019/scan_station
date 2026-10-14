@@ -618,11 +618,11 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                     Text(
                         _assigneeId.isEmpty
                             ? "不指定（谁接都可以）"
-                            : (_warehouses
-                                    .firstWhere(
-                                        (w) => w["id"] == _assigneeId)["name"]
+                            : (_warehouses.firstWhere(
+                                    (w) => w["id"] == _assigneeId,
+                                    orElse: () => const {})["name"]
                                     ?.toString() ??
-                                ""),
+                                "（已停用）"),
                         style: TextStyle(
                             fontSize: 13,
                             fontWeight: FontWeight.w600,
@@ -740,10 +740,10 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                               "assigneeId": _assigneeId,
                               "assigneeName": _assigneeId.isEmpty
                                   ? ""
-                                  : (_warehouses
-                                          .firstWhere((w) =>
-                                              w["id"] == _assigneeId)["name"]
-                                          ?.toString() ??
+                                  : (_warehouses.firstWhere((w) =>
+                                          w["id"] == _assigneeId,
+                                          orElse: () => const {})["name"]
+                                      ?.toString() ??
                                       "")
                             });
                           },

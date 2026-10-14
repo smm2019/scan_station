@@ -1415,6 +1415,8 @@ class PrefsSync {
                     : dd);
       }
       final n = pv["notes"];
+      // ㉖v53 首页模块自定义：顺序/显隐 + 用量 + 习惯开关（落本地，changed 触发主界面重建页签）
+      await TabCustom.applyServer(pv["pd_tabs"], pv["pd_tabuse"], pv["pd_tab_auto"]);
       if (n is Map) {
         if (n["req_new"] != null)
           await sp.setBool("remind_req_new", n["req_new"] != false);
@@ -1460,6 +1462,8 @@ class PrefsSync {
         "pd_defPallet": sp.getString("pd_defPallet") ?? "",
         "pd_dateOffset": sp.getInt("pd_dateOffset") ?? 0,
       };
+      // ㉖v53 首页模块自定义随偏好全量上云
+      try { body.addAll(await TabCustom.cloudPayload()); } catch (_) {}
       if (uid.isNotEmpty) body["work"] = sp.getInt("worktype_$uid") ?? 0;
       await AuthApi.setPrefs(body);
     } catch (_) {}

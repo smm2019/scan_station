@@ -45,6 +45,7 @@ part 'local_log.dart'; // ⑤本地审计日志 + ⑦全局异常兜底落盘 + 
 part 'diag_page.dart'; // ⑥设备诊断页
 part 'display_prefs_page.dart'; // 第3档 显示与扫码偏好（字号/聚焦/默认框型/领料默认值上云）
 part 'inspect_page.dart'; // ㉖④ 检验模式：AGV下架检验→备注→原样归位
+part 'tab_custom_page.dart'; // ㉖v53 首页模块自定义：页签顺序/显隐/使用习惯自学习
 part 'loc_map_page.dart'; // ③货位占用可视化
 part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 part 'agv_map_page.dart'; // ①2D实时地图
@@ -1503,6 +1504,9 @@ class _MainPageState extends State<MainPage>
       if (_showInsp) 'insp'
     ];
     _tabController = TabController(length: _tabKeys.length, vsync: this);
+    _tabController.addListener(_onTabSettled); // ㉖v53 页签驻留计时
+    TabCustom.enter(_tabKeys.first); // ㉖v53 起始页开始计时
+    TabCustom.restore().then((_) => _applyCustomTabs()); // ㉖v53 应用自定义顺序/显隐
     kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
     _startNotifPolling();
     _restoreWorkMode(); // ②按登录账号恢复上次工作模式（AGV站台/人工地面）
@@ -1517,6 +1521,35 @@ class _MainPageState extends State<MainPage>
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
     _initLoadData();
+  }
+
+  // ㉖v53 应用自定义页签顺序/显隐（restore 完成后；无自定义时保持默认零开销）
+  Future<void> _applyCustomTabs() async {
+    final keys = await TabCustom.resolve();
+    if (!mounted || keys.length == _tabKeys.length && keys.every((k) => _tabKeys.contains(k)) && keys.join() == _tabKeys.join()) return;
+    final cur = _tabKeys[_tabController.index];
+    final old = _tabController;
+    final ni = keys.indexOf(cur);
+    _tabController = TabController(length: keys.length, vsync: this, initialIndex: ni < 0 ? 0 : ni);
+    _tabController.addListener(_onTabSettled);
+    old.removeListener(_onTabSettled);
+    old.dispose();
+    setState(() => _tabKeys = keys);
+    TabCustom.enter(keys[_tabController.index]);
+  }
+
+  // ㉖v53 页签切换落定：结算上一页驻留时长，开始新页计时；顺带 60 秒节流上云
+  int _lastTabFlush = 0;
+  void _onTabSettled() {
+    if (!_tabController.indexIsChanging) {
+      // 动画结束才结算，滑过不算
+      TabCustom.enter(_tabKeys[_tabController.index]);
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (now - _lastTabFlush > 60000) {
+        _lastTabFlush = now;
+        TabCustom.flush();
+      }
+    }
   }
 
   ///【修复BUG：新增】启动数据加载：先恢复当前批次号，再刷新记录列表与统计
@@ -1675,11 +1708,13 @@ class _MainPageState extends State<MainPage>
 
   @override
   void dispose() {
+    TabCustom.flush(); // ㉖v53 退页结算驻留时长上云
     kNotifTap.removeListener(_onNotifTap);
     PrefsSync.changed.removeListener(_onPrefsChanged); // ㉖B14
     kAgvQueueTick.removeListener(_loadMyQueue); // ㉖ 队列刷新监听释放
     _myQueueTimer?.cancel();
     _notifTimer?.cancel();
+    _tabController.removeListener(_onTabSettled); // ㉖v53
     _tabController.dispose();
     _goodsFocusNode.dispose(); //【新增】释放焦点资源
     _goodsInputCtrl.dispose();
@@ -3465,37 +3500,25 @@ class _MainPageState extends State<MainPage>
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Color(0xFF515BD4),
-        toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
-        bottom: TabBar(
-          controller: _tabController,
-          isScrollable: true,
-          tabAlignment: TabAlignment.start, // 7个页签可横滑，标签不再被压成一个字
-          labelColor: Colors.white, //选中文字白色
-          labelStyle: TextStyle(fontWeight: FontWeight.bold), //选中加粗
-          unselectedLabelColor: Color(0xFFD0D4F8), //未选中浅白色
-          indicatorColor: Colors.white,
-          tabs: [
-            if (_showCollect) const Tab(text: "采集录入"),
-            if (_showCollect) const Tab(text: "历史批次"),
-            if (_showInv) const Tab(text: "盘点"),
-            if (_showDirect) const Tab(text: "直调"),
-            const Tab(text: "库存"),
-            if (_showReq) const Tab(text: "领料"),
-            if (_showAgv) const Tab(text: "AGV"),
-            if (_showInsp) const Tab(text: "检验"),
-          ],
-        ),
-      ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [
-          if (_showCollect)
-            //采集录入页面（内容可滚，扫码条固定底部）
+  // ㉖v53 按自定义页签顺序取页（采集页大块自原内联 children 平移至此）
+  Widget _tabPage(String k) {
+    switch (k) {
+      case 'history':
+        return _buildHistoryBatchPage();
+      case 'inv':
+        return const InventoryHomePage();
+      case 'direct':
+        return const DirectTransferPage();
+      case 'stock':
+        return const InventoryStockPage();
+      case 'req':
+        return const RequisitionPage();
+      case 'agv':
+        return const AgvMonitorPage();
+      case 'insp':
+        return const InspectPage();
+      default:
+        return 
             Column(children: [
               Expanded(
                   child: SingleChildScrollView(
@@ -3847,21 +3870,31 @@ class _MainPageState extends State<MainPage>
                   camera: _openCameraScan,
                   onSubmit: (s) => WidgetsBinding.instance
                       .addPostFrameCallback((_) => _saveRecord(s))),
-            ]),
-          //历史批次页面
-          if (_showCollect) _buildHistoryBatchPage(),
-          //盘点模式页面
-          if (_showInv) const InventoryHomePage(),
-          //MES直调页面
-          if (_showDirect) const DirectTransferPage(),
-          //库存页面（期初+入出库流水实时算库存，货架库位占用）
-          const InventoryStockPage(),
-          //领料单页面
-          if (_showReq) const RequisitionPage(),
-          //AGV调度监控模块（任务/车辆/交管/实时大屏）
-          if (_showAgv) const AgvMonitorPage(),
-          if (_showInsp) const InspectPage()
-        ],
+            ])
+      ;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Color(0xFF515BD4),
+        toolbarHeight: 5, // 原来标题没了，把顶部栏高度压低
+        bottom: TabBar(
+          controller: _tabController,
+          isScrollable: true,
+          tabAlignment: TabAlignment.start, // 7个页签可横滑，标签不再被压成一个字
+          labelColor: Colors.white, //选中文字白色
+          labelStyle: TextStyle(fontWeight: FontWeight.bold), //选中加粗
+          unselectedLabelColor: Color(0xFFD0D4F8), //未选中浅白色
+          indicatorColor: Colors.white,
+          tabs: [for (final k in _tabKeys) Tab(text: TabCustom.titles[k] ?? k)],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [for (final k in _tabKeys) _tabPage(k)],
       ),
       bottomNavigationBar: ValueListenableBuilder<int>(
           valueListenable: kUnreadMsgs,
@@ -3881,7 +3914,8 @@ class _MainPageState extends State<MainPage>
                 showUnselectedLabels: true,
                 onTap: (idx) async {
                   if (idx == 0) {
-                    _tabController.animateTo(0);
+                    final ci = _tabKeys.indexOf('collect'); // ㉖v53 采集可能被用户挪位，按键定位
+                    if (ci >= 0) _tabController.animateTo(ci);
                   } else if (idx == 1) {
                     // ㉑消息中枢：分组卡片流，点消息跳领料页
                     await Navigator.push(
@@ -4123,6 +4157,7 @@ class _MainPageState extends State<MainPage>
   /// ㉖B14 服务器偏好回写本地后，刷新工作模式选择
   void _onPrefsChanged() {
     if (!mounted) return;
+    _applyCustomTabs(); // ㉖v53 服务器回写的页签布局即时重建
     SharedPreferences.getInstance().then((sp) {
       final v = sp.getInt("worktype_" + (Auth.user?.id ?? ""));
       if (mounted && v != _workType)
@@ -4793,6 +4828,15 @@ class SettingsMenuPage extends StatelessWidget {
             subtitle: "字号档位 / 自动聚焦 / 默认框型 / 领料默认值（存服务器换设备跟随）",
             onTap: () => Navigator.push(context,
                 MaterialPageRoute(builder: (_) => const DisplayPrefsPage())),
+          ),
+          _settingTile(
+            context,
+            icon: Icons.dashboard_customize_outlined,
+            color: const Color(0xFF00897B),
+            title: "首页模块自定义",
+            subtitle: "页签排序 / 隐藏 / 按使用习惯自动排（存服务器换设备跟随）",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const TabCustomPage())),
           ),
           if (Auth.can("location_reg"))
             _settingTile(
