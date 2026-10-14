@@ -3507,10 +3507,17 @@ function updateInspects(nowMs) {
         if (s && s.state === '有货' && (s.codes || []).map((c) => String(c).toUpperCase()).includes(String(q.code).toUpperCase())) { q.state = 'atStation'; q.arriveAt = nowMs; dirty = true; db.users.filter((x) => (x.id === q.uid || x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', '🔎 检验框已到站台 ' + q.station + '（' + q.code + '），请核对并归位', '')); }
         else if (nowMs - (q.at || 0) > 30 * 60000) { q.state = 'stuck'; q.err = '下架超30分钟未到站台，请到RCS核查'; dirty = true; }
       } else if (q.state === 'returning') {
-        // 归位完成判定：账本里该标签回到原货位
+        // ㉖v52 修归位假完成：检验期间账本不动（设计上标签一直在原货位），旧判据"账本命中=done"
+        // 在发车当秒就误判完成（框实际还在途）。正确判据=inspback 队列项已完成（入库对账确认 RCS 放货任务 fin）且账本在原位
+        const it = _qi('inspback');
+        const landed = it && it.state === '完成';
         const back = led.find((x) => String(x.c || '').toUpperCase() === String(q.code).toUpperCase() && String(x.l || '').toUpperCase() === String(q.from).toUpperCase());
-        if (back) { q.state = 'done'; q.doneAt = nowMs; dirty = true; db.users.filter((x) => (x.id === q.uid) && x.enabled).forEach((x) => notify(x.id, 'req_flow', '✅ 检验框 ' + q.code + ' 已归位回 ' + q.from, '')); }
+        if (landed && back) { q.state = 'done'; q.doneAt = nowMs; dirty = true; db.users.filter((x) => (x.id === q.uid) && x.enabled).forEach((x) => notify(x.id, 'req_flow', '✅ 检验框 ' + q.code + ' 已归位回 ' + q.from, '')); }
         else if (nowMs - (q.retAt || 0) > 30 * 60000) { q.state = 'stuck'; q.err = '归位超30分钟未回原货位，请核查'; dirty = true; }
+      } else if (q.state === 'stuck' && q.retAt) { // ㉖v52 归位慢超30分被误判 stuck 的框后来真放回了 → 自动纠正 done（队列完成项留存2小时内有效）
+        const it = _qi('inspback');
+        const back = led.find((x) => String(x.c || '').toUpperCase() === String(q.code).toUpperCase() && String(x.l || '').toUpperCase() === String(q.from).toUpperCase());
+        if (it && it.state === '完成' && back) { q.state = 'done'; q.doneAt = nowMs; q.err = ''; dirty = true; db.users.filter((x) => (x.id === q.uid) && x.enabled).forEach((x) => notify(x.id, 'req_flow', '✅ 检验框 ' + q.code + ' 已归位回 ' + q.from, '')); }
       }
       if (q.updAt !== nowMs && q.state !== 'toStation' && q.state !== 'returning') q.updAt = nowMs;
     }
