@@ -1111,10 +1111,19 @@ function printLot(mk, fallback) { const s = String(mk || '').trim(); const p = (
 let _metaMap = null, _metaKey = '';
 // 标签号 → 采集流水元信息（MES打印时间 + 最新有效一条的零件号/物料名/数量）：
 // 旧版 PDA 推的账本行零件字段可能为空——统一从流水回填
-function scanMetaOf() { const key = (db.scanlogCount || 0) + '|' + (db.scanlogAt || ''); if (_metaMap && _metaKey === key) return _metaMap; const m = {}; for (const s of Object.values(db.scanlog || {})) { const c = String(s.code || '').toUpperCase(); if (!c) continue; const e = m[c] = m[c] || { mk: '', pn: '', nm: '', q: 0, t: -1 }; if (!e.mk && s.mk) e.mk = String(s.mk); const t = Number(s.t) || 0; if (!s.cx && t >= e.t) { e.t = t; e.pn = String(s.pn || ''); e.nm = String(s.nm || ''); e.q = Number(s.q) || 0; } } _metaMap = m; _metaKey = key; return m; }
+function scanMetaOf() { const key = (db.scanlogCount || 0) + '|' + (db.scanlogAt || ''); if (_metaMap && _metaKey === key) return _metaMap; const m = {}; for (const s of Object.values(db.scanlog || {})) { const c = String(s.code || '').toUpperCase(); if (!c) continue; const e = m[c] = m[c] || { mk: '', pn: '', nm: '', q: 0, ct: '', t: -1 }; if (!e.mk && s.mk) e.mk = String(s.mk); const t = Number(s.t) || 0; if (!s.cx && t >= e.t) { e.t = t; e.pn = String(s.pn || ''); e.nm = String(s.nm || ''); e.q = Number(s.q) || 0; e.ct = String(s.ct || ''); } } _metaMap = m; _metaKey = key; return m; }
 // 账本只读视图（批次派生 + 空零件字段回填）：仅供查询出口/看板/导出/取货建议/零件档案使用；
 // 绝不用于写路径——ledgerHash 依赖库内原值做增量同步仲裁，改派生值会触发全量重推。
-function ledgerView() { const mm = scanMetaOf(); return (db.ledger || []).map((x) => { const mt = mm[String(x.c || '').toUpperCase()]; if (!mt) return x; const patch = {}; if (mt.mk) patch.b = printLot(mt.mk, x.b); if (!(x.p || '') && mt.pn) patch.p = mt.pn; if (!(x.n || '') && mt.nm) patch.n = mt.nm; if (!(Number(x.q) > 0) && mt.q) patch.q = mt.q; return Object.keys(patch).length ? Object.assign({}, x, patch) : x; }); }
+function ledgerView() { const mm = scanMetaOf(); return (db.ledger || []).map((x) => { const mt = mm[String(x.c || '').toUpperCase()]; if (!mt) return x; const patch = {}; if (mt.mk) patch.b = printLot(mt.mk, x.b); if (!(x.p || '') && mt.pn) patch.p = mt.pn; if (!(x.n || '') && mt.nm) patch.n = mt.nm; if (!(Number(x.q) > 0) && mt.q) patch.q = mt.q; if (!(x.f || '') && mt.ct) patch.f = mt.ct; return Object.keys(patch).length ? Object.assign({}, x, patch) : x; }); }
+// ㉖v52 容器类型兜底：账本行 f 为空（旧版 PDA/异常路径未记录）→ 从采集流水最新有效一条取 ct
+function palletTypeOf(code) {
+  const c = String(code || '').toUpperCase();
+  const led = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === c);
+  const f = led && String(led.f || '').trim();
+  if (f) return f;
+  const mt = scanMetaOf()[c];
+  return mt && mt.ct ? String(mt.ct) : '';
+}
 // ---- ㉕A1 导出角色门禁（方案6.6）：D9活动流=仅管理员；D8领料台账/D10盘点=仓管+管理员；其余登录即可 ----
 function expRoleOk(u, label) { label = String(label || ''); if (label === '活动流审计') return u.role === 'admin'; if (label === '领料台账' || label.indexOf('盘点结果') === 0) return u.role === 'warehouse' || u.role === 'admin'; return true; }
 // ---- ㉕B1 ops活动流：关键操作全景留痕（谁/何时/动作/对象/详情），滚动5000条，供控制后台与D9审计导出 ----
@@ -2372,7 +2381,7 @@ const server = http.createServer(async (req, res) => {
         if (want) { if (!AGV_STNS.includes(want)) return send(res, 400, { ok: false, msg: '站台编码不在 12 个站台范围（NB02-CK-01~12）' }); if (!inspStationFree(want, Date.now())) return send(res, 400, { ok: false, msg: '站台 ' + want + ' 当前被占用（有货/队列/检验中），请改选或稍后再试' }); to = want; }
         else { for (const st of AGV_STNS) { if (!inspStationFree(st, Date.now())) continue; to = st; break; } }
         if (!to) return send(res, 400, { ok: false, msg: '暂无空闲站台放下架框，请稍后再试' });
-        const rec = { id: newId('insp'), code, from, station: to, palletType: String(srcBox.f || '').toUpperCase(), part: String(srcBox.p || ''), nm: String(srcBox.n || ''), uid: u.id, by: u.name, note: String(b.note || '').slice(0, 120), state: 'toStation', at: Date.now(), updAt: Date.now(), taskNo: '' };
+        const rec = { id: newId('insp'), code, from, station: to, palletType: (String(srcBox.f || '').trim() || palletTypeOf(code)).toUpperCase(), part: String(srcBox.p || ''), nm: String(srcBox.n || ''), uid: u.id, by: u.name, note: String(b.note || '').slice(0, 120), state: 'toStation', at: Date.now(), updAt: Date.now(), taskNo: '' };
         if (!canFeature(u, 'insp_assist')) { // 检验员发单 → 待协助下架，等仓管/管理员点协助
           rec.state = 'waitOut'; db.inspects = db.inspects || []; db.inspects.push(rec); save();
           pushOps(u, '检验发单', code, from + (to ? ' 期望台' + to : ''));
@@ -3842,14 +3851,15 @@ async function wmasLocOf(code) {
   }
   return (_wmasLoc || {})[String(code).toUpperCase()] || null;
 }
-async function wmasDispatchOne(q, tk, ov) { const from = (ov && ov.from) || q.fromLoc; const to = (ov && ov.to) || q.station; const pallet = (ov && ov.pallet) || q.palletType; const ref = (ov && ov.ref !== undefined) ? ov.ref : (q.reqNo || "");
+async function wmasDispatchOne(q, tk, ov) { const from = (ov && ov.from) || q.fromLoc; const to = (ov && ov.to) || q.station; let pallet = (ov && ov.pallet) || q.palletType; if (!String(pallet || '').trim() && q.code) pallet = palletTypeOf(q.code); // ㉖v52 账本空类型兜底：从采集流水取容器类型
+  const ref = (ov && ov.ref !== undefined) ? ov.ref : (q.reqNo || "");
   // 容器自动选号：优先挑"近30分钟无在途任务"的号；挑不到就复用（与人工叫车同款行为——WMAS不强校验容器号唯一，复用不影响叉货）
   const cr = await wmasHttp('GET', '/api/logistics/container/list?pageNum=1&pageSize=1000', tk);
   if (!wmasOk(cr)) return { ok: false, msg: '查容器主档失败：' + JSON.stringify(cr).slice(0, 80) };
   const t = String(pallet || '').toUpperCase();
   const forced = (ov && ov.container) ? String(ov.container).trim().toUpperCase() : ''; // ㉖⑰ 调用方已指定容器则跳过类型候选校验
   const cands = ((cr.data && cr.data.records) || []).map((x) => String(x.containerCode || '')).filter((c) => t && c.toUpperCase().includes(t)).sort();
-  if (!cands.length && !forced) return { ok: false, msg: `容器主档无「${q.palletType}」类型编码，请人工叫车` };
+  if (!cands.length && !forced) return { ok: false, msg: `容器主档无「${pallet || '未记录类型'}」类型编码（标签 ${q.code || '?'}），请到货位账本补记容器类型后重试，或人工叫车` };
   const nowMs = Date.now();
   const used = new Set();
   for (const st of ['PUSHED', 'DISPATCHED', 'IN_TRANSIT']) {
@@ -3885,7 +3895,7 @@ function clearQueueCall(reqId, code) { // 队列项取消/失败出队 → 解�
 // ㉖ 检验下架/归位入队：与 carry 同款——先局部试发（manualOnly 指定台不可用则排队等待绝不改派），结果入全局队列统一治理
 async function inspEnqueue(rec, leg, u, from, to, ref) {
   db.agvQueue = db.agvQueue || [];
-  const item = { id: newId('cq'), code: rec.code, fromLoc: from, stationManual: to, station: '', palletType: rec.palletType, type: leg === 'out' ? 'insp' : 'inspback', inspId: rec.id, ref, manualOnly: true, by: u.name, state: '排队', at: Date.now(), updAt: Date.now() };
+  const item = { id: newId('cq'), code: rec.code, fromLoc: from, stationManual: to, station: '', palletType: String(rec.palletType || '').trim() || palletTypeOf(rec.code), type: leg === 'out' ? 'insp' : 'inspback', inspId: rec.id, ref, manualOnly: true, by: u.name, state: '排队', at: Date.now(), updAt: Date.now() };
   const taken = db.agvQueue.filter((q) => q !== item && ['排队', '下发中', '已下发'].includes(q.state) && (q.station || q.stationManual)).map((q) => q.station || q.stationManual);
   await dispatchOne(item, Date.now(), [], taken, (db.agvDispatchMode || 'dry') === 'live');
   db.agvQueue.push(item);
