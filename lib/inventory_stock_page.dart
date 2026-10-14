@@ -268,6 +268,16 @@ Future<_StockAgg> computeStock() async {
   return agg;
 }
 
+String _invRelTime(DateTime t) {
+  final d = DateTime.now().difference(t);
+  if (d.inMinutes < 1) return "刚刚";
+  if (d.inMinutes < 60) return "${d.inMinutes} 分钟前";
+  if (d.inHours < 24) return "${d.inHours} 小时前";
+  if (d.inDays < 2) return "昨天";
+  if (d.inDays < 8) return "${d.inDays} 天前";
+  return "${t.month}月${t.day}日";
+}
+
 String _invCsvEsc(String v) =>
     (v.contains(",") || v.contains("\"") || v.contains("\n"))
         ? "\"${v.replaceAll("\"", "\"\"")}\""
@@ -384,7 +394,7 @@ class _InventoryStockPageState extends State<InventoryStockPage>
                         onReload: _reload),
                     _ShelfTab(agg: _agg!),
                     _FlowTab(agg: _agg!),
-                    const _WatchTab(),
+                    _WatchTab(agg: _agg!),
                   ],
                 )),
     ]);
@@ -700,58 +710,150 @@ class _FlowTab extends StatefulWidget {
   State<_FlowTab> createState() => _FlowTabState();
 }
 
+class _FlowView {
+  final DateTime time;
+  final String partNo, itemName, barcode, sub;
+  final double qty;
+  final bool cancelled;
+  const _FlowView(this.time, this.partNo, this.itemName, this.barcode, this.qty, this.sub, {this.cancelled = false});
+}
+
 class _FlowTabState extends State<_FlowTab> {
   bool _showIn = true;
+  String _q = "";
+  int _win = 0; // 0全部 1今天 3近3天 7近7天
 
   @override
   Widget build(BuildContext context) {
-    final rows = <Widget>[];
+    final k = _q.trim().toLowerCase();
+    final cutoff = _win == 1
+        ? DateTime.now().copyWith(hour: 0, minute: 0, second: 0, millisecond: 0)
+        : _win > 1
+            ? DateTime.now().subtract(Duration(days: _win))
+            : null;
+    // 统一视图模型：入库/出库两类型字段不同，先各自摊平再共同过滤渲染
+    final views = <_FlowView>[];
     if (_showIn) {
-      final list = widget.agg.inRows.reversed.take(300).toList();
-      for (final r in list) {
-        rows.add(ListTile(
-          dense: true,
-          leading: Icon(r.cancelled ? Icons.block : Icons.login,
-              color: r.cancelled ? Colors.red : Colors.green, size: 20),
-          title: Text("${r.partNo} ${r.itemName}${r.cancelled ? "（已作废）" : ""}",
-              style: TextStyle(
-                  fontSize: 13,
-                  decoration: r.cancelled ? TextDecoration.lineThrough : null)),
-          subtitle: Text(
-              "${r.time.toString().substring(5, 16)} · ${r.barcode} · 数量 ${_fmtInvNum(r.qty)} · ${r.loc} · ${r.container} · ${r.operator}",
-              style: const TextStyle(fontSize: 11)),
-        ));
+      for (final r in widget.agg.inRows.reversed) {
+        views.add(_FlowView(r.time, r.partNo, r.itemName, r.barcode, r.qty,
+            "${r.loc}${r.container.isNotEmpty ? " · ${r.container}" : ""}${r.cancelled ? " · 已作废" : " · ${r.operator}"}",
+            cancelled: r.cancelled));
       }
     } else {
-      final list = widget.agg.outRows.reversed.take(300).toList();
-      for (final r in list) {
-        rows.add(ListTile(
-          dense: true,
-          leading: const Icon(Icons.logout, color: Colors.deepOrange, size: 20),
-          title: Text("${r.partNo} ${r.itemName}",
-              style: const TextStyle(fontSize: 13)),
-          subtitle: Text(
-              "${r.time.toString().substring(5, 16)} · ${r.barcode} · 数量 ${_fmtInvNum(r.qty)} · ${r.orderNo} · ${r.operator}",
-              style: const TextStyle(fontSize: 11)),
-        ));
+      for (final r in widget.agg.outRows.reversed) {
+        views.add(_FlowView(r.time, r.partNo, r.itemName, r.barcode, r.qty,
+            "${r.orderNo} · ${r.loc} · ${r.operator}"));
       }
     }
+    var list = views;
+    if (cutoff != null) list = list.where((r) => r.time.isAfter(cutoff)).toList();
+    if (k.isNotEmpty) {
+      list = list
+          .where((r) =>
+              r.partNo.toLowerCase().contains(k) ||
+              r.itemName.toLowerCase().contains(k) ||
+              r.barcode.toLowerCase().contains(k) ||
+              r.sub.toLowerCase().contains(k))
+          .toList();
+    }
+    final shown = list.take(300).toList();
+    chip(int v, String t) => ChoiceChip(
+        label: Text(t, style: TextStyle(fontSize: 11.5, color: _win == v ? Colors.white : Colors.blueGrey)),
+        selected: _win == v,
+        showCheckmark: false,
+        selectedColor: const Color(0xFF515BD4),
+        labelPadding: const EdgeInsets.symmetric(horizontal: 6),
+        onSelected: (_) => setState(() => _win = v));
     return Column(children: [
       Padding(
-          padding: const EdgeInsets.all(10),
-          child: SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(value: true, label: Text("入库流水")),
-              ButtonSegment(value: false, label: Text("出库流水"))
-            ],
-            selected: {_showIn},
-            onSelectionChanged: (s) => setState(() => _showIn = s.first),
-          )),
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+          child: Row(children: [
+            Expanded(
+                child: TextField(
+              onChanged: (v) => setState(() => _q = v),
+              decoration: InputDecoration(
+                  hintText: _showIn ? "搜零件/标签/操作人/货位" : "搜零件/标签/出库单/操作人",
+                  isDense: true,
+                  filled: true,
+                  fillColor: Colors.white,
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  suffixIcon: _q.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.clear, size: 18),
+                          onPressed: () => setState(() => _q = "")),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8))),
+            )),
+          ])),
+      Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+          child: Row(children: [
+            Expanded(
+              child: SegmentedButton<bool>(
+                style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                segments: const [
+                  ButtonSegment(value: true, label: Text("入库流水")),
+                  ButtonSegment(value: false, label: Text("出库流水"))
+                ],
+                selected: {_showIn},
+                onSelectionChanged: (s) => setState(() => _showIn = s.first),
+              ),
+            ),
+          ])),
+      Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+          child: Row(children: [
+            chip(1, "今天"),
+            const SizedBox(width: 6),
+            chip(3, "近3天"),
+            const SizedBox(width: 6),
+            chip(7, "近7天"),
+            const SizedBox(width: 6),
+            chip(0, "全部"),
+            const Spacer(),
+            Text('${shown.length}${list.length > 300 ? "/${list.length}" : ""} 条',
+                style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+          ])),
       Expanded(
-          child: rows.isEmpty
-              ? const Center(
-                  child: Text("暂无流水", style: TextStyle(color: Colors.grey)))
-              : ListView(children: rows)),
+          child: shown.isEmpty
+              ? Center(
+                  child: Text(k.isNotEmpty || _win != 0 ? "没有符合条件的流水" : "暂无流水",
+                      style: const TextStyle(color: Colors.grey)))
+              : ListView.builder(
+                  padding: const EdgeInsets.all(10),
+                  itemCount: shown.length,
+                  itemBuilder: (ctx, i) {
+                    final r = shown[i];
+                    final t = r.time;
+                    return ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 6),
+                      leading: Icon(_showIn ? (r.cancelled ? Icons.block : Icons.login) : Icons.logout,
+                          color: _showIn ? (r.cancelled ? Colors.red : Colors.green) : Colors.deepOrange,
+                          size: 20),
+                      title: Text("${r.partNo} ${r.itemName}",
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 13,
+                              decoration: r.cancelled ? TextDecoration.lineThrough : null)),
+                      subtitle: Text(
+                          "${r.barcode} · ${_fmtInvNum(r.qty)} 件 · ${r.sub}",
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: r.cancelled ? Colors.red : null)),
+                      trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+                        Text(_invRelTime(t),
+                            style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+                        Text("${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}",
+                            style: TextStyle(fontSize: 9.5, color: Colors.grey.shade400)),
+                      ]),
+                    );
+                  },
+                )),
     ]);
   }
 }
@@ -1478,7 +1580,8 @@ class _PpBadge extends StatelessWidget {
 
 // ---------- ⑮ 我的预约（来料提醒）Tab ----------
 class _WatchTab extends StatefulWidget {
-  const _WatchTab();
+  final _StockAgg agg;
+  const _WatchTab({required this.agg});
   @override
   State<_WatchTab> createState() => _WatchTabState();
 }
@@ -1670,13 +1773,28 @@ class _WatchTabState extends State<_WatchTab> {
 
   @override
   Widget build(BuildContext context) {
+    // 已到料（当前在架>0）排前面，让"等到的"最先看到；其余按预约时间倒序
+    final sorted = _items.toList()..sort((a, b) {
+      final pa = widget.agg.parts[a["partNo"]?.toString()];
+      final pb = widget.agg.parts[b["partNo"]?.toString()];
+      final ha = (pa != null && pa.inBoxes > 0) ? 1 : 0;
+      final hb = (pb != null && pb.inBoxes > 0) ? 1 : 0;
+      if (ha != hb) return hb - ha;
+      return ((b["at"] as num?)?.toInt() ?? 0).compareTo((a["at"] as num?)?.toInt() ?? 0);
+    });
+    final arrived = sorted.where((w) {
+      final p = widget.agg.parts[w["partNo"]?.toString()];
+      return p != null && p.inBoxes > 0;
+    }).length;
     return Column(children: [
       Padding(
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
           child: Row(children: [
-            const Expanded(
-                child: Text("到料时通知我的零件号（入库后推送，同零件10分钟聚合一条）",
-                    style: TextStyle(fontSize: 12, color: Colors.blueGrey))),
+            Expanded(
+                child: Text(_items.isEmpty
+                    ? "到料时通知我的零件号（入库后推送，同零件10分钟聚合一条）"
+                    : "共 ${_items.length} 个预约 · $arrived 个已到料在架",
+                    style: const TextStyle(fontSize: 12, color: Colors.blueGrey))),
             FilledButton.icon(
                 style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF00897B)),
@@ -1697,29 +1815,38 @@ class _WatchTabState extends State<_WatchTab> {
                               style: TextStyle(color: Colors.grey)))
                       : ListView.builder(
                           padding: const EdgeInsets.all(10),
-                          itemCount: _items.length,
+                          itemCount: sorted.length,
                           itemBuilder: (ctx, i) {
-                            final w = _items[i];
+                            final w = sorted[i];
                             final pn = w["partNo"]?.toString() ?? "";
                             final at = (w["at"] as num?)?.toInt() ?? 0;
+                            final pr = widget.agg.parts[pn];
+                            final inStock = pr != null && pr.inBoxes > 0;
                             return Card(
                                 margin: const EdgeInsets.symmetric(vertical: 4),
+                                color: inStock ? const Color(0xFFE8F5E9) : null,
                                 child: ListTile(
                                   dense: true,
-                                  leading: const Icon(
-                                      Icons.shopping_cart_outlined,
-                                      color: Color(0xFF00897B),
+                                  leading: Icon(
+                                      inStock ? Icons.shopping_cart : Icons.shopping_cart_outlined,
+                                      color: inStock ? const Color(0xFF2E7D32) : const Color(0xFF00897B),
                                       size: 22),
-                                  title: Text(pn,
+                                  title: Text(
+                                      pr != null && pr.itemName.isNotEmpty ? "${pn}  ${pr.itemName}" : pn,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: const TextStyle(
                                           fontSize: 14,
                                           fontFamily: "monospace",
                                           fontWeight: FontWeight.w600)),
                                   subtitle: Text(
-                                      at > 0
-                                          ? "预约于 ${DateTime.fromMillisecondsSinceEpoch(at).toString().substring(0, 16)}"
-                                          : "",
-                                      style: const TextStyle(fontSize: 11)),
+                                      (inStock
+                                              ? "✅ 已到料 · 在架 ${pr.inBoxes} 框 · ${_fmtInvNum(pr.inStockQty)} 件"
+                                              : "⏳ 等待来料中") +
+                                          (at > 0 ? " · 预约于 ${_invRelTime(DateTime.fromMillisecondsSinceEpoch(at))}" : ""),
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: inStock ? const Color(0xFF2E7D32) : Colors.grey)),
                                   trailing: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
