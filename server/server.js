@@ -1762,6 +1762,20 @@ const server = http.createServer(async (req, res) => {
         const m = M[op]; if (!m) return send(res, 400, { ok: false, msg: '未知操作' });
         const path = m[1] + encodeURIComponent(no) + (m[2] === null ? '' : ('&detailId=' + m[2]));
         const r = await rcsReq2(path, m[0], m[0] === 'DELETE' ? no : null);
+        if (r.ok && (op === 'top' || op === 'cancelTop')) { // ㉖v52 置顶回读校验：RCS 常回空 data 成功，前端此前"点了没反应"；现回读队列给出位次反馈
+          try {
+            const t = await rcsReq2('/task/getTaskInfo');
+            let arr = t && t.data; try { if (typeof arr === 'string') arr = JSON.parse(arr); } catch (_) { arr = []; }
+            if (Array.isArray(arr) && arr.length) {
+              const pend = arr.filter((x) => Number(x.taskState) === 0).map((x) => String(x.dispatchNo));
+              const pos = pend.indexOf(no);
+              if (pos < 0) r.msg = op === 'top' ? '已置顶（任务已不在待执行队列，可能刚被领走）' : '已取消置顶（任务已不在待执行队列）';
+              else r.msg = op === 'top'
+                ? (pos === 0 ? '已置顶：当前最早待执行就是它' : `已置为待执行第 ${pos + 1} 位（前面还有 ${pos} 个更早任务，调度按建单先后派车）`)
+                : `已取消置顶（当前待执行第 ${pos + 1} 位）`;
+            }
+          } catch (_) { /* 回读失败不影响操作结果本身 */ }
+        }
         pushOps(u, 'RCS任务操作', no, op + (r.ok ? ' ✅' : ' ❌' + r.msg));
         return send(res, 200, r);
       }

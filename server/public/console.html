@@ -815,7 +815,8 @@ async function loadQ(){let st={},rj={running:[],done:[],live:false};
  const hhms=(ms)=>ms?new Date(ms).toLocaleTimeString('zh-CN',{hour12:false}).slice(0,5):'';
  const carNm=(id)=>id==null?'未分配':('AGV'+String(id).padStart(2,'0'));
  const actBtn=(op,no,tx,cls,dg)=>canCtl?`<button class="pill ${cls||''}" style="padding:2px 8px;font-size:11px" ${dg?'title="删除后 AGV 不再执行该任务"':''} onclick="rTaskAct('${op}','${_esc(no)}')">${tx}</button>`:'';
- const run=(rj.running||[]).sort((a,b)=>(a.st===b.st?(b.pri-a.pri):(a.st===1?-1:a.st===0?1:0))-(b.st===1?-1:b.st===0?1:0)||a.build-b.build);
+ const _sr=(s)=>s===1?0:s===0?1:2; // ㉖v52 排序修正：执行中→待执行(📌置顶在前、再按建单先后=调度FIFO口径)→其他；旧比较器状态分组数学有误致列表顺序与RCS语义脱节
+ const run=(rj.running||[]).sort((a,b)=>(_sr(a.st)-_sr(b.st))||(b.pri-a.pri)||((a.build||0)-(b.build||0)));
  const dn=(rj.done||[]).slice(0,30);
  $('#agvbody').innerHTML=`<div class="card"><div class="row" style="margin-bottom:8px"><b style="font-size:13px">调度模式</b>
 <button class="pill ${mode=='dry'?'':'q'}" onclick="setMode('dry')">🧮 演算（不下发）</button><button class="pill ${mode=='live'?'':'q'}" onclick="setMode('live')">🚀 真实下发</button>
@@ -829,7 +830,7 @@ ${dn.length?`<div style="font-size:12px;color:var(--sub);margin:8px 0 4px">最�
  clearInterval(window._qT);window._qT=setInterval(()=>{if(AGVTAB==='q'&&!document.hidden)loadQ()},RFT())}
 async function rTaskAct(op,no){const L={resetPick:'重置取货',resetPut:'重置卸货',recoverPick:'恢复取货',recoverPut:'恢复卸货',top:'置顶',cancelTop:'取消置顶',delete:'删除任务'}[op]||op;
  if(op=='delete'&&!confirm('⚠️ 删除 RCS 任务 '+no+' ？\n\nAGV 将不再执行该任务（未执行的才会被删）。请确认对应框还在原位，否则货会停在半途。'))return;
- try{const j=await api('/api/rcs/taskAct',{method:'POST',body:{op,dispatchNo:no}});T(j.ok?('✅ '+L+' 已执行'):('❌ '+(j.msg||'失败')));loadQ()}catch(_){T(L+'请求失败')}}
+ try{const j=await api('/api/rcs/taskAct',{method:'POST',body:{op,dispatchNo:no}});T(j.ok?('✅ '+L+(j.msg?('：'+j.msg):' 已执行')):(/第一个|无需处理/.test(j.msg||'')?'⚠️ '+j.msg+'（RCS 按所属车辆队列判首位，📌=置顶标记）':('❌ '+(j.msg||'失败'))));loadQ()}catch(_){T(L+'请求失败')}}
 // ===== ㉖ 指挥舱·车辆页（糅合 PDA AGV 车辆签：状态卡+去充电/回待命/清除任务/急停/启动） =====
 async function loadCars(){let j;try{j=await api('/api/rcs/cars')}catch(_){$('#agvbody').innerHTML='<div class="card" style="color:var(--warn)">车辆数据加载失败　<button class="pill" onclick="loadCars()">重试</button></div>';return}
  if(!j.ok){$('#agvbody').innerHTML='<div class="card" style="color:var(--warn)">RCS 未连接：'+_esc(j.err||j.msg||'')+'</div>';return}
