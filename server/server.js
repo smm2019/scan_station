@@ -743,6 +743,38 @@ function autoEnqueueOnAccept(r, byName, byId) {
   if (n) console.log(`[auto派] ${r.no} 接单即派入队 ${n} 框`);
   return n;
 }
+// ===== ㉖v52 备料排队看板：待接单+备料中的单按下单先后排队，供下单回执与看板接口共用 =====
+// nowReq 传入则算"我排在几号"；items 全员可见（单号+下单人），mine 标记本人。ETA 用近 20 单实测备料均时×前方单数，无样本则 null（不臆造）。
+function queueBoardOf(nowReq) {
+  const min = (ms) => Math.max(0, Math.round(ms / 60000));
+  const active = (db.requisitions || []).filter((x) => (x.status === 'pending' || x.status === 'accepted') && x.createdAt)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  const myIdx = nowReq ? active.findIndex((x) => x.id === nowReq.id) : -1;
+  const agvActive = (db.agvQueue || []).filter((q) => !['完成', '取消', '失败'].includes(q.state)).length;
+  // 实测平均备料分钟：已备齐/签收且记了接单时刻的近期单（readyAt 数字毫秒、acceptedAt ISO 串，统一转 ms）
+  const msOf = (v) => (typeof v === 'number' ? v : v ? Date.parse(v) : 0);
+  const done = (db.requisitions || []).filter((x) => msOf(x.acceptedAt) && (msOf(x.readyAt) || msOf(x.doneAt)) && ['ready', 'done'].includes(x.status)).slice(-20);
+  const prepMins = done.length ? Math.round(done.reduce((s, x) => { const a = msOf(x.acceptedAt), z = msOf(x.readyAt) || msOf(x.doneAt); return s + Math.max(0, (z - a) / 60000); }, 0) / done.length) : 0;
+  const items = active.map((x, i) => ({
+    id: x.id, no: x.no, byName: x.byName || '', status: x.status,
+    acceptedBy: x.status === 'accepted' ? (x.acceptedBy || '') : '',
+    acceptedMin: x.acceptedAt ? min(Date.now() - Date.parse(x.acceptedAt)) : null,
+    waitMin: min(Date.now() - Date.parse(x.createdAt)),
+    rush: !!x.rush, mine: nowReq ? x.id === nowReq.id : false, pos: i + 1,
+    needDate: x.needDate || '',
+  }));
+  const ahead = items.slice(0, Math.max(0, myIdx));
+  // 前方需处理单里仓管会逐个消化；正在备料=已接单的靠前项
+  const servingNow = items.filter((x) => x.status === 'accepted');
+  return {
+    rank: myIdx >= 0 ? myIdx + 1 : null, total: active.length, agvActive,
+    aheadCount: ahead.length, behind: items.slice(myIdx >= 0 ? myIdx + 1 : items.length),
+    ahead, servingNow, items,
+    // 预计等待=前方单逐个消化：待接单的按均时全算，备料中的只算剩余（均时-已备分钟）
+    etaMin: (prepMins && myIdx > 0) ? ahead.reduce((s, x) => s + (x.status === 'accepted' ? Math.max(2, prepMins - (x.acceptedMin || 0)) : prepMins), 0) : null,
+    prepAvgMin: prepMins || null,
+  };
+}
 function issuedOf(i) { return (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0, l: '' } : { c: String(x.c || ''), q: Number(x.q) || 0, l: String(x.l || '') }); }
 function uniqCodes(arr) { return [...new Set(arr.map(s => String(s).toUpperCase()))]; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
@@ -2810,9 +2842,9 @@ const server = http.createServer(async (req, res) => {
           }
           save();
           console.log(`[req] ${u.name} 下单 ${r.no}${assignee ? ' → 指定 ' + assignee.name : ''}`);
-          // ㉖v51 排队位次：比本单更早、仍在等仓管处理（待接单/备料中）的单数——下单即知前面压了几张
-          const ahead = db.requisitions.filter((x) => x !== r && ['pending', 'accepted'].includes(x.status) && String(x.createdAt || '') < String(r.createdAt || '')).length;
-          return send(res, 200, { ok: true, req: reqView(r), queueAhead: ahead });
+          // ㉖v52 排队位次看板：本单在待接单/备料中队列里的排位、前方单数、正在给谁备料、AGV 活跃任务数、预计备齐时长
+          let board = null; try { board = queueBoardOf(r); } catch (_) {}
+          return send(res, 200, { ok: true, req: reqView(r), queueAhead: board ? board.aheadCount : null, queue: board });
         }
 
         // 列表：物料员看自己的，仓管/管理员看全部；scope=todo 只看待办
@@ -2824,6 +2856,17 @@ const server = http.createServer(async (req, res) => {
           if (q === 'todo') list = isWh ? list.filter(r => r.status === 'pending' || r.status === 'accepted')
                                         : list.filter(r => r.status === 'ready' && r.by === u.id);
           return send(res, 200, { ok: true, reqs: list.map(reqView) });
+        }
+
+        // ㉖v52 备料排队看板：带 my=单号算本人排位；不带则全员队列全景（网页看板/仓管督办用）
+        if (req.method === 'GET' && p === '/api/requisitions/queue') {
+          sweepAssignOpen();
+          const my = String(url.searchParams.get('my') || '').trim();
+          const nowReq = my ? db.requisitions.find((x) => x.id === my) : null;
+          const board = queueBoardOf(nowReq);
+          board.at = new Date().toISOString();
+          // 全员视角不含 mine 语义时仍可用：rank=null 时前端只渲染 items
+          return send(res, 200, { ok: true, board });
         }
 
         // 可选仓管员列表（新建单指定用）；lastAssigneeId=本人最近一次指定过的仓管（默认带出）
@@ -2909,7 +2952,7 @@ const server = http.createServer(async (req, res) => {
                 return send(res, 403, { ok: false, msg: `该单已指定给 ${r.assigneeName || '其他仓管'} 备料（未超时），暂不能接单` });
               }
             }
-            r.status = 'accepted'; r.acceptedBy = u.name;
+            r.status = 'accepted'; r.acceptedBy = u.name; r.acceptedAt = new Date().toISOString();
             hpush(`接单（${u.name}）${r.assigneeName && r.assigneeId !== u.id ? '，原指定 ' + r.assigneeName + ' 超时未接' : ''}`);
             notify(r.by, 'req_accept', `你的领料单 ${r.no} 已由 ${u.name} 接单备料`, r.id);
             if (r.assigneeId && r.assigneeId !== u.id) { const aU = db.users.find((x) => x.id === r.assigneeId); if (aU && aU.enabled) notify(r.assigneeId, 'req_reassign', `📢 你被指定的领料单 ${r.no} 已由 ${u.name} 接单，请勿再备料`, r.id); } // ⑲防原指定人白备料

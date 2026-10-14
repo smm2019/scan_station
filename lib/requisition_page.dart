@@ -167,6 +167,22 @@ class _RequisitionPageState extends State<RequisitionPage>
         content: Text(m), backgroundColor: err ? Colors.red : Colors.green));
   }
 
+  /// ㉖v52 备料排队看板：排位一目了然——我正排第几、仓管在给谁备料、前面都有谁
+  Future<void> _showQueueBoard() async {
+    // 本人最早的未完单作为排位锚点（物料员视角）；仓管/管理员传空看全景
+    final mine = _reqs
+        .where((r) =>
+            r["by"] == Auth.user?.id &&
+            (r["status"] == "pending" || r["status"] == "accepted"))
+        .toList();
+    mine.sort((a, b) =>
+        (a["createdAt"] ?? "").toString().compareTo((b["createdAt"] ?? "").toString()));
+    showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (ctx) => _QueueBoardSheet(myId: mine.isEmpty ? "" : mine.first["id"].toString()));
+  }
+
   Color _statusColor(String s) => switch (s) {
         'pending' => Colors.orange,
         'accepted' => Colors.blue,
@@ -215,17 +231,44 @@ class _RequisitionPageState extends State<RequisitionPage>
         needDate: res["needDate"]?.toString() ?? "");
     if (!mounted) return;
     if (r["ok"] == true) {
+      // ㉖v52 排队看板回执：我排几号 / 正在给谁备料 / 前面还有谁在等 / 仓库在跑多少 AGV 任务
+      final q = r["queue"];
+      String qTxt = "";
+      if (q is Map) {
+        final rank = (q["rank"] as num?)?.toInt() ?? 0;
+        final total = (q["total"] as num?)?.toInt() ?? 0;
+        final serving = List<Map>.from(q["servingNow"] ?? [])
+            .map((x) => "${x["byName"]}的单（${x["acceptedBy"]}备料中${(x["acceptedMin"] as num?) != null ? "·已${x["acceptedMin"]}分钟" : ""}）")
+            .take(2)
+            .join("、");
+        final ahead = List<Map>.from(q["ahead"] ?? []);
+        final aheadWho = ahead
+            .map((x) => "${x["byName"]}${x["status"] == "pending" ? "（待接单）" : "（备料中）"}")
+            .take(3)
+            .join("、");
+        final eta = (q["etaMin"] as num?)?.toInt();
+        final agv = (q["agvActive"] as num?)?.toInt() ?? 0;
+        if (rank <= 1 && ahead.isEmpty) {
+          qTxt = "，你排第 $rank 位${total > 1 ? "（共 $total 单）" : ""}，仓管马上就能接你的单";
+        } else {
+          qTxt = "，你排第 $rank 位（共 $total 单）"
+              "${ahead.isNotEmpty ? "，前面：$aheadWho${ahead.length > 3 ? "…等${ahead.length}单" : ""}" : ""}"
+              "${serving.isNotEmpty ? "，正在给 $serving" : ""}"
+              "${eta != null && eta > 0 ? "，预计 ${eta > 90 ? "${(eta / 60).ceil()} 小时" : "$eta 分钟"}后轮到你" : ""}"
+              "${agv > 0 ? "｜仓库在跑 $agv 个AGV任务" : ""}";
+        }
+      } else {
+        final ahead = (r["queueAhead"] as num?)?.toInt();
+        qTxt = ahead == null
+            ? ""
+            : ahead == 0
+                ? "，当前无单排队，仓管接单最快"
+                : "，前面还有 $ahead 张单在排队";
+      }
       final aName = res["assigneeName"]?.toString() ?? "";
-      // ㉖v51 排队位次：服务器回执 queueAhead=本单之前仍在等仓管处理的单数（旧服务器无此字段则不显示）
-      final ahead = (r["queueAhead"] as num?)?.toInt();
-      final qTxt = ahead == null
-          ? ""
-          : ahead == 0
-              ? "，当前无单排队，仓管接单最快"
-              : "，前面还有 $ahead 张单在排队";
       _toast(
           "领料单已提交：${r["req"]["no"]}"
-          "${aName.isNotEmpty ? "，已指定 $aName 备料（30分钟未接自动放开）" : ""}$qTxt",
+          "${aName.isNotEmpty ? "，已指定 $aName 备料（30分钟未接自动放开）" : ""}$qTxt\n（点顶部「排队」按钮随时看进度）",
           err: false);
       _load();
     } else
@@ -279,6 +322,10 @@ class _RequisitionPageState extends State<RequisitionPage>
         title: const Text("领料单"),
         toolbarHeight: 44,
         actions: [
+          IconButton(
+              icon: const Icon(Icons.groups_outlined),
+              tooltip: "备料排队看板",
+              onPressed: _showQueueBoard),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _load), // ㉖ 顶栏铃铛按用户要求移除（消息入口保留在底部"消息"页签）
         ],
       ),
@@ -2538,5 +2585,254 @@ class _MsgCenterPageState extends State<MsgCenterPage> {
                             ]);
                       }),
     );
+  }
+}
+
+// ---------- ㉖v52 备料排队看板：物料员"我排第几、谁在备料、前面还有谁"一屏看清 ----------
+class _QueueBoardSheet extends StatefulWidget {
+  final String myId; // 本人某未完单号；空=仓管/管理员全景视角
+  const _QueueBoardSheet({required this.myId});
+  @override
+  State<_QueueBoardSheet> createState() => _QueueBoardSheetState();
+}
+
+class _QueueBoardSheetState extends State<_QueueBoardSheet> {
+  Map? _q;
+  bool _loading = true;
+  String _err = "";
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _err = "";
+    });
+    final r = await AuthApi.reqQueue(my: widget.myId);
+    if (!mounted) return;
+    if (r["ok"] == true) {
+      setState(() {
+        _q = r["board"] as Map?;
+        _loading = false;
+      });
+    } else {
+      setState(() {
+        _loading = false;
+        _err = (r["msg"] ?? "加载失败").toString();
+      });
+    }
+  }
+
+  String _dur(dynamic min) {
+    final m = (min as num?)?.toInt();
+    if (m == null) return "—";
+    if (m < 1) return "刚刚";
+    if (m < 60) return "$m 分钟";
+    final h = (m / 60).floor(), mm = m % 60;
+    return mm == 0 ? "$h 小时" : "$h 小时 $mm 分";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(top: MediaQuery.of(context).viewInsets.top),
+      child: Container(
+        constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.82),
+        decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        child: _loading
+            ? const Padding(
+                padding: EdgeInsets.all(40),
+                child: Center(child: CircularProgressIndicator()))
+            : _err.isNotEmpty
+                ? Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Text(_err,
+                        style: const TextStyle(color: Colors.red)))
+                : Column(children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 8, 6),
+                      child: Row(children: [
+                        const Text("备料排队看板",
+                            style: TextStyle(
+                                fontSize: 17, fontWeight: FontWeight.bold)),
+                        const Spacer(),
+                        TextButton.icon(
+                            onPressed: _load,
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text("刷新")),
+                        IconButton(
+                            onPressed: () => Navigator.pop(context),
+                            icon: const Icon(Icons.close)),
+                      ]),
+                    ),
+                    _head(),
+                    Expanded(
+                        child: ListView(
+                            padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
+                            children: _rows())),
+                  ]),
+      ),
+    );
+  }
+
+  Widget _head() {
+    final q = _q ?? const {};
+    final rank = (q["rank"] as num?)?.toInt();
+    final total = (q["total"] as num?)?.toInt() ?? 0;
+    final agv = (q["agvActive"] as num?)?.toInt() ?? 0;
+    final eta = (q["etaMin"] as num?)?.toInt();
+    final serving = List<Map>.from(q["servingNow"] ?? []);
+    final isMine = rank != null;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+          color: const Color(0xFFF0F4FF),
+          borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (isMine)
+            Row(children: [
+              Text("你排在第 ",
+                  style: const TextStyle(fontSize: 15, color: Color(0xFF3F51B5))),
+              Text("$rank",
+                  style: const TextStyle(
+                      fontSize: 30,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF3F51B5))),
+              Text(" 号 · 共 $total 单在队",
+                  style: const TextStyle(fontSize: 15, color: Color(0xFF3F51B5))),
+            ])
+          else
+            Row(children: [
+              const Text("当前在队 ",
+                  style: TextStyle(fontSize: 15, color: Color(0xFF3F51B5))),
+              Text("$total",
+                  style: const TextStyle(
+                      fontSize: 30,
+                      fontWeight: FontWeight.w900,
+                      color: Color(0xFF3F51B5))),
+              const Text(" 单（全景视角）",
+                  style: TextStyle(fontSize: 15, color: Color(0xFF3F51B5))),
+            ]),
+          if (eta != null && eta > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text("⏳ 预计 ${_dur(eta)} 后轮到你（按近期备料实测均时估算）",
+                  style:
+                      const TextStyle(fontSize: 12.5, color: Color(0xFF5C6BC0))),
+            ),
+          if (serving.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                  "🔧 仓管正在给 ${serving.map((s) => "${s["byName"]}（${s["acceptedBy"]}已备 ${_dur(s["acceptedMin"])}）").join("、")} 备料",
+                  style: const TextStyle(
+                      fontSize: 12.5, color: Color(0xFF2E7D32))),
+            )
+          else if (total > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: const Text("🕐 暂无仓管接单，稍候或催单提醒",
+                  style: TextStyle(
+                      fontSize: 12.5, color: Color(0xFFE65100))),
+            ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text("🤖 仓库在跑 $agv 个 AGV 搬运任务",
+                style: const TextStyle(fontSize: 12, color: Colors.grey)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _rows() {
+    final items = List<Map>.from((_q?["items"] as List?) ?? []);
+    if (items.isEmpty)
+      return [
+        const Padding(
+            padding: EdgeInsets.all(30),
+            child: Center(
+                child: Text("队列为空，没有待接单/备料中的单",
+                    style: TextStyle(color: Colors.grey))))
+      ];
+    final rank = (_q?["rank"] as num?)?.toInt();
+    final out = <Widget>[
+      const Padding(
+          padding: EdgeInsets.fromLTRB(4, 6, 4, 4),
+          child: Text("完整排队序列（按下单先后）",
+              style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blueGrey)))
+    ];
+    for (final x in items) {
+      final me = x["mine"] == true;
+      final isNext = rank != null && x["pos"] == rank + 1 && x["status"] == "pending";
+      final serving = x["status"] == "accepted";
+      out.add(Card(
+        margin: const EdgeInsets.symmetric(vertical: 3),
+        color: me ? const Color(0xFFE8EAF6) : null,
+        child: ListTile(
+          dense: true,
+          leading: CircleAvatar(
+            radius: 16,
+            backgroundColor: serving
+                ? const Color(0xFF2E7D32)
+                : (x["rush"] == true ? const Color(0xFFE65100) : Colors.blueGrey),
+            child: Text("${x["pos"]}",
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white)),
+          ),
+          title: Row(children: [
+            Flexible(
+              child: Text(
+                  "${x["byName"]}${me ? "（我）" : ""} · ${x["no"]}",
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: me ? FontWeight.bold : FontWeight.normal)),
+            ),
+            if (x["rush"] == true)
+              const Padding(
+                  padding: EdgeInsets.only(left: 4),
+                  child: Text("🔥急",
+                      style: TextStyle(fontSize: 11, color: Color(0xFFE65100)))),
+            if (isNext)
+              const Padding(
+                  padding: EdgeInsets.only(left: 4),
+                  child: Text("← 下一个",
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF1565C0),
+                          fontWeight: FontWeight.bold))),
+          ]),
+          subtitle: Text(
+            serving
+                ? "🔧 ${x["acceptedBy"]} 备料中 · 已 ${_dur(x["acceptedMin"])}"
+                : "🕐 等待接单 ${_dur(x["waitMin"])}",
+            style: const TextStyle(fontSize: 12),
+          ),
+          trailing: Text(
+              serving
+                  ? "备料中"
+                  : (x["rush"] == true ? "急料待接" : "待接单"),
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: serving ? const Color(0xFF2E7D32) : Colors.orange)),
+        ),
+      ));
+    }
+    return out;
   }
 }

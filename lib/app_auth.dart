@@ -200,6 +200,13 @@ class AuthApi {
   static Future<Map> reqList({String scope = ""}) async => _req("GET",
       scope.isEmpty ? "/api/requisitions" : "/api/requisitions?scope=$scope",
       token: await AuthStore.token());
+  /// ㉖v52 备料排队看板：my=本人某单号则返回该单排位；留空返回全员排队全景
+  static Future<Map> reqQueue({String my = ""}) async => _req(
+      "GET",
+      my.isEmpty
+          ? "/api/requisitions/queue"
+          : "/api/requisitions/queue?my=${Uri.encodeComponent(my)}",
+      token: await AuthStore.token());
   static Future<Map> reqAction(String id, String action, [Map? body]) async =>
       _req("POST", "/api/requisitions/$id/$action",
           body: body ?? {}, token: await AuthStore.token());
