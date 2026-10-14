@@ -440,7 +440,7 @@ function ctHour(x){const t=Number(x&&x.t)||0;return t?Math.max(0,Math.floor((Dat
 function ctAgeTxt(h){if(h<0)return '<span style="color:var(--sub)">时刻缺失</span>';if(h<1)return '刚刚入库';if(h<24)return h+' 小时';const d=Math.floor(h/24);return d+' 天'+(h%24?' '+(h%24)+' 小时':'')}
 async function pgCtn(){
  $('#main').innerHTML=`<div class="card"><div class="row"><input id="ctq" placeholder="标签号 / 货位 / 零件号 / 物料名" value="${TM.ctq||''}" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ctSearch()"><button class="pill" onclick="ctSearch()">查询</button><button class="pill q" title="清空搜索与筛选" onclick="TM.ctq='';TM.ctf='';TM.ctmE=0;ctSearch()">↺ 重置</button><button class="pill" style="${_ctv==='map'?'':'background:#78909c'}" title="库区×巷道×格的真实形状——框住在哪一格，空位在哪" onclick="ctSeg('map')">🗺 库位地图</button><button class="pill" style="${_ctv==='ov'?'':'background:#78909c'}" title="KPI·类型健康卡·明细清单" onclick="ctSeg('ov')">📋 概览清单</button><span id="ctc" style="color:var(--sub);font-size:12px"></span></div><div id="ctbody">加载中…</div></div>`;
- if(!CTN.style)document.head.insertAdjacentHTML('beforeend','<style id="ctgs">.ctg{display:inline-flex;align-items:center;justify-content:center;width:27px;height:21px;border-radius:4px;font-size:10px;font-weight:700;color:#fff;cursor:pointer;margin:1px;position:relative}.ctg:hover{transform:scale(1.35);z-index:3;box-shadow:0 2px 8px rgba(0,0,0,.3)}.ctg-g{background:#43a047}.ctg-o{background:#fb8c00}.ctg-r{background:#e53935;animation:ctPulse 1.6s infinite}.cte{background:transparent;border:1.5px dashed #b6c2d4;color:#a5b3c8;font-weight:400}.cte:hover{border-color:#26a69a}.ctg-em{background:#26a69a;border:none;color:#fff;animation:ctPulse 1.6s infinite}.cte.em{border-color:#26a69a;border-style:solid;background:rgba(38,166,154,.16);color:#00897b}.ctg-em:hover,.cte:hover{transform:scale(1.35)}.cth{outline:2.5px solid #1a237e;box-shadow:0 0 8px 2px rgba(48,63,159,.6);z-index:2}.dimc{opacity:.22}@keyframes ctPulse{50%{box-shadow:0 0 0 3px rgba(229,57,53,.35)}}</style>');
+ if(!CTN.style)document.head.insertAdjacentHTML('beforeend','<style id="ctgs">.ctg{display:inline-flex;align-items:center;justify-content:center;width:27px;height:21px;border-radius:4px;font-size:10px;font-weight:700;color:#fff;cursor:pointer;margin:1px;position:relative}.ctg:hover{transform:scale(1.35);z-index:3;box-shadow:0 2px 8px rgba(0,0,0,.3)}.ctg-g{background:#43a047}.ctg-o{background:#fb8c00}.ctg-r{background:#e53935;animation:ctPulse 1.6s infinite}.cte{background:transparent;border:1.5px dashed #b6c2d4;color:#a5b3c8;font-weight:400}.cte:hover{border-color:#26a69a}.ctg-em{background:#26a69a;border:none;color:#fff;animation:ctPulse 1.6s infinite}.cte.em{border-color:#26a69a;border-style:solid;background:rgba(38,166,154,.16);color:#00897b}.ctg-em:hover,.cte:hover{transform:scale(1.35)}.cth{outline:2.5px solid #1a237e;box-shadow:0 0 8px 2px rgba(48,63,159,.6);z-index:2}.dimc{opacity:.22}@keyframes ctPulse{50%{box-shadow:0 0 0 3px rgba(229,57,53,.35)}}.ctcol{position:absolute;display:flex;flex-direction:column;gap:1px;padding:2px;border:1px solid rgba(120,140,170,.35);border-radius:4px;background:rgba(255,255,255,.72);cursor:pointer;transition:transform .12s}.ctcol:hover{transform:translate(-50%,-50%) scale(1.45)!important;z-index:5;box-shadow:0 3px 12px rgba(0,0,0,.28)}.ctcol-n{font-size:8px;color:var(--sub);text-align:center;line-height:1;margin-top:1px}.ctb{width:13px;height:9px;border-radius:2px;cursor:pointer}.ctb-g{background:#43a047}.ctb-o{background:#fb8c00}.ctb-r{background:#e53935}.ctb-e{background:transparent;border:1px dashed #b6c2d4}.ctb-em{background:#26a69a;border:none;animation:ctPulse 1.6s infinite}.ctb-em:hover{transform:scale(1.6)}.ctrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;margin:4px 0}.ctf{font-family:Consolas,monospace;font-size:12px;font-weight:700;color:var(--pri);width:26px}</style>');
  CTN.style=1;
  if(!Object.keys(CTN.types).length)await ctTypes();
  await ctData();
@@ -547,7 +547,7 @@ async function ctMap(){
  const q=(TM.ctq||'').trim().toUpperCase();
  const {rows,zoneSt,total,used,miscN,miscB}=ctSlotStats();
  const zf=CTN.zf||'';const hunt=!!TM.ctmE;
- $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+ ▢ 空格(点击看编号) 数字=同格多框 ｜ NB02 高位货架=巷道立面(3F顶→1F底) · NB03 地面=巷道平面(按排铺格)'}</span></div>`;
+ $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+ ▢/灰虚线 空位 ｜ NB02 高架=真实坐标平面(每块一列货架,层条自下而上) · NB03 地面=巷道排格平面'}</span></div>`;
  // 单格渲染（两区共用）：空格/占格、寻宝高亮、搜索命中
  const renderCells=(R,maxHi)=>{
    let s='';
@@ -569,28 +569,80 @@ async function ctMap(){
  const zrows=Object.keys(rows).filter(k=>!zf||rows[k].zone===zf).map(k=>rows[k]);
  const rack=zrows.filter(R=>R.rack), gnd=zrows.filter(R=>!R.rack);
  let h='';
- // NB02 高位货架：按巷道分组，层从上到下 3F→1F（站在货架正面看的立面图），各层列对齐成矩形
- const byA={};rack.forEach(R=>{(byA[R.rowid]=byA[R.rowid]||[]).push(R)});
- Object.keys(byA).sort().forEach((a,ai)=>{
+ // ===== NB02 高架货架：RCS 真实坐标平面图（列=货架纵向单元，列内 3F→1F 层条堆叠）=====
+ // 列聚合：rowid(NB02-A)+列号 → {key,tiers:{1F:{loc,boxes}}}；同列各层共用一个地标坐标（rack表实证）
+ const cols={};
+ rack.forEach(R=>{Object.keys(R.cells).forEach((c)=>{const key=R.rowid+'-'+String(c).padStart(2,'0');const C=cols[key]=cols[key]||{key,tiers:{},aisle:R.rowid};C.tiers[R.tier]=R.cells[c];});});
+ CTN._cols=cols;
+ let netOK=false;
+ try{ if(!CTN.net){const nj=await api('/api/rcs/net');CTN.net=(nj&&nj.ok&&nj.lands&&Object.keys(nj.lands).length>100)?nj:null;} netOK=!!CTN.net&&!!CTN.net.locLand&&Object.keys(CTN.net.locLand).length>50; }catch(_){}
+ const xyOf=(key)=>{const ll=CTN.net.locLand,ls=CTN.net.lands;for(const t of['1F','2F','3F','4F']){const lc=ll[key+'-'+t];if(lc&&ls[lc]&&Number.isFinite(ls[lc].x))return ls[lc];}return null;};
+ if(netOK){
+   const arr=Object.values(cols);const pos=[];const noXY=[];
+   arr.forEach((C)=>{const p=xyOf(C.key);if(p)pos.push(Object.assign(C,{x:p.x,y:p.y}));else noXY.push(C);});
+   const tierMax={};arr.forEach(C=>{const n=C.key.split('-')[2];tierMax[C.aisle]=Math.max(tierMax[C.aisle]||1,...Object.keys(C.tiers).map((t)=>parseInt(t)||1))});
+   const xs=pos.map(c=>c.x),ys=pos.map(c=>c.y);
+   const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+   const sx=(x)=>3+(x-x0)/((x1-x0)||1)*94, sy=(y)=>3+(1-(y-y0)/((y1-y0)||1))*94;
+   // 巷道标签质心
+   const aC={};pos.forEach(C=>{(aC[C.aisle]=aC[C.aisle]||{x:0,y:0,n:0});aC[C.aisle].x+=C.x;aC[C.aisle].y+=C.y;aC[C.aisle].n++});
+   const ar=Math.max(0.35,Math.min(2.2,(y1-y0)/((x1-x0)||1)));
+   h+=`<div style="margin:6px 0 3px;font-size:12.5px;font-weight:800;color:var(--pri)">NB02 高架区 · 真实平面 <span style="font-weight:400;color:var(--sub);font-size:11px">每块=一列货架(纵向3层)，块内小条自下而上 1F→顶F；灰虚线=该层空位 · 坐标取自 RCS 货架主档(${pos.length}/${arr.length}列)</span></div>`;
+   h+=`<div style="position:relative;width:100%;height:0;padding-bottom:${(ar*100*1.15).toFixed(1)}%;min-height:340px;background:linear-gradient(rgba(81,91,212,.045),rgba(81,91,212,.045)),repeating-linear-gradient(0deg,transparent,transparent 39px,rgba(120,140,170,.12) 40px),repeating-linear-gradient(90deg,transparent,transparent 39px,rgba(120,140,170,.12) 40px);border:1px solid var(--line);border-radius:10px;overflow:hidden">`;
+   Object.entries(aC).forEach(([a,c])=>{h+=`<div style="position:absolute;left:${sx(c.x/c.n).toFixed(2)}%;top:${sy(c.y/c.n).toFixed(2)}%;transform:translate(-50%,-50%);font-size:26px;font-weight:900;color:rgba(81,91,212,.18);pointer-events:none">${a.split('-').pop()}区</div>`});
+   pos.forEach((C)=>{
+     const tn=tierMax[C.aisle]||3;const tiers=[];
+     for(let t=tn;t>=1;t--){const k=t+'F';const cell=C.tiers[k];
+       if(!cell){tiers.push(`<div class="ctb ${hunt?'ctb-em':'ctb-e'}" title="${_esc(C.key+'-'+k)} · 空位${hunt?'（可存放新框，点击复制编号）':''}" onclick="event.stopPropagation();ctFreeSlot('${_esc(C.key+'-'+k)}')"></div>`);continue}
+       const bs=cell.boxes,worst=bs.some(b=>b._h>=168)?'r':(bs.some(b=>b._h>=72)?'o':'g');
+       const mk=q&&(String(C.key+k)+' '+bs.map(b=>b.codes.join(' ')+' '+(b.p||'')+(b.n||'')).join(' ')).toUpperCase().includes(q);
+       tiers.push(`<div class="ctb ctb-${worst}${mk?' cth':''}" title="${_esc(C.key+'-'+k+'｜'+bs.length+'框 '+bs.reduce((a,b)=>a+b.lc,0)+'标签｜'+bs.map(b=>(b.p||b._fl)+'×'+b.q).join('；'))}" onclick="event.stopPropagation();ctCol('${_esc(C.key)}')">${bs.length>1?bs.length:''}</div>`);}
+     const colHit=q&&String(C.key).toUpperCase().includes(q);
+     const colAllEmpty=Object.keys(C.tiers).length===0;
+     h+=`<div class="ctcol${(q&&!colHit&&!tiers.join('').includes('cth'))|| (hunt&&!colAllEmpty)?' dimc':''}${colHit?' cth':''}${hunt&&colAllEmpty?' ctg-em':''}" style="position:absolute;left:${sx(C.x).toFixed(2)}%;top:${sy(C.y).toFixed(2)}%;transform:translate(-50%,-50%)" title="${_esc(C.key+' 列')} · 点击查看各层" onclick="ctCol('${_esc(C.key)}')">${tiers.join('')}<span class="ctcol-n">${C.key.split('-').pop()}</span></div>`;
+   });
+   h+='</div>';
+   if(noXY.length)h+=`<div style="margin-top:6px;font-size:11px;color:var(--warn)">⚠ ${noXY.length} 列货架在 RCS 主档查不到坐标（新建位未同步）：${noXY.slice(0,6).map((C)=>C.key).join('、')}${noXY.length>6?'…':''}</div>`;
+ } else {
+  // 路网不可用兜底：巷道立面图（3F顶→1F底）
+  const byA={};rack.forEach(R=>{(byA[R.rowid]=byA[R.rowid]||[]).push(R)});
+  Object.keys(byA).sort().forEach((a,ai)=>{
    const tiers=byA[a].sort((x,y)=>(parseInt(y.tier)||0)-(parseInt(x.tier)||0)); // ㉖v52 层号"3F"用 parseInt（Number 得 NaN 排序失效）
    const maxCol=Math.max(0,...tiers.map(R=>R.hi||0));
    const u=tiers.reduce((s,R)=>s+Object.keys(R.cells).length,0);
-   h+=`<div style="margin:${ai?14:6}px 0 3px;font-size:12.5px;font-weight:800;color:var(--pri)">${a} 巷道 <span style="font-weight:400;color:var(--sub);font-size:11px">高位货架 ${tiers.length}层×${maxCol}列 · 存 ${u}/${maxCol*tiers.length}</span></div>`;
+   h+=`<div style="margin:${ai?14:6}px 0 3px;font-size:12.5px;font-weight:800;color:var(--pri)">${a} 巷道 <span style="font-weight:400;color:var(--sub);font-size:11px">高位货架 ${tiers.length}层×${maxCol}列 · 存 ${u}/${maxCol*tiers.length}（RCS 坐标不可用，退层立面图）</span></div>`;
    h+='<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px 7px;background:linear-gradient(180deg,rgba(81,91,212,.05),transparent)">';
    tiers.forEach(R=>{const o=Object.keys(R.cells).length;h+=rowLine(R.tier+(o?'':' 空'),R,maxCol,o)});
    h+='</div>';
- });
- // NB03 地面：按巷道字母分组，排按号升序，每排横铺格位（编码即地面物理布局）
+  });
+ }
+ // ===== NB03 地面：巷道分组，排=横条，格按配置数铺（编码即地面物理布局）=====
  const gA={};gnd.forEach(R=>{const a=R.rowid.split('-').slice(0,2).join('-');(gA[a]=gA[a]||[]).push(R)});
  Object.keys(gA).sort().forEach((a,ai)=>{
    const rs=gA[a].sort((x,y)=>(Number(x.rowid.split('-').pop())||0)-(Number(y.rowid.split('-').pop())||0));
    const u=rs.reduce((s,R)=>s+Object.keys(R.cells).length,0);
+   const maxC=Math.max(0,...rs.map(R=>R.hi));
    h+=`<div style="margin:${ai?14:10}px 0 3px;font-size:12.5px;font-weight:800;color:#00897b">${a} 区 <span style="font-weight:400;color:var(--sub);font-size:11px">地面 ${rs.length} 排 · 存 ${u} 框</span></div>`;
+   h+='<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:linear-gradient(180deg,rgba(0,137,123,.05),transparent)">';
+   let ruler='<span style="width:66px"></span>';
+   for(let c=1;c<=maxC;c++)ruler+=`<span class="ctg" style="background:transparent;color:var(--sub);font-size:9px;cursor:default;pointer-events:none">${c}</span>`;
+   h+=`<div style="display:flex;gap:0;margin-bottom:2px">${ruler}</div>`;
    rs.forEach(R=>{const rn=R.rowid.split('-').pop(),o=Object.keys(R.cells).length;h+=rowLine('第'+rn+'排'+(o?'':' 空'),R,R.hi,o)});
+   h+='</div>';
  });
  $('#ctmap').innerHTML=h||'<div style="color:var(--sub);padding:20px">账本为空——地图无格可画</div>';
 }
 function ctZone(z){CTN.zf=(CTN.zf===z)?'':z;ctMap()}
+// 高架列弹窗：一列货架纵向各层明细（层号+占用+标签），点层进格弹窗
+function ctCol(key){const C=(CTN._cols||{})[key];if(!C){T('该列暂无数据');return}
+ const tn=Math.max(1,...Object.keys(C.tiers).map((t)=>parseInt(t)||1));
+ let rows='';
+ for(let t=tn;t>=1;t--){const k=t+'F';const cell=C.tiers[k];
+  if(!cell){rows+=`<div class="ctrow"><span class="ctf">${k}</span><span style="color:var(--sub);font-size:12px">空位</span><button class="pill q" style="margin-left:auto;padding:2px 8px;font-size:11px" onclick="$('#mask').classList.add('hide');ctFreeSlot('${_esc(key+'-'+k)}')">⧉ 复制编号</button></div>`;continue}
+  const bs=cell.boxes,worst=bs.some(b=>b._h>=168)?'var(--bad)':(bs.some(b=>b._h>=72)?'var(--warn)':'var(--ok)');
+  rows+=`<div class="ctrow" style="cursor:pointer" onclick="$('#mask').classList.add('hide');ctCell('${_esc(cell.loc)}')"><span class="ctf">${k}</span><span style="font-size:12.5px">${_esc(bs.map(b=>(b.p||b._fl)+'×'+b.q).join('、'))}</span><span style="margin-left:auto;font-size:11.5px;color:${worst}">${bs.length}框 · ${ctAgeTxt(Math.min.apply(null,bs.map(b=>b._h<0?1e12:b._h)))}</span></div>`;}
+ dlg(`<h3>🗄 ${_esc(key)} 列 <button class="pill q" style="padding:2px 8px;font-size:11px;vertical-align:middle" title="复制列编号" onclick="ctCopy('${_esc(key)}')">⧉ 复制</button></h3><div style="font-size:11.5px;color:var(--sub);margin-bottom:6px">纵向 ${tn} 层 · 自上而下 ${tn}F→1F · 点层看该格明细</div>${rows}<div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill" onclick="$('#mask').classList.add('hide')">关闭</button></div>`);
+}
 function ctCell(loc){const bs=CTN.byBox[String(loc).toUpperCase()]||[];
  if(!bs.length){ctFreeSlot(loc);return}
  dlg(`<h3>📍 ${_esc(loc)} <button class="pill q" style="padding:2px 8px;font-size:11px;vertical-align:middle" title="复制货位编号" onclick="ctCopy('${_esc(loc)}')">⧉ 复制编号</button></h3>`+bs.map((b)=>`<div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin:6px 0"><b style="font-size:13px">${_esc(b._fl)}</b>${b.lc>1?` <span class="tag" style="background:rgba(81,91,212,.1);color:var(--pri);font-size:10.5px">${b.lc} 码同托</span>`:''}<span style="float:right;font-size:12px;color:${b._h>=168?'var(--bad)':b._h>=72?'var(--warn)':'var(--ok)'}">${ctAgeTxt(b._h)}</span><div style="clear:both;font-size:12px;color:var(--sub);margin-top:2px">${_esc(b.p||'')} ${_esc(b.n||'')} · 数量 ${b.q}${b.t?' · '+b.by+' '+new Date(b.t).toLocaleString('zh-CN',{hour12:false}).slice(5,16):''}</div><div class="mono" style="font-size:11.5px;margin-top:3px">${b.codes.map((c)=>`<a href="javascript:void 0" style="color:var(--pri)" onclick="$('#mask').classList.add('hide');traceBox('${_esc(c)}')">${_esc(c)}</a>`).join('　')}</div></div>`).join('')+

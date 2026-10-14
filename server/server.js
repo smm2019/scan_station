@@ -1690,7 +1690,8 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/rcs/net') {
         const lands = {}; for (const [k, v] of Object.entries(NetMap.lands)) lands[k] = { x: v.x, y: v.y, r: v.r, t: v.t };
         const edges = []; for (const [a, list] of Object.entries(NetMap.adj)) for (const [b] of list) if (a < b || NetMap.adj[b] === undefined || !NetMap.adj[b].some((e2) => e2[0] === a)) edges.push([a, b]);
-        return send(res, 200, { ok: true, ready: NetMap.ready(), lands, edges });
+        // ㉖v52 货位→地标映射（rack表权威+学习兜底）：容器管理高架平面图按真实坐标定位
+        return send(res, 200, { ok: true, ready: NetMap.ready(), lands, edges, locLand: NetMap.locLand || {} });
       }
       if (req.method === 'GET' && p === '/api/rcs/map') {
         const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
