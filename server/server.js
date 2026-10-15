@@ -1805,8 +1805,37 @@ const server = http.createServer(async (req, res) => {
         // 货架占用：landmark → {loc, codes}
         const byLoc = {};
         for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); (byLoc[l] = byLoc[l] || []).push(x.c); }
+        const locT = {}; for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (!x.t) continue; if (!locT[l] || x.t < locT[l]) locT[l] = x.t; } // ㉖v54 新鲜度
         const shelf = [];
         for (const [loc, codes] of Object.entries(byLoc)) { const lc = NetMap.landOf(loc); if (lc && NetMap.lands[lc]) shelf.push({ land: lc, loc, n: codes.length }); }
+        // ㉖v54 完整地图①：全量货架列（含空列）——locLand 里所有 NB02-*-xF 按列聚合，坐标取该列地标
+        const colAgg = {};
+        for (const [loc, lc] of Object.entries(NetMap.locLand)) {
+          const m = /^NB02-([A-Z])-(\d{2})-(\dF)$/.exec(loc); if (!m) continue;
+          const lk = NetMap.lands[lc]; if (!lk || !Number.isFinite(lk.x)) continue;
+          const key = 'NB02-' + m[1] + '-' + m[2];
+          const C = colAgg[key] || (colAgg[key] = { key, aisle: m[1], x: lk.x, y: lk.y, tiers: {}, n: 0, ageT: 0 });
+          const cnt = (byLoc[loc] || []).length;
+          if (cnt) { C.tiers[m[3]] = cnt; C.n += cnt;
+            const tmin = locT[loc]; if (tmin && (!C.ageT || tmin < C.ageT)) C.ageT = tmin; }
+        }
+        const shelfCols = Object.values(colAgg);
+        // ㉖v54 完整地图②：NB03 地面排格聚合（AGV 不跑地面区、账本无机器坐标 → 前端以"示意·非等比"面板呈现）
+        const gAgg = {};
+        for (const x of db.ledger || []) {
+          const m = /^NB03-([A-Z])-(\d{2})-(\d{1,2})$/.exec(String(x.l || '').toUpperCase()); if (!m) continue;
+          const rk = m[1] + '|' + m[2];
+          const R = gAgg[rk] || (gAgg[rk] = { aisle: m[1], row: +m[2], cells: {} });
+          const cn = +m[3];
+          const cell = R.cells[cn] || (R.cells[cn] = { n: 0, q: 0, codes: [] });
+          cell.n++; cell.q += Number(x.q) || 0;
+          if (cell.codes.length < 10) cell.codes.push(String(x.c || '').toUpperCase());
+        }
+        const gSlots = db.groundSlots || {};
+        const ground = Object.values(gAgg).map((R) => {
+          const key = 'NB03-' + R.aisle + '-' + String(R.row).padStart(2, '0');
+          return { key, aisle: R.aisle, row: R.row, slots: gSlots[key] || 12, cells: R.cells };
+        }).sort((a, b) => a.key.localeCompare(b.key));
         const stn = [];
         for (const [loc, lc] of Object.entries(NetMap.locLand)) { // 全量站台：从路网映射取所有CK货位，状态缺省空闲
           if (!/-CK-/.test(loc) || !NetMap.lands[lc]) continue;
@@ -1819,7 +1848,7 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, {
           ok: true, at: new Date().toISOString(), netReady: NetMap.ready(),
           cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1 })),
-          shelf, stations: stn,
+          shelf, shelfCols, ground, stations: stn,
           jam: Object.entries(owners).map(([land, car]) => ({ land, car })).filter((j) => NetMap.lands[j.land]),
         });
       }
