@@ -1245,9 +1245,14 @@ loadAll();setInterval(loadAll,30000);
 
 let db = loadDb();
 // ㉖v56 落盘合并：save() 只标脏，120ms 窗口内的多次变更合并为一次全量写（89 个调用点高频触发，同步写 3MB 会卡事件循环）
+// 审计加固：_dirty 在写成功后才清（原实现先清后写，磁盘瞬时故障会静默丢掉重试触发）；失败 2 秒自动重试一次，仍败等下次 save 再试（全量快照写，成功一次即覆盖全部积压）
 let _dirty = false, _saveT = null;
-function flushSave() { if (_saveT) { clearTimeout(_saveT); _saveT = null; } if (_dirty) { _dirty = false; saveDb(db); } }
-const save = () => { _dirty = true; if (!_saveT) _saveT = setTimeout(flushSave, 120); };// ---------------- 会话 ----------------
+function flushSave() { if (_saveT) { clearTimeout(_saveT); _saveT = null; } if (!_dirty) return; saveDb(db); _dirty = false; }
+function save() {
+  _dirty = true;
+  if (_saveT) return;
+  _saveT = setTimeout(() => { _saveT = null; try { flushSave(); } catch (e) { logErr('saveDb', e); _saveT = setTimeout(() => { _saveT = null; try { flushSave(); } catch (_) {} }, 2000); } }, 120);
+} // ---------------- 会话 ----------------
 function touchSession(token) {
   const s = db.sessions[token];
   if (!s) return null;
