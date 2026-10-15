@@ -118,13 +118,14 @@ function saveDb(db) { // 原子写：临时文件 + rename
   const _sv = []; // ㉕F6 落盘加密：同步暂换→序列化→还原（单线程无并发观察，免整库深拷贝）
   try { walkSec(db, (o, k) => { const e = encSec(o[k]); if (e !== o[k]) { _sv.push([o, k, o[k]]); o[k] = e; } }); } catch (_) {}
   const _t0 = Date.now();
-  try { fs.writeFileSync(tmp, JSON.stringify(db, null, 2), 'utf8'); } finally { for (const it of _sv) it[0][it[1]] = it[2]; }
+  try { fs.writeFileSync(tmp, JSON.stringify(db), 'utf8'); } finally { for (const it of _sv) it[0][it[1]] = it[2]; } // ㉖v56 紧凑序列化：省 40% 体积与近半耗时（读取端 parse 无感）
   fs.renameSync(tmp, DB_FILE);
   try { const ms = Date.now() - _t0; _saveStat.ring.push(ms); if (_saveStat.ring.length > 50) _saveStat.ring.shift(); _saveStat.n++; _saveStat.max = Math.max.apply(null, _saveStat.ring); _saveStat.avg = Math.round(_saveStat.ring.reduce((a, b) => a + b, 0) / _saveStat.ring.length); } catch (_) {}
 }
 // ---- 数据自动备份：启动一次 + 每30分钟快照，保留最近72份（约36小时）；误删/损坏可从 data/backups 恢复 ----
 function backupDb() {
   try {
+    flushSave(); // ㉖v56 备份前把合并窗口脏数据落盘，防快照滞后
     if (!fs.existsSync(DB_FILE)) return;
     const dir = path.join(DATA_DIR, 'backups');
     fs.mkdirSync(dir, { recursive: true });
@@ -1243,7 +1244,10 @@ loadAll();setInterval(loadAll,30000);
 }
 
 let db = loadDb();
-const save = () => saveDb(db);// ---------------- 会话 ----------------
+// ㉖v56 落盘合并：save() 只标脏，120ms 窗口内的多次变更合并为一次全量写（89 个调用点高频触发，同步写 3MB 会卡事件循环）
+let _dirty = false, _saveT = null;
+function flushSave() { if (_saveT) { clearTimeout(_saveT); _saveT = null; } if (_dirty) { _dirty = false; saveDb(db); } }
+const save = () => { _dirty = true; if (!_saveT) _saveT = setTimeout(flushSave, 120); };// ---------------- 会话 ----------------
 function touchSession(token) {
   const s = db.sessions[token];
   if (!s) return null;
@@ -4452,7 +4456,11 @@ function buildFunnel(days) {
   return { call: stat('call'), queue: stat('queue'), dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
 }
 
-process.on('uncaughtException', (e) => { try { logErr('uncaughtException', e); save(); } catch (_) {} console.error('[FATAL] 未捕获异常：', e); }); // ㉖ 崩溃前留痕（不退出：调度循环中断比报错更糟）
+process.on('uncaughtException', (e) => { try { logErr('uncaughtException', e); flushSave(); } catch (_) {} console.error('[FATAL] 未捕获异常：', e); }); // ㉖ 崩溃前留痕（不退出：调度循环中断比报错更糟）；㉖v56 改 flushSave 同步落盘防合并窗口丢数据
 process.on('unhandledRejection', (e) => { try { logErr('unhandledRejection', e instanceof Error ? e : { message: String(e) }); } catch (_) {} console.error('[REJECT] 未处理 Promise 拒绝：', e); });
+// ㉖v56 优雅退出：进程终止前把合并窗口脏数据同步落盘（防丢最后 120ms 变更）
+// Windows 无真实 SIGTERM（kill=TerminateProcess 强杀无 handler）：NSSM 停服/Ctrl+C 走 SIGINT，Ctrl+Break 走 SIGBREAK；flush 后必须主动 exit，否则监听器会抑制默认退出
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) { process.on(sig, () => { try { flushSave(); } catch (_) {} console.log('[exit] ' + sig + ' 优雅停止：脏数据已落盘'); process.exit(0); }); }
+process.on('beforeExit', () => { try { flushSave(); } catch (_) {} }); // 自然退出兜底（事件循环排空时）
 
 server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); } catch (_) {} backupDb(); archiveOld(); });
