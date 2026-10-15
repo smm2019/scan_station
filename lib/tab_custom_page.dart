@@ -74,7 +74,7 @@ class TabCustom {
     final allow = allowed();
     final cfg = await _load();
     final order = (cfg['order'] as List).map((e) => e.toString()).toList();
-    final hidden = (cfg['hidden'] as Set).map((e) => e.toString()).toSet().difference(pinned);
+    final hidden = (cfg['hidden'] as List).map((e) => e.toString()).toSet().difference(pinned);
     List<String> out = [];
     for (final k in order) {
       if (allow.contains(k) && !hidden.contains(k) && !out.contains(k)) out.add(k);
