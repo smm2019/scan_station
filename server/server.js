@@ -542,7 +542,8 @@ function _markTimeoutResolved(ev) {
       const L = led.get(code);
       if (e.kind === '出库超时' || e.kind === '检验下架超时') { if (!L || /-CK-/.test(L)) { e.resolved = 1; e.resMsg = L ? '框已在站台位（已拣出）' : '框已离架出账'; continue; } }
       else if (e.kind === '入库超时' || e.kind === '检验归位超时') { if (!atStn.has(code)) { e.resolved = 1; e.resMsg = '已不压站台'; continue; } }
-      e.resMsg = '未了结';
+      const _aged = Date.now() - (Number(e.ts) || 0) > 24 * 3600e3; // ㉖v54 兜底：超24小时无任何后续动作=陈旧告警，自动闭环不再占现役（人工处置常不走扫码，账本旁证永不成立）
+      e.resolved = _aged ? 1 : 0; e.resMsg = _aged ? '超24小时无后续动作，自动闭环' : '未了结';
     }
   } catch (_) {}
 }
@@ -550,7 +551,7 @@ function _markTimeoutResolved(ev) {
 function _markJamResolved(ev) {
   try {
     const up = {}; for (const e of ev) if (e.kind === '堵点解除') { const w = String(e.who || ''); if (up[w] === undefined || (Number(up[w]) > Number(e.ts))) up[w] = e.ts; }
-    for (const e of ev) { if (e.kind !== '堵点') continue; const u = up[String(e.who || '')]; e.resolved = (u !== undefined && u >= (Number(e.ts) || 0)) ? 1 : 0; e.resMsg = e.resolved ? '交管已放行' : '仍未放行'; }
+    for (const e of ev) { if (e.kind !== '堵点') continue; const u = up[String(e.who || '')]; const _pair = u !== undefined && u >= (Number(e.ts) || 0); const _aged2 = !_pair && Date.now() - (Number(e.ts) || 0) > 24 * 3600e3; e.resolved = (_pair || _aged2) ? 1 : 0; e.resMsg = _pair ? '交管已放行' : (_aged2 ? '超24小时无后续动作，自动闭环' : '仍未放行'); }
   } catch (_) {}
 }
 
