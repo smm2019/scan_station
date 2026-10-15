@@ -1484,24 +1484,35 @@ class _PartProfilePageState extends State<PartProfilePage> {
     );
   }
 
-  /// v55 库存页发起检验下架：确认弹窗 → /api/inspect/start → 刷新（站台自动分配）
+  /// v55 库存页发起检验下架：自动/指定站台 → /api/inspect/start → 刷新
   Future<void> _inspStart(_PPBox b) async {
-    final yes = await showDialog<bool>(
+    final pick = await showDialog<String>(
         context: context,
         builder: (c2) => AlertDialog(
-                title: const Text("确认检验下架"),
+                title: const Text("发起检验下架"),
                 content: Text(
-                    "货位 ${b.curLoc}\n零件 ${widget.partNo}${b.itemName.isNotEmpty ? " · ${b.itemName}" : ""} · ${_fmtInvNum(b.qty)}件\n标签 ${b.barcode}${b.inBatch.isNotEmpty ? "\n批次 ${b.inBatch}" : ""}\n\nAGV 将把该框送到空闲站台，检验员看完结论后由仓管协助归位回 ${b.curLoc}。"),
+                    "货位 ${b.curLoc}\n零件 ${widget.partNo}${b.itemName.isNotEmpty ? " · ${b.itemName}" : ""} · ${_fmtInvNum(b.qty)}件\n标签 ${b.barcode}${b.inBatch.isNotEmpty ? "\n批次 ${b.inBatch}" : ""}\n\nAGV 把该框送到站台，检验员看完结论后由仓管协助归位回 ${b.curLoc}。"),
                 actions: [
                   TextButton(
-                      onPressed: () => Navigator.pop(c2, false),
+                      onPressed: () => Navigator.pop(c2),
                       child: const Text("取消")),
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2, "pick"),
+                      child: const Text("指定站台",
+                          style: TextStyle(color: Color(0xFF00897B)))),
                   FilledButton(
-                      onPressed: () => Navigator.pop(c2, true),
-                      child: const Text("发起下架")),
+                      onPressed: () => Navigator.pop(c2, "auto"),
+                      child: const Text("自动分配")),
                 ]));
-    if (yes != true || !mounted) return;
-    final r = await AuthApi.inspectStart(b.curLoc, "库存页发起检验");
+    if (pick == null || !mounted) return;
+    String station = "";
+    if (pick == "pick") {
+      final st = await _pickFreeStation();
+      if (st == null || !mounted) return;
+      station = st;
+    }
+    final r = await AuthApi.inspectStart(b.curLoc, "库存页发起检验",
+        station: station);
     if (!mounted) return;
     if (r["ok"] == true) {
       final rec = Map.from(r["rec"] ?? {});
@@ -1516,6 +1527,43 @@ class _PartProfilePageState extends State<PartProfilePage> {
           content: Text("发起失败：${r["msg"] ?? "未知错误"}"),
           backgroundColor: Colors.red));
     }
+  }
+
+  /// 空闲站台选层（数据与检验页同源：inspectSearch 附带 freeStns/aliases）
+  Future<String?> _pickFreeStation() async {
+    final r = await AuthApi.inspectSearch(widget.partNo);
+    if (!mounted) return null;
+    final free =
+        ((r["freeStns"] as List?) ?? []).map((e) => e.toString()).toList();
+    if (free.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("当前无空闲站台（都有货/队列/检验占用），请先清台或改用自动分配"),
+          backgroundColor: Colors.orange));
+      return null;
+    }
+    final al = r["aliases"];
+    final alias = al is Map
+        ? al.map((k, v) => MapEntry(k.toString(), v.toString()))
+        : <String, String>{};
+    return showModalBottomSheet<String>(
+        context: context,
+        builder: (c2) => SafeArea(
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Text("指定检验下架站台",
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+              ...free.map((st) => ListTile(
+                  leading: const Icon(Icons.pin_drop_outlined,
+                      color: Color(0xFF00897B)),
+                  title: Text(alias[st] == null || alias[st]!.isEmpty
+                      ? st
+                      : "${alias[st]}(${st.split("-").last})"),
+                  onTap: () => Navigator.pop(c2, st))),
+              TextButton(
+                  onPressed: () => Navigator.pop(c2), child: const Text("取消")),
+            ])));
   }
 
   @override
