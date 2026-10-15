@@ -152,7 +152,7 @@ function archiveOld() {
     if (d.getHours() < 18) return;
     const day = d.toISOString().slice(0, 10);
     if (_archLast === day) return; _archLast = day;
-    const days = Number(db.archiveAfterDays) || 180;
+    const days = P().archDays; const reqDays = P().reqArchDays; // ㉖v56 归档窗口参数化（db.archiveAfterDays 旧值由 PARAMS 默认兼容，不再直读）
     const cut = Date.now() - days * 86400000;
     const dir = path.join(DATA_DIR, 'archive'); fs.mkdirSync(dir, { recursive: true });
     const mon = day.slice(0, 7);
@@ -173,6 +173,19 @@ function archiveOld() {
     opsDigestTick(); // ㉖每日断链摘要+ops文件清理
     move('scanlog', db.scanlog, (v) => Number(v && v.t) || 0);
     move('outbound', db.outbound, (v) => Date.parse(v && v.at || v && v.time || '') || 0);
+    // ㉖v56 领料单年度归档：仅已终结单（done/rejected/cancelled）且超 reqDays；在途/待处理永不归档；按单号幂等合并
+    try {
+      const rcut = Date.now() - reqDays * 864e5;
+      const done = (db.requisitions || []).filter((r) => ['done', 'rejected', 'cancelled'].includes(r.status) && (Date.parse(r.createdAt) || 0) < rcut);
+      if (done.length) {
+        const rf = path.join(dir, mon + '-requisitions.json');
+        let all = []; try { if (fs.existsSync(rf)) all = JSON.parse(fs.readFileSync(rf, 'utf8')); } catch (_) {}
+        const seen = new Set(all.map((x) => x.no)); for (const r of done) if (!seen.has(r.no)) all.push(r);
+        fs.writeFileSync(rf + '.tmp', JSON.stringify(all)); fs.renameSync(rf + '.tmp', rf); // 先落盘成功
+        const mv = new Set(done.map((r) => r.no)); db.requisitions = db.requisitions.filter((r) => !mv.has(r.no));
+        moved += done.length;
+      }
+    } catch (_) {}
     if ((db.notifications || []).length > 2000) { const old = db.notifications.filter((x) => Date.parse(x.time) < cut); if (old.length) { db.notifications = db.notifications.filter((x) => Date.parse(x.time) >= cut); moved += old.length; } }
     if (moved) { save(); console.log(`[archive] 归档 ${moved} 条超${days}天数据 → data/archive/${mon}-*（${day}）`); }
   } catch (e) { console.log('[archive] 失败：', e.message); logErr('archiveOld', e); }
@@ -323,7 +336,7 @@ function buildExport(ds, fRaw) {
     ];
     return { label: '工作量报表', parts, rows: parts[0].rows, total: parts[0].rows.length + parts[1].rows.length + parts[2].rows.length, f: { from: wdstr(F), to: wdstr(T) } };
   }
-  if (ds === 'D8') { const ST = { pending: '待接单', accepted: '备料中', ready: '待签收', done: '已签收', rejected: '已拒单', cancelled: '已取消' }; const rows = (db.requisitions || []).filter((r) => { const t = Date.parse(r.createdAt) || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map((r) => { const acc = (r.history || []).find((h) => /接单/.test(h.text || '')); const fin = (r.history || []).filter((h) => /签收|拒单|取消/.test(h.text || '')).pop(); const mins = acc && fin ? Math.round((Date.parse(fin.time) - Date.parse(acc.time)) / 60000) : ''; return [r.no, expTs(Date.parse(r.createdAt) || 0), r.byName || r.by || '', (r.items || []).length, (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), ST[r.status] || r.status, r.acceptedBy || '', r.confirmedBy || '', expTs(Date.parse(r.confirmedAt) || 0), acc ? expTs(Date.parse(acc.time) || 0) : '', mins === '' ? '' : mins, (r.remark || '').slice(0, 60)]; }); return mk('领料台账', ['单号', '下单时间', '下单人', '行数', '件数合计', '状态', '接单人', '签收人', '签收时间', '接单时间', '处理分钟', '备注'], ['S', 'S', 'S', 'N', 'N', 'S', 'S', 'S', 'S', 'S', 'N', 'S'], rows, '领料单全量（含节点时刻，处理分钟=接单到终结）'); }
+  if (ds === 'D8') { const ST = { pending: '待接单', accepted: '备料中', ready: '待签收', done: '已签收', rejected: '已拒单', cancelled: '已取消' }; const _rq = _arch ? db.requisitions.concat((() => { const out = []; try { for (const fd of fs.readdirSync(path.join(DATA_DIR, 'archive'))) { if (fd.indexOf('-requisitions.json') < 0) continue; try { out.push.apply(out, JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', fd), 'utf8'))); } catch (_) {} } } catch (_) {} return out; })()) : (db.requisitions || []); const rows = _rq.filter((r) => { const t = Date.parse(r.createdAt) || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map((r) => { const acc = (r.history || []).find((h) => /接单/.test(h.text || '')); const fin = (r.history || []).filter((h) => /签收|拒单|取消/.test(h.text || '')).pop(); const mins = acc && fin ? Math.round((Date.parse(fin.time) - Date.parse(acc.time)) / 60000) : ''; return [r.no, expTs(Date.parse(r.createdAt) || 0), r.byName || r.by || '', (r.items || []).length, (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), ST[r.status] || r.status, r.acceptedBy || '', r.confirmedBy || '', expTs(Date.parse(r.confirmedAt) || 0), acc ? expTs(Date.parse(acc.time) || 0) : '', mins === '' ? '' : mins, (r.remark || '').slice(0, 60)]; }); return mk('领料台账', ['单号', '下单时间', '下单人', '行数', '件数合计', '状态', '接单人', '签收人', '签收时间', '接单时间', '处理分钟', '备注'], ['S', 'S', 'S', 'N', 'N', 'S', 'S', 'S', 'S', 'S', 'N', 'S'], rows, '领料单（含节点时刻，处理分钟=接单到终结）' + (_arch ? '；含归档=主库∪archive已终结超期归档单' : '；主库窗口，超期已终结单勾「含归档」回查')); }
   if (ds === 'D9') { const rows = opsLoadDays(OPS_KEEP_DAYS).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', o.role || '', o.act || '', o.obj || '', o.det || '']); return mk('活动流审计', ['时间', '操作人', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流）'); }
   if (ds === 'D10') { const inv = Object.values(db.inventories || {}).filter((r) => { const t = r.at || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => b.at - a.at); const bid = String((fRaw && fRaw.batchId) || '').trim(); const sel = bid ? inv.filter((r) => r.batchId === bid) : inv; const one = sel[0] || {};
     const parts = [
@@ -673,6 +686,8 @@ const PARAMS = {
   failKeepMin:    { grp: '数据保留', name: '失败队列项保留', unit: '分钟', min: 5, max: 720, d: 30, tip: '失败项在队列里保留多久供查看原因后自动出队' },
   trailMin:       { grp: '数据保留', name: '轨迹回放保留', unit: '分钟', min: 30, max: 2880, d: 1440, tip: '车辆轨迹采样点保留时长（轨迹回放可选窗口上限）' },
   notifKeep:      { grp: '数据保留', name: '通知保留条数', unit: '条', min: 100, max: 5000, d: 500, tip: '消息中心滚动保留最近多少条通知（超出丢弃最旧）' },
+  archDays:       { grp: '数据保留', name: '流水归档窗口', unit: '天', min: 30, max: 365, d: 90, tip: '采集流水/出库单超期挪归档目录（主库瘦身；导出勾「含归档」仍可查全史）；原硬编码180' },
+  reqArchDays:    { grp: '数据保留', name: '领料单归档窗口', unit: '天', min: 90, max: 730, d: 365, tip: '已终结(签收/拒单/取消)领料单超期挪归档，主库只留在途与近一年；未终结单永不归档' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
 
