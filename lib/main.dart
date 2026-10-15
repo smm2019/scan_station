@@ -2446,7 +2446,7 @@ class _MainPageState extends State<MainPage>
               .filter()
               .goodsCodeEqualTo(code.toUpperCase())
               .findFirst();
-          final auto = await nb02AutoAssign(recA?.mesPartNo ?? "");
+          final auto = await nb02AutoAssign(recA?.mesPartNo ?? "", code: code.toUpperCase());
           if (auto == null) {
             if (mounted)
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

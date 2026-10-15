@@ -447,6 +447,11 @@ class AuthApi {
   // ㉖⑰ 服务器权威货架占用（入库自动分配货位用，多PDA统一）
   static Future<Map> ledgerLocs() async =>
       _req("GET", "/api/ledger/locs", token: await AuthStore.token());
+  // ㉖v54 原子预占分配：服务器算位+锁位一体（多PDA并发不撞位）
+  static Future<Map> ledgerReserve(String code, String partNo) async =>
+      _req("POST", "/api/ledger/reserve",
+          body: {"code": code, "partNo": partNo},
+          token: await AuthStore.token());
   // ㉖ 容器类型配置：读（采集页按钮数据源）/ 整表保存（仓管·管理员）
   static Future<Map> containersGet() async =>
       _req("GET", "/api/containers", token: await AuthStore.token());

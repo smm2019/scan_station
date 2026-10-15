@@ -47,8 +47,19 @@ extension CollectionLedgerExt on _MainPageState {
 
   ///AGV 目标货位自动分配：①同零件已占的架内空位（同件同架，AGV整架取放最优）
   ///②同零件所在区的空架空位 ③全局顺序兜底（A-01-1F 起集满靠前）。无可分配返回 null。
-  ///㉖ 占用判定=本机账本 ∪ 服务器权威账本（多PDA并发不撞位；断网回退本机）
-  Future<String?> nb02AutoAssign(String partNo) async {
+  ///㉖v54 首选服务器原子预占（多PDA并发拿不同格，根治5~15秒撞位窗口）；仅网络不通降级本机口径
+  Future<String?> nb02AutoAssign(String partNo, {String code = ''}) async {
+    if (code.isNotEmpty) {
+      try {
+        final rv = await AuthApi.ledgerReserve(code, partNo);
+        if (rv["ok"] == true && (rv["loc"] as String?)?.isNotEmpty == true) {
+          return (rv["loc"] as String).toUpperCase();
+        }
+        if (rv["_status"] != null) return null; // 服务器可达但拒绝（满位/无权限）：如实返回，不走本机重复占位
+      } catch (e) {
+        LocalLog.err('自动分配·服务器预占不可达降级本机', e); // 网络异常：降级旧口径
+      }
+    }
     final byLoc = await _ledgerByLoc();
     try {
       final lv = await AuthApi.ledgerLocs();
@@ -407,7 +418,7 @@ extension CollectionLedgerExt on _MainPageState {
         .goodsCodeEqualTo(code.toUpperCase())
         .findFirst();
     final partNo = rec?.mesPartNo ?? "";
-    final loc = await nb02AutoAssign(partNo);
+    final loc = await nb02AutoAssign(partNo, code: code.toUpperCase());
     if (!mounted) return;
     if (loc == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

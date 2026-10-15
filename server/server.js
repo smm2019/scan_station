@@ -102,6 +102,7 @@ function loadDb() {
   if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
   if (!Array.isArray(d.errLogs)) { d.errLogs = []; added = true; } // ㉖ PDA异常上报表（旧库补齐）
   if (typeof d.stnMeta !== 'object' || d.stnMeta === null || Array.isArray(d.stnMeta)) { d.stnMeta = {}; added = true; } // ㉖⑫ 站台身份配置（旧库补齐）
+  if (!d.locReserve || typeof d.locReserve !== 'object' || Array.isArray(d.locReserve)) { d.locReserve = {}; added = true; } // ㉖v54 货位预占表（旧库补齐）
   if (!Array.isArray(d.containerTypes) || !d.containerTypes.length) { d.containerTypes = defaultDb().containerTypes; added = true; } // ㉖ 容器类型配置（旧库补齐默认5项）
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
@@ -538,6 +539,30 @@ function buildEvents() {
 }
 
 // ㉖①② 标签全局状态：返回该标签在各数据域的命中（账本在库/采集流水/出库单/领料已发/AGV队列在途/检验中/历史出库）
+// ---- ㉖v54 货位预占：NB02 AUTO 分配服务器原子版（与 PDA nb02AutoAssign 同款算法：同架→同区→全局，前三层优先；预占10分钟过期） ----
+const RES_TTL_MS = 10 * 60 * 1000;
+function nb02MasterSeq() { const out = []; for (const z of ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']) { for (let r = 1; r <= 16; r++) { const rr = String(r).padStart(2, '0'); for (let f = 1; f <= 4; f++) out.push('NB02-' + z + '-' + rr + '-' + f + 'F'); } } return out; }
+function pruneReserve() { const R = db.locReserve || {}; const now = Date.now(); for (const l of Object.keys(R)) { if (now - (Number(R[l].at) || 0) > RES_TTL_MS) delete R[l]; } }
+function nb02AssignFree(partNo) {
+  pruneReserve();
+  const R = db.locReserve || {};
+  const used = new Set();
+  for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (/^NB02-/.test(l) && !/-CK-/.test(l)) used.add(l); }
+  for (const l of Object.keys(R)) used.add(l);
+  const free = nb02MasterSeq().filter((l) => !used.has(l));
+  if (!free.length) return '';
+  const low3 = (arr) => { for (const l of arr) { const f = l.length >= 2 ? l[l.length - 2] : ''; if (f === '1' || f === '2' || f === '3') return l; } return arr.length ? arr[0] : ''; };
+  if (partNo) {
+    const shelves = new Set();
+    for (const x of db.ledger || []) { if (String(x.p || '').toUpperCase() !== partNo) continue; const l = String(x.l || '').toUpperCase(); if (/^NB02-[A-Z]-\d{2}-\dF$/.test(l)) shelves.add(l.slice(0, 9)); }
+    for (const sh of [...shelves].sort()) { const cand = free.filter((l) => l.startsWith(sh)); if (cand.length) return low3(cand); }
+    const zones = new Set([...shelves].map((x) => x[5]));
+    const sz = free.filter((l) => l.length > 5 && zones.has(l[5]));
+    if (sz.length) return low3(sz);
+  }
+  return low3(free);
+}
+
 function labelStatus(codeRaw) {
   const code = String(codeRaw || '').trim().toUpperCase(); if (!code) return null;
   const inLedger = (db.ledger || []).filter((x) => String(x.c || '').toUpperCase() === code);
@@ -1542,6 +1567,7 @@ const server = http.createServer(async (req, res) => {
         if (!cur.size && !tomb.size && !dels.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
         db.ledger = [...cur.values()];
         db.ledgerTomb = [...tomb.entries()].map(([c, v]) => ({ c, t: v.t, rec: v.rec })).sort((a, b2) => b2.t - a.t).slice(0, 20000);
+        if (db.locReserve) { for (const l of Object.keys(db.locReserve)) { if (cur.has(String(db.locReserve[l].code || '').toUpperCase()) || rec0 - (Number(db.locReserve[l].at) || 0) > RES_TTL_MS) delete db.locReserve[l]; } } // ㉖v54 标签落账(任意位)或预占过期→释放
         db.ledgerRev = (db.ledgerRev || 0) + 1;
         db.ledgerAt = new Date().toISOString();
         db.ledgerBy = u.name;
@@ -1658,7 +1684,31 @@ const server = http.createServer(async (req, res) => {
       // ---- ㉖⑰ 货架位占用查询（服务器账本权威）：PDA 入库自动分配货位用，多PDA不再各算各的 ----
       if (req.method === 'GET' && p === '/api/ledger/locs') {
         const m = {}; for (const x of db.ledger || []) { const L = String(x.l || '').toUpperCase(); if (/^NB02-/.test(L) && !/-CK-/.test(L)) (m[L] = m[L] || []).push(String(x.c || '')); }
+        pruneReserve(); for (const [l, r] of Object.entries(db.locReserve || {})) { (m[l] = m[l] || []).push(String(r.code || '')); } // ㉖v54 预占即占用：旧版PDA与picker一并避让
         return send(res, 200, { ok: true, byLoc: m });
+      }
+      // ㉖v54 货位预占：AUTO 分配由服务器算位并锁位（Node 单线程同步段内完成判定+登记，多PDA并发拿到不同格，根治5~15秒竞态撞位）
+      if (req.method === 'POST' && p === '/api/ledger/reserve') {
+        if (!canFeature(u, 'collect')) return send(res, 403, { ok: false, msg: '当前角色未开通「采集录入」权限' });
+        const b = await readBody(req);
+        const code = String((b && b.code) || '').trim().toUpperCase();
+        const partNo = String((b && b.partNo) || '').trim().toUpperCase();
+        if (!code || code.length > 40) return send(res, 400, { ok: false, msg: '缺少标签号' });
+        const inLed = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code);
+        if (inLed) return send(res, 200, { ok: true, loc: String(inLed.l || '').toUpperCase(), kept: true }); // 已上账：回现位，不重复占
+        pruneReserve();
+        const R = db.locReserve = db.locReserve || {};
+        const usedLoc = new Set(); for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (/^NB02-/.test(l) && !/-CK-/.test(l)) usedLoc.add(l); }
+        for (const l of Object.keys(R)) { // 幂等：同标签未过期且位置未被占→复用原格
+          if (String(R[l].code || '') !== code) continue;
+          if (!usedLoc.has(l)) { R[l].at = Date.now(); R[l].by = u.name; save(); return send(res, 200, { ok: true, loc: l, kept: true }); }
+          delete R[l];
+        }
+        const loc = nb02AssignFree(partNo);
+        if (!loc) return send(res, 200, { ok: false, msg: '货架已无空位：请手动选位或改地面登记' });
+        R[loc] = { code, by: u.name, at: Date.now() };
+        save();
+        return send(res, 200, { ok: true, loc });
       }
       if (req.method === 'POST' && p === '/api/scanlog/cancel') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可作废流水' });
