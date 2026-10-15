@@ -57,6 +57,20 @@ jobs:
           Set-Content -Path "android/key.properties" -Value @("storeFile=keystore.jks", "storePassword=$env:KS_PW", "keyAlias=scan_station", "keyPassword=$env:KS_PW")
           Write-Host "keystore还原完成: $(Test-Path 'android/keystore.jks') / key.properties: $(Test-Path 'android/key.properties')"
 
+      - name: Sync AppUpdater version constants from pubspec
+        shell: pwsh
+        run: |
+          $m = Select-String -Path pubspec.yaml -Pattern '^version:\s*(\d+\.\d+\.\d+)\+(\d+)' | Select-Object -First 1
+          if (-not $m) { Write-Host '::error::pubspec version parse failed'; exit 1 }
+          $ver = $m.Matches[0].Groups[1].Value
+          $bld = $m.Matches[0].Groups[2].Value
+          $f = 'lib/update_page.dart'
+          $c = Get-Content -Raw -Encoding UTF8 $f
+          $c2 = $c -replace 'static const localVersion = "[^"]*"', ('static const localVersion = "' + $ver + '"')
+          $c2 = $c2 -replace 'static const localBuild = \d+', ('static const localBuild = ' + $bld)
+          if ($c2 -notmatch ('static const localBuild = ' + $bld + '\b')) { Write-Host '::error::localBuild sync verify failed'; exit 1 }
+          if ($c2 -ne $c) { [IO.File]::WriteAllText((Join-Path (Get-Location) $f), $c2, (New-Object System.Text.UTF8Encoding($false))); Write-Host "AppUpdater constants were stale, synced to $ver+$bld" } else { Write-Host "AppUpdater already in sync: $ver+$bld" }
+
       - name: flutter pub get
         run: flutter pub get
 
