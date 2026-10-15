@@ -4,6 +4,10 @@
 <style>
 :root{--bg:#f4f6fa;--card:#fff;--ink:#1c2430;--sub:#6b7a8d;--pri:#515bd4;--ok:#2e7d32;--warn:#e65100;--bad:#c62828;--line:#e3e8f0;--r:10px}
 [data-theme=dark]{--bg:#101823;--card:#18222f;--ink:#e8eef5;--sub:#8fa1b3;--pri:#7c86e8;--line:#26313f}
+html[data-accent=indigo]{--pri:#3f51b5;--pri2:#7986cb}html[data-accent=teal]{--pri:#00897b;--pri2:#4db6ac}html[data-accent=green]{--pri:#2e7d32;--pri2:#66bb6a}html[data-accent=orange]{--pri:#e07000;--pri2:#ffb74d}
+html[data-density=compact] .card{padding:10px}html[data-density=compact] th,html[data-density=compact] td{padding:3.5px 7px}html[data-density=compact] nav button{padding:5px 11px}
+html[data-density=roomy] .card{padding:18px}html[data-density=roomy] th,html[data-density=roomy] td{padding:10px 9px}html[data-density=roomy] nav button{padding:10px 17px}
+#login{--pri:var(--pri)}
 *{box-sizing:border-box;margin:0}body{font:14px/1.5 "Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink)}
 button{cursor:pointer;border:0;border-radius:8px;font:inherit}input,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:14px}
@@ -31,7 +35,7 @@ html[data-theme=dark] body.lgmode::before{background:radial-gradient(900px 520px
 #login .lbtn{width:100%;padding:11px;border-radius:11px;font-size:15px;font-weight:600;color:#fff;letter-spacing:6px;background:linear-gradient(135deg,#515bd4,#6d76e0);box-shadow:0 6px 18px rgba(81,91,212,.35);transition:transform .15s,box-shadow .15s}
 #login .lbtn:hover{transform:translateY(-1px);box-shadow:0 9px 24px rgba(81,91,212,.45)}
 #login .lbtn:active{transform:translateY(0)}
-header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--pri);color:#fff;position:sticky;top:0;z-index:5}
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:linear-gradient(90deg,var(--pri),var(--pri2,var(--pri)));color:#fff;position:sticky;top:0;z-index:5;box-shadow:0 2px 10px rgba(30,40,90,.14)}
 header b{font-size:16px}header .sp{flex:1}
 nav{display:flex;gap:6px;padding:8px 12px;background:var(--card);border-bottom:1px solid var(--line);overflow-x:auto}
 nav button{padding:7px 14px;background:transparent;color:var(--sub);white-space:nowrap}
@@ -42,6 +46,12 @@ main{padding:14px;max-width:1280px;margin:0 auto}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:left}
+tbody tr:nth-child(even){background:rgba(120,140,170,.045)}tbody tr:hover{background:rgba(81,91,212,.07)}th{position:sticky;top:0;background:var(--card);z-index:1}
+::-webkit-scrollbar{width:9px;height:9px}::-webkit-scrollbar-thumb{background:rgba(120,140,170,.4);border-radius:5px}::-webkit-scrollbar-thumb:hover{background:rgba(120,140,170,.6)}::-webkit-scrollbar-track{background:transparent}
+nav button{border-radius:999px;transition:background .15s,color .15s}nav button.on{background:var(--pri);color:#fff}
+.uiChip{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border:1px solid var(--line);border-radius:999px;font-size:12px;cursor:pointer;color:var(--sub);background:var(--card);user-select:none}
+.uiChip.on{border-color:var(--pri);color:var(--pri);background:rgba(81,91,212,.08);font-weight:700}
+.uiDot{width:10px;height:10px;border-radius:50%;display:inline-block}
 th{color:var(--sub);font-weight:600;position:sticky;top:0;z-index:2;background:var(--card)}
 .mono{font-family:Consolas,monospace}
 .tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px}
@@ -106,7 +116,7 @@ async function api(p,o={}){o.headers=Object.assign({'Content-Type':'application/
  return r.json()}
 async function doLogin(){const u=$('#lu').value.trim(),p=$('#lp').value;$('#le').textContent='';
  try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});const j=await r.json();
- if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=Object.assign({},j.user,{features:j.features||{}});PF=j.prefs||{};kkUseLoad();if(j.uiRefreshSec)URS=j.uiRefreshSec;if('theme' in PF)applyTheme(PF.theme);localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));showApp();esSSE();go((location.hash||'').slice(1)||PF.landing||'')}catch(e){$('#le').textContent='网络错误'}}
+ if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=Object.assign({},j.user,{features:j.features||{}});PF=j.prefs||{};kkUseLoad();UiTune.serverPull();UiTune.apply();if(j.uiRefreshSec)URS=j.uiRefreshSec;if('theme' in PF)applyTheme(PF.theme);localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));showApp();esSSE();go((location.hash||'').slice(1)||PF.landing||'')}catch(e){$('#le').textContent='网络错误'}}
 function todayStr(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function reqJump(s,extra){TM=Object.assign({s:s||'',q:'',mine:0,rush:0,late:0},extra||{});go('reqs')}
 // ===== ㉖ 两端互移：网页侧 新建领料单 / 账本叫车 / 流水作废恢复 =====
@@ -121,12 +131,12 @@ async function newReqGo(btn){const items=[...document.querySelectorAll('.nrow')]
   if(j.ok){T('✅ 已提交 '+(j.req&&j.req.no||''),1);$('#mask').classList.add('hide');pgReqs()}else T('❌ '+(j.msg||'失败'))}catch(_){T('提交失败')}btn.disabled=false}
 async function webCancel(k,cx,code){if(!confirm(cx?('作废流水 '+code+'？将同步整框消账并允许重新扫码录入'):('恢复流水 '+code+'？将按原货位重登账本')))return;
  try{const j=await api('/api/scanlog/cancel',{method:'POST',body:{k,cx}});T(j.ok?('✅ '+(j.msg||'完成')):('❌ '+(j.msg||'失败')),2);if(j.ok)flowGo()}catch(_){T('操作失败')}} // ㉖⑫ 概览下钻统一入口：全量重置筛选(含搜索词/我的待办/急料/超时/视图)，杜绝"点进去空白"
-function showApp(){document.body.classList.remove('lgmode');try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();setInterval(notifPoll,45000)}catch(_){}}
+function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.remove('lgmode');try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();setInterval(notifPoll,45000)}catch(_){}}
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
 const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['rpt','📈 工作量'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['admin','⚙️ 控制后台']];
-function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;$('#nav').innerHTML=TABS.filter(([k])=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material')).map(([k,n])=>`<button class="${k==TAB?'on':''}" onclick="go('${k}')">${n}</button>`).join('');navBadge(window._lastRed||0);const _p=({dash:pgDash,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
+function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
 function navBadge(n){const b=document.querySelector('#nav button');if(!b)return;let bd=b.querySelector('.navbd');if(n>0){if(!bd){bd=document.createElement('span');bd.className='navbd';b.appendChild(bd)}bd.textContent=n>9?'9+':n}else if(bd)bd.remove()}
 // ===== ㉖v52 静默刷新调度器：后台照常取数，前台不打扰 =====
 // 规则：①你正在输入/选中文字/弹窗开着/刚有过鼠标键盘动作(3秒内) → 本轮直接跳过，不取数也不改画面
@@ -202,10 +212,10 @@ async function prefDlg(){try{const q=await api('/api/prefs');window._tpls=q.temp
 <label>登录后默认落地页</label><select id="pd_l"><option value="">📊 概览</option>${TABS.filter(([k])=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material')).map(([k,n])=>`<option value="${k}" ${PF.landing==k?'selected':''}>${n}</option>`).join('')}</select>
 <label>通知订阅（车辆告警/急停强制必达，不可退订）</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 10px">${N.map(([k,n])=>`<span style="font-size:13px"><input type="checkbox" data-n="${k}" ${(pf[k]!==false)?'checked':''}> ${n}</span>`).join('')}</div>
 <label>概览 KPI 卡：列表顺序即显示顺序（↑↓ 调整，✕ 移除，全空=全部显示）</label><div id="kord" style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:6px"></div><div class="row" style="margin-bottom:6px"><select id="kadd" style="flex:1;padding:4px 6px"></select><button class="pill q" onclick="kpiAdd()">＋ 加入</button></div>
-<div class="row" style="margin-top:10px"><select id="pd_tpl" style="flex:1">${(window._tpls||[]).map((t)=>`<option value="${t.name}">${t.name}（${t.by}）</option>`).join('')||'<option value="">（暂无模板）</option>'}</select><button class="pill q" onclick="tplApply()">套用</button>${U.role=='admin'?'<button class="pill q" onclick="tplSave()">当前设置存为模板</button>':''}</div>
-<div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill" onclick="prefSave(this)">保存</button></div>`);renderKpiOrd()}
+<div id="uiSec"></div><div class="row" style="margin-top:10px"><select id="pd_tpl" style="flex:1">${(window._tpls||[]).map((t)=>`<option value="${t.name}">${t.name}（${t.by}）</option>`).join('')||'<option value="">（暂无模板）</option>'}</select><button class="pill q" onclick="tplApply()">套用</button>${U.role=='admin'?'<button class="pill q" onclick="tplSave()">当前设置存为模板</button>':''}</div>
+<div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill" onclick="prefSave(this)">保存</button></div>`);renderKpiOrd();prefRepaintUi()}
 async function prefSave(btn){btn.disabled=true;const notes={},kpi=[];document.querySelectorAll('#dlg input[data-n]').forEach((c)=>notes[c.dataset.n]=c.checked);_kord.forEach((n)=>{if((window._K||[]).includes(n))kpi.push(n)});
- try{const j=await api('/api/prefs',{method:'POST',body:{landing:$('#pd_l').value,kpi,notes}});if(j.ok){PF=Object.assign(PF,j.prefs||{});T('✅ 偏好已保存',1);$('#mask').classList.add('hide');if(TAB==='dash')pgDash()}else T('❌ '+(j.msg||'失败'))}catch(_){T('保存失败')}btn.disabled=false}
+ UiTune.persist();UiTune.pushT0();UiTune.push();try{const j=await api('/api/prefs',{method:'POST',body:{landing:$('#pd_l').value,kpi,notes}});if(j.ok){PF=Object.assign(PF,j.prefs||{});T('✅ 偏好已保存（含界面个性化）',1);$('#mask').classList.add('hide');UiTune.renderNav();if(TAB==='dash')pgDash()}else T('❌ '+(j.msg||'失败'))}catch(_){T('保存失败')}btn.disabled=false}
 async function tplApply(){try{const j=await api('/api/prefs/apply',{method:'POST',body:{name:$('#pd_tpl').value}});if(j.ok){PF=Object.assign(PF,j.prefs||{});T('✅ 模板已套用',1);$('#mask').classList.add('hide');go(PF.landing||TAB)}else T('❌ '+(j.msg||'失败'))}catch(_){T('失败')}}
 async function tplSave(){const n=prompt('模板名（如：夜班模式）');if(!n)return;const notes={},kpi=[];document.querySelectorAll('#dlg input[data-n]').forEach((c)=>notes[c.dataset.n]=c.checked);_kord.forEach((n)=>{if((window._K||[]).includes(n))kpi.push(n)});
  try{const j=await api('/api/admin/prefs/template',{method:'POST',body:{name:n,prefs:{landing:$('#pd_l').value,kpi,notes}}});T(j.ok?'✅ 模板已保存（他人可在偏好里套用）':'❌ '+(j.msg||''))}catch(_){T('失败')}}
@@ -1116,11 +1126,138 @@ function kkUseLoad(){try{_kkUse=JSON.parse(localStorage.getItem('ck_use')||'{}')
 function kkUseHit(id){if(!id||String(id).indexOf('tip:')===0)return;const o=_kkUse[id]||{n:0,t:0};o.n=(o.n||0)+1;o.t=Date.now();_kkUse[id]=o;
  try{const ks=Object.keys(_kkUse);if(ks.length>60){ks.sort((x,y)=>(_kkUse[x].t||0)-(_kkUse[y].t||0)).slice(0,ks.length-60).forEach((k)=>delete _kkUse[k])}localStorage.setItem('ck_use',JSON.stringify(_kkUse))}catch(_){}
  const now=Date.now();if(TK&&now-_kkPush>15000){_kkPush=now;api('/api/prefs',{method:'POST',body:{ck_use:JSON.stringify(_kkUse)}}).catch(()=>{})}}
+// ===================== ㉖v56 网页界面个性化：主题色×5 / 深色三态(自动昼浅夜深) / 密度 / 缩放 / 页签自定义+驻留习惯自排序 =====================
+// 设计（对齐 PDA v53 首页自定义并超越）：
+//  · 所有设置即时预览（点一下立刻变），保存上云换设备跟随；本地 localStorage 冷启动即恢复（登录前也生效）
+//  · 深色"自动"= 18点-6点深色，上夜班打开就是暗的；顶栏🌙键=手动在浅色间拨（自动跟随时间）
+//  · 页签：显隐+调序，概览锚定首位防自锁；"按使用习惯自动排序"=驻留时长(近7天,800ms防误触/10min防挂机)高频顶前
+//  · 隐藏≠禁用：被隐藏的页签 Ctrl+K 仍可直达（页面底部有提示），杜绝"藏丢了"
+const UIV = { accent: 'blue', dark: 'auto', density: 'cozy', zoom: 's100', tabs: null, tabuse: {}, auto: false };
+const UiTune = {
+  ACC: { blue: '靛蓝', indigo: '藏青', teal: '青碧', green: '翠绿', orange: '暖橙' },
+  DK: { auto: '自动', on: '深色', off: '浅色' },
+  DEN: { cozy: '标准', compact: '紧凑', roomy: '宽松' },
+  ZM: { s100: '100%', s110: '110%', s125: '125%' },
+  _c: '', _at: 0, _dirty: 0, _pushT: 0,
+  load() { try { const o = JSON.parse(localStorage.getItem('ck_ui') || '{}'); if (o && typeof o === 'object') { Object.assign(UIV, o); if (!UIV.tabuse || typeof UIV.tabuse !== 'object') UIV.tabuse = {}; } } catch (_) {} },
+  persist() { try { localStorage.setItem('ck_ui', JSON.stringify(UIV)) } catch (_) {} },
+  serverPull() { // 登录后服务器权威值覆盖本地（多设备同步）；旧版 theme 偏好一次性折算
+    if (typeof PF.ck_accent === 'string' && PF.ck_accent) UIV.accent = PF.ck_accent;
+    if (typeof PF.ck_darkmode === 'string' && PF.ck_darkmode) UIV.dark = PF.ck_darkmode;
+    else if (PF.theme && !localStorage.getItem('ck_ui')) UIV.dark = PF.theme === 'dark' ? 'on' : 'off';
+    if (typeof PF.ck_density === 'string' && PF.ck_density) UIV.density = PF.ck_density;
+    if (typeof PF.ck_zoom === 'string' && PF.ck_zoom) UIV.zoom = PF.ck_zoom;
+    if (PF.ck_tab_auto !== undefined) UIV.auto = PF.ck_tab_auto === true;
+    if (typeof PF.ck_tabs === 'string' && PF.ck_tabs) { try { const t = JSON.parse(PF.ck_tabs); if (t && Array.isArray(t.order)) UIV.tabs = t } catch (_) {} }
+    if (typeof PF.ck_tabuse === 'string' && PF.ck_tabuse) { try { const u = JSON.parse(PF.ck_tabuse); if (u && typeof u === 'object') { for (const k in u) { const d = UIV.tabuse[k] || (UIV.tabuse[k] = {}); for (const dd in u[k]) d[dd] = Math.max(d[dd] || 0, Number(u[k][dd]) || 0) } } } catch (_) {} }
+    this.persist();
+  },
+  push() { if (!TK) return; const now = Date.now(); if (now - this._pushT < 4000) return; this._pushT = now; api('/api/prefs', { method: 'POST', body: { ck_accent: UIV.accent, ck_darkmode: UIV.dark, ck_density: UIV.density, ck_zoom: UIV.zoom, ck_tab_auto: UIV.auto === true, ck_tabs: JSON.stringify(UIV.tabs || { order: [], hidden: [] }), ck_tabuse: JSON.stringify(UIV.tabuse) } }).catch(() => {}) },
+  set(k, v) { UIV[k] = v; this.persist(); this.apply(); this.pushT0(); this.push() },
+  pushT0() { this._pushT = 0 },
+  isDark() { const h = new Date().getHours(); return UIV.dark === 'on' || (UIV.dark === 'auto' && (h >= 18 || h < 6)) },
+  apply() {
+    const d = document.documentElement;
+    d.dataset.accent = UIV.accent; d.dataset.density = UIV.density; d.dataset.zoom = UIV.zoom;
+    d.style.zoom = UIV.zoom === 's110' ? '1.1' : (UIV.zoom === 's125' ? '1.25' : '');
+    const dk = this.isDark();
+    d.dataset.theme = dk ? 'dark' : ''; localStorage.setItem('ck_th', dk ? 'dark' : '');
+    const b = $('#thb'); if (b) b.textContent = dk ? '☀️' : '🌙';
+    this.renderNav();
+  },
+  tabs() { // 权限过滤 → 自定义顺序/显隐（概览锚定不可隐） → 习惯自动排序
+    const allow = TABS.filter(([k]) => (k != 'admin' || U.role == 'admin') && (k != 'inv' || U.role != 'material'));
+    const keys = allow.map((x) => x[0]); const nm = {}; allow.forEach((x) => { nm[x[0]] = x[1] });
+    const T = UIV.tabs || { order: [], hidden: [] };
+    const hid = (T.hidden || []).filter((k) => k !== 'dash');
+    let out = [];
+    for (const k of T.order || []) if (keys.includes(k) && !hid.includes(k) && !out.includes(k)) out.push(k);
+    for (const k of keys) if (!hid.includes(k) && !out.includes(k)) out.push(k);
+    if (UIV.auto) { const u = this.use7(); const mv = out.filter((k) => k !== 'dash'); if (mv.some((k) => (u[k] || 0) > 0)) { mv.sort((a, b) => (u[b] || 0) - (u[a] || 0)); out = ['dash'].concat(mv) } }
+    if (out[0] !== 'dash') { out = out.filter((k) => k !== 'dash'); out.unshift('dash') }
+    return out.map((k) => [k, nm[k]]);
+  },
+  renderNav() { const nav = $('#nav'); if (!nav || !U || $('#app').classList.contains('hide')) return; nav.innerHTML = this.tabs().map(([k, n]) => `<button class="${k == TAB ? 'on' : ''}" onclick="go('${k}')">${n}</button>`).join(''); navBadge(window._lastRed || 0) },
+  enter(k) { const now = Date.now(); this.settle(now); this._c = k; this._at = now },
+  settle(at) {
+    const now = at || Date.now();
+    if (this._c && this._at) { const ms = now - this._at;
+      if (ms > 800 && ms < 600000) { const d = String(Math.floor(now / 864e5)); const u = UIV.tabuse[this._c] || (UIV.tabuse[this._c] = {}); u[d] = (u[d] || 0) + ms; this._dirty = 1; this.prune(now) } }
+    this._c = ''; this._at = 0;
+  },
+  prune(now) { const cut = Math.floor(now / 864e5) - 7; for (const k in UIV.tabuse) { const u = UIV.tabuse[k]; for (const d in u) if ((Number(d) || 0) < cut) delete u[d]; if (!Object.keys(u).length) delete UIV.tabuse[k] } },
+  use7() { const cut = Math.floor(Date.now() / 864e5) - 7; const o = {}; for (const k in UIV.tabuse) { let s = 0; for (const d in UIV.tabuse[k]) if ((Number(d) || 0) >= cut) s += UIV.tabuse[k][d]; o[k] = s } return o },
+  flush() { this.settle(); if (this._dirty) { this._dirty = 0; this.persist(); this.pushT0(); this.push() } },
+  // —— 偏好弹窗"界面个性化"区 ——
+  section() {
+    const cur = UIV.tabs || { order: this.tabs().map((x) => x[0]), hidden: [] };
+    const ord = cur.order.filter((k) => TABS.some((t) => t[0] === k));
+    for (const [k] of TABS) if (!ord.includes(k)) ord.push(k);
+    const nmOf = (k) => (TABS.find((t) => t[0] === k) || [, k])[1];
+    return `<label>🎨 界面个性化（点击即时预览 · 保存后换设备登录自动跟随）</label>
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px;margin:2px 0 6px">
+${Object.entries(this.ACC).map(([k, n]) => `<span class="uiChip${UIV.accent === k ? ' on' : ''}" onclick="UiTune.set('accent','${k}');uiRepaint()"><i class="uiDot" style="background:${k == 'blue' ? '#515bd4' : k == 'indigo' ? '#3f51b5' : k == 'teal' ? '#00897b' : k == 'green' ? '#2e7d32' : '#e07000'}"></i>${n}</span>`).join('')}
+<span style="width:10px"></span>
+${Object.entries(this.DK).map(([k, n]) => `<span class="uiChip${UIV.dark === k ? ' on' : ''}" onclick="UiTune.set('dark','${k}');uiRepaint()">🌓 ${n}</span>`).join('')}
+<span style="width:10px"></span>
+${Object.entries(this.DEN).map(([k, n]) => `<span class="uiChip${UIV.density === k ? ' on' : ''}" onclick="UiTune.set('density','${k}');uiRepaint()">📏 ${n}</span>`).join('')}
+${Object.entries(this.ZM).map(([k, n]) => `<span class="uiChip${UIV.zoom === k ? ' on' : ''}" onclick="UiTune.set('zoom','${k}');uiRepaint()">🔍 ${n}</span>`).join('')}
+</div>
+<label>首页页签（↑↓调序 · 点眼睛显隐 · 概览锚定不可隐藏；隐藏的页签 Ctrl+K 仍可直达）</label>
+<div id="utabs" style="max-height:150px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:4px 6px;margin-bottom:4px"></div>
+<span class="uiChip${UIV.auto ? ' on' : ''}" id="uauto" onclick="UiTune.set('auto',!UIV.auto);uiRepaint()">🧠 按使用习惯自动排序（近7天驻留时长，高频顶前）</span>`;
+  },
+  repaintTabs() {
+    const box = $('#utabs'); if (!box) return;
+    const T = UIV.tabs || { order: [], hidden: [] };
+    const ord = T.order.filter((k) => TABS.some((t) => t[0] === k));
+    for (const [k] of TABS) if (!ord.includes(k)) ord.push(k);
+    const use = this.use7();
+    box.innerHTML = ord.map((k, i) => {
+      const t = TABS.find((x) => x[0] === k); const hid = (T.hidden || []).includes(k) && k !== 'dash';
+      return `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12.5px;${hid ? 'opacity:.45' : ''}">
+<span style="width:18px;color:var(--sub);font-size:11px">${k === 'dash' ? '📌' : i + 1}</span>
+<span style="flex:1">${t[1]}${use[k] ? ` <span style="font-size:10px;color:var(--sub)">7日用${(use[k] / 3600e3).toFixed(1)}h</span>` : ''}</span>
+<button class="pill q" style="padding:1px 7px;font-size:11px" ${i === 0 ? 'disabled' : ''} onclick="uiTabMove('${k}',-1)">↑</button>
+<button class="pill q" style="padding:1px 7px;font-size:11px" ${i === ord.length - 1 ? 'disabled' : ''} onclick="uiTabMove('${k}',1)">↓</button>
+<button class="pill q" style="padding:1px 7px;font-size:11px" ${k === 'dash' ? 'disabled title="概览是锚点，不可隐藏"' : ''} onclick="uiTabHide('${k}')">${hid ? '🚫显示' : '👁隐藏'}</button></div>`;
+    }).join('');
+  },
+};
+function uiTabMove(k, dir) {
+  const T = UIV.tabs || { order: [], hidden: [] };
+  const ord = T.order.filter((x) => TABS.some((t) => t[0] === x));
+  for (const [kk] of TABS) if (!ord.includes(kk)) ord.push(kk);
+  const i = ord.indexOf(k); const j = i + dir;
+  if (i < 0 || j < 0 || j >= ord.length) return;
+  ord.splice(j, 0, ord.splice(i, 1)[0]);
+  UIV.tabs = { order: ord, hidden: T.hidden || [] };
+  UiTune.persist(); UiTune.pushT0(); UiTune.push(); UiTune.renderNav(); UiTune.repaintTabs();
+}
+function uiTabHide(k) {
+  if (k === 'dash') return;
+  const T = UIV.tabs || { order: [], hidden: [] };
+  const hid = (T.hidden || []).filter((x) => x !== k);
+  const ord = T.order.filter((x) => TABS.some((t) => t[0] === x));
+  for (const [kk] of TABS) if (!ord.includes(kk)) ord.push(kk);
+  UIV.tabs = { order: ord, hidden: hid };
+  UiTune.persist(); UiTune.pushT0(); UiTune.push(); UiTune.renderNav(); UiTune.repaintTabs();
+}
+function uiRepaint() { const d = $('#dlg'); if (!d) return; const sc = d.scrollTop; prefRepaintUi(); d.scrollTop = sc }
+function prefRepaintUi() { const box = $('#uiSec'); if (!box) return; box.innerHTML = UiTune.section(); UiTune.repaintTabs(); const au = $('#uauto'); if (au) au.classList.toggle('on', !!UIV.auto) }
+setInterval(() => { if (U) UiTune.flush() }, 60000);
+window.addEventListener('beforeunload', () => { try { UiTune.flush() } catch (_) {} });
+
 function kkCmds(){const A=[];const okTab=(k)=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material');
  const P=[['dash','📊','概览','gl'],['reqs','📋','领料单','lld'],['queue','🚦','备料看板','blkb'],['ledger','📦','货位账本','hwzb'],['ctn','🗃','容器管理','rqgl'],['parts','🧩','零件档案','ljda'],['flow','🌊','流水在线','lszx'],['inv','🧮','盘点','pd'],['fix','🛠','修正与返架','xzyfj'],['insp','🔎','检验工单','jygd'],['agv','🤖','指挥舱','zhc'],['rpt','📈','工作量报表','gzlb'],['ana','','分析报告','fxbg'],['exp','📤','导出中心','dc'],['dict','🔤','字典','zd'],['admin','⚙️','控制后台','kzht']];
  for(const t of P)if(okTab(t[0]))A.push({id:'go:'+t[0],ic:t[1],tx:t[2],hint:'页面',py:t[3],run:((k)=>()=>go(k))(t[0])});
  const G=[['map','🗺','实时地图','dt'],['pipe','🏭','流水线','lsx'],['board','🚉','站台看板','ztb'],['gantt','📊','站台甘特','gt'],['q','🚚','队列控制台','dlkz'],['car','🚗','车辆','cl'],['traf','🚦','交管','jg'],['ev','🚨','异常中心','yc'],['play','⏪','轨迹回放','gj']];
  for(const g of G)A.push({id:'agv:'+g[0],ic:g[1],tx:'指挥舱 · '+g[2],hint:'子页',py:g[3],run:((k)=>()=>{go('agv');agvTab(k)})(g[0])});
+ A.push({id:'act:ui',ic:'🎨',tx:'界面个性化设置（主题色/深色/密度/页签）',hint:'操作',py:'jiemian jg yanguan',run:()=>prefDlg()});
+ A.push({id:'act:dkon',ic:'🌙',tx:'切换深色主题',hint:'操作',py:'shense dark',run:()=>UiTune.set('dark',UiTune.isDark()?'off':'on')});
+ A.push({id:'act:dka',ic:'🌓',tx:'深色随时间自动（18-6点暗）',hint:'操作',py:'zidong dongdong',run:()=>UiTune.set('dark','auto')});
+ A.push({id:'act:cmp',ic:'📏',tx:'紧凑布局（夜班窄屏省地）',hint:'操作',py:'jincou jc',run:()=>UiTune.set('density','compact')});
+ A.push({id:'act:coz',ic:'📐',tx:'标准布局',hint:'操作',py:'biaozhun bz',run:()=>UiTune.set('density','cozy')});
  A.push({id:'act:th',ic:'🌗',tx:(document.documentElement.dataset.theme=='dark'?'切换浅色模式':'切换深色模式'),hint:'操作',py:'zhuti mt theme',run:()=>th()});
  A.push({id:'act:re',ic:'⟳',tx:'刷新当前页',hint:'操作',py:'shuaxin sx',run:()=>{go(TAB);T('已刷新',1)}});
  A.push({id:'act:pf',ic:'⚙',tx:'偏好设置（落地页/主题/KPI）',hint:'操作',py:'pianhao ph',run:()=>prefDlg()});
@@ -1172,7 +1309,7 @@ async function kkRun(){const q=$('#kki').value.trim().toLowerCase();if(!q){kkEmp
  }catch(_){note='<div class="kkh" style="color:var(--warn)">数据查询失败（网络或服务未就绪）</div>'}}
  kkPaint('',note)}
 function kkOpen(){kkUseLoad();$('#kk').classList.remove('hide');$('#kki').value='';$('#kki').focus();kkEmpty()}
-(async()=>{document.documentElement.dataset.theme=localStorage.getItem('ck_th')||'';$('#thb').textContent=document.documentElement.dataset.theme=='dark'?'☀️':'';
+(async()=>{UiTune.load();UiTune.apply();document.documentElement.dataset.theme=localStorage.getItem('ck_th')||'';$('#thb').textContent=document.documentElement.dataset.theme=='dark'?'☀️':'';
  const _ut=new URLSearchParams(location.search).get('t');if(_ut){localStorage.setItem('ck_tok',_ut);TK=_ut;history.replaceState({},'',location.pathname)} // ㉖⑯ PDA内嵌免登录：URL带t=会话token即接管
  if(TK&&U){try{const j=await api('/api/me');if(j.ok){U=Object.assign({},j.user,{features:j.features||{}});PF=j.prefs||{};if(j.uiRefreshSec)URS=j.uiRefreshSec;if('theme' in PF)applyTheme(PF.theme);localStorage.setItem('ck_u',JSON.stringify(U));showApp();esSSE();go((location.hash||'').slice(1)||PF.landing||'');setInterval(()=>{if(TAB=='dash')srDash()},30000);return}}catch(e){}}
  $('#login').classList.remove('hide')})();
