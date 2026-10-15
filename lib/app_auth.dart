@@ -704,90 +704,169 @@ class _LoginPageState extends State<LoginPage> {
 
   InputDecoration _dec(String label, IconData icon) => InputDecoration(
       labelText: label,
-      prefixIcon: Icon(icon, size: 20),
-      border: const OutlineInputBorder(),
-      isDense: true);
+      labelStyle: const TextStyle(fontSize: 13, color: Colors.blueGrey),
+      prefixIcon: Icon(icon, size: 20, color: const Color(0xFF515BD4)),
+      filled: true,
+      fillColor: const Color(0xFFF1F3FA),
+      border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none),
+      enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none),
+      focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: Color(0xFF515BD4), width: 1.6)),
+      isDense: true,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14));
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF3F4FA),
-      body: SafeArea(
-          child: Center(
-              child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 420),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.warehouse_outlined,
-                    size: 64, color: Color(0xFF3F51B5)),
-                const SizedBox(height: 12),
-                const Text("AGV货位采集器",
-                    style:
-                        TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 4),
-                const Text("账号登录 · 权限管理", style: TextStyle(color: Colors.grey)),
-                const SizedBox(height: 24),
-                if (widget.kickMsg.isNotEmpty)
+      body: Container(
+        decoration: const BoxDecoration(
+            gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xFFE8EBFA), Color(0xFFF6F7FC), Color(0xFFEFF5F4)])),
+        child: SafeArea(
+            child: Center(
+                child: SingleChildScrollView(
+          padding: const EdgeInsets.all(22),
+          child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.only(bottom: 16),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                        color: Colors.red.shade50,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.red.shade200)),
-                    child: Text(widget.kickMsg,
-                        style: TextStyle(
-                            color: Colors.red.shade700, fontSize: 13)),
-                  ),
-                TextField(
-                    controller: _serverCtrl,
-                    decoration: _dec(
-                        "鉴权服务器（如 http://172.25.1.99:8098）", Icons.dns_outlined),
-                    keyboardType: TextInputType.url),
-                const SizedBox(height: 12),
-                TextField(
-                    controller: _userCtrl,
-                    decoration: _dec("账号", Icons.person_outline),
-                    textInputAction: TextInputAction.next),
-                const SizedBox(height: 12),
-                TextField(
-                    controller: _pwCtrl,
-                    obscureText: !_pwVisible,
-                    decoration: _dec("密码", Icons.lock_outline).copyWith(
-                        suffixIcon: IconButton(
-                            icon: Icon(
-                                _pwVisible
-                                    ? Icons.visibility_off
-                                    : Icons.visibility,
-                                size: 20),
-                            onPressed: () =>
-                                setState(() => _pwVisible = !_pwVisible)))),
-                const SizedBox(height: 20),
-                SizedBox(
-                    width: double.infinity,
-                    height: 46,
-                    child: ElevatedButton(
-                      onPressed: _busy ? null : _login,
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF3F51B5),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(10))),
-                      child: _busy
-                          ? const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2.5, color: Colors.white))
-                          : const Text("登 录", style: TextStyle(fontSize: 16)),
-                    )),
-              ],
-            )),
-      ))),
+                      width: 74,
+                      height: 74,
+                      decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [Color(0xFF515BD4), Color(0xFF7C86E8)]),
+                          borderRadius: BorderRadius.circular(22),
+                          boxShadow: const [
+                            BoxShadow(
+                                color: Color(0x40515BD4),
+                                blurRadius: 22,
+                                offset: Offset(0, 10))
+                          ]),
+                      child: const Icon(Icons.warehouse_outlined,
+                          size: 40, color: Colors.white)),
+                  const SizedBox(height: 14),
+                  const Text("AGV货位采集器",
+                      style: TextStyle(
+                          fontSize: 23,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1,
+                          color: Color(0xFF232B45))),
+                  const SizedBox(height: 4),
+                  const Text("账号登录 · 权限管理",
+                      style: TextStyle(color: Colors.blueGrey, fontSize: 13)),
+                  const SizedBox(height: 26),
+                  Container(
+                      padding: const EdgeInsets.fromLTRB(18, 20, 18, 20),
+                      decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(18),
+                          boxShadow: const [
+                            BoxShadow(
+                                color: Color(0x14203050),
+                                blurRadius: 26,
+                                offset: Offset(0, 8))
+                          ]),
+                      child: Column(children: [
+                        if (widget.kickMsg.isNotEmpty)
+                          Container(
+                            width: double.infinity,
+                            margin: const EdgeInsets.only(bottom: 14),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                                color: Colors.red.shade50,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: Colors.red.shade200)),
+                            child: Text(widget.kickMsg,
+                                style: TextStyle(
+                                    color: Colors.red.shade700, fontSize: 13)),
+                          ),
+                        TextField(
+                            controller: _serverCtrl,
+                            decoration: _dec(
+                                "鉴权服务器（如 http://172.25.1.99:8098）",
+                                Icons.dns_outlined),
+                            keyboardType: TextInputType.url),
+                        const SizedBox(height: 12),
+                        TextField(
+                            controller: _userCtrl,
+                            decoration: _dec("账号", Icons.person_outline),
+                            textInputAction: TextInputAction.next),
+                        const SizedBox(height: 12),
+                        TextField(
+                            controller: _pwCtrl,
+                            obscureText: !_pwVisible,
+                            onSubmitted: (_) => _busy ? null : _login(),
+                            decoration: _dec("密码", Icons.lock_outline)
+                                .copyWith(
+                                    suffixIcon: IconButton(
+                                        icon: Icon(
+                                            _pwVisible
+                                                ? Icons.visibility_off
+                                                : Icons.visibility,
+                                            size: 20),
+                                        onPressed: () => setState(
+                                            () => _pwVisible = !_pwVisible)))),
+                        const SizedBox(height: 18),
+                        SizedBox(
+                            width: double.infinity,
+                            height: 48,
+                            child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                        colors: [
+                                          Color(0xFF515BD4),
+                                          Color(0xFF6D76E0)
+                                        ]),
+                                    borderRadius: BorderRadius.circular(13),
+                                    boxShadow: const [
+                                      BoxShadow(
+                                          color: Color(0x33515BD4),
+                                          blurRadius: 14,
+                                          offset: Offset(0, 6))
+                                    ]),
+                                child: Material(
+                                    color: Colors.transparent,
+                                    child: InkWell(
+                                        borderRadius: BorderRadius.circular(13),
+                                        onTap: _busy ? null : _login,
+                                        child: Center(
+                                            child: _busy
+                                                ? const SizedBox(
+                                                    width: 22,
+                                                    height: 22,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                            strokeWidth: 2.5,
+                                                            color:
+                                                                Colors.white))
+                                                : const Text("登 录",
+                                                    style: TextStyle(
+                                                        fontSize: 16,
+                                                        fontWeight:
+                                                            FontWeight.w600,
+                                                        color: Colors.white,
+                                                        letterSpacing: 6))))),
+                            )),
+                      ])),
+                  const SizedBox(height: 18),
+                  Text("v${AppUpdater.localVersion}+${AppUpdater.localBuild} · 豪斯特仓储协同",
+                      style: const TextStyle(
+                          fontSize: 11, color: Color(0xFF9AA6BC))),
+                ],
+              )),
+        ))),
+      ),
     );
   }
 }

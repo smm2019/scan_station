@@ -17,8 +17,20 @@ button{cursor:pointer;border:0;border-radius:8px;font:inherit}input,select{font:
 .kkit b{font-family:Consolas,monospace}
 .skl{background:linear-gradient(90deg,var(--bg) 25%,var(--line) 50%,var(--bg) 75%);background-size:200% 100%;animation:skl 1.2s infinite;border-radius:8px}
 @keyframes skl{0%{background-position:200% 0}100%{background-position:-200% 0}}
-#login{max-width:340px;margin:12vh auto;padding:28px}
-#login input{width:100%;margin-bottom:10px}
+body.lgmode{overflow:hidden}
+body.lgmode::before{content:'';position:fixed;inset:0;background:radial-gradient(900px 520px at 12% -10%,rgba(81,91,212,.30),transparent),radial-gradient(820px 500px at 108% 12%,rgba(0,137,123,.22),transparent),radial-gradient(700px 420px at 50% 115%,rgba(124,134,232,.18),transparent),linear-gradient(160deg,#eef1fb 0%,#f4f6fa 45%,#e9f3f1 100%);z-index:0}
+html[data-theme=dark] body.lgmode::before{background:radial-gradient(900px 520px at 12% -10%,rgba(81,91,212,.22),transparent),radial-gradient(820px 500px at 108% 12%,rgba(0,137,123,.12),transparent),linear-gradient(160deg,#0d1420 0%,#101823 50%,#0e1a1c 100%)}
+#login{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(380px,92vw);padding:32px 30px 26px;background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:0 18px 60px rgba(30,40,90,.16);z-index:2}
+#login .lgo{width:62px;height:62px;margin:0 auto 14px;border-radius:18px;background:linear-gradient(135deg,#515bd4,#7c86e8);display:flex;align-items:center;justify-content:center;font-size:30px;box-shadow:0 8px 22px rgba(81,91,212,.38)}
+#login h2{text-align:center;font-size:19px;margin-bottom:4px}
+#login .lsb{text-align:center;font-size:12px;color:var(--sub);margin-bottom:22px}
+.lfi{position:relative}
+.lfi>i{position:absolute;left:13px;top:50%;transform:translateY(-50%);font-style:normal;font-size:15px;opacity:.5;pointer-events:none}
+#login input{width:100%;margin-bottom:12px;padding:11px 12px 11px 38px;border:1.5px solid var(--line);border-radius:11px;background:var(--bg);font-size:14px;outline:none;transition:border-color .18s,box-shadow .18s,background .18s}
+#login input:focus{border-color:var(--pri);background:var(--card);box-shadow:0 0 0 3px rgba(81,91,212,.16)}
+#login .lbtn{width:100%;padding:11px;border-radius:11px;font-size:15px;font-weight:600;color:#fff;letter-spacing:6px;background:linear-gradient(135deg,#515bd4,#6d76e0);box-shadow:0 6px 18px rgba(81,91,212,.35);transition:transform .15s,box-shadow .15s}
+#login .lbtn:hover{transform:translateY(-1px);box-shadow:0 9px 24px rgba(81,91,212,.45)}
+#login .lbtn:active{transform:translateY(0)}
 header{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--pri);color:#fff;position:sticky;top:0;z-index:5}
 header b{font-size:16px}header .sp{flex:1}
 nav{display:flex;gap:6px;padding:8px 12px;background:var(--card);border-bottom:1px solid var(--line);overflow-x:auto}
@@ -67,11 +79,12 @@ a{color:var(--pri)}
  .hscroll{grid-auto-flow:column!important;grid-auto-columns:minmax(80vw,1fr)!important;grid-template-columns:none!important;overflow-x:auto!important;-webkit-overflow-scrolling:touch;gap:10px!important}
  .hscroll>*{min-width:0}
 }
-</style></head><body>
-<div id="login" class="card"><h2 style="margin-bottom:14px"> 仓库管理控制台</h2>
-<input id="lu" placeholder="账号" autocomplete="username"><input id="lp" type="password" placeholder="密码" autocomplete="current-password">
-<button class="pill" style="width:100%;padding:10px" onclick="doLogin()">登 录</button>
-<div id="le" style="color:var(--bad);font-size:12px;margin-top:8px"></div></div>
+</style></head><body class="lgmode">
+<div id="login"><div class="lgo">🏭</div><h2>仓库管理控制台</h2><div class="lsb">豪斯特仓储协同 · 登录后进入看板</div>
+<div class="lfi"><i>👤</i><input id="lu" placeholder="账号" autocomplete="username" onkeydown="if(event.key=='Enter')doLogin()"></div>
+<div class="lfi"><i>🔒</i><input id="lp" type="password" placeholder="密码" autocomplete="current-password" onkeydown="if(event.key=='Enter')doLogin()"></div>
+<button class="lbtn" onclick="doLogin()">登 录</button>
+<div id="le" style="color:var(--bad);font-size:12px;margin-top:10px;text-align:center"></div></div>
 <div id="app" class="hide">
 <header><b>🏭 仓库控制台</b><span class="sp"></span><span id="who" style="font-size:12px;opacity:.85"></span>
 <button style="background:rgba(255,255,255,.18);color:#fff;padding:5px 10px;position:relative" title="消息中心" onclick="openMsgs()">🔔<span id="nbdg" class="hide" style="position:absolute;top:-5px;right:-5px;min-width:16px;height:16px;line-height:16px;border-radius:8px;background:var(--bad);color:#fff;font-size:10px;text-align:center;padding:0 3px"></span></button>
@@ -108,7 +121,7 @@ async function newReqGo(btn){const items=[...document.querySelectorAll('.nrow')]
   if(j.ok){T('✅ 已提交 '+(j.req&&j.req.no||''),1);$('#mask').classList.add('hide');pgReqs()}else T('❌ '+(j.msg||'失败'))}catch(_){T('提交失败')}btn.disabled=false}
 async function webCancel(k,cx,code){if(!confirm(cx?('作废流水 '+code+'？将同步整框消账并允许重新扫码录入'):('恢复流水 '+code+'？将按原货位重登账本')))return;
  try{const j=await api('/api/scanlog/cancel',{method:'POST',body:{k,cx}});T(j.ok?('✅ '+(j.msg||'完成')):('❌ '+(j.msg||'失败')),2);if(j.ok)flowGo()}catch(_){T('操作失败')}} // ㉖⑫ 概览下钻统一入口：全量重置筛选(含搜索词/我的待办/急料/超时/视图)，杜绝"点进去空白"
-function showApp(){try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();setInterval(notifPoll,45000)}catch(_){}}
+function showApp(){document.body.classList.remove('lgmode');try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();setInterval(notifPoll,45000)}catch(_){}}
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
