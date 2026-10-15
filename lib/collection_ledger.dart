@@ -55,7 +55,7 @@ extension CollectionLedgerExt on _MainPageState {
         if (rv["ok"] == true && (rv["loc"] as String?)?.isNotEmpty == true) {
           return (rv["loc"] as String).toUpperCase();
         }
-        if (rv["_status"] != null) return null; // 服务器可达但拒绝（满位/无权限）：如实返回，不走本机重复占位
+        if (rv["_status"] == 200) return null; // 服务器明确说没空位：如实返回（404老服务器/异常继续走本机旧口径）
       } catch (e) {
         LocalLog.err('自动分配·服务器预占不可达降级本机', e); // 网络异常：降级旧口径
       }
