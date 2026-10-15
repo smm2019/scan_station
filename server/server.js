@@ -1850,7 +1850,7 @@ const server = http.createServer(async (req, res) => {
           const isp = insp.filter((q) => q.station === code && ['waitOut', 'toStation', 'atStation', 'waitBack', 'returning', 'waitReturn'].includes(q.state)).map((q) => ({ code: q.code, state: q.state, by: q.by || '' }));
           const hold = (db.rcsHoldStat || {})[code];
           return { code, alias: String(meta.alias || ''), role: ['any', 'out', 'in', 'insp'].includes(meta.role) ? meta.role : 'any', off: meta.off === true,
-            state: s.state || '空闲', label: s.label || '', goods: s.goods || '', dir: s.dir || '', via: s.via || '', pickAt: s.pickAt || 0, startAt: s.startAt || 0, buildAt: s.buildAt || 0, codes: s.codes || [], since: s.since || '', manual: !!s.manual,
+            state: s.state || '空闲', label: s.label || '', goods: s.goods || '', dir: s.dir || '', via: s.via || '', pickAt: s.pickAt || 0, startAt: s.startAt || 0, buildAt: s.buildAt || 0, codes: s.codes || [], since: s.since || '', ts: s.ts || 0, manual: !!s.manual, // ㉖v54 透传毫秒到站时刻(旧前端Date.parse紧凑串=NaN致"到站"永不显示)
             holdAvg: hold && hold.n ? Math.round(hold.sum / hold.n) : 0, todayOut, todayIn, queue: qs, insp: isp };
         });
         return send(res, 200, { ok: true, at: new Date().toISOString(), on: !!(db.rcsConfig && db.rcsConfig.host), list });
