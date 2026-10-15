@@ -10,6 +10,10 @@ button{cursor:pointer;border:0;border-radius:8px;font:inherit}input,select{font:
 .hide{display:none!important}
 .kkit{padding:9px 14px;font-size:13px;cursor:pointer;border-bottom:1px solid var(--line);display:flex;gap:7px;align-items:center;color:var(--ink)}
 .kkit:hover{background:var(--bg)}
+.kkit.on{background:var(--bg);box-shadow:inset 3px 0 0 var(--pri)}
+.kkh{padding:7px 14px 3px;font-size:10.5px;font-weight:800;color:var(--sub);letter-spacing:.5px;background:rgba(120,140,170,.07)}
+.kktag{font-size:10px;color:var(--sub);border:1px solid var(--line);border-radius:4px;padding:0 6px;flex:none}
+.kkfoot{padding:7px 14px;font-size:10.5px;color:var(--sub);background:rgba(120,140,170,.07);border-top:1px solid var(--line)}
 .kkit b{font-family:Consolas,monospace}
 .skl{background:linear-gradient(90deg,var(--bg) 25%,var(--line) 50%,var(--bg) 75%);background-size:200% 100%;animation:skl 1.2s infinite;border-radius:8px}
 @keyframes skl{0%{background-position:200% 0}100%{background-position:-200% 0}}
@@ -76,7 +80,7 @@ a{color:var(--pri)}
 <button style="background:rgba(255,255,255,.18);color:#fff;padding:5px 10px" onclick="prefDlg()">⚙ 偏好</button><button style="background:rgba(255,255,255,.18);color:#fff;padding:5px 10px" onclick="out()">退出</button></header>
 <nav id="nav"></nav><main id="main"></main></div>
 <div id="mask" class="hide"><div class="dlg" id="dlg"></div></div>
-<div id="kk" class="hide" style="position:fixed;inset:0;background:rgba(8,12,20,.5);z-index:12;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh" onclick="if(event.target.id=='kk')this.classList.add('hide')"><div style="width:min(560px,92vw);background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.35)"><div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)"><span style="color:var(--sub)">🔍</span><input id="kki" placeholder="搜领料单号 / 零件号 / 标签号 / 货位…（Ctrl+K 随时唤起）" style="flex:1;border:0;outline:0;background:transparent;color:var(--ink);font-size:14px" oninput="kkGo()"><kbd style="font-size:10px;color:var(--sub);border:1px solid var(--line);border-radius:4px;padding:1px 5px">Esc</kbd></div><div id="kkr" style="max-height:52vh;overflow:auto"></div></div></div>
+<div id="kk" class="hide" style="position:fixed;inset:0;background:rgba(8,12,20,.5);z-index:12;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh" onclick="if(event.target.id=='kk')this.classList.add('hide')"><div style="width:min(640px,94vw);background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 12px 40px rgba(0,0,0,.35)"><div style="display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line)"><span style="color:var(--sub)">🔍</span><input id="kki" placeholder="搜功能、页面或数据：单号 / 零件号 / 标签号 / 货位…（↑↓选择 Enter直达）" style="flex:1;border:0;outline:0;background:transparent;color:var(--ink);font-size:14px" oninput="kkGo()"><kbd style="font-size:10px;color:var(--sub);border:1px solid var(--line);border-radius:4px;padding:1px 5px">Esc</kbd></div><div id="kkr" style="max-height:52vh;overflow:auto"></div></div></div>
 <div id="dwmask" onclick="closeDrawer()" style="position:fixed;inset:0;background:rgba(8,12,20,.4);z-index:13;opacity:0;pointer-events:none;transition:.25s"></div>
 <div id="drawer" style="position:fixed;top:0;right:0;height:100%;width:min(720px,96vw);background:var(--card);border-left:1px solid var(--line);box-shadow:-8px 0 30px rgba(0,0,0,.18);z-index:14;transform:translateX(100%);transition:.28s ease;display:flex;flex-direction:column"><div style="display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line)"><b id="dw_t" style="flex:1;font-size:17px"></b><button class="pill q" id="dw_fs" style="padding:3px 10px" title="全屏 / 还原" onclick="dwFull()">⛶</button><button class="pill q" style="padding:3px 10px" onclick="closeDrawer()">✕</button></div><div id="dw_b" style="flex:1;overflow:auto;padding:16px 22px;font-size:13.5px"></div></div>
 <script>
@@ -89,7 +93,7 @@ async function api(p,o={}){o.headers=Object.assign({'Content-Type':'application/
  return r.json()}
 async function doLogin(){const u=$('#lu').value.trim(),p=$('#lp').value;$('#le').textContent='';
  try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});const j=await r.json();
- if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=Object.assign({},j.user,{features:j.features||{}});PF=j.prefs||{};if(j.uiRefreshSec)URS=j.uiRefreshSec;if('theme' in PF)applyTheme(PF.theme);localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));showApp();esSSE();go((location.hash||'').slice(1)||PF.landing||'')}catch(e){$('#le').textContent='网络错误'}}
+ if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=Object.assign({},j.user,{features:j.features||{}});PF=j.prefs||{};kkUseLoad();if(j.uiRefreshSec)URS=j.uiRefreshSec;if('theme' in PF)applyTheme(PF.theme);localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));showApp();esSSE();go((location.hash||'').slice(1)||PF.landing||'')}catch(e){$('#le').textContent='网络错误'}}
 function todayStr(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function reqJump(s,extra){TM=Object.assign({s:s||'',q:'',mine:0,rush:0,late:0},extra||{});go('reqs')}
 // ===== ㉖ 两端互移：网页侧 新建领料单 / 账本叫车 / 流水作废恢复 =====
@@ -1083,21 +1087,76 @@ async function dictGo(){const q=$('#dq')?$('#dq').value.trim():'';const j=await 
  $('#dl').innerHTML=`<div style="overflow:auto;max-height:65vh"><table><thead><tr><th>零件号</th><th>物料名称</th><th>来源</th></tr></thead><tbody>${(j.list||[]).map(x=>`<tr><td class="mono">${x.pn}</td><td>${x.nm||''}</td><td style="color:var(--sub);font-size:12px">${x.src||''}</td></tr>`).join('')||'<tr><td colspan=3 style="color:var(--sub)">无匹配</td></tr>'}</tbody></table></div>`}
 // ---- ㉔K 命令面板：单号/零件号/标签号一处直达 ----
 let _kkt=0;
-document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()=='k'){e.preventDefault();kkOpen()}if(e.key=='Escape'&&!$('#kk').classList.contains('hide'))$('#kk').classList.add('hide')});
-function kkOpen(){$('#kk').classList.remove('hide');$('#kki').value='';$('#kki').focus();$('#kkr').innerHTML='<div style="color:var(--sub);padding:14px">输入 ≥3 个字符：领料单号 / 零件号 / 标签号 / 货位</div>'}
-async function kkGo(){clearTimeout(_kkt);_kkt=setTimeout(async()=>{const q=$('#kki').value.trim();if(q.length<3){$('#kkr').innerHTML='<div style="color:var(--sub);padding:14px">再打几个字…</div>';return}
- let h='';try{
+document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()=='k'){e.preventDefault();kkOpen()}if(e.key=='Escape'&&!$('#kk').classList.contains('hide'))$('#kk').classList.add('hide');else if(!$('#kk').classList.contains('hide'))kkKey(e)});
+// ===================== ㉖v55 命令面板（Ctrl+K）：功能/页面/数据万物直达 + 拼音首字母 + 使用习惯建议 =====================
+// 设计：
+//  · 空输入=建议栏：按"频次×时间衰减(半衰期3天)"排"猜你要去"，另列"最近用过"；首次使用给上手引导
+//  · 输入即匹配：页面名/子页/动作命令 1 个字就出，拼音首字母(zh=指挥舱 cl=车辆 dc=导出中心)；数据搜索 ≥2 字防误触发
+//  · 键盘流：↑↓ 选择(循环)、Enter 执行、悬停联动、选中项自动滚入视野；全程可不碰鼠标
+//  · 习惯上云：使用计数写 localStorage 即时生效，15秒节流同步服务器 prefs，换设备登录自动合并（取各端最大值）
+//  · 危险动作（退出登录）执行前二次确认；权限过滤与顶栏导航同口径（admin页仅管理员、盘点不给学生物料员）
+var _kkItems=[],_kkSel=-1,_kkUse={},_kkPush=0,_kkT=0;
+function kkUseLoad(){try{_kkUse=JSON.parse(localStorage.getItem('ck_use')||'{}')||{}}catch(_){_kkUse={}}
+ try{const sv=PF&&PF.ck_use?JSON.parse(PF.ck_use):null;if(sv&&typeof sv==='object'){for(const k in sv){const a=_kkUse[k]||{n:0,t:0},b=sv[k]||{n:0,t:0};_kkUse[k]={n:Math.max(a.n||0,b.n||0),t:Math.max(a.t||0,b.t||0)}}}}catch(_){}}
+function kkUseHit(id){if(!id||String(id).indexOf('tip:')===0)return;const o=_kkUse[id]||{n:0,t:0};o.n=(o.n||0)+1;o.t=Date.now();_kkUse[id]=o;
+ try{const ks=Object.keys(_kkUse);if(ks.length>60){ks.sort((x,y)=>(_kkUse[x].t||0)-(_kkUse[y].t||0)).slice(0,ks.length-60).forEach((k)=>delete _kkUse[k])}localStorage.setItem('ck_use',JSON.stringify(_kkUse))}catch(_){}
+ const now=Date.now();if(TK&&now-_kkPush>15000){_kkPush=now;api('/api/prefs',{method:'POST',body:{ck_use:JSON.stringify(_kkUse)}}).catch(()=>{})}}
+function kkCmds(){const A=[];const okTab=(k)=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material');
+ const P=[['dash','📊','概览','gl'],['reqs','📋','领料单','lld'],['queue','🚦','备料看板','blkb'],['ledger','📦','货位账本','hwzb'],['ctn','🗃','容器管理','rqgl'],['parts','🧩','零件档案','ljda'],['flow','🌊','流水在线','lszx'],['inv','🧮','盘点','pd'],['fix','🛠','修正与返架','xzyfj'],['insp','🔎','检验工单','jygd'],['agv','🤖','指挥舱','zhc'],['rpt','📈','工作量报表','gzlb'],['ana','','分析报告','fxbg'],['exp','📤','导出中心','dc'],['dict','🔤','字典','zd'],['admin','⚙️','控制后台','kzht']];
+ for(const t of P)if(okTab(t[0]))A.push({id:'go:'+t[0],ic:t[1],tx:t[2],hint:'页面',py:t[3],run:((k)=>()=>go(k))(t[0])});
+ const G=[['map','🗺','实时地图','dt'],['pipe','🏭','流水线','lsx'],['board','🚉','站台看板','ztb'],['gantt','📊','站台甘特','gt'],['q','🚚','队列控制台','dlkz'],['car','🚗','车辆','cl'],['traf','🚦','交管','jg'],['ev','🚨','异常中心','yc'],['play','⏪','轨迹回放','gj']];
+ for(const g of G)A.push({id:'agv:'+g[0],ic:g[1],tx:'指挥舱 · '+g[2],hint:'子页',py:g[3],run:((k)=>()=>{go('agv');agvTab(k)})(g[0])});
+ A.push({id:'act:th',ic:'🌗',tx:(document.documentElement.dataset.theme=='dark'?'切换浅色模式':'切换深色模式'),hint:'操作',py:'zhuti mt theme',run:()=>th()});
+ A.push({id:'act:re',ic:'⟳',tx:'刷新当前页',hint:'操作',py:'shuaxin sx',run:()=>{go(TAB);T('已刷新',1)}});
+ A.push({id:'act:pf',ic:'⚙',tx:'偏好设置（落地页/主题/KPI）',hint:'操作',py:'pianhao ph',run:()=>prefDlg()});
+ if((U.features||{}).requisition)A.push({id:'act:nr',ic:'＋',tx:'新建领料单',hint:'操作',py:'xinjian xjlld',run:()=>newReqDlg()});
+ A.push({id:'act:bs',ic:'🖥',tx:'进入监控大屏',hint:'操作',py:'dapin dp',run:()=>bigScreen()});
+ A.push({id:'act:out',ic:'🚪',tx:'退出登录',hint:'操作',py:'tuichu tc',run:()=>{if(confirm('退出当前账号？未保存的筛选条件将丢失。'))out()}});
+ return A}
+function kkScore(c,q){if(!q)return 0;const tx=String(c.tx||'').toLowerCase(),py=String(c.py||'');
+ if(tx.startsWith(q))return 100;if(tx.includes(q))return 80;
+ for(const p of py.split(' ')){if(!p)continue;if(p.startsWith(q))return 70;if(p.includes(q))return 50}
+ return 0}
+function kkAgo(t){const m=Math.max(0,Math.round((Date.now()-(Number(t)||0))/60000));if(m<1)return '刚刚';if(m<60)return m+'分钟前';const h=Math.round(m/60);if(h<24)return h+'小时前';return Math.round(h/24)+'天前'}
+function kkPaint(emptyMsg,note){const box=$('#kkr');let h='',lastG=null;
+ _kkItems.forEach((c,i)=>{const g=c.grp||'';if(g&&g!==lastG){h+=`<div class="kkh">${g}</div>`;lastG=g}
+  h+=`<div class="kkit${i==_kkSel?' on':''}" data-i="${i}"><span style="width:18px;text-align:center;flex:none">${c.ic}</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.html||_esc(c.tx)}</span><span class="kktag">${c.hint||''}</span></div>`});
+ if(!_kkItems.length)h=note||emptyMsg||'<div style="color:var(--sub);padding:18px;text-align:center">没有匹配项 —— 试试页面名、拼音首字母（zh=指挥舱）或 ≥2 个字的单号/标签/零件号/货位</div>';
+ else if(note)h=note+h;
+ box.innerHTML=h+'<div class="kkfoot">↑↓ 选择 · Enter 执行 · 支持拼音首字母（zh=指挥舱 cl=车辆 dc=导出）· 数据搜索 ≥2 字</div>';
+ box.querySelectorAll('.kkit').forEach((el)=>{el.onmouseenter=()=>{_kkSel=+el.dataset.i;kkMark()};el.onclick=()=>kkExec(+el.dataset.i)})}
+function kkMark(){const els=$('#kkr').querySelectorAll('.kkit');els.forEach((el,i)=>el.classList.toggle('on',i==_kkSel));const cur=els[_kkSel];if(cur&&cur.scrollIntoView)cur.scrollIntoView({block:'nearest'})}
+function kkExec(i){const c=_kkItems[i];if(!c)return;$('#kk').classList.add('hide');kkUseHit(c.id);try{c.run&&c.run()}catch(e){T('执行失败：'+e.message)}}
+function kkKey(e){if(e.key=='ArrowDown'){e.preventDefault();if(_kkItems.length){_kkSel=(_kkSel+1)%_kkItems.length;kkMark()}}
+ else if(e.key=='ArrowUp'){e.preventDefault();if(_kkItems.length){_kkSel=(_kkSel-1+_kkItems.length)%_kkItems.length;kkMark()}}
+ else if(e.key=='Enter'){e.preventDefault();kkExec(_kkSel>=0?_kkSel:0)}}
+function kkEmpty(){_kkItems=[];_kkSel=-1;const cmds=kkCmds();const byId={};for(const c of cmds)byId[c.id]=c;
+ const now=Date.now();const scored=[];for(const k in _kkUse){const u=_kkUse[k];if(!byId[k]||!(u.n>0))continue;const age=(now-(u.t||0))/864e5;scored.push({c:byId[k],s:u.n*Math.pow(0.5,age/3),n:u.n,t:u.t})}
+ scored.sort((a,b)=>b.s-a.s);
+ const hot=scored.slice(0,6);
+ for(const x of hot){const c=Object.assign({},x.c);c.grp='⚡ 猜你要去（按使用习惯排序）';c.html=_esc(c.tx)+`<span style="font-size:10px;color:var(--sub);margin-left:8px">用过 ${x.n} 次</span>`;_kkItems.push(c)}
+ const recent=scored.slice(6).sort((a,b)=>(b.t||0)-(a.t||0)).slice(0,3);
+ for(const x of recent){const c=Object.assign({},x.c);c.grp='🕘 最近用过';c.html=_esc(c.tx)+`<span style="font-size:10px;color:var(--sub);margin-left:8px">${kkAgo(x.t)}</span>`;_kkItems.push(c)}
+ if(!hot.length&&!recent.length){kkPaint('<div class="kkh">👋 命令面板：输页面名或拼音首字母直达，≥2 个字可搜单号/标签/零件/货位</div>');return}
+ kkPaint()}
+async function kkGo(){clearTimeout(_kkT);_kkT=setTimeout(kkRun,200)}
+async function kkRun(){const q=$('#kki').value.trim().toLowerCase();if(!q){kkEmpty();return}
+ const hits=kkCmds().map((c)=>({c,s:kkScore(c,q)})).filter((x)=>x.s>0).sort((a,b)=>b.s-a.s||String(a.c.tx).length-String(b.c.tx).length).slice(0,8);
+ _kkItems=[];_kkSel=hits.length?0:-1;
+ for(const x of hits){const c=Object.assign({},x.c);c.grp='🧭 直达';_kkItems.push(c)}
+ kkPaint('',''); // 命令秒出，数据后到再刷（网络慢不拖直达）
+ let note='';
+ if(q.length>=2){try{
   const[rq,ld,dc]=await Promise.all([api('/api/requisitions').catch(()=>({})),api('/api/ledger?fz='+encodeURIComponent(q)).catch(()=>({})),api('/api/dict?q='+encodeURIComponent(q)).catch(()=>({}))]);
-  const kq=q.toLowerCase();
-  const rs=(rq.reqs||[]).filter(r=>(r.no+' '+(r.byName||'')+(r.items||[]).map(i=>i.partNo+(i.itemName||'')).join(' ')).toLowerCase().includes(kq)).slice(0,6);
-  for(const r of rs)h+=`<div class="kkit" onclick="kkPick('reqs',{q:'${r.no}'})">📋 <b>${r.no}</b> ${r.byName||''} <span class="tag ${(ST[r.status]||['','t-x'])[1]}">${(ST[r.status]||['?'])[0]}</span></div>`;
-  const ls=(ld.items||[]).slice(0,8);
-  for(const x of ls)h+=`<div class="kkit" onclick="kkPick('ledger',{lq:'${x.c}'})">📦 <b>${x.c}</b> → ${x.l} ${x.p||''} ${x.n||''}</div>`;
-  for(const d of(dc.list||[]).slice(0,5))h+=`<div class="kkit" onclick="kkPick('dict',{dq:'${d.pn}'})">🔤 <b>${d.pn}</b> ${d.nm||''}</div>`;
-  if(!h)h='<div style="color:var(--sub);padding:14px">无匹配结果</div>';
- }catch(_){h='<div style="color:var(--warn);padding:14px">查询失败</div>'}
- $('#kkr').innerHTML=h},250)}
-function kkPick(tab,o){$('#kk').classList.add('hide');Object.assign(TM,o);go(tab)}
+  if($('#kki').value.trim().toLowerCase()!==q)return; // 异步回来输入已变：丢弃本次
+  const rs=(rq.reqs||[]).filter(r=>(r.no+' '+(r.byName||'')+(r.items||[]).map(i=>i.partNo+(i.itemName||'')).join(' ')).toLowerCase().includes(q)).slice(0,5);
+  const ls=(ld.items||[]).slice(0,6),ds=(dc.list||[]).slice(0,4);
+  for(const r of rs)_kkItems.push({grp:'🔎 数据',id:'d:req:'+r.no,ic:'📋',tx:r.no,hint:'单号',py:'',html:`📋 <b>${_esc(r.no)}</b> ${_esc(r.byName||'')} <span class="tag ${(ST[r.status]||['','t-x'])[1]}">${(ST[r.status]||['?'])[0]}</span>`,run:((n)=>()=>{TM.q=n;go('reqs')})(r.no)});
+  for(const x of ls)_kkItems.push({grp:'🔎 数据',id:'d:led:'+String(x.c).toUpperCase(),ic:'📦',tx:x.c,hint:'标签',py:'',html:`📦 <b>${_esc(x.c)}</b> → ${_esc(x.l||'')} ${_esc(((x.p||'')+' '+(x.n||'')).trim())}`,run:((cc)=>()=>{TM.lq=cc;go('ledger')})(x.c)});
+  for(const d of ds)_kkItems.push({grp:'🔎 数据',id:'d:dic:'+d.pn,ic:'🔤',tx:d.pn,hint:'零件',py:'',html:`🔤 <b>${_esc(d.pn)}</b> ${_esc(d.nm||'')}`,run:((pn)=>()=>{TM.dq=pn;go('dict')})(d.pn)});
+ }catch(_){note='<div class="kkh" style="color:var(--warn)">数据查询失败（网络或服务未就绪）</div>'}}
+ kkPaint('',note)}
+function kkOpen(){kkUseLoad();$('#kk').classList.remove('hide');$('#kki').value='';$('#kki').focus();kkEmpty()}
 (async()=>{document.documentElement.dataset.theme=localStorage.getItem('ck_th')||'';$('#thb').textContent=document.documentElement.dataset.theme=='dark'?'☀️':'';
  const _ut=new URLSearchParams(location.search).get('t');if(_ut){localStorage.setItem('ck_tok',_ut);TK=_ut;history.replaceState({},'',location.pathname)} // ㉖⑯ PDA内嵌免登录：URL带t=会话token即接管
  if(TK&&U){try{const j=await api('/api/me');if(j.ok){U=Object.assign({},j.user,{features:j.features||{}});PF=j.prefs||{};if(j.uiRefreshSec)URS=j.uiRefreshSec;if('theme' in PF)applyTheme(PF.theme);localStorage.setItem('ck_u',JSON.stringify(U));showApp();esSSE();go((location.hash||'').slice(1)||PF.landing||'');setInterval(()=>{if(TAB=='dash')srDash()},30000);return}}catch(e){}}
