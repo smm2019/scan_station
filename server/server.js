@@ -305,6 +305,7 @@ function buildExport(ds, fRaw) {
       if (e.kind === '告警' || e.kind === '红牌' || e.kind === '升级') { if (e._rt) { dur = Math.max(1, Math.round((e._rt - e.ts) / 60000)); recd = '已恢复'; } else { dur = Math.max(1, Math.round((Date.now() - e.ts) / 60000)); recd = '未恢复'; } }
       else if (e.kind === '恢复') recd = '已恢复';
       else if (e.kind === '低电') recd = (db.rcsLowBat || {})[String(e.who).replace(/\D/g, '')] ? '未回充' : '已回充';
+      else if (/超时$/.test(e.kind) || e.kind === '堵点') { dur = Math.max(1, Math.round((Date.now() - e.ts) / 60000)); recd = e.resolved === 1 ? '已了结·' + (e.resMsg || '') : (e.resMsg || '未了结'); }
       return [expTs(e.ts), e.kind, e.who || '', dur, recd, e.msg || ''];
     });
     return mk('AGV异常事件', ['时间', '类型', '对象', '持续时长(分)', '是否恢复', '内容'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '车辆告警+堵点+低电+出库超时+改位冲突统一聚合；持续时长=告警到恢复分钟（未恢复=至今）'); }
@@ -524,6 +525,35 @@ function eventsMigrateFromAlarms() { // ㉖首次升级：把存量 carAlarms �
   } catch (_) {}
 }
 
+// ---- ㉖v54 异常事件"了结"只读标注：按业务实况推断（不写事件表、不发通知、每次聚合现算，服务重启无残留） ----
+// 超时类判据顺序：①该框后续队列项=完成 → 已了结 ②该框有在途新搬运任务 → 处理中(未了结) ③出库/检验下架方向→账本已离架(无此行或已在CK站台位)=实际拣走 ④入库/归位方向→框已不压任何站台=已放置 ⑤都不满足=未了结
+function _markTimeoutResolved(ev) {
+  try {
+    const led = new Map(); for (const x of db.ledger || []) led.set(String(x.c || '').toUpperCase(), String(x.l || '').toUpperCase());
+    const qDone = {}, qAct = {};
+    for (const q of db.agvQueue || []) { const c = String(q.code || '').toUpperCase(); if (['排队', '下发中', '已下发', '到站'].includes(q.state)) qAct[c] = 1; if (q.state === '完成') qDone[c] = Math.max(qDone[c] || 0, Number(q.updAt || q.dockAt || q.at) || 0); }
+    const atStn = new Set(); for (const st of Object.values(db.rcsStations || {})) { if (st && Array.isArray(st.codes)) for (const cd of st.codes) atStn.add(String(cd || '').toUpperCase()); }
+    for (const e of ev) {
+      if (!/超时$/.test(String(e.kind || ''))) continue;
+      const code = String(e.who || '').toUpperCase(); if (!code) continue;
+      e.resolved = 0; e.resMsg = '';
+      if (qDone[code] && qDone[code] >= (Number(e.ts) || 0)) { e.resolved = 1; e.resMsg = '后续搬运已完成'; continue; }
+      if (qAct[code]) { e.resMsg = '处理中（在途新任务）'; continue; }
+      const L = led.get(code);
+      if (e.kind === '出库超时' || e.kind === '检验下架超时') { if (!L || /-CK-/.test(L)) { e.resolved = 1; e.resMsg = L ? '框已在站台位（已拣出）' : '框已离架出账'; continue; } }
+      else if (e.kind === '入库超时' || e.kind === '检验归位超时') { if (!atStn.has(code)) { e.resolved = 1; e.resMsg = '已不压站台'; continue; } }
+      e.resMsg = '未了结';
+    }
+  } catch (_) {}
+}
+// 堵点判据：同车存在时刻不早于堵点的"堵点解除"事件 → 已了结
+function _markJamResolved(ev) {
+  try {
+    const up = {}; for (const e of ev) if (e.kind === '堵点解除') { const w = String(e.who || ''); if (up[w] === undefined || (Number(up[w]) > Number(e.ts))) up[w] = e.ts; }
+    for (const e of ev) { if (e.kind !== '堵点') continue; const u = up[String(e.who || '')]; e.resolved = (u !== undefined && u >= (Number(e.ts) || 0)) ? 1 : 0; e.resMsg = e.resolved ? '交管已放行' : '仍未放行'; }
+  } catch (_) {}
+}
+
 function buildEvents() {
   // ㉖数据源升级：持久表 carEvents 为主（含恢复/解除等全部历史），运行时旧聚合兜底（迁移前数据）
   const arr = (x) => (Array.isArray(x) ? x : Object.values(x || {})); // 防御：历史字段万一被存成对象也不再崩
@@ -535,7 +565,7 @@ function buildEvents() {
   for (const [jid, j] of Object.entries(db.rcsJam || {})) addOld(j.at || 0, '堵点', 'AGV' + String(jid).padStart(2, '0'), '交管被卡：' + (j.zone || '') + '（' + (j.lands || '') + '）'); // ㉖修：rcsJam是对象非数组，此前for-of必抛异常致events接口500、异常中心恒0条
   for (const [id, v] of Object.entries(db.rcsLowBat || {})) { if (v && v.notified) addOld(v.at || 0, '低电', 'AGV' + String(id).padStart(2, '0'), '低电空闲未回充'); }
   ev.sort((a, b) => b.ts - a.ts);
-  return ev.slice(0, 800);
+  const out = ev.slice(0, 800); _markTimeoutResolved(out); _markJamResolved(out); /* ㉖v54 只读了结标注 */ return out;
 }
 
 // ㉖①② 标签全局状态：返回该标签在各数据域的命中（账本在库/采集流水/出库单/领料已发/AGV队列在途/检验中/历史出库）
