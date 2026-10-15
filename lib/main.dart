@@ -1662,7 +1662,15 @@ class _MainPageState extends State<MainPage>
     if (_bannerSeen.length > 600) {
       _bannerSeen = _bannerSeen.skip(_bannerSeen.length - 400).toSet();
     }
-    final first = list.first;
+    // ㉖v53 三档分级：仅"弹横幅档"(=2)进横幅；静默档(=1)只更新角标不打扰，关闭档(=0)服务器不发
+    final sp = await SharedPreferences.getInstance();
+    int lvOf(Map m) {
+      final key = RemindPrefs.keyOf(m["type"]?.toString() ?? "");
+      return key == null ? 2 : RemindPrefs.levelOfSp(sp, key); // 未归类类型默认弹
+    }
+    final pop = list.where((m) => lvOf(m) == 2).toList();
+    if (pop.isEmpty) return; // 本轮全是静默消息：角标靠服务端 unread 计数，无需任何横幅
+    final first = pop.first;
     final text = first["text"]?.toString() ?? "领料单有新消息";
     // ⑭系统通知（悬浮横幅/锁屏/息屏可达）：按类别开关，点击直达领料页
     final kind = first["type"]?.toString() ?? "";
@@ -1693,7 +1701,7 @@ class _MainPageState extends State<MainPage>
           payload: rid.isEmpty ? kind : (kind + "|" + rid)));
     }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(list.length > 1 ? "$text（共 ${list.length} 条新消息）" : text,
+      content: Text(pop.length > 1 ? "$text（共 ${pop.length} 条新消息）" : text,
           maxLines: 2, overflow: TextOverflow.ellipsis),
       backgroundColor: const Color(0xFF37474F),
       duration: const Duration(seconds: 6),
@@ -5012,14 +5020,15 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
   bool _sound = true;
   bool _vibration = true;
   bool _voice = true;
-  bool _nNew = true,
-      _nUrge = true,
-      _nArrive = true,
-      _nResult = true,
-      _nWatch = true,
-      _nStock = true,
-      _nCar = true,
-      _nInsp = true;
+  // ㉖v53 三档：2=弹横幅+声音 1=静默进中心 0=关闭（默认值在 _load 按 RemindPrefs 兜底）
+  int _nNew = 2,
+      _nUrge = 2,
+      _nArrive = 2,
+      _nResult = 1,
+      _nWatch = 1,
+      _nStock = 2,
+      _nCar = 2,
+      _nInsp = 2;
   double _rate = 0.55;
   bool _loaded = false;
   bool _notifGranted = false;
@@ -5124,14 +5133,14 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
       _sound = sp.getBool(AppSettings.keySound) ?? true;
       _vibration = sp.getBool(AppSettings.keyVibration) ?? true;
       _voice = sp.getBool(RemindPrefs.kVoice) ?? true;
-      _nNew = sp.getBool(RemindPrefs.kNew) ?? true;
-      _nUrge = sp.getBool(RemindPrefs.kUrge) ?? true;
-      _nArrive = sp.getBool(RemindPrefs.kArrive) ?? true;
-      _nResult = sp.getBool(RemindPrefs.kResult) ?? true;
-      _nWatch = sp.getBool(RemindPrefs.kWatch) ?? true;
-      _nStock = sp.getBool(RemindPrefs.kStock) ?? true;
-      _nCar = sp.getBool(RemindPrefs.kCar) ?? true;
-      _nInsp = sp.getBool(RemindPrefs.kInsp) ?? true;
+      _nNew = RemindPrefs.levelOfSp(sp, RemindPrefs.kNew);
+      _nUrge = RemindPrefs.levelOfSp(sp, RemindPrefs.kUrge);
+      _nArrive = RemindPrefs.levelOfSp(sp, RemindPrefs.kArrive);
+      _nResult = RemindPrefs.levelOfSp(sp, RemindPrefs.kResult);
+      _nWatch = RemindPrefs.levelOfSp(sp, RemindPrefs.kWatch);
+      _nStock = RemindPrefs.levelOfSp(sp, RemindPrefs.kStock);
+      _nCar = RemindPrefs.levelOfSp(sp, RemindPrefs.kCar);
+      _nInsp = RemindPrefs.levelOfSp(sp, RemindPrefs.kInsp);
       _rate = sp.getDouble('remind_speech_rate') ?? 0.55;
       _loaded = true;
     });
@@ -5140,11 +5149,11 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _setKey(String key, bool v) async {
-    await RemindPrefs.setEnabled(key, v);
-    PrefsSync.pushAll(); // ㉖B14 提醒订阅/语音开关上云（fire-and-forget）
+  // ㉖v53 三档分级保存：2弹横幅 1静默进中心 0关闭（同步界面绑定字段防弹回）
+  Future<void> _setLv(String key, int v) async {
+    await RemindPrefs.setLevelKey(key, v);
+    PrefsSync.pushAll();
     setState(() {
-      // 同步界面绑定字段：否则Switch读旧值弹回，表现为关不掉
       if (key == RemindPrefs.kNew)
         _nNew = v;
       else if (key == RemindPrefs.kUrge)
@@ -5161,9 +5170,58 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
         _nCar = v;
       else if (key == RemindPrefs.kInsp)
         _nInsp = v;
-      else if (key == RemindPrefs.kVoice) _voice = v;
     });
   }
+
+  Future<void> _setKey(String key, bool v) async {
+    await RemindPrefs.setEnabled(key, v);
+    PrefsSync.pushAll(); // ㉖B14 提醒订阅/语音开关上云（fire-and-forget）
+    setState(() {
+      // 同步界面绑定字段：否则Switch读旧值弹回，表现为关不掉
+      if (key == RemindPrefs.kVoice) _voice = v;
+    });
+  }
+
+  // ㉖v53 三档选择器：一行类别 + 三个档位 chip（弹横幅/静默/关闭）
+  Widget _lvChip(int cur, int v, String label, String key) => Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          child: ChoiceChip(
+            padding: const EdgeInsets.symmetric(vertical: 7),
+            label: Text(label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: cur == v ? FontWeight.w600 : FontWeight.normal,
+                    color: cur == v ? Colors.white : Colors.blueGrey)),
+            selected: cur == v,
+            showCheckmark: false,
+            selectedColor:
+                v == 2 ? const Color(0xFF515BD4) : v == 1 ? const Color(0xFF78909C) : const Color(0xFF90A4AE),
+            backgroundColor: const Color(0xFFF0F2F7),
+            onSelected: (_) => _setLv(key, v),
+          ),
+        ),
+      );
+  Widget _lvCard(String key, int val, String title, String sub, {bool allowOff = true}) => Card(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(sub, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              const SizedBox(height: 8),
+              Row(children: [
+                _lvChip(val, 2, "弹横幅", key),
+                _lvChip(val, 1, "静默", key),
+                if (allowOff) _lvChip(val, 0, "关闭", key),
+              ]),
+            ],
+          ),
+        ),
+      );
 
   Future<void> _askNotifPerm() async {
     final ok = await NotifyService.ensurePermission();
@@ -5206,75 +5264,19 @@ class _SoundVibrationPageState extends State<SoundVibrationPage> {
           const SizedBox(height: 8),
           const Padding(
               padding: EdgeInsets.fromLTRB(4, 8, 4, 6),
-              child: Text("提醒类别（关闭后该类不再弹系统通知）",
+              child: Text("提醒类别 · 三档分级（弹横幅=悬浮+铃声打扰｜静默=只进消息中心亮角标不打扰｜关闭=不接收）",
                   style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.bold,
                       color: Colors.blueGrey))),
-          Card(
-              child: SwitchListTile(
-                  value: _nNew,
-                  activeColor: const Color(0xFF515BD4),
-                  title: const Text("待接单提醒", style: TextStyle(fontSize: 15)),
-                  subtitle: const Text("新领料单/超时放开/转派给你",
-                      style: TextStyle(fontSize: 12)),
-                  onChanged: (v) => _setKey(RemindPrefs.kNew, v))),
-          Card(
-              child: SwitchListTile(
-                  value: _nUrge,
-                  activeColor: const Color(0xFF515BD4),
-                  title: const Text("催单提醒", style: TextStyle(fontSize: 15)),
-                  subtitle:
-                      const Text("领料员催接单/催备料", style: TextStyle(fontSize: 12)),
-                  onChanged: (v) => _setKey(RemindPrefs.kUrge, v))),
-          Card(
-              child: SwitchListTile(
-                  value: _nArrive,
-                  activeColor: const Color(0xFF515BD4),
-                  title: const Text("到站催扫提醒", style: TextStyle(fontSize: 15)),
-                  subtitle: const Text("货架到站台超时未扫码发料",
-                      style: TextStyle(fontSize: 12)),
-                  onChanged: (v) => _setKey(RemindPrefs.kArrive, v))),
-          Card(
-              child: SwitchListTile(
-                  value: _nResult,
-                  activeColor: const Color(0xFF515BD4),
-                  title: const Text("结果动态提醒", style: TextStyle(fontSize: 15)),
-                  subtitle: const Text("接单/备齐/签收/驳回/取消",
-                      style: TextStyle(fontSize: 12)),
-                  onChanged: (v) => _setKey(RemindPrefs.kResult, v))),
-          Card(
-              child: SwitchListTile(
-                  value: _nWatch,
-                  activeColor: const Color(0xFF515BD4),
-                  title: const Text("预约到料提醒", style: TextStyle(fontSize: 15)),
-                  subtitle: const Text("关注的零件入库时通知（库存页·我的预约）",
-                      style: TextStyle(fontSize: 12)),
-                  onChanged: (v) => _setKey(RemindPrefs.kWatch, v))),
-          Card(
-              child: SwitchListTile(
-                  value: _nStock,
-                  activeColor: const Color(0xFF515BD4),
-                  title: const Text("断料预警提醒", style: TextStyle(fontSize: 15)),
-                  subtitle: const Text("零件在架清零时通知仓管与相关物料员",
-                      style: TextStyle(fontSize: 12)),
-                  onChanged: (v) => _setKey(RemindPrefs.kStock, v))),
-          Card(
-              child: SwitchListTile(
-                  value: _nCar,
-                  activeColor: const Color(0xFF515BD4),
-                  title: const Text("车辆告警提醒", style: TextStyle(fontSize: 15)),
-                  subtitle: const Text("AGV急停/通讯断开/故障/低电时通知全体仓管，恢复时复位",
-                      style: TextStyle(fontSize: 12)),
-                  onChanged: (v) => _setKey(RemindPrefs.kCar, v))),
-          Card(
-              child: SwitchListTile(
-                  value: _nInsp,
-                  activeColor: const Color(0xFF515BD4),
-                  title: const Text("检验协助提醒", style: TextStyle(fontSize: 15)),
-                  subtitle: const Text("检验员发单/出结论请求协助、超时催办时通知仓管与管理员",
-                      style: TextStyle(fontSize: 12)),
-                  onChanged: (v) => _setKey(RemindPrefs.kInsp, v))),
+          _lvCard(RemindPrefs.kNew, _nNew, "待接单提醒", "新领料单/超时放开/转派给你"),
+          _lvCard(RemindPrefs.kUrge, _nUrge, "催单提醒", "领料员催接单/催备料"),
+          _lvCard(RemindPrefs.kArrive, _nArrive, "到站催扫提醒", "货架到站台超时未扫码发料"),
+          _lvCard(RemindPrefs.kResult, _nResult, "结果动态提醒", "接单/备齐/签收/驳回/取消/归位闭环"),
+          _lvCard(RemindPrefs.kWatch, _nWatch, "预约到料提醒", "关注的零件入库时通知（库存页·我的预约）"),
+          _lvCard(RemindPrefs.kStock, _nStock, "断料预警提醒", "零件在架清零时通知仓管与相关物料员"),
+          _lvCard(RemindPrefs.kCar, _nCar, "车辆告警提醒", "AGV急停/通讯断开/故障/低电，恢复时复位（安全底线：最低静默，不可关）", allowOff: false),
+          _lvCard(RemindPrefs.kInsp, _nInsp, "检验协助提醒", "检验员发单/出结论请求协助、超时催办"),
           const SizedBox(height: 8),
           const Padding(
               padding: EdgeInsets.fromLTRB(4, 8, 4, 6),

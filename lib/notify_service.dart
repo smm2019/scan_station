@@ -93,7 +93,7 @@ class NotifyService {
   /// 发一条系统通知（按类别开关决定是否发声/是否发出）
   static Future<void> push(String kind, String title, String body,
       {String payload = ''}) async {
-    if (!await RemindPrefs.enabled(kind)) return;
+    if (!await RemindPrefs.banner(kind)) return; // ㉖v53 仅"弹横幅"档才发系统通知；静默档只进消息中心
     try {
       await _n.show(
           ++_nid % 100000,
@@ -587,7 +587,9 @@ class RemindPrefs {
         'req_ready_wh' ||
         'req_done' ||
         'req_reject' ||
-        'req_cancel' =>
+        'req_cancel' ||
+        'req_flow' ||
+        'transfer_done' =>
           _kResult,
         'watch_in' => _kWatch,
         'stock_out' => _kStock,
@@ -596,11 +598,39 @@ class RemindPrefs {
         _ => null,
       };
 
+  /// ㉖v53 通知三档分级：2=弹横幅+声音 1=静默进消息中心(仅角标) 0=完全关闭
+  /// 旧版布尔开关向后兼容：true→该类别默认档，false→0
+  static String _lvKey(String k) => '${k}_lv';
+  static String lvKeyOf(String k) => _lvKey(k);
+  static int defaultLevelOfKey(String k) =>
+      (k == _kResult || k == _kWatch) ? 1 : 2; // 结果动态/预约到料默认静默，其余弹横幅
+  static int levelOfSp(SharedPreferences sp, String k) {
+    final lv = sp.getInt(_lvKey(k));
+    if (lv != null) return lv;
+    final legacy = sp.getBool(k);
+    return legacy != null ? (legacy ? defaultLevelOfKey(k) : 0) : defaultLevelOfKey(k);
+  }
+
+  static Future<int> levelOfKey(String k) async {
+    final sp = await SharedPreferences.getInstance();
+    return levelOfSp(sp, k);
+  }
+
+  static Future<void> setLevelKey(String k, int v) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setInt(_lvKey(k), v);
+  }
+
   static Future<bool> enabled(String kind) async {
     final k = keyOf(kind);
     if (k == null) return false;
-    final sp = await SharedPreferences.getInstance();
-    return sp.getBool(k) ?? true;
+    return await levelOfKey(k) >= 1; // 订阅（弹或静默）=服务器要发；关闭=不发
+  }
+
+  static Future<bool> banner(String kind) async {
+    final k = keyOf(kind);
+    if (k == null) return false;
+    return await levelOfKey(k) == 2; // 仅"弹横幅"档才打扰（系统通知/底部横幅）
   }
 
   static Future<bool> enabledByKey(String key) async {

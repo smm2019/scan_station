@@ -1418,18 +1418,20 @@ class PrefsSync {
       // ㉖v53 首页模块自定义：顺序/显隐 + 用量 + 习惯开关（落本地，changed 触发主界面重建页签）
       await TabCustom.applyServer(pv["pd_tabs"], pv["pd_tabuse"], pv["pd_tab_auto"]);
       if (n is Map) {
-        if (n["req_new"] != null)
-          await sp.setBool("remind_req_new", n["req_new"] != false);
-        if (n["req_urge"] != null)
-          await sp.setBool("remind_req_urge", n["req_urge"] != false);
-        if (n["req_arrive"] != null)
-          await sp.setBool("remind_req_arrive", n["req_arrive"] != false);
-        if (n["req_flow"] != null)
-          await sp.setBool("remind_req_result", n["req_flow"] != false);
-        if (n["watch_in"] != null)
-          await sp.setBool("remind_watch_in", n["watch_in"] != false);
-        if (n["stock_out"] != null)
-          await sp.setBool("remind_stock_out", n["stock_out"] != false);
+        // ㉖v53 三档分级上云：notes 值兼容 true/false(旧) 与 0/1/2(新)；bool→level(2/0)
+        Future<void> setLv(String spKey, dynamic v) async {
+          if (v == null) return;
+          final lv = v is bool ? (v ? 2 : 0) : ((v is num) ? v.toInt() : 2);
+          await sp.setInt(spKey + '_lv', lv.clamp(0, 2));
+        }
+        await setLv("remind_req_new", n["req_new"]);
+        await setLv("remind_req_urge", n["req_urge"]);
+        await setLv("remind_req_arrive", n["req_arrive"]);
+        await setLv("remind_req_result", n["req_flow"]);
+        await setLv("remind_watch_in", n["watch_in"]);
+        await setLv("remind_stock_out", n["stock_out"]);
+        await setLv("remind_car_alarm", n["car_alarm"]);
+        await setLv("remind_inspect", n["inspect"]);
       }
       kFontScaleN.value = kFontScaleOf(sp.getString("pd_font") ?? "std");
       kAutoFocus = sp.getBool("pd_focus") ?? true;
@@ -1444,14 +1446,18 @@ class PrefsSync {
     try {
       final sp = await SharedPreferences.getInstance();
       final uid = Auth.user?.id ?? "";
+      // ㉖v53 三档等级上云（0/1/2）；服务器 notes 字段向后兼容（web 端读 !==false 仍成立）
+      int lvOf(String spKey) => RemindPrefs.levelOfSp(sp, spKey);
       final body = <String, dynamic>{
         "notes": {
-          "req_new": sp.getBool("remind_req_new") ?? true,
-          "req_urge": sp.getBool("remind_req_urge") ?? true,
-          "req_arrive": sp.getBool("remind_req_arrive") ?? true,
-          "req_flow": sp.getBool("remind_req_result") ?? true,
-          "watch_in": sp.getBool("remind_watch_in") ?? true,
-          "stock_out": sp.getBool("remind_stock_out") ?? true,
+          "req_new": lvOf("remind_req_new"),
+          "req_urge": lvOf("remind_req_urge"),
+          "req_arrive": lvOf("remind_req_arrive"),
+          "req_flow": lvOf("remind_req_result"),
+          "watch_in": lvOf("remind_watch_in"),
+          "stock_out": lvOf("remind_stock_out"),
+          "car_alarm": lvOf("remind_car_alarm"),
+          "inspect": lvOf("remind_inspect"),
         },
         "rate": sp.getDouble("remind_speech_rate") ?? 0.55,
         "voice": sp.getBool("remind_voice_scan") ?? true,
