@@ -944,19 +944,32 @@ async function rTaskAct(op,no){const L={resetPick:'重置取货',resetPut:'重�
 async function loadCars(){let j;try{j=await api('/api/rcs/cars')}catch(_){$('#agvbody').innerHTML='<div class="card" style="color:var(--warn)">车辆数据加载失败　<button class="pill" onclick="loadCars()">重试</button></div>';return}
  if(!j.ok){$('#agvbody').innerHTML='<div class="card" style="color:var(--warn)">RCS 未连接：'+_esc(j.err||j.msg||'')+'</div>';return}
  const canCtl=(U.features||{}).agv_control===true||U.role=='admin'||U.role=='warehouse';
- const on=j.cars.filter(c=>c.online).length,runN=j.cars.filter(c=>c.task&&c.online).length,idle=j.cars.filter(c=>!c.task&&c.online&&c.state=='idle').length,jam=j.cars.filter(c=>c.blocked).length;
- const btn=(act,ip,name,tx,cls)=>canCtl?`<button class="pill ${cls}" style="padding:3px 10px;font-size:11.5px" onclick="rCarAct('${act}','${_esc(ip)}','${_esc(name)}')">${tx}</button>`:'';
- $('#agvbody').innerHTML=`<div class="card" style="margin-bottom:10px"><div class="row" style="align-items:center"><b style="font-size:13px">🚗 车辆</b><span class="tag t-d" style="font-size:11.5px">${on}/${j.cars.length} 在线</span><span class="tag t-a" style="font-size:11.5px">${runN} 执行中</span><span class="tag t-d" style="font-size:11.5px">${idle} 空闲</span>${jam?`<span class="tag t-p" style="font-size:11.5px">${jam} 被交管</span>`:''}<span class="sp"></span><span style="font-size:11px;color:var(--sub)">${new Date(j.at).toLocaleTimeString('zh-CN',{hour12:false})} ${RFTXT()} · 操作与 PDA·AGV·车辆 同款（经服务器代理）</span><button class="pill" style="padding:2px 10px;font-size:11px" onclick="loadCars()">⟳ 刷新</button></div></div>
-<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px">${j.cars.map(c=>{
- const exe=c.emerg?'急停中':c.mstop?'人工停止':c.charging?(c.full?'充电完成':'充电中'):c.task?('执行 '+c.task):'无任务';
+ const cars=(j.cars||[]).slice();
+ const on=cars.filter(c=>c.online).length,runN=cars.filter(c=>c.task&&c.online).length,idle=cars.filter(c=>!c.task&&c.online&&c.state=='idle').length,jam=cars.filter(c=>c.blocked).length;
+ // 排序：异常/急停/被交管/故障 → 执行中 → 空闲/充电 → 离线；同级按名称
+ const rank=(c)=>(!c.online?3:((c.emerg||c.mstop||c.blocked||c.state=='error')?0:(c.task?1:2)));
+ cars.sort((a,b)=>rank(a)-rank(b)||String(a.name).localeCompare(String(b.name)));
+ const btn=(act,ip,name,tx,cls)=>canCtl?`<button class="pill ${cls}" style="padding:2px 8px;font-size:11px" onclick="rCarAct('${act}','${_esc(ip)}','${_esc(name)}')">${tx}</button>`:'';
+ const stCol=(c)=>c.emerg||c.mstop?'#e53935':(c.blocked?'#ff6d00':(!c.online?'#b0bec5':(c.charging?'#f9a825':(c.task?'#29b6f6':'#66bb6a'))));
+ const stTxt=(c)=>c.emerg?'急停':(c.mstop?'人工停':(c.blocked?'被交管':(!c.online?'离线':(c.charging?(c.full?'充满':'充电'):(c.task?'执行中':((({pause:'暂停',error:'故障'})[c.state])||'空闲'))))));
+ $('#agvbody').innerHTML=`<div class="card" style="margin-bottom:10px"><div class="row" style="align-items:center"><b style="font-size:13px">🚗 车辆</b><span class="tag t-d" style="font-size:11.5px">${on}/${cars.length} 在线</span><span class="tag t-a" style="font-size:11.5px">${runN} 执行中</span><span class="tag t-d" style="font-size:11.5px">${idle} 空闲</span>${jam?`<span class="tag t-p" style="font-size:11.5px">${jam} 被交管</span>`:''}<span class="sp"></span><span style="font-size:11px;color:var(--sub)">${new Date(j.at).toLocaleTimeString('zh-CN',{hour12:false})} ${RFTXT()} · 操作与 PDA·AGV·车辆 同款（经服务器代理）</span><button class="pill" style="padding:2px 10px;font-size:11px" onclick="loadCars()">⟳ 刷新</button></div></div>
+<div style="display:flex;flex-wrap:wrap;gap:10px">${cars.map(c=>{
  const pw=c.power>50?'#2e7d32':c.power>25?'#e65100':'#c62828';
- return `<div class="card" style="padding:12px;${c.online?'':'opacity:.6'}"><div class="row" style="align-items:center;justify-content:flex-start"><b style="font-size:15px">${_esc(c.name)}</b><span style="font-size:11px;color:var(--sub)" class="mono">${_esc(c.ip)}</span><span class="sp"></span>${c.blocked?'<span class="tag t-p">被交管</span>':''}${c.lock?'<span class="tag t-x">已锁定</span>':''}<span class="tag ${c.online?'t-d':'t-x'}">${c.online?'在线':'离线'}</span><span class="tag ${c.state=='running'?'t-a':'t-d'}">${({idle:'空闲',running:'执行中',pause:'暂停',error:'错误'})[c.state]||c.state}</span></div>
-<div style="font-size:11.5px;color:var(--sub);margin:6px 0 2px">驾驶 ${c.auto?'自动':'手动'} · 车型 ${_esc(c.model)} · 货叉高 ${c.fork.toFixed(2)}m · 速度 ${c.speed.toFixed(2)}m/s</div>
-<div style="font-size:11.5px;margin:2px 0">执行 <b style="color:${c.emerg||c.mstop?'var(--bad)':c.task?'var(--pri)':'var(--sub)'}">${_esc(exe)}</b>${c.site?` · 点位 <b class="mono">${_esc(c.site)}</b>`:''}${(c.x!=null&&c.y!=null)?` <span style="color:var(--sub)">(${Number(c.x).toFixed(1)}, ${Number(c.y).toFixed(1)})</span>`:''}</div>
-<div style="display:flex;align-items:center;gap:8px;margin:5px 0"><span style="font-size:11px;color:var(--sub);width:30px">电量</span><div style="flex:1;height:8px;background:var(--bg);border-radius:4px;overflow:hidden"><div style="width:${Math.min(100,c.power)}%;height:100%;background:${pw}"></div></div><b style="font-size:11.5px;color:${pw}">${c.power}%</b></div>
-${c.locks&&c.locks.length?`<div style="font-size:10.5px;color:var(--sub);margin:2px 0">锁定资源集：${c.locks.map(_esc).join(', ')}</div>`:''}
-${c.err?`<div style="font-size:11px;color:var(--bad);margin:2px 0">⚠ ${_esc(c.err)}</div>`:''}
-${canCtl?`<div class="row" style="gap:6px;margin-top:8px">${btn('charge',c.ip,c.name,'⚡去充电','g')}${btn('standby',c.ip,c.name,'⌂回待命','')}${btn('reset',c.ip,c.name,'✖清除任务','r')}${btn('stop',c.ip,c.name,'⛔急停','r')}${btn('start',c.ip,c.name,'▶启动','g')}</div>`:''}</div>`}).join('')}</div>`;
+ const low=c.power<=25;
+ const col=stCol(c);
+ return `<div class="card" style="width:288px;flex:0 0 288px;padding:0;overflow:hidden;border-left:4px solid ${col};${c.online?'':'opacity:.62'}">
+ <div class="row" style="align-items:center;gap:6px;padding:8px 10px 6px"><b style="font-size:15px">${_esc(c.name)}</b><span style="font-size:10.5px;color:var(--sub)" class="mono">${_esc(c.ip||'')}</span><span class="sp"></span><span style="font-size:10.5px;font-weight:700;color:#fff;background:${col};padding:1px 8px;border-radius:9px">${stTxt(c)}</span></div>
+ <div style="padding:0 10px 8px">
+ <div style="display:flex;align-items:center;gap:8px;margin:2px 0 6px"><span style="font-size:11px;color:var(--sub);width:26px">电量</span><div style="flex:1;height:9px;background:var(--bg);border-radius:5px;overflow:hidden"><div style="width:${Math.max(0,Math.min(100,c.power))}%;height:100%;background:${pw}"></div></div><b style="font-size:11.5px;color:${pw};width:38px;text-align:right">${c.power}%${low?'⚠':''}</b></div>
+ <div style="display:grid;grid-template-columns:auto 1fr;gap:1px 8px;font-size:11.5px;line-height:1.55">
+ <span style="color:var(--sub)">驾驶</span><span>${c.auto?'自动':'手动'} · 车型 ${_esc(c.model||'-')}</span>
+ <span style="color:var(--sub)">执行</span><span><b style="color:${c.emerg||c.mstop?'var(--bad)':c.task?'var(--pri)':'var(--sub)'}">${_esc(c.task?('任务 '+c.task):'无任务')}</b></span>
+ <span style="color:var(--sub)">点位</span><span class="mono">${c.site?_esc(c.site):'-'}${(c.x!=null&&c.y!=null)?` <span style="color:var(--sub)">(${Number(c.x).toFixed(1)}, ${Number(c.y).toFixed(1)})</span>`:''}</span>
+ <span style="color:var(--sub)">速度</span><span>${(c.speed||0).toFixed(2)} m/s · 货叉 ${(c.fork||0).toFixed(2)} m</span></div>
+ ${c.err?`<div style="font-size:11px;color:var(--bad);margin-top:4px">⚠ ${_esc(c.err)}</div>`:''}
+ ${c.locks&&c.locks.length?`<div style="font-size:10px;color:var(--sub);margin-top:3px" title="${_esc(c.locks.join(', '))}">锁定资源：${c.locks.length} 个 · ${_esc(c.locks.slice(0,4).join(', '))}${c.locks.length>4?'…':''}</div>`:''}
+ ${canCtl?`<div class="row" style="gap:5px;margin-top:8px;flex-wrap:wrap">${btn('charge',c.ip,c.name,'⚡充电','g')}${btn('standby',c.ip,c.name,'⌂待命','')}${btn('reset',c.ip,c.name,'✖清任务','r')}${btn('stop',c.ip,c.name,'⛔急停','r')}${btn('start',c.ip,c.name,'▶启动','g')}</div>`:''}
+ </div></div>`}).join('')}</div>`;
  clearInterval(window._carT);window._carT=setInterval(()=>{if(AGVTAB==='car')srCars()},RFT())}
 async function rCarAct(act,ip,name){const L={charge:'去充电',standby:'回待命',reset:'清除任务',stop:'急停',start:'启动'}[act]||act;
  if(act=='stop'&&!confirm('⛔ 对 '+name+' 下发【急停】？\n\n车辆立即停车，需现场人工确认安全后再点【启动】恢复。载货途中急停可能溜车！'))return;
