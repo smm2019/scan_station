@@ -477,6 +477,33 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   bool _defAssignee = true; // 第3档 是否默认沿用上次指定
   String _needDate = ""; // 第3档 期望到货日期 yyyy-MM-dd
   bool _rush = false; // 急料：AGV优先排队+到站5分钟催扫广播
+  final List<String> _order = []; // v55 已选物料行序（靠前=加急，入队按此序）
+  final Set<String> _rushLines = {}; // v55 行级急料开关
+
+  /// v55 数量变化同步已选区：填>0入选（追加到队尾），清空即除名；零件下架由提交时兜底过滤
+  void _syncChosen(String partNo) {
+    final q = int.tryParse(_qtyCtrl[partNo]?.text.trim() ?? "") ?? 0;
+    if (q > 0) {
+      if (!_order.contains(partNo)) _order.add(partNo);
+    } else if (_order.contains(partNo)) {
+      _order.remove(partNo);
+      _rushLines.remove(partNo);
+    }
+  }
+
+  /// v55 提交行集：按已选顺序输出，零件中途清零/下架跳过（沿用 v53 防崩口径）
+  List<Map> _chosenItems() {
+    final out = <Map>[];
+    for (final pn in _order) {
+      final found = widget.parts.where((x) => x.partNo == pn).toList();
+      if (found.isEmpty) continue;
+      final q = int.tryParse(_qtyCtrl[pn]?.text.trim() ?? "") ?? 0;
+      if (q <= 0) continue;
+      final p = found.first;
+      out.add({"partNo": p.partNo, "itemName": p.itemName, "qty": q, "rush": _rushLines.contains(pn)});
+    }
+    return out;
+  }
 
   @override
   void initState() {
@@ -486,7 +513,10 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
     if (pf != null && pf.isNotEmpty) {
       for (final p in widget.parts) {
         final q = pf[p.partNo];
-        if (q != null && q.isNotEmpty) _qtyCtrl[p.partNo] = TextEditingController(text: q);
+        if (q != null && q.isNotEmpty) {
+          _qtyCtrl[p.partNo] = TextEditingController(text: q);
+          _syncChosen(p.partNo); // v55 预填行同步入已选区
+        }
       }
     }
     SharedPreferences.getInstance().then((sp) {
@@ -636,6 +666,115 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
               ),
             ],
             const SizedBox(height: 8),
+            if (_order.isNotEmpty)
+              SizedBox(
+                  height: 150,
+                  child: Column(children: [
+                    const Text("已选物料（拖把手调序：越靠前越先出库，首位=🔥加急）",
+                        style: TextStyle(
+                            fontSize: 11.5,
+                            color: Color(0xFF3949AB),
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 2),
+                    Expanded(
+                        child: ReorderableListView(
+                            shrinkWrap: true,
+                            buildDefaultDragHandles: false,
+                            onReorder: (oldI, newI) => setState(() {
+                              final pn = _order.removeAt(oldI);
+                              _order.insert(newI > oldI ? newI - 1 : newI, pn);
+                            }),
+                            children: [
+                              ..._order.asMap().entries.map((en) {
+                                final i = en.key, pn = en.value;
+                                final p = widget.parts
+                                    .where((x) => x.partNo == pn)
+                                    .firstOrNull;
+                                final q = int.tryParse(
+                                        _qtyCtrl[pn]?.text.trim() ?? "") ??
+                                    0;
+                                final r = _rushLines.contains(pn);
+                                return Card(
+                                    key: ValueKey(pn),
+                                    margin: const EdgeInsets.symmetric(
+                                        vertical: 2),
+                                    color: r
+                                        ? const Color(0xFFFFF6F0)
+                                        : Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                        side: BorderSide(
+                                            color: r
+                                                ? const Color(0xFFE65100)
+                                                : const Color(0xFFD7DEE8))),
+                                    child: Padding(
+                                        padding: const EdgeInsets.fromLTRB(
+                                            2, 2, 6, 2),
+                                        child: Row(children: [
+                                          ReorderableDragStartListener(
+                                              index: i,
+                                              child: const Padding(
+                                                  padding: EdgeInsets.symmetric(
+                                                      horizontal: 6),
+                                                  child: Icon(Icons.drag_handle,
+                                                      size: 22,
+                                                      color:
+                                                          Colors.blueGrey))),
+                                          CircleAvatar(
+                                              radius: 10,
+                                              backgroundColor: r
+                                                  ? const Color(0xFFE65100)
+                                                  : const Color(0xFF90A4AE),
+                                              child: Text("${i + 1}",
+                                                  style: const TextStyle(
+                                                      fontSize: 10.5,
+                                                      color: Colors.white,
+                                                      fontWeight:
+                                                          FontWeight.bold))),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                              child: Text(
+                                                  "$pn · ${p?.itemName ?? ''} · ${q}件",
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                      fontSize: 12.5,
+                                                      fontWeight:
+                                                          FontWeight.w600))),
+                                          IconButton(
+                                              tooltip: r ? "取消加急" : "加急此行",
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              onPressed: () => setState(() => r
+                                                  ? _rushLines.remove(pn)
+                                                  : _rushLines.add(pn)),
+                                              icon: Icon(
+                                                  r
+                                                      ? Icons
+                                                          .local_fire_department
+                                                      : Icons
+                                                          .local_fire_department_outlined,
+                                                  size: 20,
+                                                  color: r
+                                                      ? const Color(0xFFE65100)
+                                                      : Colors.blueGrey
+                                                          .shade300)),
+                                          IconButton(
+                                              tooltip: "移除该行",
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                              onPressed: () => setState(() {
+                                                _order.remove(pn);
+                                                _rushLines.remove(pn);
+                                                _qtyCtrl[pn]?.clear();
+                                              }),
+                                              icon: const Icon(Icons.close,
+                                                  size: 18, color: Colors.grey)),
+                                        ])));
+                              })
+                            ])),
+                  ])),
+            const SizedBox(height: 6),
             Expanded(
                 child: ListView(children: [
               ...list.map((p) => ListTile(
@@ -655,7 +794,9 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                               hintText: "数量",
                               isDense: true,
                               border: OutlineInputBorder()),
-                          onChanged: (_) => setState(() {}),
+                          onChanged: (_) {
+                            setState(() => _syncChosen(p.partNo)); // v55 填数即入选/清空即除名
+                          },
                         )),
                   )),
             ])),
@@ -723,22 +864,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                     onPressed: chosen.isEmpty
                         ? null
                         : () {
-                            final items = chosen
-                                .map((e) {
-                                  final found = widget.parts
-                                      .where((x) => x.partNo == e.key)
-                                      .toList();
-                                  if (found.isEmpty)
-                                    return null; // ㉖v53 填数后零件中途清零/下架：跳过该行防崩
-                                  final p = found.first;
-                                  return {
-                                    "partNo": p.partNo,
-                                    "itemName": p.itemName,
-                                    "qty": int.parse(e.value.text.trim())
-                                  };
-                                })
-                                .whereType<Map>()
-                                .toList();
+                            final items = _chosenItems(); // v55 按已选顺序提交，行级 rush（靠前=加急）
                             if (items.isEmpty) {
                               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
                                   content: Text("所选零件行已无库存，请重新选择")));

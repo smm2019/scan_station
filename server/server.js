@@ -882,6 +882,8 @@ function reqView(r) {
   return { ...r, items, statusText: REQ_STATUS_TEXT[r.status] || r.status };
 }
 // 接单即派：按建议框自动入队（与PDA一键叫车完全同口径：同托合并/已发已叫剔除/仅NB02货架框）；返回入队数
+// ㉖v55 行级急料：该行标急 或 整单标急（旧版兼容）→ 队列项插队
+function lineRush(r, it) { return !!(r && (r.rush || (it && it.rush === true))); }
 function autoEnqueueOnAccept(r, byName, byId) {
   if (db.autoDispatch === false) return 0; // 全局开关（管理员可在设置关闭）
   db.agvQueue = db.agvQueue || [];
@@ -895,7 +897,7 @@ function autoEnqueueOnAccept(r, byName, byId) {
       const code = String((bx.codes && bx.codes[0]) || '').toUpperCase();
       if (!code) continue;
       if (bx.codes.some((c) => db.agvQueue.some((q) => String(q.code).toUpperCase() === String(c).toUpperCase() && !['完成', '取消', '失败'].includes(q.state)))) continue; // 同框已在队
-      db.agvQueue.push({ code, fromLoc: l, palletType: String(bx.f || ''), stationManual: '', reqId: r.id, reqNo: r.no, by: byName, state: '排队', rush: !!r.rush, auto: 1, station: '', at: Date.now(), updAt: Date.now() });
+      db.agvQueue.push({ code, fromLoc: l, palletType: String(bx.f || ''), stationManual: '', reqId: r.id, reqNo: r.no, by: byName, state: '排队', rush: lineRush(r, it), auto: 1, station: '', at: Date.now(), updAt: Date.now() }); // v55 行级急料（靠前=加急；旧单无行标回退整单）
       it.agvCalled = (it.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code);
       it.agvCalled.push({ c: code, s: '', q: 1, by: byId, t: new Date().toISOString() }); // 登记叫车标记（建议区变🚗排队）
       n++;
@@ -968,7 +970,7 @@ function renderReqPrint(r) {
       locCell = `<span style="color:#c00;font-size:11px">${sg.inStock ? '缺物料信息' : '账本无此件'}</span>`;
     }
     return `<tr${i.transferred ? ' style="background:#f2fbf5"' : (i.skipped ? ' style="background:#f7f7f7;color:#999"' : '')}>
-      <td>${idx + 1}</td>
+      <td>${idx + 1}${i.rush ? ' <span style="color:#d32f2f;font-weight:bold">🔥</span>' : ''}</td>
       <td class="pn selectable">${esc(i.partNo)}</td>
       <td>${esc(i.itemName || '')}</td>
       <td class="num">${esc(i.qty)}</td>
@@ -2032,8 +2034,8 @@ const server = http.createServer(async (req, res) => {
           if (_confTrf.some(function (x) { return String(x.from).toUpperCase() === fromLoc || String(x.to).toUpperCase() === fromLoc; })) { conflict++; continue; } // 该货位有进行中移库
           if (db.agvQueue.some((q) => q.code === code && !['完成', '取消', '失败'].includes(q.state))) { dup++; continue; } // 同框已在队列
           if ((db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state))) { conflict++; continue; } // ㉖②④ 检验中禁止出库叫车（waitReturn 待退货除外=放行）
-          db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', rush: !!(rq && rq.rush), station: '', at: Date.now(), updAt: Date.now() });
           const ti = rq && (rq.items || []).find((i) => i.partNo === it.partNo); // 登记叫车标记：建议区变🚗排队，单框叫车自动跳过
+          db.agvQueue.push({ code, fromLoc, palletType: String(it.palletType || ''), stationManual: String(it.stationManual || '').trim().toUpperCase(), reqId, reqNo, by: u.name, state: '排队', rush: lineRush(rq, ti), station: '', at: Date.now(), updAt: Date.now() }); // v55 行级急料（旧单无行标回退整单）
           if (ti) { ti.agvCalled = (ti.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code); ti.agvCalled.push({ c: code, s: '', q: 1, by: u.id, t: new Date().toISOString() }); }
           added++;
         }
@@ -3113,7 +3115,7 @@ const server = http.createServer(async (req, res) => {
             const partNo = String(it.partNo || '').trim();
             const qty = Number(it.qty);
             if (!partNo || !(qty > 0)) continue;
-            clean.push({ partNo, itemName: String(it.itemName || ''), qty, issued: [] });
+            clean.push({ partNo, itemName: String(it.itemName || ''), qty, issued: [], rush: it.rush === true }); // v55 行级急料（列表靠前=加急）
           }
           if (!clean.length) return send(res, 400, { ok: false, msg: '至少一行有效的零件号+数量' });
           if (clean.length > 20) return send(res, 400, { ok: false, msg: '一张单最多20行' });
@@ -3131,7 +3133,7 @@ const server = http.createServer(async (req, res) => {
             remark: String(b.remark || ''), createdAt: now.toISOString(), history: [],
             assigneeId: assignee ? assignee.id : '', assigneeName: assignee ? assignee.name : '',
             assignOpenAt: assignee ? new Date(now.getTime() + P().assignMin * 60000).toISOString() : '',
-            rush: b.rush === true, // 急料：调度优先插队+催扫5分钟广播
+            rush: b.rush === true || clean.some((i) => i.rush), // 急料：调度优先插队+催扫5分钟广播（v55 任一行急=整单急）
             needDate: /^\d{4}-\d{2}-\d{2}$/.test(String(b.needDate || '')) ? String(b.needDate) : '', // 第3档 期望到货日期（PDA默认值可预填）
           };
           db.requisitions.push(r);
