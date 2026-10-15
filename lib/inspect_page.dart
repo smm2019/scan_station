@@ -20,6 +20,7 @@ class _InspectPageState extends State<InspectPage>
   }
 
   int _total = 0;
+  Map _sum = {}; // v55 零件级库存汇总（框数/件数/已检/未检/需复检）
   bool _searching = false, _searched = false, _loading = false, _loaded = false;
   String _err = "", _serr = "";
   Timer? _timer;
@@ -83,6 +84,8 @@ class _InspectPageState extends State<InspectPage>
       if (r["ok"] == true) {
         _boxes = List<Map>.from(r["boxes"] ?? []);
         _total = (r["total"] as num?)?.toInt() ?? _boxes.length;
+        final sv = r["sum"];
+        _sum = sv is Map ? Map.from(sv) : {}; // v55 库存汇总条
         _free =
             ((r["freeStns"] as List?) ?? []).map((e) => e.toString()).toList();
         final al = r["aliases"];
@@ -92,6 +95,7 @@ class _InspectPageState extends State<InspectPage>
         _serr = "";
       } else {
         _boxes = [];
+        _sum = {}; // v55 失败清空汇总防残留
         _serr = (r["msg"] ?? "搜索失败").toString();
       }
     });
@@ -295,6 +299,17 @@ class _InspectPageState extends State<InspectPage>
     _load();
   }
 
+  String _num(Object? v) {
+    final d = (v as num?)?.toDouble() ?? 0;
+    return d == d.roundToDouble() ? d.toInt().toString() : d.toStringAsFixed(1);
+  }
+
+  Widget _sumChip(String t, Color c) => Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+          color: c.withOpacity(.1), borderRadius: BorderRadius.circular(8)),
+      child: Text(t, style: TextStyle(fontSize: 11, color: c, fontWeight: FontWeight.w600)));
+
   void _toast(String s) {
     if (mounted)
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -331,6 +346,30 @@ class _InspectPageState extends State<InspectPage>
         (codes.length > 2 ? " 等${codes.length}码" : "");
     final nmX = nm.isNotEmpty ? " · $nm" : "";
     final why = (b["why"] ?? "").toString();
+    final lot = (b["lot"] ?? "").toString();
+    final insp = b["insp"] is Map ? Map.from(b["insp"]) : null;
+    final busy = why == "检验中";
+    String inspTx = "未检";
+    Color inspC = const Color(0xFF2E7D32);
+    if (busy) {
+      inspTx = "检验中";
+      inspC = const Color(0xFF515BD4);
+    } else if (insp != null) {
+      final v = (insp["v"] ?? "").toString();
+      final at = (insp["at"] as num?)?.toInt() ?? 0;
+      final dt = at > 0
+          ? DateTime.fromMillisecondsSinceEpoch(at)
+          : null;
+      final dTx = dt == null
+          ? ""
+          : "·${dt.month}-${dt.day.toString().padLeft(2, "0")}";
+      inspTx = "已检·$v$dTx";
+      inspC = v == "需复检"
+          ? const Color(0xFFE65100)
+          : (v == "退货"
+              ? const Color(0xFFC62828)
+              : (v == "不合格" ? const Color(0xFFAD1457) : Colors.blueGrey));
+    }
     return Card(
         margin: const EdgeInsets.fromLTRB(10, 0, 10, 8),
         child: Padding(
@@ -340,6 +379,8 @@ class _InspectPageState extends State<InspectPage>
               Row(children: [
                 Expanded(
                     child: Text(loc,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                             fontFamily: "monospace",
                             fontWeight: FontWeight.bold,
@@ -348,18 +389,28 @@ class _InspectPageState extends State<InspectPage>
                     padding:
                         const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
-                        color:
-                            can ? Colors.green.shade50 : Colors.grey.shade200,
+                        color: inspC.withOpacity(.1),
                         borderRadius: BorderRadius.circular(8)),
-                    child: Text(can ? "可下架" : (why.isEmpty ? "不可下架" : why),
+                    child: Text(inspTx,
                         style: TextStyle(
                             fontSize: 11,
-                            color: can
-                                ? Colors.green.shade800
-                                : Colors.blueGrey.shade700))),
+                            color: inspC,
+                            fontWeight: FontWeight.w600))),
+                if (can)
+                  Container(
+                      margin: const EdgeInsets.only(left: 6),
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                          color: Colors.green.shade50,
+                          borderRadius: BorderRadius.circular(8)),
+                      child: Text("可下架",
+                          style: TextStyle(
+                              fontSize: 11,
+                              color: Colors.green.shade800))),
               ]),
               Text(
-                  "$part$nmX · ${b["q"] ?? 0}件${ct.isNotEmpty ? " · 容器 $ct" : ""}",
+                  "$part$nmX · ${b["q"] ?? 0}件${lot.isNotEmpty ? " · 批次 $lot" : ""}${ct.isNotEmpty ? " · 容器 $ct" : ""}${(!can && why.isNotEmpty && !busy) ? " · $why" : ""}",
                   style:
                       const TextStyle(fontSize: 12.5, color: Colors.blueGrey)),
               Text(tg,
@@ -571,10 +622,43 @@ class _InspectPageState extends State<InspectPage>
                 if (_searched && _serr.isEmpty) ...[
                   Padding(
                       padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
-                      child: Text(
-                          "匹配货位（$_total 框${_total > _boxes.length ? "，显示前${_boxes.length}" : ""}）",
-                          style: const TextStyle(
-                              fontWeight: FontWeight.bold, fontSize: 13))),
+                      child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                                "匹配货位（$_total 框${_total > _boxes.length ? "，显示前${_boxes.length}" : ""}）",
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 13)),
+                            if (_sum.isNotEmpty)
+                              Padding(
+                                  padding: const EdgeInsets.only(top: 3),
+                                  child: Wrap(
+                                      spacing: 6,
+                                      runSpacing: 3,
+                                      children: [
+                                        _sumChip(
+                                            "共 ${_sum['boxes'] ?? 0} 框 · ${_num(_sum['qty'])} 件",
+                                            const Color(0xFF0891B2)),
+                                        _sumChip(
+                                            "未检 ${_sum['un'] ?? 0}",
+                                            const Color(0xFF2E7D32)),
+                                        if ((_sum['re'] ?? 0) > 0)
+                                          _sumChip(
+                                              "需复检 ${_sum['re']}",
+                                              const Color(0xFFE65100)),
+                                        _sumChip(
+                                            "已检 ${_sum['ok'] ?? 0}",
+                                            Colors.blueGrey.shade600),
+                                        if ((_sum['ret'] ?? 0) > 0)
+                                          _sumChip(
+                                              "退货 ${_sum['ret']}",
+                                              const Color(0xFFC62828)),
+                                        if ((_sum['busy'] ?? 0) > 0)
+                                          _sumChip(
+                                              "检验中 ${_sum['busy']}",
+                                              const Color(0xFF515BD4)),
+                                      ])),
+                          ])),
                   if (_boxes.isEmpty)
                     const Padding(
                         padding: EdgeInsets.all(14),

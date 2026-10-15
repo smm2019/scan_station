@@ -382,6 +382,10 @@ class AuthApi {
   static Future<Map> inspectSearch(String pn) async =>
       _req("GET", "/api/inspect/search?pn=" + Uri.encodeComponent(pn),
           token: await AuthStore.token());
+  // v55 检验态批量查询（库存页徽章/检验下架按钮用）
+  static Future<Map> inspectStatus(List<String> codes) async =>
+      _req("POST", "/api/inspect/status",
+          body: {"codes": codes}, token: await AuthStore.token());
   static Future<Map> inspectReturn(String id, String note) async =>
       _req("POST", "/api/inspect/return",
           body: {"id": id, "note": note}, token: await AuthStore.token());

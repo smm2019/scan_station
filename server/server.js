@@ -103,6 +103,7 @@ function loadDb() {
   if (!Array.isArray(d.errLogs)) { d.errLogs = []; added = true; } // ㉖ PDA异常上报表（旧库补齐）
   if (typeof d.stnMeta !== 'object' || d.stnMeta === null || Array.isArray(d.stnMeta)) { d.stnMeta = {}; added = true; } // ㉖⑫ 站台身份配置（旧库补齐）
   if (!d.locReserve || typeof d.locReserve !== 'object' || Array.isArray(d.locReserve)) { d.locReserve = {}; added = true; } // ㉖v54 货位预占表（旧库补齐）
+  if (!d.inspSeen || typeof d.inspSeen !== 'object' || Array.isArray(d.inspSeen)) { d.inspSeen = {}; added = true; } // ㉖v55 检验历史索引（标签→最近结论）
   if (!Array.isArray(d.containerTypes) || !d.containerTypes.length) { d.containerTypes = defaultDb().containerTypes; added = true; } // ㉖ 容器类型配置（旧库补齐默认5项）
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
@@ -2623,10 +2624,31 @@ const server = http.createServer(async (req, res) => {
           const L = String(x.l || '').toUpperCase(); if (!b2.loc || L < b2.loc) b2.loc = L; // 同框多标签取最小货位代表
           b2.q = Math.max(b2.q, Number(x.q) || 0); if (!b2.nm && x.n) b2.nm = String(x.n); b2.last = Math.max(b2.last, Number(x.t) || 0);
         }
-        const boxes = [...bm.values()].map((b2) => { const st = inspBoxState({ l: b2.loc, c: b2.codes[0] }); return { ...b2, shelf: st.isShelf, canDown: st.ok, why: st.why }; }).sort((a, x) => (x.canDown - a.canDown) || String(a.loc).localeCompare(String(x.loc)));
+        // v55 每框补批次（MES打印日期，与账本同口径）+ 检验态（inspSeen 取框内最新）；排序：需复检→未检可下架→检验中→未检不可→已检沉底
+        const _mm = scanMetaOf(); const _seen = db.inspSeen || {};
+        for (const b2 of bm.values()) {
+          b2.lot = '';
+          for (const c of b2.codes) { const mt = _mm[String(c).toUpperCase()]; if (mt && mt.mk) { b2.lot = printLot(mt.mk, ''); if (!b2.lot) b2.lot = String(mt.mk).slice(0, 10); break; } }
+          let best = null; for (const c of b2.codes) { const e = _seen[String(c).toUpperCase()]; if (e && (!best || (Number(e.at) || 0) > (Number(best.at) || 0))) best = e; }
+          if (best) b2.insp = { v: String(best.v || ''), at: Number(best.at) || 0 };
+        }
+        const boxes = [...bm.values()].map((b2) => { const st = inspBoxState({ l: b2.loc, c: b2.codes[0] }); return { ...b2, shelf: st.isShelf, canDown: st.ok, why: st.why }; });
+        const _rk = (b2) => b2.why === '检验中' ? 2 : (b2.insp && b2.insp.v === '需复检') ? 0 : (!b2.insp && b2.canDown) ? 1 : (!b2.insp ? 3 : 4);
+        boxes.sort((a, x) => _rk(a) - _rk(x) || String(a.loc).localeCompare(String(x.loc)));
+        const sum = { boxes: boxes.length, qty: 0, un: 0, ok: 0, re: 0, ret: 0, busy: 0 };
+        for (const b2 of boxes) { sum.qty += Number(b2.q) || 0; if (b2.why === '检验中') sum.busy++; else if (!b2.insp) sum.un++; else if (b2.insp.v === '需复检') sum.re++; else if (b2.insp.v === '退货') sum.ret++; else sum.ok++; }
         const freeStns = AGV_STNS.filter((st) => inspStationFree(st, Date.now()));
         const busyStns = {}; for (const st of AGV_STNS) { const v = (db.rcsStations || {})[st]; busyStns[st] = v && v.state && v.state !== '空闲' ? v.state : (freeStns.includes(st) ? '' : '队列/检验占用'); }
-        return send(res, 200, { ok: true, boxes: boxes.slice(0, 80), total: boxes.length, freeStns, busyStns, aliases: AGV_STNS.reduce((m, c) => { const a = stnAlias(c); if (a) m[c] = a; return m }, {}) });
+        return send(res, 200, { ok: true, boxes: boxes.slice(0, 80), total: boxes.length, sum, freeStns, busyStns, aliases: AGV_STNS.reduce((m, c) => { const a = stnAlias(c); if (a) m[c] = a; return m }, {}) });
+      }
+      // ---- v55 检验态批量查询（库存页徽章/按钮用）：只读，无权限要求（数据本就在该页可见） ----
+      if (req.method === 'POST' && p === '/api/inspect/status') {
+        const b = await readBody(req);
+        const arr = Array.isArray(b.codes) ? b.codes.slice(0, 300) : [];
+        const seen = db.inspSeen || {}; const m = {};
+        for (const c of arr) { const k = String(c || '').toUpperCase(); if (!k) continue; const e = seen[k]; m[k] = e ? { v: String(e.v || ''), at: Number(e.at) || 0 } : null; }
+        const busy = {}; for (const q of db.inspects || []) { if (['waitOut', 'toStation', 'atStation', 'waitBack', 'returning', 'waitReturn'].includes(q.state)) busy[String(q.code || '').toUpperCase()] = q.state; }
+        return send(res, 200, { ok: true, map: m, busy });
       }
       // ---- ㉖④ 检验模式：下架到站台检验，看完备注后原样归位（复用 WMAS CARRY/transfer 通道）----
       if (req.method === 'POST' && p === '/api/inspect/start') {
@@ -2672,6 +2694,7 @@ const server = http.createServer(async (req, res) => {
           const rr = String(b.retReason || '').slice(0, 120);
           if (vd === '退货' && !rr) return send(res, 400, { ok: false, msg: '退货结论必须填写退货原因（如：来料不良/错料/供应商发错）' }); // ㉖⑦ 校验先行，失败不留脏字段
           rec.verdict = vd; rec.note2 = String(b.note || '').slice(0, 200); rec.verdictBy = u.name; rec.verdictAt = Date.now();
+          inspMarkSeen(rec, vd, u.name); // ㉖v55 填结论即写检验历史（框内全兄弟标签）
           if (vd === '退货') { // ㉖⑦ 判退货：不回原货位，挂待退货，走正常出库通道出账
             rec.retReason = rr;
             rec.state = 'waitReturn'; rec.updAt = Date.now();
@@ -2765,6 +2788,7 @@ const server = http.createServer(async (req, res) => {
         const rr = String(b.retReason || '').slice(0, 120);
         if (vd === '退货' && !rr) return send(res, 400, { ok: false, msg: '退货结论必须填写退货原因（如：来料不良/错料/供应商发错）' }); // ㉖⑦ 校验先行
         rec.verdict = vd; rec.note2 = String(b.note || '').slice(0, 200); rec.verdictBy = u.name; rec.verdictAt = Date.now(); rec.updAt = Date.now();
+        inspMarkSeen(rec, vd, u.name); // v55 填结论即写检验历史（框内全兄弟标签）
         if (vd === '退货') { // ㉖⑦ 仓管/管理员自判退货：货留站台，走出库通道出账
           rec.retReason = rr;
           rec.state = 'waitReturn';
@@ -4078,6 +4102,24 @@ function inspStationFree(stn, nowMs, selfId) { // 检验可用站台：未停用
   if ((db.agvQueue || []).some((q) => q.station === stn && ['排队', '下发中', '已下发'].includes(q.state))) return false;
   if ((db.inspects || []).some((q) => q.id !== selfId && q.station === stn && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state))) return false; // waitReturn=待退货框仍压站台
   return true;
+}
+// ---- v55 检验历史：填结论即按"框=托"记全兄弟标签的最近结论（复检覆盖旧值）；180天/2万键滚动剪枝 ----
+function inspSibs(code) {
+  code = String(code || '').toUpperCase(); const out = new Set([code]);
+  const anchor = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code);
+  if (anchor) { const bk = boxKeyOf(anchor); for (const x of db.ledger || []) { if (boxKeyOf(x) === bk) out.add(String(x.c || '').toUpperCase()); } }
+  return [...out];
+}
+function inspMarkSeen(rec, vd, byName) {
+  try {
+    db.inspSeen = db.inspSeen || {};
+    const e = { v: String(vd || ''), at: Date.now(), pn: String(rec.part || '').toUpperCase(), n: String(rec.nm || '').slice(0, 40), by: String(byName || '').slice(0, 20) };
+    for (const c of inspSibs(rec.code)) db.inspSeen[c] = e;
+    const cut = Date.now() - 180 * 864e5;
+    for (const k of Object.keys(db.inspSeen)) { if ((Number(db.inspSeen[k].at) || 0) < cut) delete db.inspSeen[k]; }
+    const ks = Object.keys(db.inspSeen);
+    if (ks.length > 20000) { ks.sort((x, y) => (db.inspSeen[x].at || 0) - (db.inspSeen[y].at || 0)); for (const k of ks.slice(0, ks.length - 20000)) delete db.inspSeen[k]; }
+  } catch (_) {}
 }
 function inspBoxState(x) { // 检验框可下架性：AGV货架位(非CK站台) + 无进行中检验 + 无在途出库
   const from = String(x.l || '').toUpperCase();

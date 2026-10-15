@@ -1084,6 +1084,8 @@ class _PPBox {
       outFrom = "",
       outLink = "";
   String agvChain = ""; // 领料出库时服务器AGV节点链路（A补充）
+  Map? insp; // v55 检验历史 {v,at}（null=未检）
+  String inspBusy = ""; // v55 进行中检验工单状态（非空=检验中）
   bool get inStock => !cancelled && outTime == null;
   bool get ledgerOnly => inTime == null;
 }
@@ -1308,6 +1310,19 @@ Future<_PPData> loadPartProfile(String partNo) async {
       } catch (_) {}
     }));
   }
+  // v55 在库框批量拉检验态（徽章+检验下架按钮用；服务器不可达静默=全部按未检显示）
+  final inStockBoxes = d.boxes.where((b) => b.inStock && b.barcode.isNotEmpty).toList();
+  if (inStockBoxes.isNotEmpty) {
+    try {
+      final r = await AuthApi.inspectStatus(inStockBoxes.map((b) => b.barcode).toList()).timeout(const Duration(seconds: 8));
+      if (r["ok"] == true) {
+        final m = r["map"];
+        final busy = r["busy"];
+        if (m is Map) for (final b in inStockBoxes) { final e = m[b.barcode.toUpperCase()]; if (e is Map) b.insp = Map.from(e); }
+        if (busy is Map) for (final b in inStockBoxes) { final s = busy[b.barcode.toUpperCase()]; if (s != null) b.inspBusy = s.toString(); }
+      }
+    } catch (_) {}
+  }
   return d;
 }
 
@@ -1390,6 +1405,33 @@ class _PartProfilePageState extends State<PartProfilePage> {
             : (b.ledgerOnly
                 ? const _PpBadge("账本存量", Color(0xFF0891B2))
                 : const _PpBadge("在库", Colors.green)));
+    // v55 检验态徽章 + 检验下架入口（在库·AGV货架位·无在途工单·有检验权限）
+    final isShelf = b.inStock && RegExp(r'^NB02-').hasMatch(b.curLoc) && !b.curLoc.contains('-CK-');
+    final canInsp = isShelf && b.inspBusy.isEmpty && Auth.can("inspect_mode");
+    Widget? inspBadge;
+    if (b.inStock && (b.insp != null || b.inspBusy.isNotEmpty)) {
+      final busy = b.inspBusy.isNotEmpty;
+      final v = (b.insp?["v"] ?? "").toString();
+      final at = (b.insp?["at"] as num?)?.toInt() ?? 0;
+      final dt = at > 0 ? DateTime.fromMillisecondsSinceEpoch(at) : null;
+      final txt = busy
+          ? "检验中"
+          : "已检·$v${dt == null ? "" : "·${dt.month}-${dt.day.toString().padLeft(2, "0")}"}";
+      final col = busy
+          ? const Color(0xFF515BD4)
+          : (v == "需复检"
+              ? const Color(0xFFE65100)
+              : (v == "退货"
+                  ? const Color(0xFFC62828)
+                  : (v == "不合格" ? const Color(0xFFAD1457) : Colors.blueGrey)));
+      inspBadge = Container(
+          margin: const EdgeInsets.only(left: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+          decoration: BoxDecoration(
+              color: col.withOpacity(.1), borderRadius: BorderRadius.circular(7)),
+          child: Text(txt,
+              style: TextStyle(fontSize: 10.5, color: col, fontWeight: FontWeight.w600)));
+    }
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 5),
       child: Padding(
@@ -1406,6 +1448,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
               Text(" ${_fmtInvNum(b.qty)} 件 ",
                   style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
               badge,
+              if (inspBadge != null) inspBadge,
             ]),
             if (b.pallet.isNotEmpty || b.itemName.isNotEmpty)
               Padding(
@@ -1426,8 +1469,53 @@ class _PartProfilePageState extends State<PartProfilePage> {
                   "${_t(b.outTime)}  ·  ${b.outFrom.isNotEmpty ? b.outFrom : "?"} → ${b.outTo}  ·  ${b.outMove.isEmpty ? "" : "${b.outMove}搬运 · "}${b.outOrder}${b.outLink.isNotEmpty ? "（领料单 ${b.outLink}）" : ""}  ·  ${b.outOperator}"),
             if (b.agvChain.isNotEmpty)
               _stepLine(Icons.route, Colors.indigo, "AGV链路", b.agvChain),
+            if (canInsp)
+              Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                    TextButton.icon(
+                        onPressed: () => _inspStart(b),
+                        icon: const Icon(Icons.local_shipping_outlined,
+                            size: 18, color: Color(0xFF515BD4)),
+                        label: const Text("🔎 检验下架",
+                            style: TextStyle(color: Color(0xFF515BD4)))),
+                  ])),
           ])),
     );
+  }
+
+  /// v55 库存页发起检验下架：确认弹窗 → /api/inspect/start → 刷新（站台自动分配）
+  Future<void> _inspStart(_PPBox b) async {
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (c2) => AlertDialog(
+                title: const Text("确认检验下架"),
+                content: Text(
+                    "货位 ${b.curLoc}\n零件 ${widget.partNo}${b.itemName.isNotEmpty ? " · ${b.itemName}" : ""} · ${_fmtInvNum(b.qty)}件\n标签 ${b.barcode}${b.inBatch.isNotEmpty ? "\n批次 ${b.inBatch}" : ""}\n\nAGV 将把该框送到空闲站台，检验员看完结论后由仓管协助归位回 ${b.curLoc}。"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2, false),
+                      child: const Text("取消")),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(c2, true),
+                      child: const Text("发起下架")),
+                ]));
+    if (yes != true || !mounted) return;
+    final r = await AuthApi.inspectStart(b.curLoc, "库存页发起检验");
+    if (!mounted) return;
+    if (r["ok"] == true) {
+      final rec = Map.from(r["rec"] ?? {});
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(r["queued"] == true
+              ? "✅ 已入队 → ${rec["station"] ?? ""}（站台空闲且真实下发模式时自动发车）"
+              : "✅ 已下架 → ${rec["station"] ?? "站台"}，到台后通知归位"),
+          backgroundColor: Colors.green));
+      setState(() => _f = loadPartProfile(widget.partNo)); // 刷新徽章/按钮态
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("发起失败：${r["msg"] ?? "未知错误"}"),
+          backgroundColor: Colors.red));
+    }
   }
 
   @override
