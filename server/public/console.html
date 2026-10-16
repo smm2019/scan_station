@@ -131,7 +131,7 @@ async function newReqGo(btn){const items=[...document.querySelectorAll('.nrow')]
   if(j.ok){T('✅ 已提交 '+(j.req&&j.req.no||''),1);$('#mask').classList.add('hide');pgReqs()}else T('❌ '+(j.msg||'失败'))}catch(_){T('提交失败')}btn.disabled=false}
 async function webCancel(k,cx,code){if(!confirm(cx?('作废流水 '+code+'？将同步整框消账并允许重新扫码录入'):('恢复流水 '+code+'？将按原货位重登账本')))return;
  try{const j=await api('/api/scanlog/cancel',{method:'POST',body:{k,cx}});T(j.ok?('✅ '+(j.msg||'完成')):('❌ '+(j.msg||'失败')),2);if(j.ok)flowGo()}catch(_){T('操作失败')}} // ㉖⑫ 概览下钻统一入口：全量重置筛选(含搜索词/我的待办/急料/超时/视图)，杜绝"点进去空白"
-function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.remove('lgmode');try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();setInterval(notifPoll,45000)}catch(_){}}
+function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.remove('lgmode');if(U&&U.mustChangePw&&!document.getElementById('cpmust')){const d=document.createElement('div');d.id='cpmust';d.style.cssText='background:#fff3e0;border-bottom:2px solid #e65100;color:#bf360c;padding:7px 16px;font-size:13px;font-weight:600';d.innerHTML='⚠ 首次登录：请尽快修改初始密码 —— 点右上「⚙ 偏好」→「修改密码」区；改完此提示消失。';document.getElementById('app').insertBefore(d,document.querySelector('#app header').nextSibling||null);}try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();setInterval(notifPoll,45000)}catch(_){}}
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
@@ -202,6 +202,11 @@ function renderKpiOrd(){const el=document.getElementById('kord');if(!el)return;c
 function kpiMove(i,d){const j=i+d;if(j<0||j>=_kord.length)return;const t=_kord[i];_kord[i]=_kord[j];_kord[j]=t;renderKpiOrd()}
 function kpiRm(i){_kord.splice(i,1);renderKpiOrd()}
 function kpiAdd(){const s=document.getElementById('kadd');if(!s)return;const v=s.value;if(v&&!_kord.includes(v)){_kord.push(v);renderKpiOrd()}}
+// ---- ㉖v56 修改密码（网页端入口补齐：服务端 /api/change_password 早已存在，网页一直缺表单） ----
+async function chgPw(btn){const o=$('#cp_o').value,n1=$('#cp_n').value,n2=$('#cp_n2').value;
+ if(n1.length<6){T('新密码至少6位');return}if(n1!==n2){T('两次输入的新密码不一致');return}
+ btn.disabled=true;try{const j=await api('/api/change_password',{method:'POST',body:{oldPassword:o,newPassword:n1}});
+ if(j.ok){T('✅ 密码已修改，下次登录用新密码',1);$('#cp_o').value='';$('#cp_n').value='';$('#cp_n2').value='';U.mustChangePw=false;const b=$('#cpmust');if(b)b.remove();}else T('❌ '+(j.msg||'修改失败'))}catch(_){T('请求失败')}btn.disabled=false}
 // ---- ㉕F5 个人偏好弹窗（落地页/通知订阅/概览卡/模板） ----
 async function prefDlg(){try{const q=await api('/api/prefs');window._tpls=q.templates||[];if(q.prefs)PF=Object.assign(PF,q.prefs);}catch(_){}
  const N=[['req_new','新领料单'],['req_urge','催单'],['req_arrive','到站催扫'],['req_flow','流转动态(接单/备齐/签收等)'],['watch_in','预约到料'],['stock_out','断料预警']];
@@ -212,6 +217,8 @@ async function prefDlg(){try{const q=await api('/api/prefs');window._tpls=q.temp
 <label>登录后默认落地页</label><select id="pd_l"><option value="">📊 概览</option>${TABS.filter(([k])=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material')).map(([k,n])=>`<option value="${k}" ${PF.landing==k?'selected':''}>${n}</option>`).join('')}</select>
 <label>通知订阅（车辆告警/急停强制必达，不可退订）</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 10px">${N.map(([k,n])=>`<span style="font-size:13px"><input type="checkbox" data-n="${k}" ${(pf[k]!==false)?'checked':''}> ${n}</span>`).join('')}</div>
 <label>概览 KPI 卡：列表顺序即显示顺序（↑↓ 调整，✕ 移除，全空=全部显示）</label><div id="kord" style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px;margin-bottom:6px"></div><div class="row" style="margin-bottom:6px"><select id="kadd" style="flex:1;padding:4px 6px"></select><button class="pill q" onclick="kpiAdd()">＋ 加入</button></div>
+<label>🔑 修改密码（当前登录账号：${U.username}）</label>
+<div class="row" style="gap:6px;margin-bottom:8px"><input id="cp_o" type="password" placeholder="当前密码" style="flex:1"><input id="cp_n" type="password" placeholder="新密码(≥6位)" style="flex:1"><input id="cp_n2" type="password" placeholder="重复新密码" style="flex:1"><button class="pill" onclick="chgPw(this)">改密</button></div>
 <div id="uiSec"></div><div class="row" style="margin-top:10px"><select id="pd_tpl" style="flex:1">${(window._tpls||[]).map((t)=>`<option value="${t.name}">${t.name}（${t.by}）</option>`).join('')||'<option value="">（暂无模板）</option>'}</select><button class="pill q" onclick="tplApply()">套用</button>${U.role=='admin'?'<button class="pill q" onclick="tplSave()">当前设置存为模板</button>':''}</div>
 <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill" onclick="prefSave(this)">保存</button></div>`);renderKpiOrd();prefRepaintUi()}
 async function prefSave(btn){btn.disabled=true;const notes={},kpi=[];document.querySelectorAll('#dlg input[data-n]').forEach((c)=>notes[c.dataset.n]=c.checked);_kord.forEach((n)=>{if((window._K||[]).includes(n))kpi.push(n)});
