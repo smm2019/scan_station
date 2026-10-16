@@ -19,6 +19,7 @@ New-Item -ItemType Directory -Path "$stage\code\public" -Force | Out-Null
 Copy-Item "$serverDir\server.js" "$stage\code\server.js" -Force
 Copy-Item "$serverDir\public\*" "$stage\code\public\" -Recurse -Force
 Copy-Item (Join-Path $proj 'install.ps1') "$stage\install.ps1" -Force
+Copy-Item (Join-Path $proj '一键安装.cmd') "$stage\一键安装.cmd" -Force
 Copy-Item (Join-Path $proj 'update.ps1') "$stage\update.ps1" -Force
 Copy-Item (Join-Path $proj 'README.md') "$stage\README.md" -Force
 # 语法自检：server.js 必须能过 node --check
