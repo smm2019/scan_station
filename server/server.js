@@ -700,6 +700,9 @@ const PARAMS = {
   notifKeep:      { grp: '数据保留', name: '通知保留条数', unit: '条', min: 100, max: 5000, d: 500, tip: '消息中心滚动保留最近多少条通知（超出丢弃最旧）' },
   archDays:       { grp: '数据保留', name: '流水归档窗口', unit: '天', min: 30, max: 365, d: 90, tip: '采集流水/出库单超期挪归档目录（主库瘦身；导出勾「含归档」仍可查全史）；原硬编码180' },
   reqArchDays:    { grp: '数据保留', name: '领料单归档窗口', unit: '天', min: 90, max: 730, d: 365, tip: '已终结(签收/拒单/取消)领料单超期挪归档，主库只留在途与近一年；未终结单永不归档' },
+  rackCount:      { grp: '存储配置', name: '高架货架数', unit: '架', min: 1, max: 40, d: 8, tip: 'NB02 高位货架台数（现场实际 8 台：A/B 区各 4 架）' },
+  rackCols:       { grp: '存储配置', name: '每架列数', unit: '列', min: 4, max: 60, d: 16, tip: '每台货架横向格列数（现场 16 列）；总格位=架数×列数×层数' },
+  rackTiers:      { grp: '存储配置', name: '每架层数', unit: '层', min: 1, max: 10, d: 4, tip: '每台货架纵向层数（现场 4 层：1F-4F）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
 
@@ -2576,7 +2579,7 @@ const server = http.createServer(async (req, res) => {
       }
       // ===== ㉖ 容器类型可配置：GET 登录即可读（采集页按钮数据源）；POST 仓管/管理员整表保存（留痕） =====
       if (req.method === 'GET' && p === '/api/containers') {
-        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes });
+        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers } }); // ㉖v56 高架格位规格下发（8×16×4=512 口径，参数可调）
       }
       if (req.method === 'POST' && p === '/api/containers') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
