@@ -2339,6 +2339,84 @@ return send(res, 200, {
         return send(res, 200, { ok: true, list: ks.slice(0, 40).map((k) => ({ pn: k, nm: m[k].nm, n: m[k].n })) });
       }
       // ===== ㉖v57 任务/货物追溯看板：跨实体统一时间线（扫码→上架→领料→调度→AGV→到站→出库），只读聚合 =====
+      // ===== ㉖v58 错发/漏扫防呆体检：只读扫描全库作业隐患（不改任何数据，供🛡防呆看板展示） =====
+      if (req.method === 'GET' && p === '/api/foolproof') {
+        const ISS = [];
+        const add = (type, code, loc, detail, sev) => { ISS.push({ type: String(type || ''), code: String(code || ''), loc: String(loc || ''), detail: String(detail || ''), sev: sev === 'high' ? 'high' : sev === 'mid' ? 'mid' : 'low' }); };
+        // 采集流水按框码索引（有效采集=有入库佐证）
+        const scannedCodes = {}; for (const st of Object.values(db.scanlog || {})) { if (!st.cx) scannedCodes[String(st.code || '').toUpperCase()] = st; }
+        const ledgerByCode = {}; for (const x of db.ledger || []) ledgerByCode[String(x.c || '').toUpperCase()] = x;
+        // — ① 错发：出库单框码无任何采集/账本佐证（来源不明，疑似发错）
+        for (const o of Object.values(db.outbound || {})) {
+          if (Number(o.status) === 1) continue; // 已完成不再体检
+          for (const it of o.items || []) {
+            const c = String(it.code || it.barcode || '').toUpperCase(); if (!c) continue;
+            if (!scannedCodes[c] && !ledgerByCode[c]) add('错发', c, it.fromLoc || '', '出库单 ' + o.orderNo + ' 中该框无采集流水也无账本记录，来源不明', 'high');
+          }
+        }
+        // — ② 漏扫：领料单已备齐(ready)但有行短装未闭环（实发<需求且未跳过说明）
+        for (const r of db.requisitions || []) {
+          if (!['ready', 'accepted'].includes(r.status)) continue;
+          for (const it of r.items || []) {
+            if (it.skipped) continue;
+            const need = Number(it.qty) || 0, got = Number(it.transferQty) || 0;
+            if (need > 0 && got < need) add('漏扫', String(it.partNo || ''), '', '领料单 ' + (r.no || '') + ' 零件 ' + (it.partNo || '') + ' 需求' + need + '件实发' + got + '件，短' + (need - got) + '件', need - got >= need ? 'high' : 'mid');
+          }
+        }
+        // — ③ 超发：领料单已发数量超过需求（多发货）
+        for (const r of db.requisitions || []) {
+          if (['done', 'cancelled', 'rejected'].includes(r.status)) continue;
+          for (const it of r.items || []) {
+            const need = Number(it.qty) || 0;
+            const issued = (it.issued || []).reduce((s, e) => s + (Number(typeof e === 'string' ? 0 : e.q) || 0), 0);
+            if (need > 0 && issued > need) add('超发', String(it.partNo || ''), '', '领料单 ' + (r.no || '') + ' 零件 ' + (it.partNo || '') + ' 需求' + need + '件已发' + issued + '件，超发' + (issued - need) + '件', 'high');
+          }
+        }
+        // — ④ 一框多发：同一账本框(按boxKeyOf归并)被多个活跃领料单发料
+        const boxOwners = {};
+        for (const r of db.requisitions || []) {
+          if (['done', 'cancelled', 'rejected'].includes(r.status)) continue;
+          for (const it of r.items || []) for (const e of it.issued || []) {
+            const c = String(typeof e === 'string' ? e : e.c || '').toUpperCase(); if (!c) continue;
+            const lx = ledgerByCode[c]; const bk = lx ? boxKeyOf(lx) : 'C|' + c;
+            (boxOwners[bk] = boxOwners[bk] || new Set()).add(r.no || '');
+          }
+        }
+        for (const [bk, owners] of Object.entries(boxOwners)) {
+          if (owners.size > 1) add('一框多发', bk.replace(/^[PLC]\|/, ''), '', '同一框被多个领料单发料：' + Array.from(owners).slice(0, 5).join('、'), 'high');
+        }
+        // — ⑤ 到站滞留：AGV已到站但队列项长时间未交付闭环（漏扫交付）
+        const nowMs = Date.now(), staleMs = (Number((db.params || {}).fpStaleMin) || 30) * 60000;
+        for (const q of db.agvQueue || []) {
+          if (q.state !== '到站') continue;
+          const since = Number(q.updAt || q.at) || 0;
+          if (since && nowMs - since > staleMs) add('到站滞留', String(q.code || ''), q.station || '', 'AGV已到站台 ' + (q.station || '') + ' 超' + Math.round((nowMs - since) / 60000) + '分钟未交付闭环，疑似漏扫确认', 'mid');
+        }
+        const order = { high: 0, mid: 1, low: 2 };
+        ISS.sort((a, b) => (order[a.sev] - order[b.sev]) || String(a.type).localeCompare(String(b.type)));
+        const byType = {}; for (const x of ISS) byType[x.type] = (byType[x.type] || 0) + 1;
+        const bySev = { high: 0, mid: 0, low: 0 }; for (const x of ISS) bySev[x.sev] = (bySev[x.sev] || 0) + 1;
+        return send(res, 200, { ok: true, count: ISS.length, byType: byType, bySev: bySev, issues: ISS.slice(0, 500), staleMin: Math.round(staleMs / 60000) });
+      }
+      // ===== ㉖v58 出库扫码防呆校验：PDA/网页出库核对时实时判定该框能否出（block拦截/warn提醒/ok放行），只读不落库 =====
+      if (req.method === 'GET' && p === '/api/outbound/scanCheck') {
+        const c = String(url.searchParams.get('c') || '').trim().toUpperCase();
+        if (!c) return send(res, 400, { ok: false, msg: '缺少框码 c' });
+        const st = labelStatus(c);
+        if (!st) return send(res, 200, { ok: true, code: c, level: 'block', reason: '空框码', advice: '重新扫码' });
+        // 来源佐证：采集流水或账本记录（无佐证=来源不明，最高危错发信号）
+        const scanned = Object.values(db.scanlog || {}).some((x) => !x.cx && String(x.code || '').toUpperCase() === c);
+        const onLedger = (db.ledger || []).some((x) => String(x.c || '').toUpperCase() === c);
+        if (!scanned && !onLedger) return send(res, 200, { ok: true, code: c, level: 'block', reason: '该框无采集流水也无账本记录，来源不明', advice: '疑似发错货，请先核对来源' });
+        // 已发料到领料单：会被重复出库，硬拦（出库核对阶段该框不该再随出库单走）
+        if (st.inIssued.length) return send(res, 200, { ok: true, code: c, level: 'block', reason: '该标签已发料到领料单 ' + st.inIssued.slice(0, 3).join('、') + '，禁止重复出库', advice: '该框已走领料发料，勿再随出库单发出' });
+        // 检验中（非退货放行态）：硬拦
+        { const _act = (st.inInspect || []).filter((q) => q.state !== 'waitReturn'); if (_act.length) return send(res, 200, { ok: true, code: c, level: 'block', reason: '该框正在检验流程中，暂不可出库', advice: '待检验完成或判退货后再出' }); }
+        // 归属校验：该框在某张活跃出库单明细内=预期状态（放行）；不在任何单=提醒（可能拿错框）
+        let inOrder = ''; for (const o of Object.values(db.outbound || {})) { if (Number(o.status) === 1) continue; for (const it of o.items || []) { if (String(it.code || '').toUpperCase() === c || String(it.barcode || '').toUpperCase() === c) { inOrder = o.orderNo; break; } } if (inOrder) break; }
+        if (!inOrder) return send(res, 200, { ok: true, code: c, level: 'warn', reason: '该框不在任何活跃出库单明细内', advice: '请确认是否应随本单出库' });
+        return send(res, 200, { ok: true, code: c, level: 'ok', reason: '校验通过', order: inOrder, advice: '' });
+      }
       if (req.method === 'GET' && p === '/api/trace') {
         const q0 = String(url.searchParams.get('q') || '').trim();
         if (!q0) return send(res, 400, { ok: false, msg: '缺少查询关键字 q' });

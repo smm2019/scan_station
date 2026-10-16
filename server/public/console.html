@@ -135,8 +135,8 @@ function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.re
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
-const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['rpt','📈 工作量'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['trace','🔗 追溯'],['admin','⚙️ 控制后台']];
-function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,trace:pgTrace,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
+const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['rpt','📈 工作量'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['trace','🔗 追溯'],['fool','🛡 防呆'],['admin','⚙️ 控制后台']];
+function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,trace:pgTrace,fool:pgFool,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
 function navBadge(n){const b=document.querySelector('#nav button');if(!b)return;let bd=b.querySelector('.navbd');if(n>0){if(!bd){bd=document.createElement('span');bd.className='navbd';b.appendChild(bd)}bd.textContent=n>9?'9+':n}else if(bd)bd.remove()}
 // ===== ㉖v52 静默刷新调度器：后台照常取数，前台不打扰 =====
 // 规则：①你正在输入/选中文字/弹窗开着/刚有过鼠标键盘动作(3秒内) → 本轮直接跳过，不取数也不改画面
@@ -344,6 +344,57 @@ async function kDo(id,act,body){try{const j=await api('/api/requisitions/'+id+'/
 let TP={};
 async // ---- ㉖v57 任务/货物追溯看板：跨实体统一时间线（扫码→上架→领料→调度→AGV→到站→出库） ----
 var TRC = TRC || {};
+// ---- ㉖v58 错发/漏扫防呆：作业隐患体检 + 出库扫码实时校验 ----
+var FP = FP || {};
+function pgFool() {
+  $('#main').innerHTML = `<div class="grid" style="grid-template-columns:1fr minmax(280px,340px);align-items:start">
+    <div class="card"><div class="row" style="justify-content:space-between"><div style="font-size:13px;font-weight:600">🛡 作业隐患体检</div>
+      <div class="row"><span id="fpsub" style="font-size:11.5px;color:var(--sub)">${FP.data ? '共 ' + FP.data.count + ' 项 · 滞留阈值 ' + FP.data.staleMin + '分' : ''}</span><button class="pill" onclick="fpScan()">↻ 重新体检</button></div></div>
+      <div class="row" style="margin:6px 0"><span class="pill r" style="cursor:default" id="fpSev">—</span></div>
+      <div id="fplist" style="max-height:66vh;overflow:auto">${FP.data ? fpList(FP.data) : '<div style="color:var(--sub);font-size:12.5px;padding:16px 0">点击「重新体检」扫描全库错发/漏扫隐患。</div>'}</div>
+    </div>
+    <div class="card"><div style="font-size:13px;font-weight:600;margin-bottom:6px">📤 出库扫码校验</div>
+      <div style="font-size:11.5px;color:var(--sub);line-height:1.6;margin-bottom:8px">出库核对时输入框码，实时判定能否放行：<b style="color:var(--ok)">通过</b> / <b style="color:var(--warn)">提醒</b> / <b style="color:var(--bad)">拦截</b>。校验该框来源是否可溯、是否已在其他单据、是否属于活跃出库单。</div>
+      <div class="row"><input id="fpc" placeholder="扫描或输入框码" value="${FP.q || ''}" style="flex:1;min-width:120px" onkeydown="if(event.key=='Enter')fpCheck()"><button class="pill" onclick="fpCheck()">校验</button></div>
+      <div id="fpres" style="margin-top:10px">${FP.res ? fpResCard(FP.res) : ''}</div>
+      ${FP.hist && FP.hist.length ? `<div style="margin-top:12px;font-size:11.5px;color:var(--sub)">最近校验</div><div id="fphist" style="margin-top:4px">${FP.hist.slice(0, 8).map(x => `<div style="font-size:11.5px;padding:2px 0"><span class="mono">${_esc(x.code)}</span> <span class="tag ${x.level === 'ok' ? 't-d' : x.level === 'warn' ? 't-p' : 't-r'}">${x.level === 'ok' ? '通过' : x.level === 'warn' ? '提醒' : '拦截'}</span> <span style="color:var(--sub)">${_esc(x.reason || '')}</span></div>`).join('')}</div>` : ''}
+    </div>
+  </div>`;
+}
+function fpList(d) {
+  if (!d.issues || !d.issues.length) return '<div style="color:var(--ok);font-size:12.5px;padding:16px 0">✅ 未发现错发/漏扫隐患，作业数据健康。</div>';
+  const SC = { high: 'var(--bad)', mid: 'var(--warn)', low: 'var(--sub)' };
+  const SL = { high: '高', mid: '中', low: '低' };
+  return `<table style="width:100%;font-size:12px"><thead><tr style="color:var(--sub);text-align:left"><th style="padding:3px">级别</th><th>类型</th><th>对象</th><th>隐患说明</th></tr></thead><tbody>${
+    d.issues.map(x => `<tr style="border-top:1px solid var(--line)"><td style="padding:4px 3px;color:${SC[x.sev]};font-weight:600">${SL[x.sev]}</td><td><span class="tag ${x.type === '错发' || x.type === '一框多发' ? 't-r' : x.type === '漏扫' || x.type === '到站滞留' ? 't-p' : 't-x'}">${_esc(x.type)}</span></td><td class="mono">${_esc(x.code || '')}${x.loc ? '<br><span style="color:var(--sub);font-size:11px">' + _esc(x.loc) + '</span>' : ''}</td><td style="color:var(--fg)">${_esc(x.detail)}</td></tr>`).join('')
+  }</tbody></table>`;
+}
+function fpResCard(r) {
+  const C = r.level === 'ok' ? 'var(--ok)' : r.level === 'warn' ? 'var(--warn)' : 'var(--bad)';
+  const L = r.level === 'ok' ? '✅ 通过' : r.level === 'warn' ? '⚠️ 提醒' : '⛔ 拦截';
+  return `<div style="border:1px solid ${C};border-left:4px solid ${C};border-radius:6px;padding:8px 10px;background:${r.level === 'ok' ? 'rgba(46,125,50,.06)' : r.level === 'warn' ? 'rgba(230,81,0,.06)' : 'rgba(198,40,40,.06)'}">
+    <div style="font-size:13px;font-weight:600;color:${C}">${L} <span class="mono" style="font-weight:400;color:var(--fg)">${_esc(r.code || '')}</span>${r.order ? ' <span class="tag t-a" style="font-size:10px">出库单 ' + _esc(r.order) + '</span>' : ''}</div>
+    <div style="font-size:11.5px;color:var(--sub);margin-top:3px">${_esc(r.reason || '')}${r.advice ? ' · ' + _esc(r.advice) : ''}</div>
+  </div>`;
+}
+async function fpScan() {
+  T('体检中…');
+  try { const d = await api('/api/foolproof'); FP.data = d; pgFool(); const se = $('#fpSev'); if (se) se.textContent = '高危 ' + ((d.bySev || {}).high || 0) + ' · 中 ' + ((d.bySev || {}).mid || 0) + ' · 低 ' + ((d.bySev || {}).low || 0); T('体检完成，共 ' + d.count + ' 项', true); }
+  catch (e) { T('体检失败：' + (e && e.message ? e.message : '网络或服务未重启')); }
+}
+async function fpCheck() {
+  const v = ($('#fpc') || {}).value || ''; const c = String(v).trim();
+  if (!c) { T('请输入框码'); return; }
+  FP.q = c;
+  try {
+    const r = await api('/api/outbound/scanCheck?c=' + encodeURIComponent(c));
+    FP.res = r; FP.hist = FP.hist || []; FP.hist.unshift({ code: r.code || c, level: r.level, reason: r.reason }); FP.hist = FP.hist.slice(0, 12);
+    pgFool(); const inp = $('#fpc'); if (inp) { inp.value = ''; inp.focus(); }
+    if (r.level === 'block') T('⛔ ' + (r.reason || '不可出库'), false);
+    else if (r.level === 'warn') T('⚠️ ' + (r.reason || '请确认'), false);
+  } catch (e) { T('校验失败：' + (e && e.message ? e.message : '网络或服务未重启')); }
+}
+
 function pgTrace() {
   $('#main').innerHTML = `<div class="grid" style="grid-template-columns:minmax(300px,380px) 1fr;align-items:start">
     <div class="card"><div style="font-size:13px;font-weight:600;margin-bottom:6px">🔗 全链路追溯</div>
