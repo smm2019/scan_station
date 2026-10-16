@@ -599,15 +599,27 @@ function nb02AssignFree(partNo) {
   const free = nb02MasterSeq().filter((l) => !used.has(l));
   if (!free.length) return '';
   const low3 = (arr) => { for (const l of arr) { const f = l.length >= 2 ? l[l.length - 2] : ''; if (f === '1' || f === '2' || f === '3') return l; } return arr.length ? arr[0] : ''; };
+  // ㉖v56 拥挤避让：活跃AGV任务（正在下架/搬运）的源货位所在货架与区记为"忙"，新入库优先去不忙的架/区；逐级回退保证总有位可分
+  const busyRack = new Set(), busyZone = new Set();
+  for (const q of db.agvQueue || []) { if (['完成', '取消', '失败'].includes(q.state)) continue; const fl = String(q.fromLoc || '').toUpperCase(); if (!/^NB02-/.test(fl) || /-CK-/.test(fl)) continue; busyRack.add(fl.slice(0, 9)); if (fl.length > 5) busyZone.add(fl[5]); }
+  const calmRack = (arr) => arr.filter((l) => !busyRack.has(l.slice(0, 9)));
+  const calmZone = (arr) => arr.filter((l) => l.length > 5 && !busyZone.has(l[5]));
   if (partNo) {
     const shelves = new Set();
     for (const x of db.ledger || []) { if (String(x.p || '').toUpperCase() !== partNo) continue; const l = String(x.l || '').toUpperCase(); if (/^NB02-[A-Z]-\d{2}-\dF$/.test(l)) shelves.add(l.slice(0, 9)); }
-    for (const sh of [...shelves].sort()) { const cand = free.filter((l) => l.startsWith(sh)); if (cand.length) return low3(cand); }
-    const zones = new Set([...shelves].map((x) => x[5]));
-    const sz = free.filter((l) => l.length > 5 && zones.has(l[5]));
-    if (sz.length) return low3(sz);
+    const shelfList = [...shelves].sort();
+    for (const sh of shelfList) { const cand = calmRack(free.filter((l) => l.startsWith(sh))); if (cand.length) return low3(cand); } // 同件同架且不忙
+    const zones = new Set(shelfList.map((x) => x[5]));
+    let sz = calmZone(free.filter((l) => l.length > 5 && zones.has(l[5]))); if (sz.length) return low3(sz); // 同件同区且不忙
+    let g = calmRack(free); if (g.length) return low3(g); // 跨区：全局不忙架（拥挤区整体让路）
+    const gz = calmZone(free); if (gz.length) return low3(gz); // 跨区：全局不忙区
+    for (const sh of shelfList) { const cand = free.filter((l) => l.startsWith(sh)); if (cand.length) return low3(cand); } // 全库都忙才回同架（同件归拢兜底）
+    sz = free.filter((l) => l.length > 5 && zones.has(l[5])); if (sz.length) return low3(sz);
+  } else {
+    const g = calmRack(free); if (g.length) return low3(g);
+    const gz = calmZone(free); if (gz.length) return low3(gz);
   }
-  return low3(free);
+  return low3(free); // 全忙兜底：仍按低层优先，不让入库卡死
 }
 
 function labelStatus(codeRaw) {
@@ -3157,8 +3169,8 @@ const server = http.createServer(async (req, res) => {
           let assignee = null;
           const assigneeId = String(b.assigneeId || '').trim();
           if (assigneeId) {
-            assignee = db.users.find(x => x.id === assigneeId && x.enabled && (x.role === 'warehouse' || x.role === 'admin'));
-            if (!assignee) return send(res, 400, { ok: false, msg: '指定的仓管员不存在或未启用' });
+            assignee = db.users.find(x => x.id === assigneeId && x.enabled && x.role === 'warehouse'); // ㉖v56 只能指定仓管员备料：admin 是管理角色不进备料链（候选列表与校验同口径）
+            if (!assignee) return send(res, 400, { ok: false, msg: '指定的备料人不存在/未启用/非仓管员（管理员不参与备料）' });
           }
           const now = new Date();
           const ts = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -3209,7 +3221,7 @@ const server = http.createServer(async (req, res) => {
 
         // 可选仓管员列表（新建单指定用）；lastAssigneeId=本人最近一次指定过的仓管（默认带出）
         if (req.method === 'GET' && p === '/api/requisitions/warehouse-users') {
-          const wh = db.users.filter(x => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).map(x => ({ id: x.id, name: x.name }));
+          const wh = db.users.filter(x => x.enabled && x.role === 'warehouse').map(x => ({ id: x.id, name: x.name })); // ㉖v56 指定备料候选人=仅仓管员（与建单校验同口径，PDA/网页弹层共用）
           const last = db.requisitions.slice().reverse().find(r => r.by === u.id && r.assigneeId);
           const lastAssigneeId = last && wh.some(x => x.id === last.assigneeId) ? last.assigneeId : '';
           return send(res, 200, { ok: true, users: wh, lastAssigneeId });
