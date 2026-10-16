@@ -1657,7 +1657,9 @@ const server = http.createServer(async (req, res) => {
       if (!username || !password) return send(res, 400, { ok: false, msg: '账号密码不能为空' });
       if (!failCheck(username)) return send(res, 429, { ok: false, msg: '失败次数过多，请1分钟后再试' });
       const u = db.users.find(x => x.username === username);
-      if (!u || hashPw(password, u.salt) !== u.passHash) { failRecord(username); return send(res, 401, { ok: false, msg: '账号或密码错误' }); }
+      if (!u) { failRecord(username); return send(res, 401, { ok: false, msg: '账号或密码错误' }); }
+      if (!u.salt || !u.passHash) return send(res, 403, { ok: false, code: 'pwBroken', msg: '该账号密码数据异常，请联系管理员在「用户管理」重置密码' }); // ㉖v59 无盐账号防御：旧数据/异常写入致salt缺失，此前hashPw(undefined)抛500
+      if (hashPw(password, u.salt) !== u.passHash) { failRecord(username); return send(res, 401, { ok: false, msg: '账号或密码错误' }); }
       if (!u.enabled) return send(res, 403, { ok: false, code: 'disabled', msg: '账号已被停用，请联系管理员' });
       { const _dv = String(b.dev || '').trim().slice(0, 60); const _drec = _dv && (db.devices || {})[_dv]; if (_drec && _drec.blocked) { devAuditPush('拒绝(拉黑设备)', _dv, clientIp(req), u, ''); return send(res, 403, { ok: false, code: 'devBlocked', msg: '该设备已被管理员拉黑，禁止登录' }); } }
       const token = newToken();
@@ -1700,9 +1702,31 @@ const server = http.createServer(async (req, res) => {
         return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, serverTime: new Date().toISOString() });
       }
 
+      // ㉖v59 个人中心：我的登录设备/会话（本人可见可踢，不含 admin 拉黑等管理动作）
+      if (req.method === 'GET' && p === '/api/me/devices') {
+        const devs = db.devices || {};
+        const mine = [];
+        for (const [tok, s] of Object.entries(db.sessions || {})) {
+          if (s.userId !== u.id) continue;
+          const d = devs[s.dev] || {};
+          mine.push({ dev: s.dev || '', kind: d.kind || 'web', ip: d.ip || '', ua: d.ua || '', createdAt: s.createdAt || 0, lastSeen: s.lastSeen || 0, current: tok === a.token });
+        }
+        mine.sort((x, y) => (y.current ? 1 : 0) - (x.current ? 1 : 0) || (y.lastSeen || 0) - (x.lastSeen || 0));
+        return send(res, 200, { ok: true, sessions: mine, mustChangePw: !!u.mustChangePw });
+      }
+      if (req.method === 'POST' && p === '/api/me/devices/kick') {
+        const b = await readBody(req);
+        const dev = String(b.dev || '').trim();
+        if (!dev) return send(res, 400, { ok: false, msg: '缺少 dev' });
+        let n = 0;
+        for (const [tok, s] of Object.entries(db.sessions || {})) { if (s.userId === u.id && s.dev === dev && tok !== a.token) { delete db.sessions[tok]; n++; } }
+        if (n) { save(); devAuditPush('自踢会话', dev, clientIp(req), u, n + '个'); }
+        return send(res, 200, { ok: true, kicked: n });
+      }
       // 修改自己的密码
       if (req.method === 'POST' && p === '/api/change_password') {
         const b = await readBody(req);
+        if (!u.salt || !u.passHash) return send(res, 403, { ok: false, code: 'pwBroken', msg: '该账号密码数据异常，请联系管理员在「用户管理」重置密码' }); // ㉖v59 无盐防御
         if (hashPw(String(b.oldPassword || ''), u.salt) !== u.passHash) return send(res, 400, { ok: false, msg: '原密码错误' });
         if (String(b.newPassword || '').length < 6) return send(res, 400, { ok: false, msg: '新密码至少6位' });
         u.salt = crypto.randomBytes(16).toString('hex');
@@ -2433,35 +2457,46 @@ return send(res, 200, {
         const q0 = String(url.searchParams.get('q') || '').trim();
         if (!q0) return send(res, 400, { ok: false, msg: '缺少查询关键字 q' });
         const Q = q0.toUpperCase();
+        const _lv = ledgerView();
+        const codeOf = (x) => String(x || '').toUpperCase();
+        // 种子类型（优先 task>order>box>part），决定扩散粒度
+        const isTask = (db.agvQueue || []).some((x) => codeOf(x.wmsTask) === Q || codeOf(x.taskNo) === Q) || (db.rcsRun || []).some((r) => codeOf(r.no) === Q || codeOf(r.wms) === Q) || !!(db.agvTasks && Object.prototype.hasOwnProperty.call(db.agvTasks, Q));
+        const isOrder = Object.values(db.outbound || {}).some((o) => codeOf(o.orderNo) === Q) || (db.requisitions || []).some((r) => codeOf(r.no) === Q);
+        const isBox = Object.values(db.scanlog || {}).some((st) => codeOf(st.code) === Q) || _lv.some((x) => codeOf(x.c) === Q) || (db.agvQueue || []).some((x) => codeOf(x.code) === Q);
+        const isPart = Object.values(db.scanlog || {}).some((st) => codeOf(st.pn) === Q) || _lv.some((x) => codeOf(x.p) === Q);
+        const kind = isTask ? 'task' : isOrder ? 'order' : isBox ? 'box' : isPart ? 'part' : 'unknown';
+        // ㉖v59 核心修正：仅"按零件号查询"才扩散到该零件全部框/历史；按框/单/任务查询只追自身，避免搜一个框把全仓同零件的38框+无关出库单都拽进来
+        const partExpand = isPart && !isTask && !isOrder && !isBox;
         const EV = [];
-        const push = (t, kind, title, detail, actor) => { const tt = Number(t) || 0; if (tt) EV.push({ t: tt, kind: String(kind || ''), title: String(title || ''), detail: String(detail || ''), actor: String(actor || '') }); };
+        const push = (t, k, title, detail, actor) => { const tt = Number(t) || 0; if (tt) EV.push({ t: tt, kind: String(k || ''), title: String(title || ''), detail: String(detail || ''), actor: String(actor || '') }); };
         const CODES = new Set(); const PNS = new Set(); const TASKS = new Set(); const REQS = new Set();
-        // — ① 调度队列项：按 code / wmsTask / taskNo / reqNo 关联，命中后扩散关联键
+        // — ① 调度队列项：按 code/wmsTask/taskNo/reqNo 命中
         const qItems = [];
-        for (const x of db.agvQueue || []) {
-          const code = String(x.code || '').toUpperCase(), wt = String(x.wmsTask || '').toUpperCase(), tn = String(x.taskNo || '').toUpperCase(), rn = String(x.reqNo || '').toUpperCase();
-          if (code === Q || wt === Q || tn === Q || rn === Q) { qItems.push(x); if (code) CODES.add(code); if (wt) TASKS.add(wt); if (tn) TASKS.add(tn); if (rn) REQS.add(rn); }
-        }
-        for (const x of db.agvQueue || []) {
-          if (qItems.indexOf(x) >= 0) continue;
-          const code = String(x.code || '').toUpperCase(), wt = String(x.wmsTask || '').toUpperCase(), rn = String(x.reqNo || '').toUpperCase();
-          if ((code && CODES.has(code)) || (wt && TASKS.has(wt)) || (rn && REQS.has(rn))) { qItems.push(x); if (code) CODES.add(code); if (wt) TASKS.add(wt); if (rn) REQS.add(rn); }
-        }
-        // — ② 扫码采集流水：按 code / pn 关联（含扩散的框码）
+        const collectQ = (x) => { if (qItems.indexOf(x) < 0) { qItems.push(x); const c = codeOf(x.code), wt = codeOf(x.wmsTask), tn = codeOf(x.taskNo), rn = codeOf(x.reqNo); if (c) CODES.add(c); if (wt) TASKS.add(wt); if (tn) TASKS.add(tn); if (rn) REQS.add(rn); } };
+        for (const x of db.agvQueue || []) { if (codeOf(x.code) === Q || codeOf(x.wmsTask) === Q || codeOf(x.taskNo) === Q || codeOf(x.reqNo) === Q) collectQ(x); }
+        if (isBox) CODES.add(Q); // 种子框即使没进过队列也纳入
+        // 同托兄弟码=同一物理框，一并纳入（框查询只纳入本框兄弟，非整个零件）
+        const boxKeys = new Set();
+        for (const c of Array.from(CODES)) { const lx = _lv.find((x) => codeOf(x.c) === c); if (lx) boxKeys.add(boxKeyOf(lx)); }
+        if (boxKeys.size) for (const x of _lv) { if (boxKeys.has(boxKeyOf(x))) CODES.add(codeOf(x.c)); }
+        for (const x of db.agvQueue || []) { if (CODES.has(codeOf(x.code))) collectQ(x); }
+        // ㉖v59 出库单/领料单查询时：预收集命中单据明细的框码（item.barcode），使该框的采集/在架事件反查纳入（单据→货物方向）
+        if (isOrder && !partExpand) for (const o of Object.values(db.outbound || {})) { if (codeOf(o.orderNo) === Q || REQS.has(codeOf(o.linkReqNo))) for (const it of o.items || []) { const bc = codeOf(it.barcode); if (bc) CODES.add(bc); } }
+        // — ② 扫码采集流水：框查询→仅本框(含兄弟)；零件查询→该零件全部
         const scans = [];
         for (const st of Object.values(db.scanlog || {})) {
-          const code = String(st.code || '').toUpperCase(), pn = String(st.pn || '').toUpperCase();
-          if (code === Q || pn === Q || CODES.has(code)) { scans.push(st); if (code) CODES.add(code); if (pn) PNS.add(pn); }
+          const c = codeOf(st.code), p = codeOf(st.pn);
+          if (c === Q || CODES.has(c) || (partExpand && p === Q)) { scans.push(st); if (c) CODES.add(c); if (p) PNS.add(p); }
         }
         scans.sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0));
-        for (const st of scans.slice(0, 60)) push(st.t, st.cx ? 'scanx' : 'scan', (st.cx ? '❌ 已撤销采集 ' : '📥 采集入库 ') + String(st.code || ''), (st.pn ? '零件 ' + st.pn + ' · ' : '') + '数量 ' + (Number(st.q) || 0), st.op || '');
-        // — ③ 领料单：按单号 / 关联零件 / 关联框码，含生命周期 history
+        for (const st of scans.slice(0, 60)) push(st.t, st.cx ? 'scanx' : 'scan', (st.cx ? '❌ 已撤销采集 ' : '📥 采集入库 ') + String(st.code || ''), (st.pn ? '零件 ' + st.pn + ' · ' : '') + '数量 ' + (Number(st.q) || 0) + ((st.wt === 0 ? st.st : st.gl) ? ' · ' + (st.wt === 0 ? st.st : st.gl) : ''), st.op || '');
+        // — ③ 领料单：单号命中 / 已发含本框 /（零件查询）含该零件
         for (const r of db.requisitions || []) {
-          const no = String(r.no || '').toUpperCase();
+          const no = codeOf(r.no);
           let rel = REQS.has(no) || no === Q;
           if (!rel) for (const it of r.items || []) {
-            if (PNS.has(String(it.partNo || '').toUpperCase())) { rel = true; break; }
-            for (const e2 of it.issued || []) { if (CODES.has(String(typeof e2 === 'string' ? e2 : e2.c || '').toUpperCase())) { rel = true; break; } }
+            if (partExpand && PNS.has(codeOf(it.partNo))) { rel = true; break; }
+            for (const e2 of it.issued || []) { if (CODES.has(codeOf(typeof e2 === 'string' ? e2 : e2.c))) { rel = true; break; } }
             if (rel) break;
           }
           if (!rel) continue;
@@ -2469,13 +2504,15 @@ return send(res, 200, {
           push(r.createdAt, 'req', '📋 领料下单 ' + no, (r.items || []).map((i) => String(i.partNo || '') + '×' + (Number(i.qty) || 0)).join('、'), r.byName || '');
           for (const h of r.history || []) push(h.time, 'req', '🔸 ' + String(h.text || ''), no, h.by || '');
         }
-        // — ④ 出库单：按单号 / 关联领料单 / 关联框码或零件
+        // — ㉖v59 ④ 出库单：字段修正 item.code=零件号、item.barcode=框码（旧版写反致框→出库匹配失效）
+        // 出库单/领料单查询时：预收集命中单据明细的框码，使该框的采集/在架事件反查纳入（单据→货物方向）
+        if (isOrder && !partExpand) for (const o of Object.values(db.outbound || {})) { if (codeOf(o.orderNo) === Q || REQS.has(codeOf(o.linkReqNo))) for (const it of o.items || []) { const bc = codeOf(it.barcode); if (bc) CODES.add(bc); } }
         for (const o of Object.values(db.outbound || {})) {
-          const no = String(o.orderNo || '').toUpperCase();
-          let rel = no === Q || REQS.has(String(o.linkReqNo || '').toUpperCase());
-          if (!rel) for (const it of o.items || []) { if (CODES.has(String(it.code || '').toUpperCase()) || PNS.has(String(it.barcode || '').toUpperCase())) { rel = true; break; } }
+          const no = codeOf(o.orderNo);
+          let rel = no === Q || REQS.has(codeOf(o.linkReqNo));
+          if (!rel) for (const it of o.items || []) { if (CODES.has(codeOf(it.barcode)) || (partExpand && PNS.has(codeOf(it.code)))) { rel = true; break; } }
           if (!rel) continue;
-          push(o.createdAt, 'out', '📤 出库 ' + no, (o.items || []).map((i) => String(i.code || i.barcode || '') + '×' + (Number(i.qty) || 0)).join('、') + (o.toLoc ? ' → ' + o.toLoc : ''), o.operator || '');
+          push(o.createdAt, 'out', '📤 出库 ' + no, (o.items || []).map((i) => String(i.barcode || i.code || '') + '×' + (Number(i.qty) || 0)).join('、') + (o.toLoc ? ' → ' + o.toLoc : ''), o.operator || '');
         }
         // — ⑤ AGV 调度状态 + 决策留痕 trace
         for (const x of qItems) {
@@ -2483,38 +2520,31 @@ return send(res, 200, {
           for (const tr of x.trace || []) push(x.updAt || x.at, 'trace', '🧭 ' + String(tr), '', '');
           if (x.state === '到站' || x.state === '完成') push(x.updAt || x.at, 'station', '🏁 到达站台 ' + String(x.station || ''), '框 ' + String(x.code || ''), '');
         }
-        // — ⑥ RCS 在途任务执行节点（建任务/开始/叉取/放置）
+        // — ⑥ RCS 在途任务执行节点
         for (const r of db.rcsRun || []) {
-          const no = String(r.no || '').toUpperCase(), wms = String(r.wms || '').toUpperCase();
+          const no = codeOf(r.no), wms = codeOf(r.wms);
           if (!(no === Q || wms === Q || TASKS.has(no) || TASKS.has(wms))) continue;
           push(r.buildAt, 'agv', '🤖 AGV建任务 ' + no, (r.sp ? r.sp + ' → ' + r.ep : '') + (r.car ? ' · 车' + r.car : ''), '');
           push(r.startAt, 'agv', '▶️ AGV开始执行 ' + no, '车 ' + (r.car || ''), '');
           push(r.pickAt, 'agv', '🔱 叉取货物', r.sp || '', '');
           push(r.putAt, 'agv', '📍 放置到位', r.ep || '', '');
         }
-        // — ⑦ 已完成任务底仓（本地攒30天）
+        // — ⑦ 已完成任务底仓
         for (const [dno, r] of Object.entries(db.agvTasks || {})) {
-          const D = String(dno).toUpperCase();
+          const D = codeOf(dno);
           if (!(D === Q || TASKS.has(D))) continue;
           push(r.ex, 'agv', '🤖 执行完成 ' + dno, (r.sp ? r.sp + ' → ' + r.ep : '') + ' · 车' + (r.car || '') + ' · 耗时' + (r.dur || 0) + 's', '');
           push(r.fin, 'agv', '✅ 任务归档 ' + dno, '', '');
         }
-        // — ⑧ 当前在架位置（账本回填视图）
+        // — ⑧ 当前在架位置：框查询→仅本框(含兄弟)；零件查询→该零件全部框
         let onShelf = 0;
-        for (const x of ledgerView()) {
-          const c = String(x.c || '').toUpperCase(), pn = String(x.p || '').toUpperCase();
-          if (!(CODES.has(c) || c === Q || PNS.has(pn) || pn === Q)) continue;
+        for (const x of _lv) {
+          const c = codeOf(x.c), p = codeOf(x.p);
+          if (!(CODES.has(c) || c === Q || (partExpand && (PNS.has(p) || p === Q)))) continue;
           if (x.l) { onShelf++; push(x.t, 'shelf', '📦 在架 ' + String(x.c || ''), '库位 ' + String(x.l || '') + (x.p ? ' · 零件 ' + x.p : '') + ' · 数量 ' + (Number(x.q) || 0), ''); }
         }
         EV.sort((a, b) => a.t - b.t);
         const lastQ = qItems.length ? qItems[qItems.length - 1] : null;
-        // 种子类型：基于查询词Q本身直接命中的实体判定，不受扩散关联影响（框码查到关联任务仍应为 box）
-        const _lv = ledgerView();
-        const isTask = (db.agvQueue || []).some((x) => String(x.wmsTask || '').toUpperCase() === Q || String(x.taskNo || '').toUpperCase() === Q) || (db.rcsRun || []).some((r) => String(r.no || '').toUpperCase() === Q || String(r.wms || '').toUpperCase() === Q) || !!(db.agvTasks && Object.prototype.hasOwnProperty.call(db.agvTasks, Q));
-        const isOrder = Object.values(db.outbound || {}).some((o) => String(o.orderNo || '').toUpperCase() === Q) || (db.requisitions || []).some((r) => String(r.no || '').toUpperCase() === Q);
-        const isBox = Object.values(db.scanlog || {}).some((st) => String(st.code || '').toUpperCase() === Q) || _lv.some((x) => String(x.c || '').toUpperCase() === Q) || (db.agvQueue || []).some((x) => String(x.code || '').toUpperCase() === Q);
-        const isPart = Object.values(db.scanlog || {}).some((st) => String(st.pn || '').toUpperCase() === Q) || _lv.some((x) => String(x.p || '').toUpperCase() === Q);
-        const kind = isTask ? 'task' : isOrder ? 'order' : isBox ? 'box' : isPart ? 'part' : 'unknown';
         return send(res, 200, { ok: true, q: q0, kind: kind, count: EV.length, onShelf: onShelf, state: lastQ ? lastQ.state : '', codes: Array.from(CODES).slice(0, 20), pns: Array.from(PNS).slice(0, 20), tasks: Array.from(TASKS).slice(0, 20), reqs: Array.from(REQS).slice(0, 20), events: EV.slice(0, 400) });
       }
       if (req.method === 'GET' && p === '/api/part/profile') {
