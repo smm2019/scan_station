@@ -22,6 +22,7 @@ Copy-Item "$serverDir\server.js" "$stage\code\server.js" -Force
 Copy-Item "$serverDir\public\*" "$stage\code\public\" -Recurse -Force
 Copy-Item (Join-Path $proj 'install.ps1') "$stage\install.ps1" -Force
 Copy-Item (Join-Path $proj '一键安装.cmd') "$stage\一键安装.cmd" -Force
+Copy-Item (Join-Path $proj '一键更新.cmd') "$stage\一键更新.cmd" -Force
 Copy-Item (Join-Path $proj '迁移数据.cmd') "$stage\迁移数据.cmd" -Force
 Copy-Item (Join-Path $proj 'update.ps1') "$stage\update.ps1" -Force
 Copy-Item (Join-Path $proj 'README.md') "$stage\README.md" -Force
@@ -40,6 +41,7 @@ $uStage = Join-Path $out 'stage_upd'
 Remove-Item $uStage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $uStage -Force | Out-Null
 Copy-Item "$stage\update.ps1" "$uStage\update.ps1" -Force
+Copy-Item (Join-Path $proj '一键更新.cmd') "$uStage\一键更新.cmd" -Force
 Copy-Item "$stage\code" "$uStage\code" -Recurse -Force
 $updZip = Join-Path $out "wmas-update-$stamp.zip"
 Compress-Archive -Path "$uStage\*" -DestinationPath $updZip -Force
