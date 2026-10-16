@@ -119,6 +119,7 @@ function saveDb(db) { // 原子写：临时文件 + rename
   try { walkSec(db, (o, k) => { const e = encSec(o[k]); if (e !== o[k]) { _sv.push([o, k, o[k]]); o[k] = e; } }); } catch (_) {}
   const _t0 = Date.now();
   try { fs.writeFileSync(tmp, JSON.stringify(db), 'utf8'); } finally { for (const it of _sv) it[0][it[1]] = it[2]; } // ㉖v56 紧凑序列化：省 40% 体积与近半耗时（读取端 parse 无感）
+  let _fd = -1; try { _fd = fs.openSync(tmp, 'r+'); fs.fsyncSync(_fd); } catch (_) {} finally { if (_fd >= 0) try { fs.closeSync(_fd); } catch (_) {} } // ㉖v56 断电加固：数据块强制刷盘后再rename，根治"全零空洞"类损坏（2026-10-16 17:02 断电事故复盘）
   fs.renameSync(tmp, DB_FILE);
   try { const ms = Date.now() - _t0; _saveStat.ring.push(ms); if (_saveStat.ring.length > 50) _saveStat.ring.shift(); _saveStat.n++; _saveStat.max = Math.max.apply(null, _saveStat.ring); _saveStat.avg = Math.round(_saveStat.ring.reduce((a, b) => a + b, 0) / _saveStat.ring.length); } catch (_) {}
 }
@@ -140,10 +141,10 @@ function backupDb() {
     delete _bk.rcsToken; delete _bk.rcsTokenExp; delete _bk.sessions;
     fs.writeFileSync(p + '.tmp', JSON.stringify(_bk)); fs.renameSync(p + '.tmp', p);
     const all = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).sort();
-    while (all.length > 72) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
+    while (all.length > 144) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} } // ㉖v56 保留144份=10分钟间隔×24小时（断电事故后加密备份）
   } catch (e) { console.log('[backup] 失败：', e.message); logErr('backupDb', e); }
 }
-setInterval(backupDb, 30 * 60 * 1000).unref();
+setInterval(backupDb, 10 * 60 * 1000).unref(); // ㉖v56 备份间隔30→10分钟：最坏回滚窗口压到10分钟（2026-10-16 断电丢28分钟教训）
 // ---- G3 数据归档：每日18:00把超期数据（默认180天）挪入 data/archive/YYYY-MM-*.json 再从主库移除；先写档成功才删，档案可回捞 ----
 let _archLast = '';
 function archiveOld() {
