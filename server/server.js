@@ -3865,7 +3865,7 @@ function updateInspects(nowMs) {
         const s = stn[q.station];
         if (s && s.state === '有货' && (s.codes || []).map((c) => String(c).toUpperCase()).includes(String(q.code).toUpperCase())) {
           if (!inLedger(q.code)) { q.state = 'returned'; q.doneAt = nowMs; dirty = true; db.users.filter((x) => x.id === q.uid && x.enabled).forEach((x) => notify(x.id, 'req_flow', '✅ 检验框 ' + q.code + ' 已出库出账，检验单自动闭环（RCS 站台快照滞后，实际货已离库）', '')); } // ㉖v53 防误弹
-          else { q.state = 'atStation'; q.arriveAt = nowMs; dirty = true; db.users.filter((x) => (x.id === q.uid || x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', '🔎 检验框已到站台 ' + q.station + '（' + q.code + '），请核对并归位', '')); }
+          else { q.state = 'atStation'; q.arriveAt = nowMs; dirty = true; const _it1 = (db.agvQueue || []).find((x) => x.inspId === q.id && x.type === 'insp'); db.users.filter((x) => (x.id === q.uid || x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', '🔎 检验框已到站台 ' + q.station + '（' + q.code + '），请核对并归位' + (_it1 && _it1.trace && _it1.trace.length ? ' ｜ 调度：' + _it1.trace[0] : ''), '')); }
         }
         else { // ㉖v52 超时钟从"AGV 接令"起算：RCS 队列拥堵排了 25 分钟才派车，不该算工单超时（旧版从建单起算致假 stuck）
           const it = _qi('insp');
@@ -3885,7 +3885,7 @@ function updateInspects(nowMs) {
         const s = stn[q.station];
         if (s && s.state === '有货' && (s.codes || []).map((c) => String(c).toUpperCase()).includes(String(q.code).toUpperCase())) {
           if (!inLedger(q.code)) { q.state = 'returned'; q.doneAt = nowMs; q.err = ''; dirty = true; db.users.filter((x) => x.id === q.uid && x.enabled).forEach((x) => notify(x.id, 'req_flow', '✅ 检验框 ' + q.code + ' 已出库出账，检验单自动闭环（RCS 站台快照滞后，实际货已离库）', '')); } // ㉖v53 防误弹
-          else { q.state = 'atStation'; q.arriveAt = nowMs; q.err = ''; dirty = true; db.users.filter((x) => (x.id === q.uid || x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', '🔎 检验框已到站台 ' + q.station + '（' + q.code + '），请核对并归位', '')); }
+          else { q.state = 'atStation'; q.arriveAt = nowMs; q.err = ''; dirty = true; const _it2 = (db.agvQueue || []).find((x) => x.inspId === q.id && x.type === 'insp'); db.users.filter((x) => (x.id === q.uid || x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', '🔎 检验框已到站台 ' + q.station + '（' + q.code + '），请核对并归位' + (_it2 && _it2.trace && _it2.trace.length ? ' ｜ 调度：' + _it2.trace[0] : ''), '')); }
         }
       } else if (q.state === 'stuck' && q.retAt) { // ㉖v52 归位慢超30分被误判 stuck 的框后来真放回了 → 自动纠正 done（队列完成项留存2小时内有效）
         const it = _qi('inspback');
@@ -4092,7 +4092,8 @@ async function rcsPoll() {
       if (db.rcsRemind && db.rcsRemind[key]) continue;
       const rush = !!cl.req.rush;
       if (!rush && nowMs - (s.ts || 0) < P().urgeScanMin * 60 * 1000) continue; // 普通单起催阈值
-      const msg = `⏰ ${rush ? '🔥急料' : ''}到站催扫：框 ${cl.c} 已到站台 ${stn} 超${rush ? P().pushMin : P().urgeScanMin}分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台`;
+      const _qi = (db.agvQueue || []).find((x) => String(x.code || '').toUpperCase() === cl.c && x.station === stn);
+      const msg = `⏰ ${rush ? '🔥急料' : ''}到站催扫：框 ${cl.c} 已到站台 ${stn} 超${rush ? P().pushMin : P().urgeScanMin}分钟未扫码发料（领料单 ${cl.req.no}），请尽快清台${_qi && _qi.trace && _qi.trace.length ? ' ｜ 调度：' + _qi.trace[0] : ''}`;
       if (rush) db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, cl.req.id));
       else notify(cl.by || cl.req.by, 'req_arrive', msg, cl.req.id);
       db.rcsRemind = db.rcsRemind || {}; db.rcsRemind[key] = nowMs;
