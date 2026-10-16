@@ -1449,6 +1449,12 @@ class _PartProfilePageState extends State<PartProfilePage> {
                   style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
               badge,
               if (inspBadge != null) inspBadge,
+              IconButton(
+                  tooltip: "出入库全链路（采集→检验→AGV→出库）",
+                  visualDensity: VisualDensity.compact,
+                  icon: const Icon(Icons.route,
+                      size: 18, color: Color(0xFF515BD4)),
+                  onPressed: () => _ppTrace(b)),
             ]),
             if (b.pallet.isNotEmpty || b.itemName.isNotEmpty)
               Padding(
@@ -1564,6 +1570,114 @@ class _PartProfilePageState extends State<PartProfilePage> {
               TextButton(
                   onPressed: () => Navigator.pop(c2), child: const Text("取消")),
             ])));
+  }
+
+  /// v56 框级出入库全链路：采集入库→检验→AGV节点→扫码发料→出库出账（并行拉四源按时间线合并）
+  Future<void> _ppTrace(_PPBox b) async {
+    final code = b.barcode.toUpperCase();
+    showDialog(
+        context: context,
+        builder: (c2) => AlertDialog(
+            title: Text("🔎 全链路 · $code"),
+            content: SizedBox(
+                width: double.maxFinite,
+                child: FutureBuilder<List<List<Object?>>>(
+                    future: _traceNodes(code),
+                    builder: (ctx, snap) {
+                      if (snap.connectionState != ConnectionState.done)
+                        return const Center(
+                            child: SizedBox(
+                                width: 26,
+                                height: 26,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2.5)));
+                      final ns = snap.data ?? const [];
+                      if (ns.isEmpty)
+                        return const Text(
+                            "该标签在采集/账本/AGV/出库各域均无记录（可能属更早归档）",
+                            style: TextStyle(fontSize: 12.5));
+                      return ListView(
+                          shrinkWrap: true,
+                          children: ns
+                              .map((n) => _stepLine(n[0] as IconData,
+                                  n[1] as Color, n[2] as String, n[3] as String))
+                              .toList());
+                    })),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(c2),
+                  child: const Text("关闭")),
+            ]));
+  }
+
+  Future<List<List<Object?>>> _traceNodes(String code) async {
+    final nodes = <List<Object?>>[];
+    String fm(Object? v) {
+      final n = v is num ? v.toInt() : 0;
+      if (n == 0) return "";
+      final dt = DateTime.fromMillisecondsSinceEpoch(n);
+      String p(int x) => x.toString().padLeft(2, "0");
+      return "${dt.year}-${p(dt.month)}-${p(dt.day)} ${p(dt.hour)}:${p(dt.minute)}";
+    }
+
+    final rs = await Future.wait([
+      AuthApi.scanlogGet(limit: 2000).catchError((_) => <String, dynamic>{}),
+      AuthApi.outboundGet().catchError((_) => <String, dynamic>{}),
+      AuthApi.inspectList().catchError((_) => <String, dynamic>{}),
+      AuthApi.agvTaskOf(code).catchError((_) => <String, dynamic>{}),
+    ]);
+    final sl = rs[0], ob = rs[1], ins = rs[2], tk = rs[3];
+    for (final x in List<Map>.from(sl["items"] ?? [])) {
+      if (x["code"]?.toString().toUpperCase() != code) continue;
+      nodes.add([
+        Icons.login,
+        const Color(0xFF2E7D32),
+        "📥 采集入库",
+        "${fm(x["t"])} · ${x["op"] ?? ""} · 初始位 ${x["wt"] == 0 ? (x["st"] ?? "") : (x["gl"] ?? "")} · ${x["q"] ?? 0}件${x["cx"] == true ? " ·【已作废】" : ""}"
+      ]);
+    }
+    for (final q in List<Map>.from(ins["list"] ?? [])) {
+      if (q["code"]?.toString().toUpperCase() != code) continue;
+      nodes.add([
+        Icons.find_in_page,
+        const Color(0xFF515BD4),
+        "🔎 检验",
+        "${fm(q["at"])} · ${q["by"] ?? ""} · ${q["from"] ?? ""}⇄${q["station"] ?? ""} · ${q["state"] ?? ""}${(q["verdict"] ?? "").toString().isNotEmpty ? " · 结论:${q["verdict"]}" : ""}"
+      ]);
+    }
+    final ch = (tk["chain"] is Map)
+        ? Map<String, dynamic>.from(tk["chain"] as Map)
+        : <String, dynamic>{};
+    const steps = <List<Object>>[
+      ["created", "📋 领料下单", Icons.assignment, Color(0xFF3949AB)],
+      ["accept", "🙋 接单", Icons.pan_tool, Color(0xFF3949AB)],
+      ["call", "🚗 叫车登记", Icons.local_shipping, Color(0xFFE65100)],
+      ["enqueue", "⏳ 加入队列", Icons.hourglass_bottom, Color(0xFFE65100)],
+      ["dispatch", "📮 任务下发", Icons.markunread_mailbox, Color(0xFFE65100)],
+      ["pick", "🤖 AGV 叉出", Icons.forklift, Color(0xFFE65100)],
+      ["arrive", "🏁 到站", Icons.flag, Color(0xFF00897B)],
+      ["issue", "📤 扫码发料", Icons.qr_code_scanner, Color(0xFF2E7D32)],
+      ["transfer", "🔄 转 MES", Icons.sync, Color(0xFF6A1B9A)],
+      ["confirm", "✅ 签收", Icons.verified, Color(0xFF2E7D32)],
+    ];
+    for (final st in steps) {
+      final v = ch[st[0]];
+      if (v is num && v > 0) nodes.add([st[2], st[3], st[1], fm(v)]);
+    }
+    for (final o in (ob["items"] is List ? List<Map>.from(ob["items"]) : <Map>[])) {
+      final it = (List<Map>.from(o["items"] ?? [])).firstWhere(
+          (i) => i["barcode"]?.toString().toUpperCase() == code,
+          orElse: () => const {});
+      if (it.isEmpty) continue;
+      nodes.add([
+        Icons.logout,
+        const Color(0xFFE65100),
+        "📤 出库出账",
+        "${fm(o["createdAt"])} · ${o["orderNo"] ?? ""} · ${it["qty"] ?? 0}件 → ${o["toLoc"] ?? ""}${(o["linkReqNo"] ?? "").toString().isNotEmpty ? " · 单${o["linkReqNo"]}" : ""}"
+      ]);
+    }
+    nodes.sort((a, x) => a[3].toString().compareTo(x[3].toString()));
+    return nodes;
   }
 
   @override
