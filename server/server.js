@@ -1922,6 +1922,7 @@ const server = http.createServer(async (req, res) => {
         const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
         let cars = [];
         if (tk) { try { const cr = await rcsReq('/uds/car/getCarInfoList', 'GET', tk); cars = typeof cr.data === 'string' ? JSON.parse(cr.data) : (cr.data || []); } catch (_) {} }
+        let mapBlocked = new Set(); try { const tr = await rcsReq2('/agv/debug/getLockResourceListForStatus'); if (tr.ok) { const t = typeof tr.data === 'string' ? JSON.parse(tr.data) : (tr.data || {}); for (const z of (((t.zoneLocks || {}).zoneList) || [])) for (const x of (z.blockedCars || [])) mapBlocked.add(Number(x)); } } catch (_) {} // ㉖v56 被交管集合（与车辆页同口径）
         const locOf = (lc) => NetMap.landLoc[String(lc)] || '';
         // 货架占用：landmark → {loc, codes}
         const byLoc = {};
@@ -1968,7 +1969,7 @@ const server = http.createServer(async (req, res) => {
         const owners = (tl.landmarkLocks && tl.landmarkLocks.landmarkOwners) || {};
         return send(res, 200, {
           ok: true, at: new Date().toISOString(), netReady: NetMap.ready(),
-          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1 })),
+          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0 })), // ㉖v56 状态字段随地图下发（前端标签与车辆页同口径）
           shelf, shelfCols, ground, stations: stn,
           jam: Object.entries(owners).map(([land, car]) => ({ land, car })).filter((j) => NetMap.lands[j.land]),
         });
