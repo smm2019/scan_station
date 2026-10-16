@@ -599,29 +599,73 @@ function nb02AssignFree(partNo) {
   const free = nb02MasterSeq().filter((l) => !used.has(l));
   if (!free.length) return '';
   const low3 = (arr) => { for (const l of arr) { const f = l.length >= 2 ? l[l.length - 2] : ''; if (f === '1' || f === '2' || f === '3') return l; } return arr.length ? arr[0] : ''; };
-  // ㉖v56 拥挤避让：活跃AGV任务（正在下架/搬运）的源货位所在货架与区记为"忙"，新入库优先去不忙的架/区；逐级回退保证总有位可分
   const busyRack = new Set(), busyZone = new Set();
   for (const q of db.agvQueue || []) { if (['完成', '取消', '失败'].includes(q.state)) continue; const fl = String(q.fromLoc || '').toUpperCase(); if (!/^NB02-/.test(fl) || /-CK-/.test(fl)) continue; busyRack.add(fl.slice(0, 9)); if (fl.length > 5) busyZone.add(fl[5]); }
-  const calmRack = (arr) => arr.filter((l) => !busyRack.has(l.slice(0, 9)));
+  const cap = P().aisleCap; const ab = cap > 0 ? aisleBusy() : null; // B 巷道节流并入候选过滤
+  const calmRack = (arr) => arr.filter((l) => !busyRack.has(l.slice(0, 9)) && (!ab || (ab[l.slice(0, 9)] || 0) < cap));
   const calmZone = (arr) => arr.filter((l) => l.length > 5 && !busyZone.has(l[5]));
+  // A 周转黄金区：A类件(周转分前abcTop%)候选按"离CK站台距离"升序，其余保持低层优先
+  let pick = low3;
+  if (partNo && P().abcTop > 0) {
+    const turn = partTurnover(); const pnU = String(partNo).toUpperCase(); const sc = turn[pnU] || 0;
+    const vals = Object.values(turn).sort((a, b) => b - a);
+    const topN = Math.max(1, Math.ceil(vals.length * P().abcTop / 100));
+    const dR = ckDistRack();
+    if (sc > 0 && vals.length && sc >= (vals[topN - 1] || 0) && Object.keys(dR).length) {
+      pick = (arr) => { const ds = (l) => (dR[l.slice(0, 9)] === undefined ? 9999 : dR[l.slice(0, 9)]); const s2 = arr.slice().sort((a, b) => ds(a) - ds(b)); return s2.length ? s2[0] : low3(arr); };
+    }
+  }
   if (partNo) {
     const shelves = new Set();
     for (const x of db.ledger || []) { if (String(x.p || '').toUpperCase() !== partNo) continue; const l = String(x.l || '').toUpperCase(); if (/^NB02-[A-Z]-\d{2}-\dF$/.test(l)) shelves.add(l.slice(0, 9)); }
     const shelfList = [...shelves].sort();
-    for (const sh of shelfList) { const cand = calmRack(free.filter((l) => l.startsWith(sh))); if (cand.length) return low3(cand); } // 同件同架且不忙
+    for (const sh of shelfList) { const cand = calmRack(free.filter((l) => l.startsWith(sh))); if (cand.length) return pick(cand); }
     const zones = new Set(shelfList.map((x) => x[5]));
-    let sz = calmZone(free.filter((l) => l.length > 5 && zones.has(l[5]))); if (sz.length) return low3(sz); // 同件同区且不忙
-    let g = calmRack(free); if (g.length) return low3(g); // 跨区：全局不忙架（拥挤区整体让路）
-    const gz = calmZone(free); if (gz.length) return low3(gz); // 跨区：全局不忙区
-    for (const sh of shelfList) { const cand = free.filter((l) => l.startsWith(sh)); if (cand.length) return low3(cand); } // 全库都忙才回同架（同件归拢兜底）
+    let sz = calmZone(free.filter((l) => l.length > 5 && zones.has(l[5]))); if (sz.length) return pick(sz);
+    let g = calmRack(free); if (g.length) return pick(g);
+    const gz = calmZone(free); if (gz.length) return pick(gz);
+    for (const sh of shelfList) { const cand = free.filter((l) => l.startsWith(sh)); if (cand.length) return low3(cand); }
     sz = free.filter((l) => l.length > 5 && zones.has(l[5])); if (sz.length) return low3(sz);
   } else {
     const g = calmRack(free); if (g.length) return low3(g);
     const gz = calmZone(free); if (gz.length) return low3(gz);
   }
-  return low3(free); // 全忙兜底：仍按低层优先，不让入库卡死
+  return low3(free);
 }
 
+// ---- ㉖v56 调度策略助手：A周转分 / B巷道在途 / C站台时间窗 ----
+function partTurnover() { // 周转分=窗口内出库件数 + 采集入库件数×0.1（出库主导）
+  const cut = Date.now() - P().abcWindow * 864e5; const m = {};
+  for (const o of Object.values(db.outbound || {})) { const t = Number(o.createdAt) || 0; if (t < cut) continue; for (const i of (o.items || [])) { const p = String(i.code || '').toUpperCase(); if (p) m[p] = (m[p] || 0) + (Number(i.qty) || 0); } }
+  for (const sc of Object.values(db.scanlog || {})) { if (sc.cx) continue; const t = Number(sc.t) || 0; if (t < cut) continue; const p = String(sc.pn || '').toUpperCase(); if (p) m[p] = (m[p] || 0) + (Number(sc.q) || 0) * 0.1; }
+  return m;
+}
+function aisleBusy() { // 巷道(区-排)在途任务数：队列活跃项源货位统计
+  const m = {};
+  for (const q of db.agvQueue || []) { if (!['排队', '下发中', '已下发'].includes(q.state)) continue; const fl = String(q.fromLoc || '').toUpperCase(); if (!/^NB02-/.test(fl) || /-CK-/.test(fl)) continue; const rk = fl.slice(0, 9); m[rk] = (m[rk] || 0) + 1; }
+  return m;
+}
+let _ckd = null, _ckdT = 0;
+function _dijL(lc) { const D = { [lc]: 0 }, pq = [[0, lc]], sn = {}; while (pq.length) { pq.sort((a, b) => a[0] - b[0]); const it = pq.shift(); if (sn[it[1]]) continue; sn[it[1]] = 1; for (const e of (NetMap.adj[it[1]] || [])) { const nd = it[0] + e[1]; if (D[e[0]] === undefined || nd < D[e[0]]) { D[e[0]] = nd; pq.push([nd, e[0]]); } } } return D; }
+function ckDistRack() { // 每货架列(区-排)到最近CK站台的Dijkstra距离，30分钟缓存
+  const now = Date.now(); if (_ckd && now - _ckdT < 1800000) return _ckd;
+  _ckdT = now; _ckd = {};
+  try {
+    if (!NetMap.ready()) return _ckd;
+    const Ds = []; for (const st of AGV_STNS) { const lc = NetMap.locLand[st]; if (lc && NetMap.lands[lc]) Ds.push(_dijL(lc)); }
+    if (!Ds.length) return _ckd;
+    for (let z = 0; z < 8; z++) for (let r = 1; r <= 16; r++) {
+      const rk = 'NB02-' + String.fromCharCode(65 + z) + '-' + String(r).padStart(2, '0');
+      let best = Infinity;
+      for (const D of Ds) for (let f = 1; f <= 4; f++) { const lc = NetMap.locLand[rk + '-' + f + 'F']; if (lc && D[lc] !== undefined && D[lc] < best) best = D[lc]; }
+      if (best < Infinity) _ckd[rk] = Math.round(best);
+    }
+  } catch (_) {}
+  return _ckd;
+}
+const stnBook = {}; // 站台时间窗预约 {stn:{until,by}}
+function stnHoldUntil(stn, nowMs) { const s2 = (db.rcsStations || {})[stn]; if (s2 && (s2.state === '有货' || s2.state === '占用中')) return Infinity; const b = stnBook[stn]; return b && b.until > nowMs ? b.until : 0; }
+function stnEtaMs(fromLoc, stn) { let trav = 90; try { const dd = NetMap.dist(fromLoc, stn); if (dd > 0) trav = dd / 0.8; } catch (_) {} const hs = (db.rcsHoldStat || {})[stn]; const holdSec = hs && hs.n ? (hs.sum / hs.n) * 60 * P().stnWinPct / 100 : 120 * P().stnWinPct / 100; return Math.round((trav + 60 + holdSec) * 1000); }
 function labelStatus(codeRaw) {
   const code = String(codeRaw || '').trim().toUpperCase(); if (!code) return null;
   const inLedger = (db.ledger || []).filter((x) => String(x.c || '').toUpperCase() === code);
@@ -706,6 +750,10 @@ const PARAMS = {
   gndZones:       { grp: '存储配置', name: '地面区数', unit: '区', min: 1, max: 20, d: 6, tip: 'NB03 地面货区数量（现场 A/B/C/F/G/H 六区）；地面总格位=区数×每区排数×每排格数' },
   gndRows:        { grp: '存储配置', name: '每区排数', unit: '排', min: 1, max: 40, d: 18, tip: '每个地面区的排数（现场排号到 18）；地面总格位=区数×排数×每排格数' },
   gndCols:        { grp: '存储配置', name: '每排格数', unit: '格', min: 1, max: 60, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数）' },
+  abcWindow:      { grp: '调度策略', name: 'ABC周转统计窗', unit: '天', min: 7, max: 365, d: 30, tip: '出库单+采集流水的统计窗口，用于给零件打周转分' },
+  abcTop:         { grp: '调度策略', name: 'A类件比例', unit: '%', min: 0, max: 80, d: 20, tip: '周转分前N%判为A类：入库自动分配时优先靠近CK站台的货架列（0=关闭该策略）' },
+  aisleCap:       { grp: '调度策略', name: '巷道并发上限', unit: '任务', min: 0, max: 8, d: 2, tip: '同一货架巷道(区-排)在途搬运任务数上限，达到则新出库任务本轮不放行、入库分配避开（0=关闭节流）' },
+  stnWinPct:      { grp: '调度策略', name: '站台时间窗系数', unit: '%', min: 50, max: 300, d: 100, tip: '预约窗=路网行程+60秒缓冲+该台平均清台时长×系数；窗内站台不派新单，防两车前后脚撞台' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
 
@@ -4054,7 +4102,7 @@ async function rcsPoll() {
       db.rcsStations = db.rcsStations || {}; db.rcsHoldStat = db.rcsHoldStat || {};
       const hold = Math.round(((nowMs - (s.ts || nowMs)) / 1000) / 60);
       if (s.ts && hold > 0 && hold < 360) { const h = db.rcsHoldStat[stn] || (db.rcsHoldStat[stn] = { n: 0, sum: 0 }); h.n++; h.sum += hold; }
-      delete db.rcsStations[stn]; db.rcsDone[stn + '|' + (s.via || '')] = nowMs;
+      delete db.rcsStations[stn]; db.rcsDone[stn + '|' + (s.via || '')] = nowMs; delete stnBook[stn]; // C 清台即释放预约窗
     } else if (nowMs - (s.ts || 0) > 6 * 3600 * 1000) {
       db.rcsHoldStat = db.rcsHoldStat || {}; if (s.ts) { const h = db.rcsHoldStat[stn] || (db.rcsHoldStat[stn] = { n: 0, sum: 0 }); h.n++; h.sum += 360; }
       delete db.rcsStations[stn];
@@ -4307,9 +4355,11 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
   const mfree = q.type === 'insp' ? inspStationFree(q.stationManual, nowMs, q.inspId) : agvStationFree(q.stationManual, nowMs, runT, assigned);
   if (q.stationManual && mfree) { stn = q.stationManual; q.trace.push('指定台 ' + stn + ' 可用，按指定执行'); }
   if (!stn && q.manualOnly) { q.trace.push('起终点固定任务：指定台 ' + (q.stationManual || '?') + ' 当前不可用，排队等待（不自动改派）'); return false; }
+  const _capB = P().aisleCap; const _abB = _capB > 0 ? aisleBusy() : null; // B 巷道并发节流：源巷道在途达上限→本轮不放行（指定台任务豁免，人工意图优先）
+  if (_abB && !q.stationManual && /^NB02-/.test(String(q.fromLoc || '')) && (_abB[String(q.fromLoc).slice(0, 9)] || 0) >= _capB) { q.trace.push('通道节流：源巷道 ' + String(q.fromLoc).slice(0, 9) + ' 在途 ' + _abB[String(q.fromLoc).slice(0, 9)] + ' ≥上限' + _capB + '，本轮不放行'); return false; }
   if (!stn) {
     const skip = [];
-    const free = AGV_STNS.filter((x) => { const ok = agvStationFree(x, nowMs, runT, assigned); if (!ok && skip.length < 4) skip.push(x + '(' + stnWhy(x, nowMs, runT, assigned) + ')'); return ok; });
+    const free = AGV_STNS.filter((x) => { const ok = agvStationFree(x, nowMs, runT, assigned); if (ok && !q.stationManual) { const w = stnHoldUntil(x, nowMs); if (w > nowMs) { if (skip.length < 4) skip.push(x + '(时间窗预约中)'); return false; } } if (!ok && skip.length < 4) skip.push(x + '(' + stnWhy(x, nowMs, runT, assigned) + ')'); return ok; });
     if (free.length) {
       let best = '', bestD = Infinity;
       if (NetMap.ready()) for (const x of free) { const dd = NetMap.dist(q.fromLoc, x); if (dd >= 0 && dd < bestD) { bestD = dd; best = x; } }
@@ -4327,6 +4377,7 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
   let r;
   const _ov = {}; if (q.container) _ov.container = q.container; if (q.ref !== undefined) _ov.ref = q.ref;
   try { r = await wmasDispatchOne(q, tk, Object.keys(_ov).length ? _ov : undefined); } catch (e) { r = { ok: false, msg: '下发异常：' + e.message }; }
+  if (r && r.ok) { stnBook[stn] = { until: nowMs + stnEtaMs(q.fromLoc, stn), by: q.code }; q.trace.push('预约站台窗至 ' + new Date(stnBook[stn].until).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5) + '（行程+缓冲+平均清台×' + P().stnWinPct + '%）'); } // ㉖v56 C 时间窗预约（含指定台：检验归位同腿撞台是实测痛点，一并预约）
   q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.wmsTask = r.taskNo || ''; q.err = r.ok ? '' : r.msg;
   q.trace.push(r.ok ? 'WMAS建任务' + (r.wmsTask || '') + '下发成功' : 'WMAS下发失败：' + String(r.msg || '').slice(0, 60));
   if (q.trace.length > 8) q.trace = q.trace.slice(-8);
