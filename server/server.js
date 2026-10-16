@@ -2096,9 +2096,13 @@ const server = http.createServer(async (req, res) => {
         stn.sort((a, b) => a.code.localeCompare(b.code));
         const tl = (() => { try { return typeof db.rcsTraffic === 'string' ? JSON.parse(db.rcsTraffic) : (db.rcsTraffic || {}); } catch (_) { return {}; } })();
         const owners = (tl.landmarkLocks && tl.landmarkLocks.landmarkOwners) || {};
-        return send(res, 200, {
+                const _runByCar = {}; for (const t of db.rcsRun || []) if (t.wms) _runByCar[Number(t.car)] = t.wms; // ㉖v56 车→WMAS任务号
+        const _qByWms = {}; for (const q of db.agvQueue || []) if (q.wmsTask && !['完成', '取消', '失败'].includes(q.state)) _qByWms[String(q.wmsTask).toUpperCase()] = q;
+        const _partOf = (code) => { const cu = String(code || '').toUpperCase(); const led = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === cu); if (led) return { p: String(led.p || ''), q: Number(led.q) || 0 }; const sl = Object.values(db.scanlog || {}).find((x) => String(x.code || '').toUpperCase() === cu && !x.cx); return sl ? { p: String(sl.pn || ''), q: Number(sl.q) || 0 } : { p: '', q: 0 }; };
+        const _dirTx = { outbound: '出库', inbound: '入库', insp: '检验下架', inspback: '检验归位', transfer: '移库' };
+return send(res, 200, {
           ok: true, at: new Date().toISOString(), netReady: NetMap.ready(),
-          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0 })), // ㉖v56 状态字段随地图下发（前端标签与车辆页同口径）
+          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0, cargo: (() => { const w = _runByCar[Number(c.agvId)]; if (!w) return null; const q = _qByWms[String(w).toUpperCase()]; if (!q) return null; const pt = _partOf(q.code); return { dir: _dirTx[q.type] || '搬运', p: pt.p, q: pt.q, stn: q.station || q.stationManual || '' }; })() })), // ㉖v56 状态字段随地图下发（前端标签与车辆页同口径）
           shelf, shelfCols, ground, stations: stn,
           jam: Object.entries(owners).map(([land, car]) => ({ land, car })).filter((j) => NetMap.lands[j.land]),
         });
@@ -4194,7 +4198,7 @@ async function rcsPoll() {
   // 占用中记录每轮重建：在途任务的接令/叉出时间戳实时刷新（旧逻辑只写一次会冻结），任务取消则记录自动消失
   for (const [k, v] of Object.entries(db.rcsStations)) { if (v.state === '占用中') delete db.rcsStations[k]; }
   for (const v of Object.values(stations)) { if (!db.rcsStations[v.station]) db.rcsStations[v.station] = v; }
-  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, car: t.exeAgvId ?? 0, start: t.executeTaskNo ? 1 : 0, ...parsePts(t), ...nodeTimes(t) }));
+  db.rcsRun = runT.map(t => ({ no: t.dispatchNo, state: t.taskState, car: t.exeAgvId ?? 0, start: t.executeTaskNo ? 1 : 0, wms: String(t.executeTaskNo || ''), ...parsePts(t), ...nodeTimes(t) })); // ㉖v56 沉淀WMAS任务号wms：地图车辆标签按车→WMAS任务→队列项带货(方向/零件/数量)
   db.rcsAt = new Date().toISOString();
   // ===== ⑦ AGV效率报表底仓：已完成任务摘要增量落库（RCS只留最近199条，本地攒30天） =====
   db.agvTasks = db.agvTasks || {};
