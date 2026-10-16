@@ -132,9 +132,30 @@ class AuthApi {
     }
   }
 
-  static Future<Map> login(String server, String username, String password) =>
+  /// v56 设备标识：与 errlog 同口径（PDA-随机5位，持久化），登录/上报共用一台一码
+  static Future<String> deviceId() async {
+    final sp = await SharedPreferences.getInstance();
+    var dev = sp.getString('errlog_dev') ?? '';
+    if (dev.isEmpty) {
+      dev = 'PDA-' +
+          DateTime.now()
+              .millisecondsSinceEpoch
+              .remainder(100000)
+              .toString()
+              .padLeft(5, '0');
+      await sp.setString('errlog_dev', dev);
+    }
+    return dev;
+  }
+
+  static Future<Map> login(String server, String username, String password) async =>
       _req("POST", "/api/login",
-          body: {"username": username, "password": password},
+          body: {
+            "username": username,
+            "password": password,
+            "dev": await deviceId(),
+            "kind": "pda"
+          },
           serverOverride: server);
   static Future<Map> me() async =>
       _req("GET", "/api/me", token: await AuthStore.token());

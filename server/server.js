@@ -176,6 +176,8 @@ function loadDb() {
   if (typeof d.stnMeta !== 'object' || d.stnMeta === null || Array.isArray(d.stnMeta)) { d.stnMeta = {}; added = true; } // ㉖⑫ 站台身份配置（旧库补齐）
   if (!d.locReserve || typeof d.locReserve !== 'object' || Array.isArray(d.locReserve)) { d.locReserve = {}; added = true; } // ㉖v54 货位预占表（旧库补齐）
   if (!d.inspSeen || typeof d.inspSeen !== 'object' || Array.isArray(d.inspSeen)) { d.inspSeen = {}; added = true; } // ㉖v55 检验历史索引（标签→最近结论）
+  if (!d.devices || typeof d.devices !== 'object' || Array.isArray(d.devices)) { d.devices = {}; added = true; } // ㉖v56 登录设备注册表
+  if (!Array.isArray(d.devAudit)) { d.devAudit = []; added = true; } // ㉖v56 设备审计（登录/踢出/信任/拉黑留痕）
   if (!Array.isArray(d.containerTypes) || !d.containerTypes.length) { d.containerTypes = defaultDb().containerTypes; added = true; } // ㉖ 容器类型配置（旧库补齐默认5项）
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
@@ -1409,6 +1411,21 @@ function save() {
   if (_saveT) return;
   _saveT = setTimeout(() => { _saveT = null; try { flushSave(); } catch (e) { logErr('saveDb', e); _saveT = setTimeout(() => { _saveT = null; try { flushSave(); } catch (_) {} }, 2000); } }, 120);
 } // ---------------- 会话 ----------------
+// ---- ㉖v56 登录设备管理：注册表/审计/信任/拉黑/踢下线 ----
+function clientIp(req) { return String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, ''); }
+function devAuditPush(act, dev, ip, u, det) { db.devAudit = db.devAudit || []; db.devAudit.push({ at: Date.now(), act, dev: dev || '', ip: ip || '', uid: (u && u.id) || '', name: (u && u.name) || '', det: String(det || '').slice(0, 120) }); if (db.devAudit.length > 2000) db.devAudit = db.devAudit.slice(-2000); }
+function devReg(req, b, u) { // 登录时登记设备：id/类型/ip/UA/首末登录/绑定账号
+  const dev = String((b && b.dev) || '').trim().slice(0, 60) || ('anon-' + clientFp(req));
+  const ua = String((req.headers || {})['user-agent'] || '').slice(0, 120);
+  const kind = (b && b.kind) === 'web' ? 'web' : (b && b.kind) === 'pda' ? 'pda' : (/Flutter|Dart/i.test(ua) ? 'pda' : 'web');
+  const ip = clientIp(req);
+  db.devices = db.devices || {};
+  const d = db.devices[dev] || (db.devices[dev] = { id: dev, kind, ip, ua, firstAt: Date.now(), users: {}, trusted: false, blocked: false, note: '' });
+  d.kind = kind; d.ip = ip; d.ua = ua; d.lastAt = Date.now(); d.users[u.id] = Date.now();
+  devAuditPush('登录', dev, ip, u, kind);
+  return d;
+}
+function devOnline(dev) { for (const t of Object.values(db.sessions || {})) if (t.dev === dev && Date.now() - (t.lastSeen || 0) < SESSION_TTL_MS) return true; return false; }
 function touchSession(token) {
   const s = db.sessions[token];
   if (!s) return null;
@@ -1629,8 +1646,9 @@ const server = http.createServer(async (req, res) => {
       const u = db.users.find(x => x.username === username);
       if (!u || hashPw(password, u.salt) !== u.passHash) { failRecord(username); return send(res, 401, { ok: false, msg: '账号或密码错误' }); }
       if (!u.enabled) return send(res, 403, { ok: false, code: 'disabled', msg: '账号已被停用，请联系管理员' });
+      { const _dv = String(b.dev || '').trim().slice(0, 60); const _drec = _dv && (db.devices || {})[_dv]; if (_drec && _drec.blocked) { devAuditPush('拒绝(拉黑设备)', _dv, clientIp(req), u, ''); return send(res, 403, { ok: false, code: 'devBlocked', msg: '该设备已被管理员拉黑，禁止登录' }); } }
       const token = newToken();
-      db.sessions[token] = { userId: u.id, createdAt: Date.now(), lastSeen: Date.now(), fp: clientFp(req) }; // ㉕F6 token绑设备指纹(IP前两段+UA)
+      const _devRec = devReg(req, b, u); db.sessions[token] = { userId: u.id, createdAt: Date.now(), lastSeen: Date.now(), fp: clientFp(req), dev: _devRec.id }; // ㉕F6 token绑设备指纹(IP前两段+UA) ㉖v56 +设备id
       save();
       console.log(`[login] ${u.username}(${ROLE_NAMES[u.role]}) 登录成功`);
       pushOps(u,'登录','',u.username);
@@ -3686,6 +3704,24 @@ return send(res, 200, {
       }
 
       // ---- ㉖B8 运营参数配置：GET 定义+当前值，POST 校验范围/乐观锁/留痕，保存即时生效 ----
+      if (req.method === 'GET' && p === '/api/admin/devices') {
+        if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员' });
+        const list = Object.values(db.devices || {}).map((d) => ({ ...d, online: devOnline(d.id), usersList: Object.keys(d.users || {}).map((uid) => { const uu = db.users.find((x) => x.id === uid); return uu ? uu.name : uid; }) })).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+        return send(res, 200, { ok: true, list, audit: (db.devAudit || []).slice(-200).reverse() });
+      }
+      if (req.method === 'POST' && p === '/api/admin/devices') {
+        if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员' });
+        const b = await readBody(req); const act = String(b.act || ''), dev = String(b.dev || '');
+        const d = (db.devices || {})[dev]; if (!d) return send(res, 404, { ok: false, msg: '设备不存在' });
+        if (act === 'trust') { d.trusted = !d.trusted; devAuditPush(d.trusted ? '信任' : '取消信任', dev, d.ip, u, ''); }
+        else if (act === 'block') { d.blocked = true; devAuditPush('拉黑', dev, d.ip, u, b.reason || ''); for (const t of Object.keys(db.sessions || {})) if (db.sessions[t].dev === dev) delete db.sessions[t]; }
+        else if (act === 'unblock') { d.blocked = false; devAuditPush('解除拉黑', dev, d.ip, u, ''); }
+        else if (act === 'kick') { let n = 0; for (const t of Object.keys(db.sessions || {})) if (db.sessions[t].dev === dev) { delete db.sessions[t]; n++; } devAuditPush('踢下线', dev, d.ip, u, n + '会话'); }
+        else if (act === 'rename') { d.note = String(b.note || '').slice(0, 40); devAuditPush('备注', dev, d.ip, u, d.note); }
+        else if (act === 'del') { delete db.devices[dev]; devAuditPush('删除设备', dev, d.ip, u, ''); }
+        else return send(res, 400, { ok: false, msg: '未知操作' });
+        save(); return send(res, 200, { ok: true });
+      }
       if (req.method === 'GET' && p === '/api/admin/params') {
         const cur = P();
         const items = Object.entries(PARAMS).map(([k, d]) => ({ k, grp: d.grp || '其他', name: d.name, unit: d.unit, min: d.min, max: d.max, def: d.d, val: cur[k], tip: d.tip, set: (db.params || {})[k] !== undefined }));
