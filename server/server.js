@@ -2256,7 +2256,7 @@ const server = http.createServer(async (req, res) => {
           else if (rr && rr.pickAt) stage = 4;                          // RCS已叉出货架、还没落进站台状态
           else if (q.state === '下发中' || q.state === '已下发') stage = rr ? 3 : 2; // 任务在RCS=叉取中；未同步到=AGV已接单
           else stage = 2;
-          stages[stage - 1].push({ code, from: q.fromLoc || q.from || '', to: stnDisp(q.station || (rr ? (rr.ep || '') : '')), car: rr ? 'AGV' + String(rr.car || '').padStart(2, '0') : '', waitMs: Math.max(0, nowMs - (q.at || nowMs)), reqNo: q.reqNo || '', state: q.state, rush: !!q.rush });
+          stages[stage - 1].push({ code, from: q.fromLoc || q.from || '', to: stnDisp(q.station || (rr ? (rr.ep || '') : '')), car: rr ? 'AGV' + String(rr.car || '').padStart(2, '0') : '', waitMs: Math.max(0, nowMs - (q.at || nowMs)), reqNo: q.reqNo || '', state: q.state, rush: !!q.rush, tr: ((q.trace || [])[0] || '') });
         }
         let bn = 0; stages.forEach((s, i) => { if (s.length > stages[bn].length) bn = i; });
         const names = ['排队待派', 'AGV已接单', '在架叉取中', '载货在途', '到站待清台', '压站滞留'];
@@ -4295,31 +4295,49 @@ function inspQueueRollback(q, u) {
   if (u) pushOps(u, '检验队列取消', rec.code, rec.from + '→' + (rec.station || '') + '（工单回退 ' + rec.state + '）');
 }
 async function dispatchOne(q, nowMs, runT, assigned, live) {
+  q.trace = q.trace || [];
+  if (q.trace.length > 5) q.trace = q.trace.slice(-5); // ㉖v56 预裁剪：早退路径（等待/演算）也保证 trace 不膨胀
   let stn = '';
   // ㉖ 检验下架项指定台判据换检验口径（出库判据排除检验·入库专用台，会把指定到 insp 台的任务永远卡排队）
   const mfree = q.type === 'insp' ? inspStationFree(q.stationManual, nowMs, q.inspId) : agvStationFree(q.stationManual, nowMs, runT, assigned);
-  if (q.stationManual && mfree) stn = q.stationManual; // 指定目的地可用才用
-  if (!stn && q.manualOnly) return false; // 起终点固定（PDA 手动叫车/入库搬运）：指定目的地不可用就排队等待，绝不自动改派到别的台
+  if (q.stationManual && mfree) { stn = q.stationManual; q.trace.push('指定台 ' + stn + ' 可用，按指定执行'); }
+  if (!stn && q.manualOnly) { q.trace.push('起终点固定任务：指定台 ' + (q.stationManual || '?') + ' 当前不可用，排队等待（不自动改派）'); return false; }
   if (!stn) {
-    const free = AGV_STNS.filter((s) => agvStationFree(s, nowMs, runT, assigned));
+    const skip = [];
+    const free = AGV_STNS.filter((x) => { const ok = agvStationFree(x, nowMs, runT, assigned); if (!ok && skip.length < 4) skip.push(x + '(' + stnWhy(x, nowMs, runT, assigned) + ')'); return ok; });
     if (free.length) {
       let best = '', bestD = Infinity;
-      if (NetMap.ready()) for (const s of free) { const d = NetMap.dist(q.fromLoc, s); if (d >= 0 && d < bestD) { bestD = d; best = s; } } // 距离感知：AGV少跑一米是一米
+      if (NetMap.ready()) for (const x of free) { const dd = NetMap.dist(q.fromLoc, x); if (dd >= 0 && dd < bestD) { bestD = dd; best = x; } }
       stn = best || free[0];
-    }
+      q.trace.push('选台 ' + stn + (bestD < Infinity ? '（' + free.length + '空闲台中路网最近 ' + Math.round(bestD) + 'm）' : '（空闲台首个）'));
+      if (skip.length) q.trace.push('已排除 ' + skip.join('、'));
+    } else { q.trace.push('暂无可用台：' + (skip.join('、') || '全部站台占用/停用') + '，等待下轮'); }
   }
-  if (!stn) return false; // 暂无空闲台：继续排队，下轮再看
+  if (!stn) return false;
   assigned.push(stn); q.station = stn; q.updAt = nowMs;
-  if (!live) { q.plan = stn; console.log(`[agv-q·演算] 框 ${q.code} ${q.fromLoc} → ${stn}（切live后自动下发）`); return true; }
+  if (!live) { q.plan = stn; q.trace.push('演算模式：计划 ' + stn + '，切真实下发后执行'); console.log(`[agv-q·演算] 框 ${q.code} ${q.fromLoc} → ${stn}（切live后自动下发）`); return true; }
   q.state = '下发中'; q.sentAt = Date.now();
   const tk = await wmasToken();
-  if (!tk) { q.state = '失败'; q.err = 'WMAS未配置/登录失败（PDA设置→AGV调度系统同步WMAS账号）'; return true; }
+  if (!tk) { q.state = '失败'; q.err = 'WMAS未配置/登录失败（PDA设置→AGV调度系统同步WMAS账号）'; q.trace.push('下发失败：WMAS未登录'); return true; }
   let r;
-  const _ov = {}; if (q.container) _ov.container = q.container; if (q.ref !== undefined) _ov.ref = q.ref; // 领料队列项不传 ref → wmasDispatchOne 默认取 q.reqNo（行为与旧循环完全一致）
+  const _ov = {}; if (q.container) _ov.container = q.container; if (q.ref !== undefined) _ov.ref = q.ref;
   try { r = await wmasDispatchOne(q, tk, Object.keys(_ov).length ? _ov : undefined); } catch (e) { r = { ok: false, msg: '下发异常：' + e.message }; }
   q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.wmsTask = r.taskNo || ''; q.err = r.ok ? '' : r.msg;
+  q.trace.push(r.ok ? 'WMAS建任务' + (r.wmsTask || '') + '下发成功' : 'WMAS下发失败：' + String(r.msg || '').slice(0, 60));
+  if (q.trace.length > 8) q.trace = q.trace.slice(-8);
   console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);
   return true;
+}
+// ㉖v56 站台不可用原因（trace 用，判据与 agvStationFree 逐条对应）
+function stnWhy(stn, nowMs, runT, assigned) {
+  if (!stnUsable(stn, 'out')) return '停用/用途不符';
+  const s = (db.rcsStations || {})[stn];
+  if (s && (s.state === '有货' || s.state === '占用中')) return '台上有货或占用中';
+  if ((db.rcsManual || {})[stn] && nowMs - db.rcsManual[stn] < P().manualHoldMin * 60000) return '人工占用锁';
+  for (const t of runT) { const pp = parsePts(t); if (pp.ep === stn) return '在途任务将到'; if (pp.sp === stn && !(nodeTimes(t).pickAt > 0)) return '在途任务回取'; }
+  if ((assigned || []).includes(stn)) return '本轮已分配';
+  for (const q of db.agvQueue || []) if (q.station === stn && (q.state === '下发中' || q.state === '已下发')) return '队列在途占用';
+  return '占用';
 }
 async function agvDispatch(nowMs, runT) {
   const queue = db.agvQueue || [];
@@ -4329,7 +4347,7 @@ async function agvDispatch(nowMs, runT) {
     const has = s && Array.isArray(s.codes) && s.codes.map((c) => String(c).toUpperCase()).includes(q.code);
     if (q.state === '下发中') {
       // 下发中超过5分钟无回执（进程中断/异常残留）→ 判失败可重试，防止永久封死该站台
-      if (nowMs - (q.updAt || q.at) > P().sendTimeoutMin * 60 * 1000) { q.state = '失败'; q.err = '下发超时未回执，请重新叫车'; q.updAt = nowMs; }
+      if (nowMs - (q.updAt || q.at) > P().sendTimeoutMin * 60 * 1000) { q.state = '失败'; q.err = '下发超时未回执，请重新叫车'; q.updAt = nowMs; q.trace = (q.trace || []); q.trace.push('下发超' + P().sendTimeoutMin + '分钟无回执，判失败可重试'); }
     } else if (q.state === '已下发') {
       if (s && s.state === '有货' && has) q.state = '到站'; // 按标签匹配（容器号尾6位≠RCS任务号尾6位，不能用via比对）
     } else if (q.state === '到站') {
@@ -4383,7 +4401,7 @@ async function dispatchWatchdog(nowMs) {
     const kind = isIn ? '入库超时' : isIO ? '检验下架超时' : isIB ? '检验归位超时' : '出库超时';
     const toTxt = (isIn || isIB) ? (q.station || q.stationManual || '货架位') : (q.station || '待分配');
     const verb = (isIn || isIO || isIB) ? '未完成' : '未到站';
-    q.state = '失败'; q.err = (isIn ? '入库搬运' : isIO ? '检验下架' : isIB ? '检验归位' : '出库') + '下发超' + P().staleMin + '分钟' + verb + '，请核查'; q.updAt = nowMs;
+    q.state = '失败'; q.err = (isIn ? '入库搬运' : isIO ? '检验下架' : isIB ? '检验归位' : '出库') + '下发超' + P().staleMin + '分钟' + verb + '，请核查'; q.updAt = nowMs; q.trace = (q.trace || []); q.trace.push('超' + P().staleMin + '分钟' + verb + '，判失败并通知（RCS可能卡死）');
     clearQueueCall(q.reqId, q.code);
     pushEvent(kind, q.code || '', (q.fromLoc || '') + '→' + toTxt + ' 下发超' + P().staleMin + '分钟' + verb, nowMs);
     const msg = `⏰ AGV任务超时：框 ${q.code}（${q.fromLoc}→${toTxt}）下发超${P().staleMin}分钟${verb}${isIn || isIB ? '上架' : ''}，请到RCS核查是否卡死`;

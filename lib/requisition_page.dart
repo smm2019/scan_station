@@ -1091,7 +1091,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                           "${(q["prio"] ?? 0) != 0 ? "📌 " : ""}${q["code"]}  ${q["fromLoc"]}${(q["station"] ?? "").toString().isNotEmpty ? " → ${q["station"]}" : ((q["plan"] ?? "").toString().isNotEmpty ? " → ${q["plan"]}（计划）" : "")}",
                           style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
                       subtitle: Text(
-                          "${q["state"]}${(q["err"] ?? "").toString().isNotEmpty ? " · ${q["err"]}" : ""}${(q["palletType"] ?? "").toString().isNotEmpty ? " · ${q["palletType"]}" : ""}${q["state"] == "到站" ? " · 已到站台，请扫码发料/入库清台" : ""}",
+                          "${q["state"]}${(q["err"] ?? "").toString().isNotEmpty ? " · ${q["err"]}" : ""}${(q["palletType"] ?? "").toString().isNotEmpty ? " · ${q["palletType"]}" : ""}${q["state"] == "到站" ? " · 已到站台，请扫码发料/入库清台" : ""}${((q["trace"] is List && (q["trace"] as List).isNotEmpty) ? "\n🧭 ${(q["trace"] as List).last}" : "")}",
                           style: TextStyle(fontSize: 11, color: q["state"] == "到站" ? Colors.teal : null)),
                       trailing: !canCtl
                           ? null
