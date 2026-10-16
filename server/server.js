@@ -3683,6 +3683,14 @@ return send(res, 200, {
                 if (sib) return send(res, 400, { ok: false, msg: `标签 ${code} 与已发标签同框（一框只发一次），请勿重复扫码` });
               }
             }
+            // ㉖v58 防呆补强：服务端账本零件号交叉核对——框码在账本的实际零件号必须与所选行一致，堵"PDA选错行/扫错框"错发（PDA端MES零件号校验只在客户端，此闸为服务端兜底；应急登记可旁路但工单历史留痕）
+            {
+              const _pnSelf = (db.ledger || []).find(x => String(x.c || '').toUpperCase() === code.toUpperCase());
+              if (_pnSelf && _pnSelf.p && String(_pnSelf.p).toUpperCase() !== String(b.partNo || '').toUpperCase()) {
+                if (b.emergency !== true) return send(res, 400, { ok: false, msg: `框 ${code} 账本零件号 ${_pnSelf.p} 与所选行 ${b.partNo} 不符，是否选错框？如账本有误请走应急登记并注明原因` });
+                hpush(`⚠️ 账本零件号不符应急旁路：框 ${code} 账本零件 ${_pnSelf.p} ≠ 所选行 ${b.partNo}（${u.name}${String(b.why || '').trim() ? '：' + String(b.why || '').trim() : ''}）`);
+              }
+            }
             const target = r.items.find(i => i.partNo === b.partNo);
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
             if (target.transferred) return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已转MES，不可再补扫` });
