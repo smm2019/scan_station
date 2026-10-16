@@ -2920,7 +2920,10 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'GET' && p === '/api/inspect/list') {
         const only = url.searchParams.get('mine') === '1' ? u.id : '';
         const list = (db.inspects || []).filter((q) => !only || q.uid === only).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 200);
-        return send(res, 200, { ok: true, list, freeStns: AGV_STNS.filter((st) => inspStationFree(st, Date.now())), aliases: AGV_STNS.reduce((m, c) => { const a = stnAlias(c); if (a) m[c] = a; return m }, {}) }); // ㉖ 附空闲台：PDA 协助下架选台不再依赖先搜索
+        // ㉖v56 工单时间线数据：随单返回两腿AGV调度trace（下架腿insp/归位腿inspback），前端合并工单自带时间戳画时间线
+        const _qtrace = {}; for (const q2 of db.agvQueue || []) { if (q2.inspId && (q2.trace || []).length) { const arr = _qtrace[q2.inspId] = _qtrace[q2.inspId] || { out: [], back: [] }; if (q2.type === 'insp') arr.out = q2.trace; else if (q2.type === 'inspback') arr.back = q2.trace; } }
+        const list2 = list.map((q) => Object.assign({}, q, { legTrace: _qtrace[q.id] || { out: [], back: [] } }));
+        return send(res, 200, { ok: true, list: list2, freeStns: AGV_STNS.filter((st) => inspStationFree(st, Date.now())), aliases: AGV_STNS.reduce((m, c) => { const a = stnAlias(c); if (a) m[c] = a; return m }, {}) }); // ㉖ 附空闲台：PDA 协助下架选台不再依赖先搜索
       }
       if (req.method === 'GET' && p === '/api/prefs') {
         return send(res, 200, { ok: true, prefs: prefsFor(u.id), templates: (db.prefTemplates || []).map((t) => ({ name: t.name, by: t.by })) });

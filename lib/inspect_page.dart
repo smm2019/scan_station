@@ -440,6 +440,68 @@ class _InspectPageState extends State<InspectPage>
             ])));
   }
 
+  /// v56 工单一生时间线：发起→下架调度→到台→结论→归位调度→闭环，业务时间戳+两腿AGV留痕合并
+  void _woTimeline(Map q) {
+    final lt = q["legTrace"] is Map ? Map.from(q["legTrace"]) : {};
+    final outL = List<String>.from(lt["out"] ?? []);
+    final backL = List<String>.from(lt["back"] ?? []);
+    String t(Object? ms) {
+      final n = (ms as num?)?.toInt() ?? 0;
+      if (n == 0) return "";
+      final d = DateTime.fromMillisecondsSinceEpoch(n);
+      final p = (int x) => x.toString().padLeft(2, "0");
+      return "${p(d.month)}-${p(d.day)} ${p(d.hour)}:${p(d.minute)}";
+    }
+
+    final ns = <List<String>>[];
+    ns.add(["📋 发起检验下架", t(q["at"]),
+        "${q["by"] ?? ""} · ${q["from"] ?? ""} → 期望台 ${q["station"] ?? "自动"}"]);
+    for (final s in outL) {
+      ns.add(["🚚 下架调度", t(q["at"]), s]);
+    }
+    if ((q["arriveAt"] as num?)?.toInt() != null)
+      ns.add(["🏁 框到站台 ${q["station"] ?? ""}", t(q["arriveAt"]), ""]);
+    if ((q["verdictAt"] as num?)?.toInt() != null && q["verdict"] != null)
+      ns.add(["🧪 结论：${q["verdict"]}", t(q["verdictAt"]),
+          "${q["verdictBy"] ?? ""}${(q["note2"] ?? "").toString().isNotEmpty ? " · ${q["note2"]}" : ""}${(q["retReason"] ?? "").toString().isNotEmpty ? " · 退货：${q["retReason"]}" : ""}"]);
+    for (final s in backL) {
+      ns.add(["🔙 归位调度", t(q["retAt"]), s]);
+    }
+    if ((q["doneAt"] as num?)?.toInt() != null)
+      ns.add([
+        q["state"] == "returned" ? "✅ 退货出账闭环（不回货架）" : "✅ 归位到位 · ${q["from"] ?? ""}",
+        t(q["doneAt"]), ""
+      ]);
+    if ((q["err"] ?? "").toString().isNotEmpty)
+      ns.add(["⚠ ${q["err"]}", t(q["updAt"]), ""]);
+    showDialog(
+        context: context,
+        builder: (c2) => AlertDialog(
+            title: Text("📜 工单时间线 · ${q["code"] ?? ""}"),
+            content: SizedBox(
+                width: double.maxFinite,
+                child: ListView(
+                    shrinkWrap: true,
+                    children: ns
+                        .map((n) => Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 3),
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(n[0] + (n[2].isNotEmpty ? " · ${n[2]}" : ""),
+                                      style: const TextStyle(fontSize: 12.5)),
+                                  Text(n[1],
+                                      style: const TextStyle(
+                                          fontSize: 10.5, color: Colors.grey)),
+                                ])))
+                        .toList())),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(c2),
+                  child: const Text("关闭")),
+            ]));
+  }
+
   Widget _woCard(Map q) {
     final st = (q["state"] ?? "").toString();
     final mins = st == "atStation"
@@ -491,6 +553,13 @@ class _InspectPageState extends State<InspectPage>
                 style:
                     const TextStyle(fontSize: 11, color: Colors.orangeAccent)),
           const SizedBox(height: 6),
+          Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                  onPressed: () => _woTimeline(q),
+                  icon: const Icon(Icons.timeline, size: 16, color: Color(0xFF515BD4)),
+                  label: const Text("时间线",
+                      style: TextStyle(fontSize: 12, color: Color(0xFF515BD4))))),
           Row(children: [
             Expanded(
                 child: Text(
