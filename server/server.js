@@ -71,7 +71,78 @@ function clientFp(req) { let ip = String((req.socket && req.socket.remoteAddress
 function prefsFor(uid) { const o = (db.prefs && db.prefs[uid]) || {}; const r = {}; for (const k in o) { if (k === 'notes') r[k] = o[k].v; else if (k === 'kpi') r[k] = Array.isArray(o[k].v) ? o[k].v : []; else if (k === 'pd_tabs' || k === 'pd_tabuse' || k === 'ck_use' || k === 'ck_tabs' || k === 'ck_tabuse') r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, (k === 'ck_use') ? 8000 : 4000); // v56 网页页签配置/驻留统计透传
     else if (k === 'pd_tab_auto' || k === 'ck_tab_auto') r[k] = o[k].v === true; else if (k === 'ck_accent' || k === 'ck_darkmode' || k === 'ck_density' || k === 'ck_zoom') r[k] = String(o[k].v || ''); else if (k === 'pd_tab_auto') r[k] = o[k].v === true; else if (k === 'work') r[k] = Number(o[k].v) === 1 ? 1 : 0; else if (k === 'rate') r[k] = Math.min(0.9, Math.max(0.3, Number(o[k].v) || 0.55)); else if (k === 'voice') r[k] = o[k].v !== false; else if (k === 'pd_focus' || k === 'pd_defAssignee') r[k] = o[k].v !== false; else if (k === 'pd_font') r[k] = ['std','lg','xl'].includes(String(o[k].v)) ? String(o[k].v) : 'std'; else if (k === 'pd_dateOffset') r[k] = Math.min(90, Math.max(0, Number(o[k].v) || 0)); else if (k === 'pd_defPallet') r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); else r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); } return r; }
 function archLoad(kind) { const out = {}; try { const dir = path.join(DATA_DIR, 'archive'); for (const f of fs.readdirSync(dir)) { if (f.indexOf('-' + kind + '.json') < 0) continue; try { Object.assign(out, JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'))); } catch (_) {} } } catch (_) {} return out; }
+// ㉖v56 断电纵深防御：完整性校验 + 启动自动回滚 + 滚动安全副本
+const SAFE_FILE = path.join(DATA_DIR, 'db.safe.json'); // 不脱敏全量安全副本（备份目录被误删时的最后兜底）
+const _dbHealth = { lastOk: 0, lastRecover: 0, recoverCount: 0, safeAt: 0 }; // 持久化健康状态（供健康分暴露）
+function dbIntact(file) { // 文件级完整性：存在/够大/非全零/可解析/含关键字段。返回 {ok, reason}
+  try {
+    if (!fs.existsSync(file)) return { ok: false, reason: '文件不存在' };
+    const st = fs.statSync(file);
+    if (st.size < 200) return { ok: false, reason: '文件过小(' + st.size + 'B)' };
+    const buf = fs.readFileSync(file);
+    let nz = 0; const probe = Math.min(buf.length, 4096); for (let i = 0; i < probe; i++) if (buf[i] !== 0) { nz++; if (nz > 16) break; } // 抽样前4KB，>16个非零即非空洞
+    if (nz <= 16) return { ok: false, reason: '疑似全零空洞(断电未刷盘)' };
+    const d = JSON.parse(buf.toString('utf8'));
+    if (!d || typeof d !== 'object' || !Array.isArray(d.users) || !d.users.length) return { ok: false, reason: '结构异常(无users)' };
+    return { ok: true };
+  } catch (e) { return { ok: false, reason: 'JSON解析失败:' + String(e.message || '').slice(0, 40) }; }
+}
+function latestGoodBackup() { // 从新到旧找第一个完好的备份
+  try {
+    const dir = path.join(DATA_DIR, 'backups');
+    if (!fs.existsSync(dir)) return null;
+    const all = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).sort().reverse();
+    for (const f of all) { const p = path.join(dir, f); if (dbIntact(p).ok) return p; }
+  } catch (_) {}
+  return null;
+}
+function archiveCorrupt(reason) { // 把损坏主文件归档留证（不删），返回是否归档
+  try {
+    if (!fs.existsSync(DB_FILE)) return false;
+    const ts = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    const dst = DB_FILE + '.corrupt-' + ts;
+    fs.renameSync(DB_FILE, dst);
+    console.log('[recover] 损坏主文件已归档 ' + path.basename(dst) + '（原因：' + reason + '）');
+    return true;
+  } catch (_) { return false; }
+}
+function restoreFrom(src, label) { // 从源文件恢复到主文件（原子写），成功返回true
+  try {
+    const raw = fs.readFileSync(src, 'utf8');
+    JSON.parse(raw); // 二次确认
+    const tmp = DB_FILE + '.tmp';
+    fs.writeFileSync(tmp, raw, 'utf8');
+    let _fd = -1; try { _fd = fs.openSync(tmp, 'r+'); fs.fsyncSync(_fd); } catch (_) {} finally { if (_fd >= 0) try { fs.closeSync(_fd); } catch (_) {} }
+    fs.renameSync(tmp, DB_FILE);
+    let _dfd = -1; try { _dfd = fs.openSync(DATA_DIR, 'r'); fs.fsyncSync(_dfd); } catch (_) {} finally { if (_dfd >= 0) try { fs.closeSync(_dfd); } catch (_) {} }
+    console.log('[recover] 已从 ' + label + ' 自动恢复主数据文件');
+    return true;
+  } catch (e) { console.log('[recover] 从 ' + label + ' 恢复失败：', e.message); return false; }
+}
+function updateSafeCopy(d) { // 用内存态写一份不脱敏安全副本（原子+fsync）
+  try {
+    const tmp = SAFE_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(d), 'utf8');
+    let _fd = -1; try { _fd = fs.openSync(tmp, 'r+'); fs.fsyncSync(_fd); } catch (_) {} finally { if (_fd >= 0) try { fs.closeSync(_fd); } catch (_) {} }
+    fs.renameSync(tmp, SAFE_FILE);
+    let _dfd = -1; try { _dfd = fs.openSync(DATA_DIR, 'r'); fs.fsyncSync(_dfd); } catch (_) {} finally { if (_dfd >= 0) try { fs.closeSync(_dfd); } catch (_) {} }
+    _dbHealth.safeAt = Date.now();
+  } catch (_) {}
+}
 function loadDb() {
+  // ㉖v56 启动自检：主文件损坏→安全副本→最新备份，逐级自动回滚（无人值守自愈，杜绝全零文件起不来）
+  if (fs.existsSync(DB_FILE)) {
+    const chk = dbIntact(DB_FILE);
+    if (!chk.ok) {
+      console.log('[recover] 主数据文件损坏：' + chk.reason + '，尝试自动恢复…');
+      archiveCorrupt(chk.reason);
+      let recovered = false;
+      if (fs.existsSync(SAFE_FILE) && dbIntact(SAFE_FILE).ok) recovered = restoreFrom(SAFE_FILE, '安全副本 db.safe.json');
+      if (!recovered) { const bk = latestGoodBackup(); if (bk) recovered = restoreFrom(bk, '备份 ' + path.basename(bk)); }
+      if (recovered) { _dbHealth.lastRecover = Date.now(); _dbHealth.recoverCount++; }
+      else { console.log('[recover] 无可用安全副本/备份，将创建空库（请立即从外部备份恢复！）'); }
+    } else { _dbHealth.lastOk = Date.now(); }
+  }
   if (!fs.existsSync(DB_FILE)) { const d = defaultDb(); saveDb(d); console.log('[init] 已创建初始账号 admin / admin123（首次登录需改密）'); return d; }
   const d = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
   // 合并新增功能键：旧数据文件缺的键按默认值补齐（已有键保留管理员改过的值）
@@ -108,6 +179,7 @@ function loadDb() {
   if (!Array.isArray(d.containerTypes) || !d.containerTypes.length) { d.containerTypes = defaultDb().containerTypes; added = true; } // ㉖ 容器类型配置（旧库补齐默认5项）
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
+  updateSafeCopy(d); // ㉖v56 启动加载成功后刷新不脱敏安全副本（兜底回滚源）
   return d;
 }
 // ㉖G3 SQLite迁移触发线监控：落盘写耗时滚动统计（近50次 max/avg）
@@ -121,6 +193,8 @@ function saveDb(db) { // 原子写：临时文件 + rename
   try { fs.writeFileSync(tmp, JSON.stringify(db), 'utf8'); } finally { for (const it of _sv) it[0][it[1]] = it[2]; } // ㉖v56 紧凑序列化：省 40% 体积与近半耗时（读取端 parse 无感）
   let _fd = -1; try { _fd = fs.openSync(tmp, 'r+'); fs.fsyncSync(_fd); } catch (_) {} finally { if (_fd >= 0) try { fs.closeSync(_fd); } catch (_) {} } // ㉖v56 断电加固：数据块强制刷盘后再rename，根治"全零空洞"类损坏（2026-10-16 17:02 断电事故复盘）
   fs.renameSync(tmp, DB_FILE);
+  let _dfd = -1; try { _dfd = fs.openSync(DATA_DIR, 'r'); fs.fsyncSync(_dfd); } catch (_) {} finally { if (_dfd >= 0) try { fs.closeSync(_dfd); } catch (_) {} } // ㉖v56 断电加固②：fsync 目录句柄，保证 rename 元数据落盘（否则断电可能回滚到旧文件，NTFS/POSIX 原子写完整姿势）
+  updateSafeCopy(db); // ㉖v56 每次成功落盘后刷新不脱敏安全副本（db 此时已还原明文）
   try { const ms = Date.now() - _t0; _saveStat.ring.push(ms); if (_saveStat.ring.length > 50) _saveStat.ring.shift(); _saveStat.n++; _saveStat.max = Math.max.apply(null, _saveStat.ring); _saveStat.avg = Math.round(_saveStat.ring.reduce((a, b) => a + b, 0) / _saveStat.ring.length); } catch (_) {}
 }
 // ---- 数据自动备份：启动一次 + 每30分钟快照，保留最近72份（约36小时）；误删/损坏可从 data/backups 恢复 ----
@@ -3755,7 +3829,13 @@ const server = http.createServer(async (req, res) => {
         let dbMB = 0; try { dbMB = Math.round(fs.statSync(DB_FILE).size / 104857.6) / 10; } catch (_) {}
         cut(15, '数据文件体积', dbMB + 'MB（触发线50）', dbMB < 45);
         cut(15, '落盘写耗时', (_saveStat.n ? '近' + _saveStat.ring.length + '次 max' + _saveStat.max + '/avg' + _saveStat.avg + 'ms（触发线500）' : '尚无写入'), _saveStat.max <= 500);
-        return send(res, 200, { ok: true, score, items, uptimeMin: upMin, memMB: mem, bkAgeSec: bkAge, queueWait, ledAgeSec: ledAge, netReady, dbMB, saveMaxMs: _saveStat.max, saveAvgMs: _saveStat.avg, saveCount: _saveStat.n, sessions: Object.keys(db.sessions || {}).length });
+        // ㉖v56 断电纵深防御健康项：主文件完好性/安全副本新鲜度/自动恢复次数
+        const mainChk = dbIntact(DB_FILE);
+        cut(20, '主数据完好', mainChk.ok ? '校验通过' : ('异常：' + mainChk.reason), mainChk.ok);
+        const safeAge = _dbHealth.safeAt ? Math.round((nowMs - _dbHealth.safeAt) / 1000) : -1;
+        cut(10, '安全副本', safeAge < 0 ? '无' : Math.round(safeAge / 60) + '分钟前', safeAge >= 0 && safeAge < 45 * 60);
+        items.push({ name: '断电自愈次数', val: String(_dbHealth.recoverCount) + (_dbHealth.lastRecover ? '（最近 ' + new Date(_dbHealth.lastRecover).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) + '）' : ''), ok: true });
+        return send(res, 200, { ok: true, score, items, uptimeMin: upMin, memMB: mem, bkAgeSec: bkAge, queueWait, ledAgeSec: ledAge, netReady, dbMB, saveMaxMs: _saveStat.max, saveAvgMs: _saveStat.avg, saveCount: _saveStat.n, sessions: Object.keys(db.sessions || {}).length, persist: { mainOk: mainChk.ok, safeAgeSec: safeAge, recoverCount: _dbHealth.recoverCount, lastRecover: _dbHealth.lastRecover } });
       }
       // ---- ㉖G9 灾备恢复演练登记：POST 记结论进 ops（滚动留痕）；GET 最近一次/半年到期判定 ----
       if (req.method === 'POST' && p === '/api/admin/drill') {
