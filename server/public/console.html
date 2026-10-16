@@ -342,7 +342,7 @@ async function kDo(id,act,body){try{const j=await api('/api/requisitions/'+id+'/
  if(j.ok){T('✅ '+(act=='accept'?'已接单':act=='ready'?'已标记备齐':'已退回备料'),1);pgReqs()}else T('❌ '+(j.msg||('HTTP 操作失败')))}catch(_){T('操作失败')}}
 // ---- ㉖B6 零件档案页（画像+预约管理） ----
 let TP={};
-async // ---- ㉖v57 任务/货物追溯看板：跨实体统一时间线（扫码→上架→领料→调度→AGV→到站→出库） ----
+// ---- ㉖v57 任务/货物追溯看板：跨实体统一时间线（扫码→上架→领料→调度→AGV→到站→出库） ----
 var TRC = TRC || {};
 // ---- ㉖v58 错发/漏扫防呆：作业隐患体检 + 出库扫码实时校验 ----
 var FP = FP || {};
@@ -439,7 +439,7 @@ async function trSearch() {
   } catch (e) { T('查询失败：' + (e && e.message ? e.message : '网络或服务未重启')); }
 }
 
-function pgParts(){TP=TP||{};
+async function pgParts(){TP=TP||{};
  $('#main').innerHTML=`<div class="grid" style="grid-template-columns:minmax(300px,360px) 1fr;align-items:start"><div class="card"><div class="row"><input id="pq" placeholder="搜零件号 / 物料名称" value="${TP.q||''}" style="flex:1;min-width:150px" onkeydown="if(event.key=='Enter')ppSearch()"><button class="pill" onclick="ppSearch()">查询</button><button class="pill q" title="清空关键字" onclick="TP.q='';pgParts()">↺ 重置</button></div><div id="pres" style="max-height:70vh;overflow:auto;margin-top:8px"><div style="color:var(--sub);font-size:12px">输入至少2个字符后查询（零件号支持片段匹配）</div></div></div><div id="pprof"><div class="card" style="color:var(--sub);font-size:12.5px">点击左侧零件查看档案：在架框明细、出入库历史、预约名单、待处理需求，可一键预约到料提醒。</div></div></div>`;
  if(TP.q&&TP.q.length>=2)ppSearch()}
 async function ppSearch(){const q=($('#pq')?$('#pq').value:'').trim();TP.q=q;if(q.length<2){T('至少输入2个字符');return}
