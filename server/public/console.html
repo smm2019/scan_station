@@ -135,8 +135,8 @@ function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.re
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
-const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['rpt','📈 工作量'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['admin','⚙️ 控制后台']];
-function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
+const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['rpt','📈 工作量'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['trace','🔗 追溯'],['admin','⚙️ 控制后台']];
+function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,trace:pgTrace,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
 function navBadge(n){const b=document.querySelector('#nav button');if(!b)return;let bd=b.querySelector('.navbd');if(n>0){if(!bd){bd=document.createElement('span');bd.className='navbd';b.appendChild(bd)}bd.textContent=n>9?'9+':n}else if(bd)bd.remove()}
 // ===== ㉖v52 静默刷新调度器：后台照常取数，前台不打扰 =====
 // 规则：①你正在输入/选中文字/弹窗开着/刚有过鼠标键盘动作(3秒内) → 本轮直接跳过，不取数也不改画面
@@ -342,7 +342,53 @@ async function kDo(id,act,body){try{const j=await api('/api/requisitions/'+id+'/
  if(j.ok){T('✅ '+(act=='accept'?'已接单':act=='ready'?'已标记备齐':'已退回备料'),1);pgReqs()}else T('❌ '+(j.msg||('HTTP 操作失败')))}catch(_){T('操作失败')}}
 // ---- ㉖B6 零件档案页（画像+预约管理） ----
 let TP={};
-async function pgParts(){TP=TP||{};
+async // ---- ㉖v57 任务/货物追溯看板：跨实体统一时间线（扫码→上架→领料→调度→AGV→到站→出库） ----
+var TRC = TRC || {};
+function pgTrace() {
+  $('#main').innerHTML = `<div class="grid" style="grid-template-columns:minmax(300px,380px) 1fr;align-items:start">
+    <div class="card"><div style="font-size:13px;font-weight:600;margin-bottom:6px">🔗 全链路追溯</div>
+      <div class="row"><input id="trq" placeholder="框码 / 零件号 / 任务号 / 出库单号 / 领料单号" value="${TRC.q || ''}" style="flex:1;min-width:160px" onkeydown="if(event.key=='Enter')trSearch()"><button class="pill" onclick="trSearch()">查询</button><button class="pill q" title="清空" onclick="TRC.q='';TRC.data=null;pgTrace()">↺</button></div>
+      <div style="font-size:11.5px;color:var(--sub);margin-top:6px;line-height:1.6">输入任一标识即可追溯该货物的完整旅程：采集入库 → 上架库位 → 领料下单 → 调度决策 → AGV 执行 → 到站 → 出库交付。系统自动关联同一托/零件/单据的全部事件。</div>
+      <div id="trmeta" style="margin-top:10px">${TRC.data ? trMeta(TRC.data) : ''}</div>
+    </div>
+    <div class="card"><div id="trtl">${TRC.data ? trTimeline(TRC.data) : '<div style="color:var(--sub);font-size:12.5px;padding:20px 0">在左侧输入标识后查询，时间线将显示在此处。</div>'}</div></div>
+  </div>`;
+  const inp = $('#trq'); if (inp) inp.focus();
+}
+function trMeta(d) {
+  const K = { task: '任务号', box: '框码', part: '零件号', order: '单据号', unknown: '未匹配' };
+  const chip = (arr, pre) => (arr || []).length ? arr.slice(0, 8).map(x => `<span class="tag t-x mono" style="margin:2px 3px 2px 0">${pre}${_esc(x)}</span>`).join('') : '';
+  return `<div style="font-size:12px;line-height:1.9">
+    <div>类型：<b>${K[d.kind] || d.kind}</b> · 事件 <b>${d.count}</b> 条${d.onShelf ? ' · 在架 <b>' + d.onShelf + '</b> 框' : ''}${d.state ? ' · 调度态 <b>' + _esc(d.state) + '</b>' : ''}</div>
+    ${chip(d.codes, '框 ')}${chip(d.pns, '件 ')}${chip(d.tasks, '任务 ')}${chip(d.reqs, '单 ')}
+  </div>`;
+}
+function trTimeline(d) {
+  if (!d.events || !d.events.length) return '<div style="color:var(--sub);font-size:12.5px;padding:20px 0">未找到与该标识关联的任何事件记录。</div>';
+  const KC = { scan: 't-d', scanx: 't-x', shelf: 't-a', req: 't-p', out: 't-p', queue: 't-x', trace: 't-x', agv: 't-a', station: 't-d' };
+  const rows = d.events.map((e, i) => {
+    const dt = new Date(e.t || 0).toLocaleString('zh-CN', { hour12: false });
+    const last = i === d.events.length - 1;
+    return `<div class="tl-i${last ? ' cur' : ''}">
+      <div style="font-size:12.5px">${_esc(e.title)}${e.detail ? ` <span style="color:var(--sub);font-size:11.5px">${_esc(e.detail)}</span>` : ''}</div>
+      <div style="font-size:11px;color:var(--sub)">${_esc(dt)}${e.actor ? ' · ' + _esc(e.actor) : ''} <span class="tag ${KC[e.kind] || 't-x'}" style="font-size:10px">${_esc(e.kind)}</span></div>
+    </div>`;
+  }).join('');
+  return `<div class="tl" style="max-height:74vh;overflow:auto">${rows}</div>`;
+}
+async function trSearch() {
+  const v = ($('#trq') || {}).value || '';
+  const q = String(v).trim();
+  if (!q) { T('请输入查询标识'); return; }
+  TRC.q = q;
+  try {
+    const d = await api('/api/trace?q=' + encodeURIComponent(q));
+    TRC.data = d; pgTrace();
+    if (!d.count) T('无关联事件，请检查标识是否正确');
+  } catch (e) { T('查询失败：' + (e && e.message ? e.message : '网络或服务未重启')); }
+}
+
+function pgParts(){TP=TP||{};
  $('#main').innerHTML=`<div class="grid" style="grid-template-columns:minmax(300px,360px) 1fr;align-items:start"><div class="card"><div class="row"><input id="pq" placeholder="搜零件号 / 物料名称" value="${TP.q||''}" style="flex:1;min-width:150px" onkeydown="if(event.key=='Enter')ppSearch()"><button class="pill" onclick="ppSearch()">查询</button><button class="pill q" title="清空关键字" onclick="TP.q='';pgParts()">↺ 重置</button></div><div id="pres" style="max-height:70vh;overflow:auto;margin-top:8px"><div style="color:var(--sub);font-size:12px">输入至少2个字符后查询（零件号支持片段匹配）</div></div></div><div id="pprof"><div class="card" style="color:var(--sub);font-size:12.5px">点击左侧零件查看档案：在架框明细、出入库历史、预约名单、待处理需求，可一键预约到料提醒。</div></div></div>`;
  if(TP.q&&TP.q.length>=2)ppSearch()}
 async function ppSearch(){const q=($('#pq')?$('#pq').value:'').trim();TP.q=q;if(q.length<2){T('至少输入2个字符');return}

@@ -2338,6 +2338,95 @@ return send(res, 200, {
         ks.sort((a, b) => (m[b].n || 0) - (m[a].n || 0) || a.localeCompare(b));
         return send(res, 200, { ok: true, list: ks.slice(0, 40).map((k) => ({ pn: k, nm: m[k].nm, n: m[k].n })) });
       }
+      // ===== ㉖v57 任务/货物追溯看板：跨实体统一时间线（扫码→上架→领料→调度→AGV→到站→出库），只读聚合 =====
+      if (req.method === 'GET' && p === '/api/trace') {
+        const q0 = String(url.searchParams.get('q') || '').trim();
+        if (!q0) return send(res, 400, { ok: false, msg: '缺少查询关键字 q' });
+        const Q = q0.toUpperCase();
+        const EV = [];
+        const push = (t, kind, title, detail, actor) => { const tt = Number(t) || 0; if (tt) EV.push({ t: tt, kind: String(kind || ''), title: String(title || ''), detail: String(detail || ''), actor: String(actor || '') }); };
+        const CODES = new Set(); const PNS = new Set(); const TASKS = new Set(); const REQS = new Set();
+        // — ① 调度队列项：按 code / wmsTask / taskNo / reqNo 关联，命中后扩散关联键
+        const qItems = [];
+        for (const x of db.agvQueue || []) {
+          const code = String(x.code || '').toUpperCase(), wt = String(x.wmsTask || '').toUpperCase(), tn = String(x.taskNo || '').toUpperCase(), rn = String(x.reqNo || '').toUpperCase();
+          if (code === Q || wt === Q || tn === Q || rn === Q) { qItems.push(x); if (code) CODES.add(code); if (wt) TASKS.add(wt); if (tn) TASKS.add(tn); if (rn) REQS.add(rn); }
+        }
+        for (const x of db.agvQueue || []) {
+          if (qItems.indexOf(x) >= 0) continue;
+          const code = String(x.code || '').toUpperCase(), wt = String(x.wmsTask || '').toUpperCase(), rn = String(x.reqNo || '').toUpperCase();
+          if ((code && CODES.has(code)) || (wt && TASKS.has(wt)) || (rn && REQS.has(rn))) { qItems.push(x); if (code) CODES.add(code); if (wt) TASKS.add(wt); if (rn) REQS.add(rn); }
+        }
+        // — ② 扫码采集流水：按 code / pn 关联（含扩散的框码）
+        const scans = [];
+        for (const st of Object.values(db.scanlog || {})) {
+          const code = String(st.code || '').toUpperCase(), pn = String(st.pn || '').toUpperCase();
+          if (code === Q || pn === Q || CODES.has(code)) { scans.push(st); if (code) CODES.add(code); if (pn) PNS.add(pn); }
+        }
+        scans.sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0));
+        for (const st of scans.slice(0, 60)) push(st.t, st.cx ? 'scanx' : 'scan', (st.cx ? '❌ 已撤销采集 ' : '📥 采集入库 ') + String(st.code || ''), (st.pn ? '零件 ' + st.pn + ' · ' : '') + '数量 ' + (Number(st.q) || 0), st.op || '');
+        // — ③ 领料单：按单号 / 关联零件 / 关联框码，含生命周期 history
+        for (const r of db.requisitions || []) {
+          const no = String(r.no || '').toUpperCase();
+          let rel = REQS.has(no) || no === Q;
+          if (!rel) for (const it of r.items || []) {
+            if (PNS.has(String(it.partNo || '').toUpperCase())) { rel = true; break; }
+            for (const e2 of it.issued || []) { if (CODES.has(String(typeof e2 === 'string' ? e2 : e2.c || '').toUpperCase())) { rel = true; break; } }
+            if (rel) break;
+          }
+          if (!rel) continue;
+          REQS.add(no);
+          push(r.createdAt, 'req', '📋 领料下单 ' + no, (r.items || []).map((i) => String(i.partNo || '') + '×' + (Number(i.qty) || 0)).join('、'), r.byName || '');
+          for (const h of r.history || []) push(h.time, 'req', '🔸 ' + String(h.text || ''), no, h.by || '');
+        }
+        // — ④ 出库单：按单号 / 关联领料单 / 关联框码或零件
+        for (const o of Object.values(db.outbound || {})) {
+          const no = String(o.orderNo || '').toUpperCase();
+          let rel = no === Q || REQS.has(String(o.linkReqNo || '').toUpperCase());
+          if (!rel) for (const it of o.items || []) { if (CODES.has(String(it.code || '').toUpperCase()) || PNS.has(String(it.barcode || '').toUpperCase())) { rel = true; break; } }
+          if (!rel) continue;
+          push(o.createdAt, 'out', '📤 出库 ' + no, (o.items || []).map((i) => String(i.code || i.barcode || '') + '×' + (Number(i.qty) || 0)).join('、') + (o.toLoc ? ' → ' + o.toLoc : ''), o.operator || '');
+        }
+        // — ⑤ AGV 调度状态 + 决策留痕 trace
+        for (const x of qItems) {
+          push(x.at, 'queue', '🚦 进入调度队列', '框 ' + String(x.code || '') + (x.fromLoc ? ' · ' + x.fromLoc : '') + (x.station ? ' → ' + x.station : '') + ' · 状态 ' + String(x.state || ''), x.by || '');
+          for (const tr of x.trace || []) push(x.updAt || x.at, 'trace', '🧭 ' + String(tr), '', '');
+          if (x.state === '到站' || x.state === '完成') push(x.updAt || x.at, 'station', '🏁 到达站台 ' + String(x.station || ''), '框 ' + String(x.code || ''), '');
+        }
+        // — ⑥ RCS 在途任务执行节点（建任务/开始/叉取/放置）
+        for (const r of db.rcsRun || []) {
+          const no = String(r.no || '').toUpperCase(), wms = String(r.wms || '').toUpperCase();
+          if (!(no === Q || wms === Q || TASKS.has(no) || TASKS.has(wms))) continue;
+          push(r.buildAt, 'agv', '🤖 AGV建任务 ' + no, (r.sp ? r.sp + ' → ' + r.ep : '') + (r.car ? ' · 车' + r.car : ''), '');
+          push(r.startAt, 'agv', '▶️ AGV开始执行 ' + no, '车 ' + (r.car || ''), '');
+          push(r.pickAt, 'agv', '🔱 叉取货物', r.sp || '', '');
+          push(r.putAt, 'agv', '📍 放置到位', r.ep || '', '');
+        }
+        // — ⑦ 已完成任务底仓（本地攒30天）
+        for (const [dno, r] of Object.entries(db.agvTasks || {})) {
+          const D = String(dno).toUpperCase();
+          if (!(D === Q || TASKS.has(D))) continue;
+          push(r.ex, 'agv', '🤖 执行完成 ' + dno, (r.sp ? r.sp + ' → ' + r.ep : '') + ' · 车' + (r.car || '') + ' · 耗时' + (r.dur || 0) + 's', '');
+          push(r.fin, 'agv', '✅ 任务归档 ' + dno, '', '');
+        }
+        // — ⑧ 当前在架位置（账本回填视图）
+        let onShelf = 0;
+        for (const x of ledgerView()) {
+          const c = String(x.c || '').toUpperCase(), pn = String(x.p || '').toUpperCase();
+          if (!(CODES.has(c) || c === Q || PNS.has(pn) || pn === Q)) continue;
+          if (x.l) { onShelf++; push(x.t, 'shelf', '📦 在架 ' + String(x.c || ''), '库位 ' + String(x.l || '') + (x.p ? ' · 零件 ' + x.p : '') + ' · 数量 ' + (Number(x.q) || 0), ''); }
+        }
+        EV.sort((a, b) => a.t - b.t);
+        const lastQ = qItems.length ? qItems[qItems.length - 1] : null;
+        // 种子类型：基于查询词Q本身直接命中的实体判定，不受扩散关联影响（框码查到关联任务仍应为 box）
+        const _lv = ledgerView();
+        const isTask = (db.agvQueue || []).some((x) => String(x.wmsTask || '').toUpperCase() === Q || String(x.taskNo || '').toUpperCase() === Q) || (db.rcsRun || []).some((r) => String(r.no || '').toUpperCase() === Q || String(r.wms || '').toUpperCase() === Q) || !!(db.agvTasks && Object.prototype.hasOwnProperty.call(db.agvTasks, Q));
+        const isOrder = Object.values(db.outbound || {}).some((o) => String(o.orderNo || '').toUpperCase() === Q) || (db.requisitions || []).some((r) => String(r.no || '').toUpperCase() === Q);
+        const isBox = Object.values(db.scanlog || {}).some((st) => String(st.code || '').toUpperCase() === Q) || _lv.some((x) => String(x.c || '').toUpperCase() === Q) || (db.agvQueue || []).some((x) => String(x.code || '').toUpperCase() === Q);
+        const isPart = Object.values(db.scanlog || {}).some((st) => String(st.pn || '').toUpperCase() === Q) || _lv.some((x) => String(x.p || '').toUpperCase() === Q);
+        const kind = isTask ? 'task' : isOrder ? 'order' : isBox ? 'box' : isPart ? 'part' : 'unknown';
+        return send(res, 200, { ok: true, q: q0, kind: kind, count: EV.length, onShelf: onShelf, state: lastQ ? lastQ.state : '', codes: Array.from(CODES).slice(0, 20), pns: Array.from(PNS).slice(0, 20), tasks: Array.from(TASKS).slice(0, 20), reqs: Array.from(REQS).slice(0, 20), events: EV.slice(0, 400) });
+      }
       if (req.method === 'GET' && p === '/api/part/profile') {
         const pn = String(url.searchParams.get('pn') || '').trim().toUpperCase();
         if (!pn) return send(res, 400, { ok: false, msg: '缺少 pn' });
