@@ -703,6 +703,9 @@ const PARAMS = {
   rackCount:      { grp: '存储配置', name: '高架货架数', unit: '架', min: 1, max: 40, d: 8, tip: 'NB02 高位货架台数（现场实际 8 台：A/B 区各 4 架）' },
   rackCols:       { grp: '存储配置', name: '每架列数', unit: '列', min: 4, max: 60, d: 16, tip: '每台货架横向格列数（现场 16 列）；总格位=架数×列数×层数' },
   rackTiers:      { grp: '存储配置', name: '每架层数', unit: '层', min: 1, max: 10, d: 4, tip: '每台货架纵向层数（现场 4 层：1F-4F）' },
+  gndZones:       { grp: '存储配置', name: '地面区数', unit: '区', min: 1, max: 20, d: 6, tip: 'NB03 地面货区数量（现场 A/B/C/F/G/H 六区）；地面总格位=区数×每区排数×每排格数' },
+  gndRows:        { grp: '存储配置', name: '每区排数', unit: '排', min: 1, max: 40, d: 12, tip: '每个地面区的排数（排号 01-12；现场有排号到 18 的，超出排按每排格数并入占用统计，不计入总格位）' },
+  gndCols:        { grp: '存储配置', name: '每排格数', unit: '格', min: 1, max: 60, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
 
@@ -2579,7 +2582,7 @@ const server = http.createServer(async (req, res) => {
       }
       // ===== ㉖ 容器类型可配置：GET 登录即可读（采集页按钮数据源）；POST 仓管/管理员整表保存（留痕） =====
       if (req.method === 'GET' && p === '/api/containers') {
-        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers } }); // ㉖v56 高架格位规格下发（8×16×4=512 口径，参数可调）
+        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols } }); // ㉖v56 高架+地面格位规格下发（参数可调）
       }
       if (req.method === 'POST' && p === '/api/containers') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });

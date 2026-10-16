@@ -487,7 +487,7 @@ async function qAccept(id){const x=(window._qboard||[]).find((i)=>i.id==id)||{};
 // ===== ㉖v50 容器管理：让每只框"自我介绍"——类型健康度、滞留预警、区域热力，一屏看全 =====
 let CTN={types:{},timer:0};
 let _ctv='ov';        // 当前视图：ov=概览清单 / map=库位地图
-async function ctTypes(){try{const j=await api('/api/containers');if(j.ok)CTN.types={};if(j.ok&&j.rack)CTN.rack=j.rack;(j.types||[]).forEach(t=>{CTN.types[String(t.db).toUpperCase()]=t.show||t.db})}catch(_){}} // v56 高架格位规格
+async function ctTypes(){try{const j=await api('/api/containers');if(j.ok)CTN.types={};if(j.ok&&j.rack)CTN.rack=j.rack;if(j.ok&&j.gnd)CTN.gnd=j.gnd;(j.types||[]).forEach(t=>{CTN.types[String(t.db).toUpperCase()]=t.show||t.db})}catch(_){}} // v56 高架格位规格
 function ctLabel(f){f=String(f||'').trim();if(!f)return '未标注类型';return CTN.types[f.toUpperCase()]||f}
 function ctHour(x){const t=Number(x&&x.t)||0;return t?Math.max(0,Math.floor((Date.now()-t)/3600e3)):-1}
 function ctHourB(x){const bt=Number(x&&x.bt)||0;if(bt)return Math.max(0,Math.floor((Date.now()-bt)/3600e3));return ctHour(x)} // ㉖v56 滞留=按批次(MES打印日期)起算，缺批次回退入账时刻
@@ -575,7 +575,7 @@ function ctOcc(){const box=$('#ctocc');if(!box||!CTN.boxes||!CTN.boxes.length){i
  const idleOf=(c)=>{const mh=Math.min.apply(null,c.boxes.map(b=>b._h<0?1e12:b._h));return mh>=336}; // 14天
  const capCfg=(CTN.rack&&CTN.rack.count&&CTN.rack.cols&&CTN.rack.tiers)?CTN.rack.count*CTN.rack.cols*CTN.rack.tiers:0; // ㉖v56 8×16×4=512
  const cap=capCfg||rackRows.reduce((s2,R)=>s2+R.hi,0);
- const usedR=rackRows.reduce((s2,R)=>s2+Object.keys(R.cells).length,0);
+ const usedR=rackRows.reduce((s2,R)=>s2+Object.keys(R.cells).length,0); const gUsed=rowsAll.filter(R=>!R.rack).reduce((s2,R)=>s2+Object.keys(R.cells).length,0); // v56 地面已占格数
  let idleCells=0,multi=0,boxSum=0;rowsAll.forEach(R=>{for(const c of Object.values(R.cells)){boxSum+=c.boxes.length;if(c.boxes.length>1)multi++;if(idleOf(c))idleCells++;}});
  const occCells=rowsAll.reduce((s2,R)=>s2+Object.keys(R.cells).length,0);
  const chip=(t,v,tip)=>`<div style="border:1px solid var(--line);border-radius:8px;padding:5px 10px;min-width:96px" title="${tip||''}"><div style="font-size:15px;font-weight:800">${v}</div><div style="font-size:10.5px;color:var(--sub)">${t}</div></div>`;
@@ -583,7 +583,7 @@ function ctOcc(){const box=$('#ctocc');if(!box||!CTN.boxes||!CTN.boxes.length){i
  const rackAgg={};rackRows.forEach(R=>{const a=rackAgg[R.rowid]=rackAgg[R.rowid]||{tiers:0,cap:0,used:0,boxes:0,lc:0,idle:0};a.tiers++;a.cap+=R.hi;const oc=Object.keys(R.cells).length;a.used+=oc;for(const c of Object.values(R.cells)){a.boxes+=c.boxes.length;a.lc+=c.boxes.reduce((s3,b)=>s3+b.lc,0);if(idleOf(c))a.idle++;}});
  const rr=Object.entries(rackAgg).map(([k,a])=>({k,...a,p:a.cap?Math.round(a.used/a.cap*100):0})).sort((x,y)=>x.p-y.p||x.k.localeCompare(y.k));
  box.innerHTML=`<div class="card" style="margin-top:10px"><div class="row" style="align-items:center"><b style="font-size:13px">📐 高位货架占用率 · 长期闲置 · 框占用</b><span style="font-size:11px;color:var(--sub)">闲置格=批次≥14天未流转；多框格=同货位停≥2框</span></div>
- <div class="row" style="gap:8px;margin:8px 0;flex-wrap:wrap">${chip('NB02总格位',cap,CTN.rack?('配置 '+CTN.rack.count+'架×'+CTN.rack.cols+'列×'+CTN.rack.tiers+'层（存储配置组可调）'):'主序列货架格总数（含巷道对齐补齐）')}${chip('已占用',usedR,'当前有框停放的格')}${chip('占用率',pct+'%','已占/总格')}${chip('长期闲置',idleCells,'占位框批次(MES打印日期)≥14天——考虑清理或移库盘活')}${chip('多框同格',multi,'同货位停多框（地面/叠放）')}${chip('均框/格',occCells?(boxSum/occCells).toFixed(2):'0','占用格上平均停框数')}${chip('地面区占用',(st.total-rackRows.reduce((s2,R)=>s2+R.hi,0))>0?Math.round((st.used-usedR)/(st.total-rackRows.reduce((s2,R)=>s2+R.hi,0))*100)+'%':'—','NB03地面排格占用率')}</div>
+ <div class="row" style="gap:8px;margin:8px 0;flex-wrap:wrap">${chip('NB02总格位',cap,CTN.rack?('配置 '+CTN.rack.count+'架×'+CTN.rack.cols+'列×'+CTN.rack.tiers+'层（存储配置组可调）'):'主序列货架格总数（含巷道对齐补齐）')}${chip('已占用',usedR,'当前有框停放的格')}${chip('占用率',pct+'%','已占/总格')}${chip('长期闲置',idleCells,'占位框批次(MES打印日期)≥14天——考虑清理或移库盘活')}${chip('多框同格',multi,'同货位停多框（地面/叠放）')}${chip('均框/格',occCells?(boxSum/occCells).toFixed(2):'0','占用格上平均停框数')}${chip('地面区占用',(CTN.gnd&&CTN.gnd.zones*CTN.gnd.rows*CTN.gnd.cols)?Math.round(gUsed/(CTN.gnd.zones*CTN.gnd.rows*CTN.gnd.cols)*100)+'%':((st.total-rackRows.reduce((s2,R)=>s2+R.hi,0))>0?Math.round((st.used-usedR)/(st.total-rackRows.reduce((s2,R)=>s2+R.hi,0))*100)+'%':'—'),CTN.gnd?('配置 '+CTN.gnd.zones+'区×'+CTN.gnd.rows+'排×'+CTN.gnd.cols+'格='+(CTN.gnd.zones*CTN.gnd.rows*CTN.gnd.cols)+'格，已占'+gUsed+'（存储配置组可调）'):'NB03地面排格占用率')}</div>
  <div style="overflow:auto;max-height:46vh"><table><thead><tr><th>货架</th><th>层数</th><th title="列数×层数（列按存储配置16列对齐）">格位</th><th>已占</th><th>占用率</th><th>框/标签</th><th>闲置格</th><th>状态</th></tr></thead><tbody>${rr.map(r=>`<tr><td class="mono">${r.k}</td><td>${r.tiers}</td><td>${r.cap}</td><td>${r.used}</td><td style="min-width:120px"><div style="display:flex;align-items:center;gap:6px"><div style="flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden"><div style="height:100%;width:${r.p}%;background:${r.p<30?'var(--warn)':r.p>85?'var(--bad)':'var(--ok)'}"></div></div><b style="font-size:11.5px">${r.p}%</b></div></td><td>${r.boxes}/${r.lc}</td><td>${r.idle||'—'}</td><td>${r.idle?'<span class="tag" style="background:rgba(230,81,0,.1);color:var(--warn)">有闲置</span>':(r.p<30?'<span class="tag" style="background:rgba(230,81,0,.08);color:var(--warn)">低占用</span>':(r.p>85?'<span class="tag" style="background:rgba(198,40,40,.1);color:var(--bad)">趋满</span>':'<span class="tag t-d">正常</span>'))}</td></tr>`).join('')}</tbody></table></div>
  <div style="font-size:11px;color:var(--sub);margin-top:6px">口径：格位=货架层×列（巷道对齐后）；占用=账本有框；闲置按框最早入账时刻算滞留；清理闲置可到「修正与返架」移库或出库消化。</div></div>`;}
 function csT(k,num){if(!TM.cs)TM.cs={k:'t',d:1,sz:100,pg:1};if(TM.cs.k==k)TM.cs.d*=-1;else{TM.cs.k=k;TM.cs.d=num?-1:1}TM.cs.pg=1;ctList()}
@@ -608,7 +608,7 @@ function ctSlotStats(){
  // ㉖v52 货架巷道：同一货架各层物理列数相同→按巷道最大列对齐（立面成矩形，统计口径与渲染一致）
  const rackMax={};Object.values(rows).forEach(R=>{if(R.rack)rackMax[R.rowid]=Math.max(rackMax[R.rowid]||0,R.max)});
  Object.keys(rows).forEach(k=>{const R=rows[k];
-  R.hi=R.rack?Math.max(CTN.rack&&CTN.rack.cols||0,rackMax[R.rowid]||R.max):Math.max(R.max,Number(CTN.gslots[R.rowid])||12); // v56 配置列数为准(16)，观测超配时兜底
+  R.hi=R.rack?Math.max(CTN.rack&&CTN.rack.cols||0,rackMax[R.rowid]||R.max):Math.max(R.max,Number(CTN.gslots[R.rowid])||(CTN.gnd&&CTN.gnd.cols)||12); // v56 配置列数为准(16)，观测超配时兜底
   const n=R.hi,o=Object.keys(R.cells).length;total+=n;used+=o;
   const z=zoneSt[R.zone]=zoneSt[R.zone]||{t:0,u:0};z.t+=n;z.u+=o;});
  return {rows,zoneSt,total,used,miscN,miscB};
