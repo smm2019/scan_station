@@ -4864,4 +4864,7 @@ process.on('unhandledRejection', (e) => { try { logErr('unhandledRejection', e i
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) { process.on(sig, () => { try { flushSave(); } catch (_) {} console.log('[exit] ' + sig + ' 优雅停止：脏数据已落盘'); process.exit(0); }); }
 process.on('beforeExit', () => { try { flushSave(); } catch (_) {} }); // 自然退出兜底（事件循环排空时）
 
+server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认keep-alive 5s短于浏览器连接池复用窗口，POST落在服务端已关连接上被reset且不自动重试；抬到65s(长于常见代理60s)
+server.headersTimeout = 66000; // 需略大于keepAliveTimeout
+server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); } catch (_) {} backupDb(); archiveOld(); });
