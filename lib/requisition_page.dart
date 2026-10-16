@@ -1585,7 +1585,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         "${em != null ? "⚠️应急已发" : "已发"} $code（$boxQty 件）累计 ${_fmtInvNum(tGot)}/${_fmtInvNum(tNeed)}${fromLoc.isNotEmpty ? " · 原$fromLoc 已拣下" : ""}",
         err: false);
     if (fromLoc.isNotEmpty)
-      ledgerRemoveBoxAndPush(code.toUpperCase()); //发料扫码即整框拣下（同托兄弟码一并消位）
+      ledgerRemoveAndPush([code.toUpperCase()]); //㉖v59 方案B：逐码发料→单码拣下（同托兄弟码各自扫各自消，不再整框连坐）
     if (tGot >= tNeed) {
       final next = items2.firstWhere(
           (e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0),

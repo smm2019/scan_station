@@ -84,7 +84,8 @@ class _StockBox {
       operator = "",
       loc = "";
   double qty = 0;
-  bool inStock = true; // 未出库（框内任一标签在库即整框在库）
+  double inStockQty = 0; // ㉖v59 方案B：框内在库量=未发标签数量之和（半发托只扣已发码，不整框连坐）
+  bool inStock = true; // 框内仍有未发标签即在库（方案B逐码口径）
   int ageH = -1; // ㉖v52 在库滞留小时（登记时刻起算；-1=时刻缺失）
 }
 
@@ -175,7 +176,8 @@ Future<_StockAgg> computeStock() async {
           ..operator = oper
           ..loc = loc
           ..ageH = ((DateTime.now()).difference(r.scanTime).inMinutes / 60).floor()
-          ..inStock = !outCodes.contains(r.goodsCode));
+          ..inStock = !outCodes.contains(r.goodsCode)
+          ..inStockQty = outCodes.contains(r.goodsCode) ? 0 : qty);
   }
 
   // 出库扣减（按出库流水零件号汇总；出库的框已从在库剔除）
@@ -213,11 +215,12 @@ Future<_StockAgg> computeStock() async {
             ..operator = p.operator
             ..loc = p.loc
             ..ageH = ((DateTime.now()).difference(DateTime.fromMillisecondsSinceEpoch(p.assignedAt)).inMinutes / 60).floor()
-            ..inStock = !outCodes.contains(p.goodsCode));
+            ..inStock = !outCodes.contains(p.goodsCode)
+            ..inStockQty = outCodes.contains(p.goodsCode) ? 0 : info.qty);
     }
   }
 
-  // 零件汇总与货架分布：先按"框键"合并标签级框（同托多码=1框，数量求和、任一已发整框出库），再派生统计
+  // 零件汇总与货架分布：先按"框键"合并标签级框（同托多码=1框，数量求和；㉖v59方案B：逐码发料，任一码在库即框在库，在库量=未发码之和），再派生统计
   final merged = <String, _StockBox>{};
   for (final b in boxesByKey.values) {
     final k = boxKey(extraMap[b.barcode]?.palletId ?? "", b.loc, b.partNo, b.barcode);
@@ -226,7 +229,8 @@ Future<_StockAgg> computeStock() async {
       merged[k] = b;
     } else {
       old.qty += b.qty; // ㉖ 框数量=框内各标签之和（一筐两标签各25→50）
-      old.inStock = old.inStock && b.inStock; // 框内任一标签已发→整框已出库（一框一发）
+      old.inStockQty += b.inStockQty; // ㉖v59 在库量=未发标签之和（半发托不整框连坐）
+      old.inStock = old.inStock || b.inStock; // ㉖v59 方案B：框内任一标签未发→框仍在库（旧口径"任一已发整框出库"作废）
       if (old.loc.isEmpty && b.loc.isNotEmpty) old.loc = b.loc;
       if (old.ageH < 0 || (b.ageH >= 0 && b.ageH > old.ageH)) old.ageH = b.ageH; // 同托取最早入账（最大滞留）
     }
@@ -238,7 +242,7 @@ Future<_StockAgg> computeStock() async {
     row.inQty += box.qty; // 入库合计按框计一次
     if (!box.inStock) continue;
     row.inBoxes++;
-    row.inStockQty += box.qty;
+    row.inStockQty += box.inStockQty; // ㉖v59 方案B：在库量=框内未发码之和（半发托只算剩余码）
     if (box.ageH >= 168) { row.staleBoxes++; agg.staleBoxes++; }
     else if (box.ageH >= 0 && box.ageH < 72) agg.freshBoxes++;
     if (box.loc.isNotEmpty) {
@@ -883,13 +887,13 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
       final k = "${e.key}|${b.partNo}";
       final old = locMap[k];
       if (old != null) {
-        old.qty += b.qty;
+        old.qty += b.inStockQty; // ㉖v59 方案B：基线库位量按未发码之和（与库存页在库口径一致，防半发托虚高致盘点误判）
       } else {
         locMap[k] = BaselineLoc(
             fileKey: key,
             locCode: e.key,
             partNo: b.partNo,
-            qty: b.qty,
+            qty: b.inStockQty,
             goodsCode: b.barcode);
       }
     }

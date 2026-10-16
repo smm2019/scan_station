@@ -1019,10 +1019,19 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   const agv = agvMap || {};
   const ex = excludeCodes || new Set();
   const match = ledgerView().filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase()); // ㉖ 用派生批次视图：FIFO 按 MES 打印日期先后（YYYY-MM-DD 字典序=时间序）
-  const boxes = groupLedgerBoxes(match).filter(bx => !bx.codes.some(c => ex.has(String(c).toUpperCase()))); // 框内任一标签已发→整框剔除（一框一发）
+  const boxes = [];
+  for (const bx of groupLedgerBoxes(match)) { // ㉖v59 方案B：框内已发码剔除、剩余码保留（逐码发料，半发框继续出现在建议里）；全发完才整框消失
+    const left = bx.codes.filter(c => !ex.has(String(c).toUpperCase()));
+    if (!left.length) continue;
+    bx.allCodes = bx.codes.slice(); // 原全码保留：AGV叫车是整托一车，兄弟码叫过→剩余码同样标记
+    bx.codes = left;
+    bx.items = bx.items.filter(it => left.includes(it.c));
+    bx.q = bx.items.reduce((a, it) => a + (Number(it.q) || 0), 0);
+    boxes.push(bx);
+  }
   let acc = 0; const pick = [];
   for (const x of boxes) {
-    const called = x.codes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || '';
+    const called = x.allCodes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || '';
     x.agv = called; // 框内任一标签叫过AGV → 整框标记（一框一车，同托标签一起走）
     pick.push(x);
     acc += x.q;
@@ -2372,18 +2381,17 @@ return send(res, 200, {
             if (need > 0 && issued > need) add('超发', String(it.partNo || ''), '', '领料单 ' + (r.no || '') + ' 零件 ' + (it.partNo || '') + ' 需求' + need + '件已发' + issued + '件，超发' + (issued - need) + '件', 'high');
           }
         }
-        // — ④ 一框多发：同一账本框(按boxKeyOf归并)被多个活跃领料单发料
-        const boxOwners = {};
+        // — ④ 同码重复发料：同一标签码在多个活跃领料单被记账（㉖v59 方案B下同框多码拆单发是合法作业，同码双记才是异常）
+        const codeOwners = {};
         for (const r of db.requisitions || []) {
           if (['done', 'cancelled', 'rejected'].includes(r.status)) continue;
           for (const it of r.items || []) for (const e of it.issued || []) {
             const c = String(typeof e === 'string' ? e : e.c || '').toUpperCase(); if (!c) continue;
-            const lx = ledgerByCode[c]; const bk = lx ? boxKeyOf(lx) : 'C|' + c;
-            (boxOwners[bk] = boxOwners[bk] || new Set()).add(r.no || '');
+            (codeOwners[c] = codeOwners[c] || new Set()).add(r.no || '');
           }
         }
-        for (const [bk, owners] of Object.entries(boxOwners)) {
-          if (owners.size > 1) add('一框多发', bk.replace(/^[PLC]\|/, ''), '', '同一框被多个领料单发料：' + Array.from(owners).slice(0, 5).join('、'), 'high');
+        for (const [c, owners] of Object.entries(codeOwners)) {
+          if (owners.size > 1) add('重复发料', c, '', '同一标签在多个领料单被记账：' + Array.from(owners).slice(0, 5).join('、') + '（数量会双计，请核实）', 'high');
         }
         // — ⑤ 到站滞留：AGV已到站但队列项长时间未交付闭环（漏扫交付）
         const nowMs = Date.now(), staleMs = (Number((db.params || {}).fpStaleMin) || 30) * 60000;
@@ -3671,18 +3679,7 @@ return send(res, 200, {
             if (r.items.some(i => normIssued(i).some(e => e.c === code))) return send(res, 400, { ok: false, msg: `标签 ${code} 已扫过` });
             // ㉖② 全局出库防重：该标签已在其他出库单/其他领料单发过 → 拦（应急登记旁路，需原因）
             if (b.emergency !== true) { const _lst = labelStatus(code); const _b2 = labelBlockReason(_lst, 'out') || labelBlockReason(_lst, 'x'); if ((_lst.inOutbound.length || _lst.inIssued.length) && _b2) return send(res, 400, { ok: false, msg: _b2 }); const _act = _lst.inInspect.filter((q) => q.state !== 'waitReturn'); if (_act.length) return send(res, 400, { ok: false, msg: '该框检验中，不可发料出库' }); if (_lst.inInspect.length) hpush('🔁 检验判退货框扫码出库：' + code + '（' + (_lst.inInspect[0].retReason || '') + '，检验单 ' + _lst.inInspect[0].id + '）'); }
-            // 一框一发：同框兄弟码（同托号/同货位同零件号）已发过则拦截，防整框数量双计
-            {
-              const self = db.ledger.find(x => String(x.c).toUpperCase() === code.toUpperCase());
-              if (self) {
-                const bk = boxKeyOf(self);
-                const sib = r.items.some(i => normIssued(i).some(e => {
-                  const l = db.ledger.find(x => String(x.c).toUpperCase() === String(e.c).toUpperCase());
-                  return l && boxKeyOf(l) === bk;
-                }));
-                if (sib) return send(res, 400, { ok: false, msg: `标签 ${code} 与已发标签同框（一框只发一次），请勿重复扫码` });
-              }
-            }
+            // ㉖v59 方案B（用户拍板2026-10-16）：一框一发闸已移除——一筐多码逐码扫码、各记各的MES数量（10-13数量口径=各标签之和的自然延伸：两标签各25→整筐50须扫两码各记25）。同码防重由上方"已扫过"闸兜底；超发由行级qty与防呆体检兜底。
             // ㉖v58 防呆补强：服务端账本零件号交叉核对——框码在账本的实际零件号必须与所选行一致，堵"PDA选错行/扫错框"错发（PDA端MES零件号校验只在客户端，此闸为服务端兜底；应急登记可旁路但工单历史留痕）
             {
               const _pnSelf = (db.ledger || []).find(x => String(x.c || '').toUpperCase() === code.toUpperCase());
