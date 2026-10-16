@@ -51,6 +51,8 @@ function defaultDb() {
     watchlist: [], // ⑮预约来料
     inspects: [], seenIn: {}, seenOut: {}, // ㉖④检验工单 / ①②标签生命周期索引 [{userId,partNo,at}]
     groundSlots: {}, // ⑮地面排格数覆盖 {"NB03-A-11":13}，缺省12
+    gndZoneRows: {}, // ㉖v59 地面按区排数覆盖 {"A":15,"B":10}，缺省=每区排数参数；0=整区不用
+    gndRowOff: {}, // ㉖v59 地面停用排 {"NB03-A-01":1}，停用排地图灰显、不计入格位统计（账本有货仍显示提醒）
     stockAlert: {}, // ⑮断料告警去重 {零件号: 最近告警日}
     prefs: {}, // ㉕F5 个人偏好 {userId:{key:{v,at}}}（后写覆盖=方案"到达序新者胜"）
     prefTemplates: [], // ㉕F5 管理员配置模板 [{name,prefs,by,at}]
@@ -169,6 +171,8 @@ function loadDb() {
   if (!d.seenOut || typeof d.seenOut !== 'object') { d.seenOut = {}; added = true; }
   if (!d.seenIn || typeof d.seenIn !== 'object') { d.seenIn = {}; added = true; } // 历史录入过的标签（跨批次/跨设备永久防重，不受窗口截断） // 曾出库标签登记（跨生命周期防重） // ㉖异常事件持久表（180天滚动，恢复即归档不删除）
   if (typeof d.groundSlots !== 'object' || d.groundSlots === null || Array.isArray(d.groundSlots)) { d.groundSlots = {}; added = true; }
+  if (typeof d.gndZoneRows !== 'object' || d.gndZoneRows === null || Array.isArray(d.gndZoneRows)) { d.gndZoneRows = {}; added = true; } // ㉖v59 按区排数覆盖（旧库补齐）
+  if (typeof d.gndRowOff !== 'object' || d.gndRowOff === null || Array.isArray(d.gndRowOff)) { d.gndRowOff = {}; added = true; } // ㉖v59 停用排（旧库补齐）
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
   if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
@@ -794,8 +798,8 @@ function reqItemsSuggestText(r) {
 }
 // ---- ㉖B8 运营参数：调度/通知/告警阈值集中可调，服务器端统一取值（改完即时生效）----
 const PARAMS = {
-  pollSec:        { grp: '调度节奏', name: 'RCS轮询间隔', unit: '秒', min: 5, max: 300, d: 20, tip: '站台/车辆/任务刷新频率，越小越实时但越吃RCS负载' },
-  uiRefreshSec:   { grp: '界面刷新', name: '指挥舱页面刷新', unit: '秒', min: 5, max: 600, d: 30, tip: '网页指挥舱各页(车辆/交管/队列/看板等)自动拉取间隔；数据新鲜度受RCS轮询节律限制，设小于轮询间隔时以轮询为准' },
+  pollSec:        { grp: '调度节奏', name: 'RCS轮询间隔', unit: '秒', min: 1, max: 300, d: 20, tip: '站台/车辆/任务刷新频率，越小越实时但越吃RCS负载（1秒=近实时，注意RCS侧压力）' },
+  uiRefreshSec:   { grp: '界面刷新', name: '指挥舱页面刷新', unit: '秒', min: 1, max: 600, d: 30, tip: '网页指挥舱各页(车辆/交管/队列/看板等)自动拉取间隔；数据新鲜度受RCS轮询节律限制，设小于轮询间隔时以轮询为准' },
   assignMin:      { grp: '调度节奏', name: '指定单超时放开', unit: '分钟', min: 1, max: 240, d: 30, tip: '指定仓管员下单后，超时未接单自动放开给全员' },
   urgeMin:        { grp: '通知治理', name: '催单最小间隔', unit: '分钟', min: 1, max: 120, d: 10, tip: '同一张领料单两次催单的最小间隔，防轰炸' },
   pushMin:        { grp: '通知治理', name: '急料到站催扫', unit: '分钟', min: 1, max: 60, d: 5, tip: '急料框到站台超此时长未扫码→广播全体仓管' },
@@ -821,11 +825,11 @@ const PARAMS = {
   notifKeep:      { grp: '数据保留', name: '通知保留条数', unit: '条', min: 100, max: 5000, d: 500, tip: '消息中心滚动保留最近多少条通知（超出丢弃最旧）' },
   archDays:       { grp: '数据保留', name: '流水归档窗口', unit: '天', min: 30, max: 365, d: 90, tip: '采集流水/出库单超期挪归档目录（主库瘦身；导出勾「含归档」仍可查全史）；原硬编码180' },
   reqArchDays:    { grp: '数据保留', name: '领料单归档窗口', unit: '天', min: 90, max: 730, d: 365, tip: '已终结(签收/拒单/取消)领料单超期挪归档，主库只留在途与近一年；未终结单永不归档' },
-  rackCount:      { grp: '存储配置', name: '高架货架数', unit: '架', min: 1, max: 40, d: 8, tip: 'NB02 高位货架台数（现场实际 8 台：A/B 区各 4 架）' },
+  rackCount:      { grp: '存储配置', name: '高架货架数', unit: '架', min: 1, max: 40, d: 8, tip: 'NB02 高位货架台数（现场 8 台：A~H 一个字母一台，货位码 NB02-字母-列-层 的字母段即架号）' },
   rackCols:       { grp: '存储配置', name: '每架列数', unit: '列', min: 4, max: 60, d: 16, tip: '每台货架横向格列数（现场 16 列）；总格位=架数×列数×层数' },
   rackTiers:      { grp: '存储配置', name: '每架层数', unit: '层', min: 1, max: 10, d: 4, tip: '每台货架纵向层数（现场 4 层：1F-4F）' },
   gndZones:       { grp: '存储配置', name: '地面区数', unit: '区', min: 1, max: 20, d: 6, tip: 'NB03 地面货区数量（现场 A/B/C/F/G/H 六区）；地面总格位=区数×每区排数×每排格数' },
-  gndRows:        { grp: '存储配置', name: '每区排数', unit: '排', min: 1, max: 40, d: 18, tip: '每个地面区的排数（现场排号到 18）；地面总格位=区数×排数×每排格数' },
+  gndRows:        { grp: '存储配置', name: '每区排数', unit: '排', min: 1, max: 40, d: 18, tip: '每个地面区的默认排数（现场排号到 18）；可在「地面排配置」按区单独覆盖（如 B 区 15 排），并支持停用指定排（如 A-01 不用）' },
   gndCols:        { grp: '存储配置', name: '每排格数', unit: '格', min: 1, max: 60, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数）' },
   abcWindow:      { grp: '调度策略', name: 'ABC周转统计窗', unit: '天', min: 7, max: 365, d: 30, tip: '出库单+采集流水的统计窗口，用于给零件打周转分' },
   abcTop:         { grp: '调度策略', name: 'A类件比例', unit: '%', min: 0, max: 80, d: 20, tip: '周转分前N%判为A类：入库自动分配时优先靠近CK站台的货架列（0=关闭该策略）' },
@@ -2112,7 +2116,7 @@ const server = http.createServer(async (req, res) => {
         const gSlots = db.groundSlots || {};
         const ground = Object.values(gAgg).map((R) => {
           const key = 'NB03-' + R.aisle + '-' + String(R.row).padStart(2, '0');
-          return { key, aisle: R.aisle, row: R.row, slots: gSlots[key] || 12, cells: R.cells };
+          return { key, aisle: R.aisle, row: R.row, slots: gSlots[key] || P().gndCols, off: !!(db.gndRowOff || {})[key], cells: R.cells }; // ㉖v59 格数缺省读参数；附停用标记
         }).sort((a, b) => a.key.localeCompare(b.key));
         const stn = [];
         for (const [loc, lc] of Object.entries(NetMap.locLand)) { // 全量站台：从路网映射取所有CK货位，状态缺省空闲
@@ -2902,7 +2906,8 @@ return send(res, 200, {
       }
       // ===== ㉖ 容器类型可配置：GET 登录即可读（采集页按钮数据源）；POST 仓管/管理员整表保存（留痕） =====
       if (req.method === 'GET' && p === '/api/containers') {
-        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols } }); // ㉖v56 高架+地面格位规格下发（参数可调）
+        const _gzr = db.gndZoneRows || {}, _goff = db.gndRowOff || {}; // ㉖v59 按区排数覆盖+停用排下发（zoneRows=各区有效排数，offs=停用排键集）
+        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols, zoneRows: _gzr, offs: _goff } }); // ㉖v56 高架+地面格位规格下发（参数可调）
       }
       if (req.method === 'POST' && p === '/api/containers') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
@@ -2921,7 +2926,7 @@ return send(res, 200, {
         return send(res, 200, { ok: true, types: clean, msg: '已保存，全端下次进入采集页生效' });
       }
       if (req.method === 'GET' && p === '/api/ground-slots') {
-        return send(res, 200, { ok: true, slots: db.groundSlots || {} });
+        return send(res, 200, { ok: true, slots: db.groundSlots || {}, rows: db.gndZoneRows || {}, offs: db.gndRowOff || {}, def: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols } }); // ㉖v59 附按区排数/停用排/默认参数
       }
       if (req.method === 'POST' && p === '/api/ground-slots') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
@@ -2936,10 +2941,29 @@ return send(res, 200, {
           if (v < 1 || v > 60) { delete db.groundSlots[k]; continue; } // 1~60之外=恢复默认12
           db.groundSlots[k] = v;
         }
+        // ㉖v59 按区排数覆盖：{"A":15}=该区15排，{"B":0}=整区不用，{"C":null/删除}=恢复默认
+        const rowEntries = Array.isArray(b.rowEntries) ? b.rowEntries : [];
+        db.gndZoneRows = db.gndZoneRows || {};
+        for (const e of rowEntries) {
+          const z = String(e.zone || '').trim().toUpperCase();
+          if (!/^[A-Z]$/.test(z)) continue;
+          if (e.count === null || e.count === '' || e.count === undefined) { delete db.gndZoneRows[z]; continue; }
+          const v = Number(e.count);
+          if (!Number.isFinite(v) || v < 0 || v > 40) continue;
+          db.gndZoneRows[z] = v;
+        }
+        // ㉖v59 停用排：off=true 停用（如 A-01 不用），off=false 恢复
+        const offEntries = Array.isArray(b.offEntries) ? b.offEntries : [];
+        db.gndRowOff = db.gndRowOff || {};
+        for (const e of offEntries) {
+          const k = String(e.prefix || '').trim().toUpperCase();
+          if (!/^NB03-[A-Z]-\d{2}$/.test(k)) continue;
+          if (e.off === true) db.gndRowOff[k] = 1; else delete db.gndRowOff[k];
+        }
         const _cr = cfgBump();
         save();
-        pushOps(u,'改格数配置','','地面排格数已更新');
-        return send(res, 200, { ok: true, cfgRev: _cr, slots: db.groundSlots });
+        pushOps(u,'改格数配置','','地面排格数/排数/停用排已更新');
+        return send(res, 200, { ok: true, cfgRev: _cr, slots: db.groundSlots, rows: db.gndZoneRows, offs: db.gndRowOff });
       }
       if (req.method === 'POST' && p === '/api/agv/transfer') {
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });

@@ -109,7 +109,7 @@ a{color:var(--pri)}
 <script>
 const $=s=>document.querySelector(s),T=(m,g)=>{const e=document.createElement('div');e.className='toast';if(g)e.style.background='var(--ok)';e.textContent=m;document.body.appendChild(e);setTimeout(()=>e.remove(),3200)};
 let TK=localStorage.getItem('ck_tok')||'',U=JSON.parse(localStorage.getItem('ck_u')||'null'),TAB='dash',TM={},PF={},URS=30; // ㉖ URS=指挥舱页面自动刷新秒数（参数配置 uiRefreshSec，登录/心跳下发）
-const RFT=()=>Math.max(5,Number(URS)||30)*1000, RFTXT=()=>Math.max(5,Number(URS)||30)+'秒自动刷新';
+const RFT=()=>Math.max(1,Number(URS)||30)*1000, RFTXT=()=>Math.max(1,Number(URS)||30)+'秒自动刷新';
 async function api(p,o={}){o.headers=Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+TK},o.headers||{});if(o.body&&typeof o.body!=='string')o.body=JSON.stringify(o.body);
  const r=await fetch(p,o);if(r.status==401||r.status==403){out();throw 0}
  if(r.status>=500){let m='HTTP '+r.status;try{const b=await r.clone().json();if(b&&b.msg)m=b.msg}catch(_){}throw new Error(m)} // ㉖ 仅服务器5xx抛出真因（4xx业务错误仍返回j供if(j.ok)处理，不破坏操作类调用点）
@@ -538,6 +538,33 @@ async function prmSave(btn){const v={};for(const x of ((window._prv||{}).items||
  try{const r=await fetch('/api/admin/params',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+TK},body:JSON.stringify({values:v,baseRev:((window._prv||{}).cfgRev)||null})});const j=await r.json();btn.disabled=false;
  if(j.ok){T('✅ '+(j.msg||'已保存'),1);adTab('params')}else{T('❌ '+(j.msg||('HTTP '+r.status)),1);if(r.status==409)setTimeout(()=>adTab('params'),1200)}}catch(_){btn.disabled=false;T('保存失败')}}
 
+let GC=null;
+async function gndCfg(){const box=$('#gndcfg');if(!box)return;
+ try{const j=await api('/api/ground-slots');if(!j.ok||j.def===undefined){box.innerHTML='';return}
+  GC={def:j.def||{zones:6,rows:18,cols:12},rows:Object.assign({},j.rows||{}),offs:Object.assign({},j.offs||{})};
+  GC.rowsOrig=Object.assign({},GC.rows);GC.offsOrig=Object.assign({},GC.offs);GC.rev=((window._prv||{}).cfgRev)||null;gndRender();
+ }catch(e){box.innerHTML='<div class="card" style="color:var(--sub)">地面排配置：需服务重启加载新版后启用（旧版无此接口字段）</div>'}}
+function gndZoneEff(z){const v=GC.rows[z];return v===undefined||v===null?Number(GC.def.rows):Math.max(0,Number(v)||0)}
+function gndRender(){const box=$('#gndcfg');if(!box||!GC)return;const Z='ABCDEFGH';
+ box.innerHTML=`<div class="card" style="margin-top:10px"><b style="font-size:13px">🟩 地面排配置（NB03）</b> <span style="font-size:11.5px;color:var(--sub)">默认每区 ${GC.def.rows} 排 × ${GC.def.cols} 格（改全局默认去上方「存储配置·每区排数」）。这里给单个区设不同排数、停用整区或停用指定排；库位地图与占用统计即时按此计算，停用排若仍有货会标 ⚠️ 提醒移走。</span>
+ <div style="margin-top:8px;overflow:auto"><table><thead><tr><th>区</th><th title="留空=用全局默认；0=整区停用；数字=该区实际排数">排数覆盖</th><th>停用排（点排号切换，✕=停用）</th></tr></thead><tbody>${
+  Z.split('').map(z=>{const n=gndZoneEff(z);
+   const chips=n<=0?'<span style="color:#78909c;font-size:11px">整区已停用</span>':Array.from({length:n},(_,i)=>i+1).map(r=>{const key='NB03-'+z+'-'+String(r).padStart(2,'0'),off=GC.offs[key];return `<span class="pill${off?' r':''}" style="padding:1px 7px;font-size:11px;margin:1px;cursor:pointer" title="${off?'已停用 · 点击恢复':'点击停用本排'}" onclick="gndToggleOff('${key}')">${off?'✕':''}${r}</span>`}).join('');
+   return `<tr><td class="mono" style="font-weight:700">${z}</td><td><input type="number" id="gz_${z}" value="${(GC.rows[z]===undefined||GC.rows[z]===null)?'':GC.rows[z]}" placeholder="默认${GC.def.rows}" min="0" max="40" style="width:88px;padding:3px 6px" oninput="gndZoneChange('${z}')"></td><td>${chips}</td></tr>`;
+  }).join('')
+ }</tbody></table></div>
+ <div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill q" onclick="gndCfg()">↺ 放弃改动</button><button class="pill g" onclick="gndSave(this)">保存地面排配置</button></div></div>`;}
+function gndZoneChange(z){const el=$('#gz_'+z);const v=String(el.value).trim();if(v===''){GC.rows[z]=undefined}else{const n=Number(v);GC.rows[z]=Number.isFinite(n)?Math.max(0,Math.min(40,Math.round(n))):undefined}const n=gndZoneEff(z);for(let r=n+1;r<=40;r++){delete GC.offs['NB03-'+z+'-'+String(r).padStart(2,'0')]}gndRender();const e2=$('#gz_'+z);if(e2){e2.focus();e2.select()}}
+function gndToggleOff(key){if(GC.offs[key])delete GC.offs[key];else GC.offs[key]=1;gndRender()}
+async function gndSave(btn){if(!GC)return;const Z='ABCDEFGH';
+ const rowEntries=Z.split('').filter(z=>(GC.rows[z]===undefined?undefined:GC.rows[z])!==(GC.rowsOrig[z]===undefined?undefined:GC.rowsOrig[z])).map(z=>({zone:z,count:GC.rows[z]===undefined?null:GC.rows[z]}));
+ const keys=new Set([...Object.keys(GC.offs),...Object.keys(GC.offsOrig)]);
+ const offEntries=[...keys].filter(k=>!!GC.offs[k]!==!!GC.offsOrig[k]).map(k=>({prefix:k,off:!!GC.offs[k]}));
+ if(!rowEntries.length&&!offEntries.length){T('没有地面排改动');return}
+ if(!confirm('确认保存地面排配置？库位地图与占用统计将即时按新排数/停用排计算。'))return;btn.disabled=true;
+ try{const j=await api('/api/ground-slots',{method:'POST',body:{rowEntries,offEntries,baseRev:GC.rev}});btn.disabled=false;
+  if(j.ok){T('✅ 地面排配置已保存',1);GC.rev=j.cfgRev||GC.rev;gndCfg()}else{T('❌ '+(j.msg||'保存失败'),1);if(j.code==='conflict')setTimeout(()=>gndCfg(),1200)}}catch(_){btn.disabled=false;T('保存失败')}}
+
 let _ledT=null;
 async function pgLedger(){const q=TM.lq||'';
  $('#main').innerHTML=`<div class="card"><div class="row"><input id="lq" placeholder="零件号/物料名/标签号，或货位前缀（如 NB03-A-13）" value="${q}" style="flex:1;min-width:200px"><button class="pill" onclick="TM.lq=$('#lq').value;pgLedger()">查询</button><button class="pill q" title="清空关键字，看全部货位" onclick="TM.lq='';pgLedger()">↺ 重置</button><span id="lc" style="color:var(--sub);font-size:12px"></span></div><div id="llist">加载中…</div></div>`;
@@ -687,7 +714,7 @@ function ctOcc(){const box=$('#ctocc');if(!box||!CTN.boxes||!CTN.boxes.length){i
  const rackAgg={};rackRows.forEach(R=>{const a=rackAgg[R.rowid]=rackAgg[R.rowid]||{tiers:0,cap:0,used:0,boxes:0,lc:0,idle:0};a.tiers++;a.cap+=R.hi;const oc=Object.keys(R.cells).length;a.used+=oc;for(const c of Object.values(R.cells)){a.boxes+=c.boxes.length;a.lc+=c.boxes.reduce((s3,b)=>s3+b.lc,0);if(idleOf(c))a.idle++;}});
  const rr=Object.entries(rackAgg).map(([k,a])=>({k,...a,p:a.cap?Math.round(a.used/a.cap*100):0})).sort((x,y)=>x.p-y.p||x.k.localeCompare(y.k));
  box.innerHTML=`<div class="card" style="margin-top:10px"><div class="row" style="align-items:center"><b style="font-size:13px">📐 高位货架占用率 · 长期闲置 · 框占用</b><span style="font-size:11px;color:var(--sub)">闲置格=批次≥14天未流转；多框格=同货位停≥2框</span></div>
- <div class="row" style="gap:8px;margin:8px 0;flex-wrap:wrap">${chip('NB02总格位',cap,CTN.rack?('配置 '+CTN.rack.count+'架×'+CTN.rack.cols+'列×'+CTN.rack.tiers+'层（存储配置组可调）'):'主序列货架格总数（含巷道对齐补齐）')}${chip('已占用',usedR,'当前有框停放的格')}${chip('占用率',pct+'%','已占/总格')}${chip('长期闲置',idleCells,'占位框批次(MES打印日期)≥14天——考虑清理或移库盘活')}${chip('多框同格',multi,'同货位停多框（地面/叠放）')}${chip('均框/格',occCells?(boxSum/occCells).toFixed(2):'0','占用格上平均停框数')}${chip('地面区占用',(CTN.gnd&&CTN.gnd.zones*CTN.gnd.rows*CTN.gnd.cols)?Math.round(gUsed/(CTN.gnd.zones*CTN.gnd.rows*CTN.gnd.cols)*100)+'%':((st.total-rackRows.reduce((s2,R)=>s2+R.hi,0))>0?Math.round((st.used-usedR)/(st.total-rackRows.reduce((s2,R)=>s2+R.hi,0))*100)+'%':'—'),CTN.gnd?('配置 '+CTN.gnd.zones+'区×'+CTN.gnd.rows+'排×'+CTN.gnd.cols+'格='+(CTN.gnd.zones*CTN.gnd.rows*CTN.gnd.cols)+'格，已占'+gUsed+'（存储配置组可调）'):'NB03地面排格占用率')}</div>
+ <div class="row" style="gap:8px;margin:8px 0;flex-wrap:wrap">${chip('NB02总格位',cap,CTN.rack?('配置 '+CTN.rack.count+'架×'+CTN.rack.cols+'列×'+CTN.rack.tiers+'层（存储配置组可调）'):'主序列货架格总数（含巷道对齐补齐）')}${chip('已占用',usedR,'当前有框停放的格')}${chip('占用率',pct+'%','已占/总格')}${chip('长期闲置',idleCells,'占位框批次(MES打印日期)≥14天——考虑清理或移库盘活')}${chip('多框同格',multi,'同货位停多框（地面/叠放）')}${chip('均框/格',occCells?(boxSum/occCells).toFixed(2):'0','占用格上平均停框数')}${chip('地面区占用',(st.total-st.used)>0&&st.total>0?Math.round((st.used-usedR)/(st.total-rackRows.reduce((s2,R)=>s2+R.hi,0))*100)+'%':'—',CTN.gnd?('有效格位（含按区排数/停用排调整，「地面排配置」可调）已占'+(st.used-usedR)+'（存储配置组可调）'):'NB03地面排格占用率（已扣除停用排）')}</div>
  <div style="overflow:auto;max-height:46vh"><table><thead><tr><th>货架</th><th>层数</th><th title="列数×层数（列按存储配置16列对齐）">格位</th><th>已占</th><th>占用率</th><th>框/标签</th><th>闲置格</th><th>状态</th></tr></thead><tbody>${rr.map(r=>`<tr><td class="mono">${r.k}</td><td>${r.tiers}</td><td>${r.cap}</td><td>${r.used}</td><td style="min-width:120px"><div style="display:flex;align-items:center;gap:6px"><div style="flex:1;height:8px;background:var(--line);border-radius:4px;overflow:hidden"><div style="height:100%;width:${r.p}%;background:${r.p<30?'var(--warn)':r.p>85?'var(--bad)':'var(--ok)'}"></div></div><b style="font-size:11.5px">${r.p}%</b></div></td><td>${r.boxes}/${r.lc}</td><td>${r.idle||'—'}</td><td>${r.idle?'<span class="tag" style="background:rgba(230,81,0,.1);color:var(--warn)">有闲置</span>':(r.p<30?'<span class="tag" style="background:rgba(230,81,0,.08);color:var(--warn)">低占用</span>':(r.p>85?'<span class="tag" style="background:rgba(198,40,40,.1);color:var(--bad)">趋满</span>':'<span class="tag t-d">正常</span>'))}</td></tr>`).join('')}</tbody></table></div>
  <div style="font-size:11px;color:var(--sub);margin-top:6px">口径：格位=货架层×列（巷道对齐后）；占用=账本有框；闲置按框最早入账时刻算滞留；清理闲置可到「修正与返架」移库或出库消化。</div></div>`;}
 function csT(k,num){if(!TM.cs)TM.cs={k:'t',d:1,sz:100,pg:1};if(TM.cs.k==k)TM.cs.d*=-1;else{TM.cs.k=k;TM.cs.d=num?-1:1}TM.cs.pg=1;ctList()}
@@ -708,11 +735,23 @@ function ctSlotStats(){
   R.cells[col]={loc:String(boxes[0]&&boxes[0].l).toUpperCase(),boxes};
   if(col>R.max)R.max=col;
  });
+ // ㉖v59 地面：按"每区有效排数"枚举补齐空排（现场排号到18但地图只见有货的排），停用排打标
+ const G=CTN.gnd||{},gOff=G.offs||{},gZr=G.zoneRows||{};
+ const zoneLetter=(rowid)=>String(rowid).split('-')[1]||''; // NB03-A → A
+ const rowsOfZone=(z)=>{const v=gZr[z];return v===undefined||v===null||!Number.isFinite(Number(v))?Math.max(1,Number(G.rows)||18):Math.max(0,Number(v));}; // 区覆盖>全局参数；0=整区不用
+ Object.keys(rows).forEach(k=>{const R=rows[k];if(R.rack)return;const rn=Number(R.rowid.split('-').pop())||0;R.off=!!gOff[R.rowid];R.over=rn>rowsOfZone(zoneLetter(R.rowid));});
+ const zrZones={};Object.entries(gZr).forEach(([z,v])=>{zrZones['NB03-'+z]=Math.max(0,Number(v)||0)});
+ if(Object.keys(gOff).length||Object.keys(gZr).length||G.rows){ // 有地面配置才补空排（旧服务端无 zoneRows/offs 时行为不变）
+  Object.keys(zrZones).forEach(rowid=>{const n=zrZones[rowid];for(let i=1;i<=n;i++){const rowid2=rowid+'-'+String(i).padStart(2,'0');if(gOff[rowid2])continue;const label=rowid2+' 排';if(!rows[label])rows[label]={zone:rowid.split('-')[0],rack:false,rowid:rowid2,tier:String(i),cells:{},max:0,off:false,over:false};}});
+  const zn=new Set();Object.values(rows).forEach(R=>{if(!R.rack)zn.add(R.rowid.split('-').slice(0,2).join('-'))});
+  zn.forEach(rowid=>{const n=rowsOfZone(zoneLetter(rowid));for(let i=1;i<=n;i++){const rowid2=rowid+'-'+String(i).padStart(2,'0');if(gOff[rowid2])continue;const label=rowid2+' 排';if(!rows[label])rows[label]={zone:rowid.split('-')[0],rack:false,rowid:rowid2,tier:String(i),cells:{},max:0,off:false,over:false};}});
+ }
  const zoneSt={};let total=0,used=0;
  // ㉖v52 货架巷道：同一货架各层物理列数相同→按巷道最大列对齐（立面成矩形，统计口径与渲染一致）
  const rackMax={};Object.values(rows).forEach(R=>{if(R.rack)rackMax[R.rowid]=Math.max(rackMax[R.rowid]||0,R.max)});
  Object.keys(rows).forEach(k=>{const R=rows[k];
   R.hi=R.rack?Math.max(CTN.rack&&CTN.rack.cols||0,rackMax[R.rowid]||R.max):Math.max(R.max,Number(CTN.gslots[R.rowid])||(CTN.gnd&&CTN.gnd.cols)||12); // v56 配置列数为准(16)，观测超配时兜底
+  if(R.off){R.offCells=Object.keys(R.cells).length;return;} // ㉖v59 停用排不计格位统计（有货的排仍渲染提醒）
   const n=R.hi,o=Object.keys(R.cells).length;total+=n;used+=o;
   const z=zoneSt[R.zone]=zoneSt[R.zone]||{t:0,u:0};z.t+=n;z.u+=o;});
  return {rows,zoneSt,total,used,miscN,miscB};
@@ -769,12 +808,16 @@ async function ctMap(){
    const rs=gA[a].sort((x,y)=>(Number(x.rowid.split('-').pop())||0)-(Number(y.rowid.split('-').pop())||0));
    const u=rs.reduce((s,R)=>s+Object.keys(R.cells).length,0);
    const maxC=Math.max(0,...rs.map(R=>R.hi));
-   h+=`<div style="margin:${ai?14:10}px 0 3px;font-size:12.5px;font-weight:800;color:#00897b">${a} 区 <span style="font-weight:400;color:var(--sub);font-size:11px">地面 ${rs.length} 排 · 存 ${u} 框 · 每两排间为通行巷道</span></div>`;
+   const offN=rs.filter(R=>R.off).length,overN=rs.filter(R=>R.over).length; // ㉖v59 停用排/超配排计数
+   const zoneCfg=(CTN.gnd&&CTN.gnd.zoneRows||{})[a.split('-').pop()];
+   h+=`<div style="margin:${ai?14:10}px 0 3px;font-size:12.5px;font-weight:800;color:#00897b">${a} 区 <span style="font-weight:400;color:var(--sub);font-size:11px">地面 ${rs.length} 排${zoneCfg!==undefined?`（本区自定义 ${zoneCfg} 排${zoneCfg===0?'，整区停用':''}）`:''} · 存 ${u} 框 · 每两排间为通行巷道${offN?` · <span style="color:#78909c">停用 ${offN} 排</span>`:''}${overN?` · <span style="color:var(--bad)">⚠️ ${overN} 排超出配置排数</span>`:''}</span></div>`;
    h+='<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px;background:linear-gradient(180deg,rgba(0,137,123,.05),transparent)">';
    let ruler='<span style="width:66px"></span>';
    for(let c=1;c<=maxC;c++)ruler+=`<span class="ctg" style="background:transparent;color:var(--sub);font-size:9px;cursor:default;pointer-events:none">${c}</span>`;
    h+=`<div style="display:flex;gap:0;margin-bottom:2px">${ruler}</div>`;
-   rs.forEach((R,ri)=>{const rn=R.rowid.split('-').pop(),o=Object.keys(R.cells).length;h+=rowLine('第'+rn+'排'+(o?'':' 空'),R,R.hi,o);if(ri%2===1&&ri<rs.length-1)h+=aisle('巷道')});
+   rs.forEach((R,ri)=>{const rn=R.rowid.split('-').pop(),o=Object.keys(R.cells).length;
+     if(R.off){h+=`<div style="display:flex;align-items:center;gap:6px;margin:1px 0;opacity:.55"><span class="mono" style="font-size:11px;width:66px;color:#78909c;text-align:right">第${rn}排</span><span class="tag t-x" style="font-size:10px">已停用${o?` · ⚠️仍有 ${o} 格有货（${R.offCells||o}框）请移走`:''}</span></div>`;return;} // ㉖v59 停用排灰显不画格
+     h+=rowLine('第'+rn+'排'+(R.over?' ⚠️超配':(o?'':' 空')),R,R.hi,o);if(ri%2===1&&ri<rs.length-1)h+=aisle('巷道')});
    h+='</div>';
  });
  $('#ctmap').innerHTML=h||'<div style="color:var(--sub);padding:20px">账本为空——地图无格可画</div>';
@@ -949,7 +992,7 @@ async function adTab(t){['ops','errlog','syserr','users','perm','health','params
  else if(t=='dev'){B.innerHTML='<div class="card">加载中…</div>';loadDev()} else if(t=='params'){B.innerHTML='加载中…';try{const j=await api('/api/admin/params');window._prv=j;
 B.innerHTML=`<div class="card"><b style="font-size:13px">运营参数</b> <span style="font-size:12px;color:var(--sub)">调度节奏 / 通知治理 / 告警阈值集中配置，保存即时生效无需重启；带乐观锁（他人同时修改会提示刷新）</span>
 <div style="overflow:auto;margin-top:8px"><table><thead><tr><th>参数</th><th>当前值</th><th>允许范围</th><th>默认</th><th>说明</th></tr></thead><tbody>${(()=>{const G=['调度节奏','界面刷新','通知治理','告警阈值','数据保留'],by={};(j.items||[]).forEach(x=>{const k=x.grp||'其他';(by[k]=by[k]||[]).push(x)});let h='';for(const g of[...G,...Object.keys(by).filter(k=>!G.includes(k))]){const arr=by[g];if(!arr||!arr.length)continue;h+='<tr><td colspan=5 style="background:var(--bg);font-weight:700;color:var(--pri);font-size:12px;padding:7px 8px;border-top:2px solid var(--line)">▍ '+g+'（'+arr.length+' 项）</td></tr>';h+=arr.map((x)=>`<tr><td style="white-space:nowrap">${x.name}${x.set?' <span style="font-size:10px;color:var(--pri)">已自定义</span>':''}</td><td><input type="number" id="prm_${x.k}" value="${x.val}" min="${x.min}" max="${x.max}" style="width:92px;padding:3px 6px"></td><td style="font-size:11px;color:var(--sub);white-space:nowrap">${x.min} ~ ${x.max} ${x.unit}</td><td style="font-size:11px;color:var(--sub)">${x.def}</td><td style="font-size:11.5px;color:var(--sub)">${x.tip}</td></tr>`).join('')}return h})()}</tbody></table></div>
-<div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill" onclick="prmDef()">全部填回默认</button><button class="pill g" onclick="prmSave(this)">保存参数</button></div></div>`}catch(e){B.innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'服务需重启加载新代码')+'</div>'}}
+<div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill" onclick="prmDef()">全部填回默认</button><button class="pill g" onclick="prmSave(this)">保存参数</button></div></div><div id="gndcfg"><div class="card" style="margin-top:10px">加载地面排配置…</div></div>`;gndCfg()}catch(e){B.innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'服务需重启加载新代码')+'</div>'}}
  else if(t=='health'){B.innerHTML='加载中…';try{const j=await api('/api/admin/healthscore');const c=j.score>=85?'var(--ok)':j.score>=60?'var(--warn)':'var(--bad)';
   B.innerHTML=`<div class="card"><div class="row" style="align-items:center;gap:14px"><div style="font-size:46px;font-weight:800;color:${c}">${j.score}</div><div style="font-size:13px;color:var(--sub)">/100 系统健康分</div><span class="sp"></span><button class="pill" onclick="adTab('health')">⟳ 重新检测</button></div>
 <table><thead><tr><th>分项</th><th>当前值</th><th>判定</th></tr></thead><tbody>${(j.items||[]).map(x=>`<tr><td>${x.name}</td><td class="mono">${x.val}</td><td><span class="tag ${x.ok?'t-d':'t-p'}">${x.ok?'正常':'⚠ 需关注'}</span></td></tr>`).join('')}</tbody></table>
@@ -1221,7 +1264,7 @@ async function pgInsp(){loadInsp()}
 async function loadInsp(){clearInterval(window._espT);let j;try{j=await api('/api/inspect/list');window._ispAll=j.list||[]}catch(_){window._ispAll=[];$('#main').innerHTML='<div class="card" style="color:var(--warn)">检验工单加载失败（服务需重启加载新代码）　<button class="pill" onclick="loadInsp()">重试</button></div>';return}
 const map={waitOut:['🤝待协助下架','t-p'],toStation:['下架途中','t-a'],atStation:['站台待检','t-p'],waitBack:['🤝待协助归位','t-p'],waitReturn:['🔁待退货出账','t-p'],returning:['归位途中','t-a'],done:['已归位','t-d'],returned:['已退货出账','t-d'],stuck:['⚠ 超时待核','t-x'],cancel:['已取消','t-x']};const ASSIST=(U.features||{}).insp_assist===true;const now=Date.now();const canCtl=(U.features||{}).inspect_mode===true||U.role==='admin'||U.role==='warehouse';window._ispFreeAll=j.freeStns||[];window._ispStnById={};
 const rows=(j.list||[]).map((q)=>{const mm=map[q.state]||[q.state,'t-x'];q.mine=q.uid===U.id;window._ispStnById[q.id]=q.station||'';const mins=Math.round((now-(q.arriveAt||q.at||now))/60000);let h='<tr><td class="mono" style="font-size:11.5px"><a href="javascript:void 0" style="color:var(--pri)" onclick="traceBox('+"'"+q.code+"'"+')">'+q.code+'</a></td><td style="font-size:11.5px">'+(q.from||'')+' → '+(q.station||'')+'</td><td><span class="tag '+mm[1]+'">'+mm[0]+'</span>'+(['atStation','waitOut','waitBack','waitReturn'].includes(q.state)?' <span style="font-size:11px;color:var(--sub)">已等'+mins+'分</span>':'')+(q.verdict?' <span style="font-size:11px;color:var(--ok)">['+q.verdict+(q.verdictBy?'·'+q.verdictBy:'')+']</span>':'')+(q.err?' <span style="font-size:11px;color:var(--bad)">'+q.err+'</span>':'')+'</td><td style="font-size:11.5px">'+(q.part||'')+(q.nm?' · '+q.nm:'')+'</td><td style="font-size:11.5px">'+(q.by||'')+'<div style="font-size:11px;color:var(--sub)">'+new Date(q.at||0).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+(q.note?' · '+String(q.note).slice(0,40):'')+'</div></td><td><button class="pill q" style="padding:2px 8px;font-size:11px" title="工单一生时间线（业务节点+两腿AGV调度原因）" onclick="inspTl(&#39;'+q.id+'&#39;)">📜</button> '+(inspBtn(q,ASSIST,canCtl))+'</td></tr>';return h}).join('');
-$('#main').innerHTML='<div class="card"><div class="row" style="align-items:center"><b style="font-size:13px">🔎 检验工单（下架检验→备注→原样归位）</b><span class="sp"></span>'+(canCtl?'<button class="pill g" onclick="inspStartDlg()">▶ 发起检验下架</button>':'')+'</div><div style="font-size:11.5px;color:var(--sub);margin-bottom:6px">检验期间该框账本不动、禁止出库叫车；AGV 送回原货位核对到账本后自动完成。结论判「退货」的框不回原货位，挂在站台标🔁待退货出账（出库通道放行），仓管按直调/领料出库正常扫码出账后自动闭环（超30分钟催办）。检验员可发单/填结论，AGV 动作由仓管·管理员「协助」控制（超10分钟自动催办）。共 '+(j.list||[]).length+' 单。</div><div style="overflow:auto;max-height:62vh"><table><thead><tr><th>标签</th><th>货位→站台</th><th>状态</th><th>零件</th><th>发起/备注</th><th></th></tr></thead><tbody>'+(rows||'<tr><td colspan=6 style="color:var(--sub)">暂无检验工单</td></tr>')+'</tbody></table></div></div>';window._espT=setInterval(()=>{if(TAB==='insp')srInsp()},Math.max(5,Number(URS)||30)*1000)}
+$('#main').innerHTML='<div class="card"><div class="row" style="align-items:center"><b style="font-size:13px">🔎 检验工单（下架检验→备注→原样归位）</b><span class="sp"></span>'+(canCtl?'<button class="pill g" onclick="inspStartDlg()">▶ 发起检验下架</button>':'')+'</div><div style="font-size:11.5px;color:var(--sub);margin-bottom:6px">检验期间该框账本不动、禁止出库叫车；AGV 送回原货位核对到账本后自动完成。结论判「退货」的框不回原货位，挂在站台标🔁待退货出账（出库通道放行），仓管按直调/领料出库正常扫码出账后自动闭环（超30分钟催办）。检验员可发单/填结论，AGV 动作由仓管·管理员「协助」控制（超10分钟自动催办）。共 '+(j.list||[]).length+' 单。</div><div style="overflow:auto;max-height:62vh"><table><thead><tr><th>标签</th><th>货位→站台</th><th>状态</th><th>零件</th><th>发起/备注</th><th></th></tr></thead><tbody>'+(rows||'<tr><td colspan=6 style="color:var(--sub)">暂无检验工单</td></tr>')+'</tbody></table></div></div>';window._espT=setInterval(()=>{if(TAB==='insp')srInsp()},Math.max(1,Number(URS)||30)*1000)}
 async function inspStartDlg(){
  dlg('<h3>🔎 检验下架 · 按零件号找框</h3><p style="font-size:12px;color:var(--sub);margin:2px 0 8px">输入零件号片段或完整标签号 → 列出账本匹配在库框 → 点「下架」自动选空闲站台，点「选站台」指定目标。AGV 叉到站台检验，完成后在本页点「检验完·归位」原样放回。</p><div class="row"><input id="ispn" placeholder="零件号片段 / 标签号" style="flex:1;min-width:160px" autofocus onkeydown="if(event.key==\'Enter\')inspSearch()"><button class="pill" onclick="inspSearch()">搜索</button></div><div id="ispres" style="max-height:56vh;overflow:auto;margin-top:4px;font-size:12.5px;color:var(--sub)">等待搜索…</div><div class="row" style="margin-top:8px;justify-content:flex-end"><button class="pill q" onclick="document.getElementById(\'mask\').classList.add(\'hide\')">关闭</button></div>',1);setTimeout(()=>{const e=document.getElementById('ispn');if(e)e.focus()},80)}
 async function inspSearch(){const q=((document.getElementById('ispn')||{}).value||'').trim().toUpperCase();const el=document.getElementById('ispres');if(!el)return;
