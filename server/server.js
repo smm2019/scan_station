@@ -704,7 +704,7 @@ const PARAMS = {
   rackCols:       { grp: '存储配置', name: '每架列数', unit: '列', min: 4, max: 60, d: 16, tip: '每台货架横向格列数（现场 16 列）；总格位=架数×列数×层数' },
   rackTiers:      { grp: '存储配置', name: '每架层数', unit: '层', min: 1, max: 10, d: 4, tip: '每台货架纵向层数（现场 4 层：1F-4F）' },
   gndZones:       { grp: '存储配置', name: '地面区数', unit: '区', min: 1, max: 20, d: 6, tip: 'NB03 地面货区数量（现场 A/B/C/F/G/H 六区）；地面总格位=区数×每区排数×每排格数' },
-  gndRows:        { grp: '存储配置', name: '每区排数', unit: '排', min: 1, max: 40, d: 12, tip: '每个地面区的排数（排号 01-12；现场有排号到 18 的，超出排按每排格数并入占用统计，不计入总格位）' },
+  gndRows:        { grp: '存储配置', name: '每区排数', unit: '排', min: 1, max: 40, d: 18, tip: '每个地面区的排数（现场排号到 18）；地面总格位=区数×排数×每排格数' },
   gndCols:        { grp: '存储配置', name: '每排格数', unit: '格', min: 1, max: 60, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
