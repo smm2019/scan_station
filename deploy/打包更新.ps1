@@ -30,6 +30,10 @@ Copy-Item (Join-Path $proj 'README.md') "$stage\README.md" -Force
 node --check "$stage\code\server.js"
 if ($LASTEXITCODE -ne 0) { throw 'server.js 语法自检失败，中止打包' }
 
+# 内嵌 Node 运行时（server.js 零依赖，单 node.exe 即可跑；服务器无winget/无外网也能装）
+New-Item -ItemType Directory -Path "$stage\runtime" -Force | Out-Null
+$nodeSrc = 'D:\nodejs\node.exe'
+if (Test-Path $nodeSrc) { Copy-Item $nodeSrc "$stage\runtime\node.exe" -Force } else { Write-Warning '未找到 D:\nodejs\node.exe，安装包将不含内嵌运行时（服务器需已装 Node）' }
 # 完整安装包（含 nssm）
 $nssmSrc = 'C:\Users\周小亚\AppData\Local\Microsoft\WinGet\Packages\NSSM.NSSM_Microsoft.Winget.Source_8wekyb3d8bbwe\nssm-2.24-101-g897c7ad\win64\nssm.exe'
 if (Test-Path $nssmSrc) { Copy-Item $nssmSrc "$stage\nssm.exe" -Force } else { Write-Warning '未找到 nssm.exe，安装包将不含服务注册器' }

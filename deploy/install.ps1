@@ -33,16 +33,23 @@ Write-Host "安装目录: $InstallDir   端口: $Port"
 
 # ---------- 1. 检查/安装 Node.js ----------
 $node = $null
-$cmd = Get-Command node.exe -ErrorAction SilentlyContinue
-if ($cmd) { $node = $cmd.Source }
-if (-not $node -and (Test-Path 'C:\Program Files\nodejs\node.exe')) { $node = 'C:\Program Files\nodejs\node.exe' }
-if (-not $node) {
-  Write-Host '[1/6] 未检测到 Node.js，尝试用 winget 安装 LTS...' -ForegroundColor Yellow
-  winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements --silent
-  if (Test-Path 'C:\Program Files\nodejs\node.exe') { $node = 'C:\Program Files\nodejs\node.exe' }
+# ---------- 1. 确定 Node 运行时：包内内嵌优先（服务器无winget/无外网也能装） ----------
+$node = $null
+if (Test-Path "$root\runtime\node.exe") {
+  $node = 'BUNDLED'   # 标记：稍后复制到安装目录使用
+  Write-Host '[1/6] 使用部署包内嵌 Node.js（无需联网安装）' -ForegroundColor Green
+} else {
+  $cmd = Get-Command node.exe -ErrorAction SilentlyContinue
+  if ($cmd) { $node = $cmd.Source }
+  if (-not $node -and (Test-Path 'C:\Program Files\nodejs\node.exe')) { $node = 'C:\Program Files\nodejs\node.exe' }
+  if (-not $node) {
+    Write-Host '[1/6] 包内无内嵌 Node 且系统未装，尝试 winget（需联网）...' -ForegroundColor Yellow
+    try { winget install OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements --silent } catch { Write-Host '      winget 不可用（Server 版常见），跳过' -ForegroundColor Yellow }
+    if (Test-Path 'C:\Program Files\nodejs\node.exe') { $node = 'C:\Program Files\nodejs\node.exe' }
+  }
+  if (-not $node) { throw '未找到 Node 运行时：请用新版部署包（含 runtime\node.exe），或手动安装 Node 18+ 后重试' }
+  Write-Host "[1/6] Node.js: $node  $(& $node -v)" -ForegroundColor Green
 }
-if (-not $node) { throw 'Node.js 安装失败：请手动安装 Node 18+ (https://nodejs.org) 后重新运行本脚本' }
-Write-Host "[1/6] Node.js: $node  $(& $node -v)" -ForegroundColor Green
 
 # ---------- 2. 检查部署包内容 ----------
 if (-not (Test-Path "$root\code\server.js")) { throw "缺少 code\server.js，请确认部署包解压完整（本脚本应与 code\、nssm.exe 同目录）" }
@@ -57,6 +64,12 @@ Copy-Item "$root\code\public\*" "$InstallDir\public\" -Recurse -Force
 Copy-Item "$root\nssm.exe" "$InstallDir\nssm.exe" -Force
 New-Item -ItemType Directory -Path "$InstallDir\data\logs" -Force | Out-Null
 Write-Host "[3/6] 代码已复制到 $InstallDir（data 目录未改动）" -ForegroundColor Green
+if ($node -eq 'BUNDLED') {
+  New-Item -ItemType Directory -Path "$InstallDir\runtime" -Force | Out-Null
+  Copy-Item "$root\runtime\node.exe" "$InstallDir\runtime\node.exe" -Force
+  $node = "$InstallDir\runtime\node.exe"
+  Write-Host "[3/6] 内嵌 Node 已就位: $node  $(& $node -v)" -ForegroundColor Green
+}
 
 # ---------- 4. 注册/重装 NSSM 服务 ----------
 $svc = Get-Service $svcName -ErrorAction SilentlyContinue
