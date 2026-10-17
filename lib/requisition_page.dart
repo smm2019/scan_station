@@ -597,7 +597,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
       padding: EdgeInsets.fromLTRB(
           14, 10, 14, MediaQuery.of(context).viewInsets.bottom + 14),
       child: SizedBox(
-          height: MediaQuery.of(context).size.height * 0.9,
+          height: MediaQuery.of(context).size.height * 0.95,
           child: Column(children: [
             const Text("新建领料单（从库存选择）",
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
@@ -677,14 +677,16 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
             const SizedBox(height: 8),
             if (_order.isNotEmpty)
               SizedBox(
-                  height: 44.0 + 56.0 * (_order.length > 3 ? 3 : _order.length),
+                  height: 40.0 + 52.0 * (_order.length > 5 ? 5 : _order.length),
                   child: Column(children: [
-                    const Text("已选物料 · 拖把手调序（靠前先出库，首位=🔥加急）· 数量填框数",
+                    const Text("已选物料（拖把手调序 · 靠前先出库 · 首位=🔥加急 · 数量填框数）",
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                            fontSize: 11.5,
+                            fontSize: 11,
                             color: Color(0xFF3949AB),
                             fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 1),
                     Expanded(
                         child: ReorderableListView(
                             shrinkWrap: true,
@@ -706,7 +708,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                 return Card(
                                     key: ValueKey(pn),
                                     margin: const EdgeInsets.symmetric(
-                                        vertical: 2),
+                                        vertical: 1),
                                     color: r
                                         ? const Color(0xFFFFF6F0)
                                         : Colors.white,
@@ -792,8 +794,11 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                                 },
                                               )),
                                           SizedBox(
-                                              width: 40,
-                                              child: Text(
+                                              width: 52,
+                                              child: FittedBox(
+                                                  fit: BoxFit.scaleDown,
+                                                  alignment: Alignment.centerRight,
+                                                  child: Text(
                                                   q > 0 &&
                                                           (p?.perBoxQty ?? 0) >
                                                               0
@@ -801,11 +806,12 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                                       : q > 0
                                                           ? "$q 框"
                                                           : "",
+                                                  maxLines: 1,
                                                   textAlign: TextAlign.right,
                                                   style: const TextStyle(
                                                       fontSize: 10.5,
                                                       color:
-                                                          Color(0xFF78909C)))),
+                                                          Color(0xFF78909C))))),
                                           IconButton(
                                               tooltip: r ? "取消加急" : "加急此行",
                                               visualDensity:
