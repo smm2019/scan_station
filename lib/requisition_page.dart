@@ -57,6 +57,15 @@ String reqTimeLocal(dynamic s) {
   return "${lo.month.toString().padLeft(2, "0")}-${lo.day.toString().padLeft(2, "0")} ${lo.hour.toString().padLeft(2, "0")}:${lo.minute.toString().padLeft(2, "0")}";
 }
 
+/// v60 建单弹层历史行压缩："10-12 20:51 领5000件 LL2026101212510740" → "10-12 领5000件"
+String _histShort(String h) {
+  final m = RegExp(r'^(\d{2}-\d{2})\s+\d{2}:\d{2}\s+(领\S+件?)').firstMatch(h);
+  if (m != null) return "${m.group(1)} ${m.group(2)}";
+  final m2 = RegExp(r'^(\d{2}-\d{2})\s+(领\S+件?)').firstMatch(h); // 无时分的旧格式
+  if (m2 != null) return "${m2.group(1)} ${m2.group(2)}";
+  return h.length > 14 ? "${h.substring(0, 14)}…" : h;
+}
+
 class _RequisitionPageState extends State<RequisitionPage>
     with AutomaticKeepAliveClientMixin {
   List<Map> _reqs = [];
@@ -668,9 +677,9 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
             const SizedBox(height: 8),
             if (_order.isNotEmpty)
               SizedBox(
-                  height: 150,
+                  height: 44.0 + 56.0 * (_order.length > 3 ? 3 : _order.length),
                   child: Column(children: [
-                    const Text("已选物料（拖把手调序：越靠前越先出库，首位=🔥加急）",
+                    const Text("已选物料 · 拖把手调序（靠前先出库，首位=🔥加急）· 数量填框数",
                         style: TextStyle(
                             fontSize: 11.5,
                             color: Color(0xFF3949AB),
@@ -734,13 +743,69 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                           const SizedBox(width: 8),
                                           Expanded(
                                               child: Text(
-                                                  "$pn · ${p?.itemName ?? ''} · ${q}件",
+                                                  "$pn · ${p?.itemName ?? ''}",
                                                   overflow:
                                                       TextOverflow.ellipsis,
                                                   style: const TextStyle(
                                                       fontSize: 12.5,
                                                       fontWeight:
                                                           FontWeight.w600))),
+                                          SizedBox(
+                                              width: 52,
+                                              child: TextField(
+                                                controller: _qtyCtrl.putIfAbsent(
+                                                    pn,
+                                                    () => TextEditingController()),
+                                                keyboardType:
+                                                    TextInputType.number,
+                                                textAlign: TextAlign.center,
+                                                style: const TextStyle(
+                                                    fontSize: 12.5,
+                                                    fontWeight:
+                                                        FontWeight.w600),
+                                                decoration: InputDecoration(
+                                                    hintText: "框",
+                                                    isDense: true,
+                                                    contentPadding:
+                                                        const EdgeInsets
+                                                            .symmetric(
+                                                            horizontal: 2,
+                                                            vertical: 7),
+                                                    enabledBorder:
+                                                        OutlineInputBorder(
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        6),
+                                                            borderSide: BorderSide(
+                                                                color: r
+                                                                    ? const Color(
+                                                                        0xFFE65100)
+                                                                    : const Color(
+                                                                        0xFFB9C4D6),
+                                                                width: 1)),
+                                                    border:
+                                                        const OutlineInputBorder()),
+                                                onChanged: (_) {
+                                                  setState(
+                                                      () => _syncChosen(pn)); // 框数清零自动除名
+                                                },
+                                              )),
+                                          SizedBox(
+                                              width: 40,
+                                              child: Text(
+                                                  q > 0 &&
+                                                          (p?.perBoxQty ?? 0) >
+                                                              0
+                                                      ? "≈${_fmtInvNum(q * (p!.perBoxQty))}件"
+                                                      : q > 0
+                                                          ? "$q 框"
+                                                          : "",
+                                                  textAlign: TextAlign.right,
+                                                  style: const TextStyle(
+                                                      fontSize: 10.5,
+                                                      color:
+                                                          Color(0xFF78909C)))),
                                           IconButton(
                                               tooltip: r ? "取消加急" : "加急此行",
                                               visualDensity:
@@ -775,30 +840,56 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                             ])),
                   ])),
             const SizedBox(height: 6),
+            const SizedBox(height: 4),
+            const Text("从库存勾选 · 填框数自动加入上方清单",
+                style: TextStyle(
+                    fontSize: 11.5,
+                    color: Color(0xFF3949AB),
+                    fontWeight: FontWeight.w600)),
             Expanded(
                 child: ListView(children: [
-              ...list.map((p) => ListTile(
-                    dense: true,
-                    title: Text("${p.partNo}  ${p.itemName}",
-                        style: const TextStyle(fontSize: 13)),
-                    subtitle: Text(
-                        "在库 ${p.inBoxes} 框 · ${_fmtInvNum(p.inStockQty)}${p.perBoxQty > 0 ? " · ≈${_fmtInvNum(p.perBoxQty.roundToDouble())}件/框（按框领，填框数×约数）" : ""}${(widget.hist[p.partNo] ?? []).isNotEmpty ? "\n📋 上次领用：${widget.hist[p.partNo]!.join("；")}" : ""}",
-                        style: const TextStyle(fontSize: 11)),
-                    trailing: SizedBox(
-                        width: 90,
-                        child: TextField(
-                          controller: _qtyCtrl.putIfAbsent(
-                              p.partNo, () => TextEditingController()),
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                              hintText: "数量",
-                              isDense: true,
-                              border: OutlineInputBorder()),
-                          onChanged: (_) {
-                            setState(() => _syncChosen(p.partNo)); // v55 填数即入选/清空即除名
-                          },
-                        )),
-                  )),
+              ...list.map((p) {
+                final h = widget.hist[p.partNo] ?? [];
+                return ListTile(
+                  dense: true,
+                  visualDensity: const VisualDensity(vertical: -1),
+                  title: Text("${p.partNo}  ${p.itemName}",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                      "在库 ${p.inBoxes} 框${p.perBoxQty > 0 ? " · ≈${_fmtInvNum(p.perBoxQty.roundToDouble())}件/框" : ""}${h.isNotEmpty ? " · 上次 ${_histShort(h.first)}" : ""}",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 11, color: Color(0xFF78909C))),
+                  trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                            width: 56,
+                            child: TextField(
+                              controller: _qtyCtrl.putIfAbsent(
+                                  p.partNo, () => TextEditingController()),
+                              keyboardType: TextInputType.number,
+                              textAlign: TextAlign.center,
+                              decoration: const InputDecoration(
+                                  hintText: "框数",
+                                  isDense: true,
+                                  contentPadding: EdgeInsets.symmetric(
+                                      horizontal: 2, vertical: 8),
+                                  border: OutlineInputBorder()),
+                              onChanged: (_) {
+                                setState(() => _syncChosen(p.partNo)); // v55 填数即入选/清空即除名
+                              },
+                            )),
+                        const SizedBox(width: 2),
+                        const Icon(Icons.chevron_right,
+                            size: 18, color: Color(0xFFB0BEC5)),
+                      ]),
+                );
+              }),
             ])),
             const SizedBox(height: 6),
             TextField(
