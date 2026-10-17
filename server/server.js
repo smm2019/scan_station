@@ -173,6 +173,32 @@ function loadDb() {
   if (typeof d.groundSlots !== 'object' || d.groundSlots === null || Array.isArray(d.groundSlots)) { d.groundSlots = {}; added = true; }
   if (typeof d.gndZoneRows !== 'object' || d.gndZoneRows === null || Array.isArray(d.gndZoneRows)) { d.gndZoneRows = {}; added = true; } // ㉖v59 按区排数覆盖（旧库补齐）
   if (typeof d.gndRowOff !== 'object' || d.gndRowOff === null || Array.isArray(d.gndRowOff)) { d.gndRowOff = {}; added = true; } // ㉖v59 停用排（旧库补齐）
+  // ㉖v61 出库流水乱码自愈：PDA/WMAS 推送编码丢失产生的 U+FFFD 与控制字符——name 按标签反查流水/账本/字典回填干净名，查不到则剥替换符；move 归一 AGV/人工
+  {
+    const _bad = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
+    const _nmByCode = {};
+    for (const s0 of Object.values(d.scanlog || {})) { const c0 = String(s0.code || '').toUpperCase(); if (c0 && s0.nm && !_bad.test(String(s0.nm)) && !_nmByCode[c0]) _nmByCode[c0] = String(s0.nm); }
+    for (const x0 of (d.ledger || [])) { const c0 = String(x0.c || '').toUpperCase(); if (c0 && x0.n && !_bad.test(String(x0.n)) && !_nmByCode[c0]) _nmByCode[c0] = String(x0.n); }
+    for (const [k0, v0] of Object.entries(d.itemDict || {})) { if (v0 && v0.nm && !_bad.test(String(v0.nm)) && !_nmByCode[String(k0).toUpperCase()]) _nmByCode[String(k0).toUpperCase()] = String(v0.nm); }
+    let _fx = 0;
+    for (const o of Object.values(d.outbound || {})) {
+      for (const it of (o.items || [])) {
+        const nm0 = String(it.name || '');
+        if (_bad.test(nm0)) {
+          const bc = String(it.barcode || it.code || '').toUpperCase();
+          const pc = String(it.code || '').toUpperCase();
+          const good = _nmByCode[bc] || _nmByCode[pc];
+          it.name = good ? good : nm0.replace(_bad, '').replace(/\s+/g, ' ').trim();
+          _fx++;
+        }
+        const mv0 = String(it.move || '');
+        if (mv0 && _bad.test(mv0)) { it.move = /AGV/i.test(mv0.replace(_bad, '')) ? 'AGV' : mv0.replace(_bad, '').includes('人工') || mv0.length <= 6 ? '人工' : mv0.replace(_bad, '').trim() || '人工'; _fx++; }
+      }
+      if (_bad.test(String(o.operator || ''))) { o.operator = String(o.operator).replace(_bad, '').trim(); _fx++; }
+      if (_bad.test(String(o.toLoc || ''))) { o.toLoc = String(o.toLoc).replace(_bad, '').trim(); _fx++; }
+    }
+    if (_fx) { added = true; console.log('[migrate] 出库流水乱码自愈 ' + _fx + ' 处（name 反查回填/替换符剥离，move 归一）'); }
+  }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
   if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
@@ -334,14 +360,16 @@ function buildWork(from, to) {
     const day = wdstr(t), who = String(s.op || '').trim() || '未知';
     P(who, day).inB++; P(who, day).days[day].inB++; D(day).inB++;
   }
-  // 出库：出库单标签去重计框、件数合计；操作人记o.operator
+  // 出库：㉖v61 按托归并计框（与入库口径统一：框=托）——barcode 反查账本 boxKeyOf（托号优先/同位同件合并/缺则按标签），件数合计；操作人记o.operator
+  const _ledMap = {}; for (const x of db.ledger || []) { const c0 = String(x.c || '').toUpperCase(); if (c0 && !_ledMap[c0]) _ledMap[c0] = x; }
   for (const o of Object.values(db.outbound || {})) {
     const t = Number(o.createdAt) || 0; if (t < from || t > to) continue;
     const day = wdstr(t), who = String(o.operator || '').trim() || '未知';
-    const codes = new Set(); let qty = 0;
-    for (const i of (o.items || [])) { const c = String(i.barcode || '').toUpperCase(); if (c && !codes.has(c)) { codes.add(c); qty += Number(i.qty) || 0; } }
-    if (!codes.size) continue;
-    const p = P(who, day); p.outB += codes.size; p.outQ += qty; p.days[day].outB += codes.size; D(day).outB += codes.size; D(day).outQ += qty;
+    const boxes = new Set(); let qty = 0;
+    for (const i of (o.items || [])) { const c = String(i.barcode || '').toUpperCase(); if (!c) continue; qty += Number(i.qty) || 0; const lx = _ledMap[c]; boxes.add(lx ? boxKeyOf(lx) : 'C|' + c); }
+    if (!boxes.size) continue;
+    const nb = boxes.size;
+    const p = P(who, day); p.outB += nb; p.outQ += qty; p.days[day].outB += nb; D(day).outB += nb; D(day).outQ += qty;
   }
   // 修正/返架：审计流水（改位+补登记+消位=修正，返架单列）
   for (const f of db.ledgerFixes || []) {
@@ -3513,6 +3541,10 @@ return send(res, 200, {
         if (!no) return send(res, 400, { ok: false, msg: '缺少 orderNo' });
         for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.code || itx.barcode || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; } // ㉖② 历史出库登记（标签生命周期防复用）
         db.outbound[no] = { orderNo: no, createdAt: Number(b.createdAt) || 0, toLoc: String(b.toLoc || ''), operator: String(b.operator || ''), status: Number(b.status) || 0, linkReqNo: String(b.linkReqNo || ''), items: Array.isArray(b.items) ? b.items : [] };
+        // ㉖v61 写入清洗：剥离 U+FFFD 与控制字符（PDA/WMAS 推送编码丢失所致），与账本同步乱码清洗同口径；防止脏 name 再沉淀进字典
+        { const _cb = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g; const _cl = (s0) => String(s0 == null ? '' : s0).replace(_cb, '').replace(/\s+/g, ' ').trim();
+          const _o = db.outbound[no]; _o.toLoc = _cl(_o.toLoc); _o.operator = _cl(_o.operator); _o.linkReqNo = _cl(_o.linkReqNo);
+          for (const e of (_o.items || [])) { e.code = _cl(e.code); e.name = _cl(e.name); e.barcode = _cl(e.barcode); e.fromLoc = _cl(e.fromLoc); if (e.move != null) e.move = _cl(e.move); } }
         for (const e of (db.outbound[no].items || [])) feedDict(e.code, e.name, '出库单'); // ㉒G7 字典沉淀
         db.outboundAt = new Date().toISOString(); db.outboundCount = Object.keys(db.outbound).length;
         save();
