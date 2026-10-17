@@ -401,30 +401,28 @@ async function fpCheck() {
 // ---- ㉖v59 个人中心：账号信息/改密码/我的登录设备（从偏好弹窗迁出改密码） ----
 function pgMe(){
  $('#main').innerHTML=`<div class="grid" style="grid-template-columns:minmax(300px,420px) 1fr;align-items:start">
-  <div>
-   <div class="card"><div style="display:flex;align-items:center;gap:12px">
-     <div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,var(--pri),#7c86e8);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800">${_esc((U.name||U.username||'?')[0])}</div>
-     <div><div style="font-size:15px;font-weight:700">${_esc(U.name)}${U.mustChangePw?' <span class="tag t-p" style="font-size:10px">未改初始密码</span>':''}</div>
-     <div style="font-size:12px;color:var(--sub)">${_esc(U.username)} · ${ROLE_CN(U.role)}</div></div>
-   </div>
-   <div style="margin-top:10px;font-size:12px;color:var(--sub);line-height:1.9">权限功能：${Object.keys(U.features||{}).filter(k=>U.features[k]).length?Object.keys(U.features||{}).filter(k=>U.features[k]).map(k=>`<span class="tag t-a" style="font-size:10.5px;margin:1px 3px 1px 0">${_esc(FEAT_CN[k]||k)}</span>`).join(''):'—'}</div>
-   <div class="row" style="margin-top:10px;gap:8px"><button class="pill" onclick="prefDlg()">🎨 偏好设置</button><button class="pill q" onclick="logout()">退出登录</button></div>
+  <div class="card"><div style="display:flex;align-items:center;gap:12px">
+    <div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,var(--pri),#7c86e8);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:800">${_esc((U.name||U.username||'?')[0])}</div>
+    <div><div style="font-size:15px;font-weight:700">${_esc(U.name)}${U.mustChangePw?' <span class="tag t-p" style="font-size:10px">未改初始密码</span>':''}</div>
+    <div style="font-size:12px;color:var(--sub)">${_esc(U.username)} · ${ROLE_CN(U.role)}</div></div>
   </div>
-  <div class="card" style="margin-top:10px"><b style="font-size:13px">🔑 修改密码</b> <span style="font-size:11.5px;color:var(--sub)">修改成功后其他设备下次操作将被要求重新登录</span>
-   <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:6px;margin-top:8px"><input id="cp_o" type="password" placeholder="当前密码"><input id="cp_n" type="password" placeholder="新密码(≥6位)"><input id="cp_n2" type="password" placeholder="重复新密码"><button class="pill" onclick="chgPw(this)">改密</button></div>
-  </div>
+  <div style="margin-top:10px;font-size:12px;color:var(--sub);line-height:1.9">权限功能：${Object.keys(U.features||{}).filter(k=>U.features[k]).length?Object.keys(U.features||{}).filter(k=>U.features[k]).map(k=>`<span class="tag t-a" style="font-size:10.5px;margin:1px 3px 1px 0">${_esc(FEAT_CN[k]||k)}</span>`).join(''):'—'}</div>
+  <div class="row" style="margin-top:10px;gap:8px"><button class="pill" onclick="prefDlg()">🎨 偏好设置</button><button class="pill q" onclick="logout()">退出登录</button></div>
   </div>
   <div class="card"><b style="font-size:13px">📱 我的登录设备</b> <span style="font-size:11.5px;color:var(--sub)">当前账号的活动会话；发现陌生设备点「下线」，改密码后旧密码会话即失效</span><div id="medev" style="margin-top:8px">加载中…</div></div>
+  <div class="card" style="grid-column:1/-1"><b style="font-size:13px">🔑 修改密码</b> <span style="font-size:11.5px;color:var(--sub)">修改成功后其他设备下次操作将被要求重新登录</span>
+   <div class="row" style="gap:8px;margin-top:8px;flex-wrap:wrap"><input id="cp_o" type="password" placeholder="当前密码" style="flex:1;min-width:160px;max-width:320px"><input id="cp_n" type="password" placeholder="新密码(≥6位)" style="flex:1;min-width:160px;max-width:320px"><input id="cp_n2" type="password" placeholder="重复新密码" style="flex:1;min-width:160px;max-width:320px"><button class="pill" style="white-space:nowrap" onclick="chgPw(this)">改密码</button></div>
+  </div>
  </div>`;
  meDevLoad();
 }
 function ROLE_CN(r){return r=='admin'?'管理员':r=='warehouse'?'仓管员':r=='inspector'?'检验员':'物料员'}
-const FEAT_CN={requisition:'领料下单',receive_confirm:'签收确认',agv_control:'AGV控制',inspect_mode:'检验模式',location_reg:'位置登记',collect:'采集录入',inventory:'盘点'};
+const FEAT_CN={requisition:'领料下单',receive_confirm:'签收确认',agv_control:'AGV车辆控制',inspect_mode:'检验模式',insp_assist:'检验协助',location_reg:'位置登记',collect:'采集录入',inventory:'盘点',export:'导出下载',mes_query:'MES查询',direct_transfer:'直调转单',admin_panel:'管理后台',agv_monitor:'AGV监控'};
 async function meDevLoad(){const el=$('#medev');if(!el)return;
- try{const j=await api('/api/me/devices');if(!j.ok){el.innerHTML='<span style="color:var(--warn)">加载失败</span>';return}
+ try{const j=await api('/api/me/devices');if(!j.ok){el.innerHTML='<div style="color:var(--warn);font-size:12px">'+_esc(j.msg||'接口返回异常')+'<button class="pill q" style="padding:2px 8px;font-size:11px;margin-left:6px" onclick="meDevLoad()">重试</button></div>';return}
   const now=Date.now();
   el.innerHTML=j.sessions.length?`<table style="width:100%;font-size:12px"><thead><tr style="color:var(--sub);text-align:left"><th style="padding:3px 4px">设备</th><th>类型</th><th>IP</th><th>最近活跃</th><th></th></tr></thead><tbody>${j.sessions.map(s=>`<tr style="border-top:1px solid var(--line)"><td class="mono" style="padding:4px">${s.current?'📍 ':''}${_esc(s.dev||'(旧会话)')}</td><td><span class="tag ${s.kind==='pda'?'t-a':'t-x'}" style="font-size:10.5px">${s.kind==='pda'?'PDA':'网页'}</span></td><td class="mono" style="font-size:11px">${_esc(s.ip||'')}</td><td style="font-size:11px;color:var(--sub)">${s.lastSeen?Math.round((now-s.lastSeen)/60000)+' 分钟前':'—'}</td><td>${s.current?'<span class="tag t-d" style="font-size:10.5px">当前设备</span>':`<button class="pill r" style="padding:2px 8px;font-size:11px" onclick="meKick('${_esc(s.dev)}')">下线</button>`}</td></tr>`).join('')}</tbody></table>`:'<span style="color:var(--sub);font-size:12px">暂无其他活动会话</span>';
- }catch(_){el.innerHTML='<span style="color:var(--warn)">加载失败（服务需重启加载新版）</span>'}}
+ }catch(_){el.innerHTML='<div style="color:var(--warn);font-size:12px">加载失败：接口未响应——「我的登录设备」是新版功能，<b>服务重启后才会生效</b>（当前服务跑的还是旧代码）。<button class="pill q" style="padding:2px 8px;font-size:11px;margin-left:6px" onclick="meDevLoad()">重试</button></div>'}}
 async function meKick(dev){if(!confirm('下线该设备？其会话立即失效，需重新登录。'))return;
  try{const j=await api('/api/me/devices/kick',{method:'POST',body:{dev}});T(j.ok?('✅ 已下线 '+(j.kicked||0)+' 个会话'):'❌ '+(j.msg||'失败'),j.ok?1:0);meDevLoad()}catch(_){T('操作失败')}}
 
