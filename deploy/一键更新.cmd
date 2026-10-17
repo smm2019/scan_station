@@ -1,5 +1,4 @@
 @echo off
-chcp 65001 >nul
-rem WMAS ä¸€é”®æ›´æ–°ï¼šåŒå‡»å³å¯ï¼Œè‡ªåŠ¨å¼¹ UAC ç®¡ç†å‘˜æˆæƒè¿è¡Œ update.ps1
+rem WMAS Ò»¼ü¸üĞÂ£ºË«»÷¼´¿É£¬×Ô¶¯µ¯ UAC ¹ÜÀíÔ±ÊÚÈ¨ÔËĞĞ update.ps1
 cd /d "%~dp0"
 powershell -NoProfile -Command "Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%~dp0update.ps1' -Wait"
