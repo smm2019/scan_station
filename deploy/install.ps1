@@ -1,7 +1,6 @@
-﻿#Requires -RunAsAdministrator
-# =====================================================================
+﻿# =====================================================================
 #  WMAS 仓库管理系统 · 一键安装（Windows Server 2016+ / PowerShell 5.1）
-#  用法：解压部署包后，右键本文件「以管理员身份运行」
+#  用法：解压部署包后，双击「一键安装.cmd」（脚本自动提权，窗口不会闪退）
 #  可选参数：-InstallDir D:\wmas  -Port 8099
 #  重复运行 = 重装服务注册（不动 data 数据目录）
 # =====================================================================
@@ -10,6 +9,21 @@ param(
   [int]$Port = 8099
 )
 $ErrorActionPreference = 'Stop'
+# ---- 自动提权：修复双击闪退（2026-10-17，原 #Requires 会致非管理员窗口瞬间退出） ----
+$__admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $__admin) {
+  Write-Host '检测到当前无管理员权限，自动请求提权（请在弹出的授权窗口点「是」）...' -ForegroundColor Yellow
+  try {
+    $__cmdLine = "& '" + $PSCommandPath + "' -InstallDir '" + $InstallDir + "' -Port " + $Port + "; Read-Host '执行结束，按回车关闭本窗口'"
+    $__p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $__cmdLine
+    exit $__p.ExitCode
+  } catch {
+    Write-Host ('[失败] 无法获取管理员权限：' + $_.Exception.Message) -ForegroundColor Red
+    Write-Host '请右键「一键安装.cmd」→ 以管理员身份运行，或改用管理员账号登录后重试。' -ForegroundColor Red
+    Read-Host '按回车关闭'
+    exit 1
+  }
+}
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $svcName = 'HSAuthServer'
 

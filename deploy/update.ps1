@@ -1,15 +1,28 @@
-﻿#Requires -RunAsAdministrator
-# =====================================================================
-#  WMAS 日常更新：本地改好代码 → 打更新包 → 拷到服务器 → 双击本脚本
+﻿# =====================================================================
+#  WMAS 日常更新：本地改好代码 → 打更新包 → 拷到服务器 → 双击「一键更新.cmd」
 #  只覆盖代码（server.js + public），绝不动 data（数据库/备份/APK/日志）
-#  用法：把 update.zip 解压到任意目录，右键本文件「以管理员身份运行」
-#  可选参数：-InstallDir D:\wmas（与 install.ps1 保持一致）
+#  可选参数：-InstallDir D:\wmas -Port 8099（与 install.ps1 保持一致）
 # =====================================================================
 param(
   [string]$InstallDir = 'D:\wmas',
   [int]$Port = 8099
 )
 $ErrorActionPreference = 'Stop'
+# ---- 自动提权：修复双击闪退（2026-10-17，原 #Requires 会致非管理员窗口瞬间退出） ----
+$__admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $__admin) {
+  Write-Host '检测到当前无管理员权限，自动请求提权（请在弹出的授权窗口点「是」）...' -ForegroundColor Yellow
+  try {
+    $__cmdLine = "& '" + $PSCommandPath + "' -InstallDir '" + $InstallDir + "' -Port " + $Port + "; Read-Host '执行结束，按回车关闭本窗口'"
+    $__p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', $__cmdLine
+    exit $__p.ExitCode
+  } catch {
+    Write-Host ('[失败] 无法获取管理员权限：' + $_.Exception.Message) -ForegroundColor Red
+    Write-Host '请右键「一键更新.cmd」→ 以管理员身份运行，或改用管理员账号登录后重试。' -ForegroundColor Red
+    Read-Host '按回车关闭'
+    exit 1
+  }
+}
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $svcName = 'HSAuthServer'
 if (-not (Test-Path "$InstallDir\server.js")) { throw "未找到 $InstallDir\server.js——首次部署请先运行 install.ps1" }
