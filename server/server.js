@@ -181,6 +181,19 @@ function loadDb() {
     for (const x0 of (d.ledger || [])) { const c0 = String(x0.c || '').toUpperCase(); if (c0 && x0.n && !_bad.test(String(x0.n)) && !_nmByCode[c0]) _nmByCode[c0] = String(x0.n); }
     for (const [k0, v0] of Object.entries(d.itemDict || {})) { if (v0 && v0.nm && !_bad.test(String(v0.nm)) && !_nmByCode[String(k0).toUpperCase()]) _nmByCode[String(k0).toUpperCase()] = String(v0.nm); }
     let _fx = 0;
+    // ㉖v61b 账本搬运方式自愈：mv 归一枚举（登记/人工/AGV），替换符剥离后按残字判定
+    const _mvNorm = (v0) => { const s0 = String(v0 || '').replace(_bad, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记') || s0.includes('登記')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; };
+    for (const x0 of (d.ledger || [])) { const mv0 = String(x0.mv || ''); if (mv0 && _bad.test(mv0)) { x0.mv = _mvNorm(mv0); _fx++; } }
+    // ㉖v61b 字典脏名清理：零件号反查流水/账本干净名覆盖，查不到剥替换符
+    for (const [k0, v0] of Object.entries(d.itemDict || {})) {
+      if (v0 && _bad.test(String(v0.nm || ''))) {
+        const good = _nmByCode[String(k0).toUpperCase()];
+        v0.nm = good ? good : String(v0.nm).replace(_bad, '').replace(/\s+/g, ' ').trim();
+        _fx++;
+      }
+    }
+    // ㉖v61b 审计文本替换符剥离（不重造内容，只去坏字符）
+    for (const o0 of (d.ops || [])) { if (_bad.test(String(o0.det || ''))) { o0.det = String(o0.det).replace(_bad, '').replace(/\s+/g, ' ').trim(); _fx++; } }
     for (const o of Object.values(d.outbound || {})) {
       for (const it of (o.items || [])) {
         const nm0 = String(it.name || '');
@@ -301,7 +314,7 @@ setInterval(archiveOld, 30 * 60 * 1000).unref();
 // ---- ㉒G7 物料字典：零件号→名称，由采集流水/出库单自动沉淀 ----
 function feedDict(pn, nm, src) {
   try {
-    pn = String(pn || '').toUpperCase().trim(); nm = String(nm || '').trim();
+    pn = String(pn || '').toUpperCase().trim(); nm = String(nm || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/\s+/g, ' ').trim(); // ㉖v61b 脏名不沉淀（字典是乱码回填的反查源）
     if (!pn || !nm || pn.length > 40 || nm.length > 80) return;
     db.itemDict = db.itemDict || {};
     const old = db.itemDict[pn];
@@ -1780,9 +1793,9 @@ const server = http.createServer(async (req, res) => {
           if (seen.has(c)) continue; // 标签重复取首行，与 PDA 账本唯一索引一致
           seen.add(c);
           clean.push({ c, l, f: String((it && it.f) || '').slice(0, 40), t: Number(it && it.t) || 0,
-            p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').replace(/\uFFFD/g, '').slice(0, 80), // ㉓乱码清洗
+            p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 80), // ㉓乱码清洗（㉖v61b 扩控制字符）
             q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40), pid: String((it && it.pid) || '').slice(0, 40),
-            mv: String((it && it.mv) || '').slice(0, 10), src: String((it && it.src) || '').slice(0, 40) });
+            mv: (() => { const s0 = String((it && it.mv) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: String((it && it.src) || '').slice(0, 40) }); // ㉖v61b mv乱码清洗+归一枚举（对账包搬运方式列数据源）
         }
         // 增量合并：按标签号 upsert + 墓碑删除，多PDA互不覆盖
         // ㉔S1 时间戳双轨（F2加固）：指纹=登记时刻+内容（含t）；"无新到达"=与本机上次推送一致(含已删行的旧副本)
@@ -2774,10 +2787,13 @@ return send(res, 200, {
         try { d = buildExport(ds, fRaw); } catch (e) { return send(res, 500, { ok: false, msg: '导出构建失败：' + e.message }); }
         if (!d) return send(res, 400, { ok: false, msg: 'ds 需为 D1库位表/D2库存汇总/D3入库/D4出库/D5AGV任务/D6异常/D7工作量/D8领料/PACK对账包' });
         if (url.searchParams.get('preview') === '1') { // ㉔铁律4：先预览后导出（前20行+总行数，不落盘不登记）
-          const cols = (d.headers || []).length;
-          const cells = d.rows.slice(0, 20).map((r) => r.map((v) => String(v === undefined || v === null ? '' : v).slice(0, 40)));
-          const flat = d.rows.reduce((s, r) => s + r.reduce((a, v) => a + String(v === undefined || v === null ? '' : v).length + 1, 0), 0);
-          return send(res, 200, { ok: true, label: d.label, total: d.total, cols, head: d.headers, sample: cells, estBytes: flat });
+          const _p0 = (d.parts && d.parts[0]) || d; // ㉖v61 多sheet数据集(D7工作量/PACK对账包)：预览取首sheet表头与样例行
+          const cols = (_p0.headers || d.headers || []).length;
+          const rowsAll = _p0.rows || d.rows || [];
+          const cells = rowsAll.slice(0, 20).map((r) => r.map((v) => String(v === undefined || v === null ? '' : v).slice(0, 40)));
+          const flat = rowsAll.reduce((s, r) => s + r.reduce((a, v) => a + String(v === undefined || v === null ? '' : v).length + 1, 0), 0);
+          const sheets = d.parts ? d.parts.map((pp) => ({ name: pp.label, rows: (pp.rows || []).length, cols: (pp.headers || []).length })) : null;
+          return send(res, 200, { ok: true, label: d.label, total: d.total, cols, head: _p0.headers || d.headers, sample: cells, estBytes: flat, sheets: sheets, sheetName: sheets ? _p0.label : null });
         }
         if (fmt === 'json') { // ㉕F8 JSON导出（SAP/BI对接：血缘+数据双段，同样登记快照可重下）
           const jp = d.parts || [d]; const jo = { lineage: { ds: d.label, src: jp.map((p) => p.src).join('；'), filter: d.f, by: u.name, at: new Date().toISOString(), caliber: (EXP_CAL[d.label] || []).concat(jp.flatMap((p) => p.caliber || [])) }, sheets: jp.map((p) => ({ name: p.label, headers: p.headers || [], rows: p.rows || [] })) };
