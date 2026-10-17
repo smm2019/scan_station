@@ -224,10 +224,10 @@ class AuthApi {
   /// ㉖v62 产线模板：列表（本人私有+同事共享）
   static Future<Map> tplList() async =>
       _req("GET", "/api/req-templates", token: await AuthStore.token());
-  static Future<Map> tplSave(String name, List<Map> items, bool shared) async =>
+  static Future<Map> tplSave(String name, List<Map> items, bool shared, {String id = ""}) async =>
       _req("POST", "/api/req-templates",
           token: await AuthStore.token(),
-          body: {"name": name, "items": items, "shared": shared});
+          body: {"name": name, "items": items, "shared": shared, if (id.isNotEmpty) "id": id});
   static Future<Map> tplDelete(String id) async => _req(
       "DELETE", "/api/req-templates?id=$id", token: await AuthStore.token());
   static Future<void> tplUse(String id) async => _req(

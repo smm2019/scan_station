@@ -591,14 +591,16 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
     if (added > 0) setState(() {});
   }
 
-  /// ㉖v62 存为产线模板：取当前已选行（零件号+数量），起名并可勾选共享给同事
-  void _saveAsTpl() {
-    final items = _chosenItems()
-        .map((e) => {"partNo": e["partNo"], "itemName": e["itemName"], "qty": e["qty"]})
-        .toList();
+  /// ㉖v62 存/编辑产线模板：edit=null 新建（取当前已选行）；edit=模板 原地编辑我的（显示模板自身行，只改名/共享；要改行请用载入后另存）
+  void _saveAsTpl({Map? edit}) {
+    final items = edit != null
+        ? List<Map>.from(edit["items"] ?? [])
+        : _chosenItems()
+            .map((e) => {"partNo": e["partNo"], "itemName": e["itemName"], "qty": e["qty"]})
+            .toList();
     if (items.isEmpty) return;
-    final nameCtrl = TextEditingController();
-    bool shared = false;
+    final nameCtrl = TextEditingController(text: edit?["name"]?.toString() ?? "");
+    bool shared = edit == null ? false : edit["shared"] == true;
     showModalBottomSheet(
         context: context,
         isScrollControlled: true,
@@ -609,9 +611,15 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text("存为产线模板（${items.length} 行）",
+                  Text("${edit == null ? "存为" : "编辑"}产线模板（${items.length} 行）",
                       style: const TextStyle(
                           fontSize: 15, fontWeight: FontWeight.bold)),
+                  if (edit != null)
+                    const Padding(
+                        padding: EdgeInsets.only(top: 2),
+                        child: Text("此处改名称/共享；要增删物料行：先点模板载入到清单，再「存为产线模板」",
+                            style: TextStyle(
+                                fontSize: 11, color: Color(0xFF78909C)))),
                   const SizedBox(height: 8),
                   TextField(
                       controller: nameCtrl,
@@ -645,11 +653,12 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                 _toast("请给模板起个名字", err: false);
                                 return;
                               }
-                              final r = await AuthApi.tplSave(nm, items, shared);
+                              final r = await AuthApi.tplSave(nm, items, shared,
+                                  id: edit?["id"]?.toString() ?? "");
                               if (!mctx.mounted) return;
                               Navigator.pop(mctx);
                               if (r["ok"] == true) {
-                                _toast("模板「$nm」已保存", err: false);
+                                _toast("模板「$nm」已${edit == null ? "保存" : "更新"}", err: false);
                                 final g = await AuthApi.tplList();
                                 if (mounted && g["ok"] == true) setState(() =>
                                     _tpls = List<Map>.from(g["list"] ?? []));
@@ -657,9 +666,26 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                 _toast(r["msg"]?.toString() ?? "保存失败");
                               }
                             },
-                            child: const Text("保存"))),
+                            child: Text(edit == null ? "保存" : "更新"))),
                   ]),
                 ]))));
+  }
+
+  /// ㉖v62 把他人共享模板载入当前清单并提示另存为自己的（可改行改量后存）
+  void _forkTpl(Map t) {
+    final items = List<Map>.from(t["items"] ?? []);
+    final miss = <String>[];
+    for (final it in items) {
+      final pn = it["partNo"].toString();
+      if (!widget.parts.any((p) => p.partNo == pn)) { miss.add(pn); continue; }
+      if (_order.contains(pn)) continue;
+      final q = (it["qty"] as num?)?.toInt() ?? 1;
+      _qtyCtrl[pn] = TextEditingController(text: "$q");
+      _syncChosen(pn);
+    }
+    setState(() {});
+    _toast("已载入「${t["name"]}」，调整后可点下方「存为产线模板」存成自己的", err: false);
+    if (miss.isNotEmpty) _toast("其中 ${miss.join("、")} 当前无在架，已跳过", err: false);
   }
 
   /// ㉖v62 产线模板弹层：点模板整单载入（无在架行自动跳过并提示），左滑删除
@@ -692,8 +718,17 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
               trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (t["by"] == _myUid)
+                    if (t["by"] == _myUid) ...[
                       IconButton(
+                          tooltip: "编辑名称/共享",
+                          icon: const Icon(Icons.edit_outlined,
+                              size: 20, color: Color(0xFF3949AB)),
+                          onPressed: () {
+                            Navigator.pop(mctx);
+                            _saveAsTpl(edit: Map<String, dynamic>.from(t));
+                          }),
+                      IconButton(
+                          tooltip: "删除",
                           icon: const Icon(Icons.delete_outline,
                               size: 20, color: Colors.redAccent),
                           onPressed: () async {
@@ -702,6 +737,15 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                             if (mounted && r["ok"] == true) setState(() =>
                                 _tpls = List<Map>.from(r["list"] ?? []));
                             if (mctx.mounted) Navigator.pop(mctx);
+                          }),
+                    ] else
+                      IconButton(
+                          tooltip: "载入后另存为我的模板",
+                          icon: const Icon(Icons.copy_all_outlined,
+                              size: 20, color: Color(0xFF00897B)),
+                          onPressed: () {
+                            Navigator.pop(mctx);
+                            _forkTpl(t);
                           }),
                     const Icon(Icons.chevron_right, size: 20),
                   ]),

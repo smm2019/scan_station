@@ -3635,6 +3635,16 @@ return send(res, 200, {
             }
             if (!items.length) return send(res, 400, { ok: false, msg: '模板至少一行有效零件号+数量' });
             if (items.length > 20) return send(res, 400, { ok: false, msg: '单模板最多20行' });
+            // ㉖v62 原地编辑：带 id 且是本人（或管理员）→ 更新母本，use 计数保留
+            if (b.id) {
+              const t0 = db.reqTemplates.find((x) => x.id === String(b.id));
+              if (!t0) return send(res, 404, { ok: false, msg: '模板不存在' });
+              if (t0.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '只能编辑自己的模板' });
+              t0.name = name; t0.items = items; t0.shared = b.shared === true; t0.at = new Date().toISOString();
+              save();
+              console.log(`[rtpl] ${u.name} 编辑模板「${name}」${items.length}行${t0.shared ? '(共享)' : ''}`);
+              return send(res, 200, { ok: true, id: t0.id });
+            }
             const mineCnt = db.reqTemplates.filter(t => t.by === u.id).length;
             if (mineCnt >= 10) return send(res, 400, { ok: false, msg: '每人最多10个模板，请先删除旧的' });
             const t = { id: newId('rtpl'), name, by: u.id, byName: u.name, shared: b.shared === true, items, use: 0, at: new Date().toISOString() };
