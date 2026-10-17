@@ -362,7 +362,7 @@ function buildWork(from, to) {
   const cars = {};
   for (const [no, t] of Object.entries(db.agvTasks || {})) {
     if ((t.fin || 0) < from || (t.fin || 0) > to) continue;
-    const key = 'AGV' + String(t.car || 0).padStart(2, '0'); const c = (cars[key] = cars[key] || { out: 0, in: 0, other: 0, dur: 0, n: 0 });
+    const key = t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失'; const c = (cars[key] = cars[key] || { out: 0, in: 0, other: 0, dur: 0, n: 0 }); // ㉖v61 RCS未回车号不再伪装成AGV00
     c[t.ck === 'out' ? 'out' : t.ck === 'in' ? 'in' : 'other']++; c.n++; c.dur += t.dur || 0;
     D(wdstr(t.fin)).agv++;
   }
@@ -390,7 +390,7 @@ function buildExport(ds, fRaw) {
   if (ds === 'D3') { const _sl = _arch ? Object.assign(archLoad('scanlog'), db.scanlog || {}) : (db.scanlog || {}); const rows = Object.values(_sl).filter((s) => (s.t || 0) >= (from || 0) && (s.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((s) => [expTs(s.t), s.code, s.pn || '', s.nm || '', s.q || 0, printLot(s.mk, s.lot), (s.wt === 0 ? s.st : s.gl) || '', s.ct || '', s.pid || '', s.op || '', s.cx ? '已作废' : '', s.rm || '']); return mk('入库流水', ['时间', '标签号', '零件号', '物料名', '数量', '批次', '初始货位', '容器类型', '托号', '操作人', '状态', '备注'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '采集流水（全厂合并；批次=MES标签打印日期）'); }
   if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), i.code || '', i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', o.operator || '']); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '零件号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调）'); }
   if (ds === 'D5') { const reqOfTask = {}; for (const q of db.agvQueue || []) { const tn = String(q.taskNo || ''); if (tn && q.reqNo && !reqOfTask[tn]) reqOfTask[tn] = q.reqNo; } // 关联单=按RCS任务号配对（完成项队列留存可回溯）
-    const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', 'AGV' + String(t.car || 0).padStart(2, '0'), expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', reqOfTask[no] || '']);
+    const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失', expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', reqOfTask[no] || '']);
     // ㉕B10 未完成在途并入同表（状态=排队/下发中/已下发/到站/失败），补"状态/关联单"两列
     for (const q of db.agvQueue || []) { if (['完成', '取消'].includes(q.state)) continue; const at = Number(q.at) || 0; if ((from && at < from) || at > to) continue; rows.push([q.wmsTask || q.taskNo || '未生成', q.type === 'transfer' ? '移库' : q.type === 'inbound' ? '入库' : q.type === 'insp' ? '检验下架' : q.type === 'inspback' ? '检验归位' : '出库', q.fromLoc || q.from || '', q.station || q.to || '', '', '', expTs(q.sentAt || 0) || '', expTs(q.dockAt || 0) || '', Math.round((Date.now() - at) / 1000), q.state, q.reqNo || '']); } // ㉖ 检验任务入队后方向列完整映射
     return mk('AGV任务', ['任务号', '方向', '起点', '终点', '车辆', '接令', '叉出', '到站', '时长秒', '状态', '关联单'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S'], rows, 'RCS任务沉淀（近30天六节点）+未完成在途队列（时长秒=已耗时）'); }
@@ -538,7 +538,7 @@ function buildDayReport(dayKey) {
   for (const t of Object.values(db.agvTasks || {})) {
     if (!(t.fin >= F && t.fin <= T)) continue; agvN++;
     const du = t.ex ? t.fin - t.ex : 0;
-    const ck = 'AGV' + String(t.car || 0).padStart(2, '0'); (cars[ck] = cars[ck] || { n: 0, dur: 0, dn: 0 }); cars[ck].n++;
+    const ck = t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失'; (cars[ck] = cars[ck] || { n: 0, dur: 0, dn: 0 }); cars[ck].n++; // ㉖v61 未回车号单列
     if (du > 0 && du < 4 * 3600e3) { agvDur += du; agvDurN++; cars[ck].dur += du; cars[ck].dn++; }
   }
   // 库存快照：调用时刻的在架状态（历史日回填时此段为"当前值"，量类指标不受影响；注释明示）
@@ -3437,14 +3437,18 @@ return send(res, 200, {
         const byCar = {}; // 车号 → {n,durSum,out,in}
         const heat = Array.from({ length: 7 }, () => Array(24).fill(0)); // 近7日×24h 任务热力
         const dayBase = new Date(); dayBase.setHours(0, 0, 0, 0); dayBase.setDate(dayBase.getDate() - 6);
+        let noCarN = 0; // ㉖v61 RCS未回车号的任务（exeAgvId缺失）单列，不再伪装成 AGV00
         for (const t of tasks) {
-          const b = (byCar[t.car] = byCar[t.car] || { n: 0, durSum: 0, out: 0, in: 0 });
-          b.n++; if (t.dur) b.durSum += t.dur; if (t.ck === 'out') b.out++; else if (t.ck === 'in') b.in++;
+          if (!t.car) { noCarN++; } else {
+            const b = (byCar[t.car] = byCar[t.car] || { n: 0, durSum: 0, out: 0, in: 0 });
+            b.n++; if (t.dur) b.durSum += t.dur; if (t.ck === 'out') b.out++; else if (t.ck === 'in') b.in++;
+          }
           const di = Math.floor((t.fin - dayBase.getTime()) / 86400000), hr = new Date(t.fin).getHours();
           if (di >= 0 && di < 7 && hr >= 0 && hr < 24) heat[di][hr]++;
         }
         const cars = Object.entries(byCar).map(([id, v]) => ({ car: Number(id), n: v.n, out: v.out, in: v.in, avgDur: v.n && v.durSum ? Math.round(v.durSum / v.n) : 0 }))
           .sort((a, b) => b.n - a.n);
+        if (noCarN) cars.push({ car: -1, n: noCarN, out: 0, in: 0, avgDur: 0 }); // car=-1 前端显示"车号缺失"
         const totalN = tasks.length, totalDur = tasks.reduce((s, t) => s + (t.dur || 0), 0);
         return send(res, 200, { ok: true, days, totalN, avgDur: totalN ? Math.round(totalDur / totalN) : 0,
           cars, heat, heatDays: Array.from({ length: 7 }, (_, i) => dstr(dayBase.getTime() + i * 86400000)) });
