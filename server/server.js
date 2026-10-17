@@ -214,6 +214,8 @@ function loadDb() {
     if (_fx) { added = true; console.log('[migrate] 出库流水乱码自愈 ' + _fx + ' 处（name 反查回填/替换符剥离，move 归一）'); }
   }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
+  if (typeof d.cyclePlans !== 'object' || d.cyclePlans === null || Array.isArray(d.cyclePlans)) { d.cyclePlans = {}; added = true; } // ㉖v63 循环盘点当日计划
+  if (typeof d.cycleLog !== 'object' || d.cycleLog === null || Array.isArray(d.cycleLog)) { d.cycleLog = {}; added = true; } // ㉖v63 验证留痕 {日:{格:{r,by,at,note}}}
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
   if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
   if (!Array.isArray(d.errLogs)) { d.errLogs = []; added = true; } // ㉖ PDA异常上报表（旧库补齐）
@@ -361,6 +363,42 @@ function expXls(d) {
 // ---- ㉓G12 工作量报表聚合：入库(框=托去重)/出库/修正/返架按人按日 + 领料时效 + AGV按车 ----
 function wdstr(ms) { const d = new Date(ms); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function wdName(s) { return String(s || '').trim().replace(/[（(][^）)]*[）)]$/, '').trim() || '未知'; } // MES回写常带(账号)后缀，统计归一
+// ===== ㉖v63 断料预测与循环盘点辅助（顶层：路由与 frequent 共用） =====
+function stockRiskOf(days) {
+  const N = Math.min(180, Math.max(7, Number(days) || 60));
+  const cut = Date.now() - N * 864e5;
+  const outAgg = {};
+  for (const o of Object.values(db.outbound || {})) {
+    const t = Number(o.createdAt) || 0; if (t < cut) continue;
+    for (const it of o.items || []) { const pn = String(it.code || '').toUpperCase(); if (!pn) continue; const a = outAgg[pn] = outAgg[pn] || { qty: 0, last: 0 }; a.qty += Number(it.qty) || 0; if (t > a.last) a.last = t; }
+  }
+  const stock = {};
+  for (const l of db.ledger || []) { const pn = String(l.p || '').toUpperCase(); if (!pn) continue; stock[pn] = (stock[pn] || 0) + (Number(l.q) || 0); }
+  const list = [];
+  for (const [pn, a] of Object.entries(outAgg)) {
+    if (a.qty <= 0) continue;
+    const daily = a.qty / N;
+    const st = stock[pn] || 0;
+    const dl = daily > 0 ? Math.floor(st / daily) : 999;
+    list.push({ pn, nm: (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || '', stockQty: st, daily: Math.round(daily * 10) / 10, daysLeft: Math.min(dl, 999), lvl: dl < 3 ? 'red' : dl <= 7 ? 'yellow' : 'green', lastOut: a.last });
+  }
+  list.sort((x, y) => x.daysLeft - y.daysLeft || y.daily - x.daily);
+  return { days: N, red: list.filter((x) => x.lvl === 'red').length, yellow: list.filter((x) => x.lvl === 'yellow').length, list };
+}
+function cyclePlanOf(n) { // 当日计划按日期种子洗牌固定（同一天反复拉不变），只抽 NB02 高架格
+  const day = new Date().toISOString().slice(0, 10);
+  db.cyclePlans = db.cyclePlans || {};
+  if (db.cyclePlans[day]) return { day, locs: db.cyclePlans[day] };
+  const locs = [...new Set((db.ledger || []).map((l) => String(l.l || '').toUpperCase()).filter((x) => /^NB02-/.test(x)))];
+  let seed = 2166136261; for (const ch of day) { seed ^= ch.charCodeAt(0); seed = Math.imul(seed, 16777619) >>> 0; }
+  const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 4294967296; };
+  for (let i = locs.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const tmp = locs[i]; locs[i] = locs[j]; locs[j] = tmp; }
+  const pick = locs.slice(0, Math.min(Math.max(1, Number(n) || 20), locs.length));
+  db.cyclePlans[day] = pick;
+  const ks = Object.keys(db.cyclePlans).sort(); while (ks.length > 7) { delete db.cyclePlans[ks[0]]; ks.shift(); }
+  save();
+  return { day, locs: pick };
+}
 function buildWork(from, to) {
   const persons = {}, days = {};
   const P = (name, day) => { name = wdName(name); const p = (persons[name] = persons[name] || { name, inB: 0, outB: 0, outQ: 0, fix: 0, ret: 0, acc: 0, finMin: 0, finN: 0, days: {} }); const d = (p.days[day] = p.days[day] || { inB: 0, outB: 0, acc: 0 }); return p; };
@@ -3000,6 +3038,74 @@ return send(res, 200, {
         pushOps(u, '容器类型配置', clean.length + ' 项', clean.map((x) => x.show).join('、'));
         return send(res, 200, { ok: true, types: clean, msg: '已保存，全端下次进入采集页生效' });
       }
+      // ===== ㉖v63 断料预测：日均耗用（近N天出库）÷ 在架 = 还能撑几天，红<3/黄3~7/绿>7 =====
+      if (req.method === 'GET' && p === '/api/stock/risk') {
+        const r = stockRiskOf(url.searchParams.get('days'));
+        return send(res, 200, { ok: true, days: r.days, red: r.red, yellow: r.yellow, total: r.list.length, list: r.list.slice(0, 300) });
+      }
+      // ===== ㉖v63 循环盘点：当日随机抽查计划 + 逐格验证留痕（扫到=ok，扫出别的=diff，没货=miss） =====
+      if (p === '/api/cycle') {
+        if (req.method === 'GET') {
+          const pl = cyclePlanOf(Number(url.searchParams.get('n')) || 20);
+          const done = (db.cycleLog || {})[pl.day] || {};
+          return send(res, 200, { ok: true, day: pl.day, locs: pl.locs.map((l) => { const expect = (db.ledger || []).filter((x) => String(x.l || '').toUpperCase() === l); const d0 = done[l]; return { loc: l, expect: expect.map((x) => ({ c: x.c, p: x.p || '', q: Number(x.q) || 0 })), v: d0 || null }; }) });
+        }
+        if (req.method === 'POST') {
+          if (!canFeature(u, 'inventory')) return send(res, 403, { ok: false, msg: '当前角色未开通盘点权限' });
+          const b = await readBody(req);
+          const loc = String(b.loc || '').trim().toUpperCase();
+          const code = String(b.code || '').trim().toUpperCase();
+          if (!loc || !code) return send(res, 400, { ok: false, msg: '缺少 loc/code' });
+          const pl = cyclePlanOf(20);
+          if (!(pl.locs || []).includes(loc)) return send(res, 400, { ok: false, msg: '该格不在今日抽查计划内' });
+          const inLed = (db.ledger || []).filter((x) => String(x.l || '').toUpperCase() === loc);
+          const found = inLed.find((x) => String(x.c || '').toUpperCase() === code);
+          const v = found ? { r: 'ok', by: u.name, at: Date.now() } : (code === 'EMPTY' ? { r: 'miss', by: u.name, at: Date.now(), note: inLed.length ? '账本记有 ' + inLed.length + ' 框但现场无货' : '账本本就无记录' } : { r: 'diff', by: u.name, at: Date.now(), note: '实扫 ' + code + '，账本记 ' + (inLed.map((x) => x.c).join('、') || '空') });
+          db.cycleLog = db.cycleLog || {};
+          (db.cycleLog[pl.day] = db.cycleLog[pl.day] || {})[loc] = v;
+          const ks = Object.keys(db.cycleLog).sort(); while (ks.length > 7) { delete db.cycleLog[ks[0]]; ks.shift(); }
+          if (v.r !== 'ok') pushOps(u, '循环盘点差异', loc, v.note + '（' + u.name + '）');
+          save();
+          return send(res, 200, { ok: true, r: v.r, note: v.note || '' });
+        }
+      }
+      // ===== ㉖v63 呆滞料排行：按零件聚合 ≥N 天未动格位（格数/件数/最长滞留），一键移地面 =====
+      if (req.method === 'GET' && p === '/api/slow-moving') {
+        const minD = Math.min(180, Math.max(3, Number(url.searchParams.get('minDays')) || 14));
+        const nowMs = Date.now();
+        const byPn = {};
+        for (const l of db.ledger || []) {
+          const t = Number(l.rec || l.t) || 0; const ageD = Math.floor((nowMs - t) / 864e5);
+          if (ageD < minD) continue;
+          const pn = String(l.p || '').toUpperCase() || '(无零件号)';
+          const a = byPn[pn] = byPn[pn] || { pn, nm: (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || l.n || '', cells: {}, qty: 0, maxAge: 0, codes: [] };
+          a.cells[String(l.l || '').toUpperCase()] = 1; a.qty += Number(l.q) || 0;
+          if (ageD > a.maxAge) a.maxAge = ageD;
+          if (a.codes.length < 8) a.codes.push(String(l.c || '').toUpperCase());
+        }
+        const list = Object.values(byPn).map((a) => ({ ...a, cells: Object.keys(a.cells).length })).sort((x, y) => y.qty - x.qty || y.maxAge - x.maxAge);
+        return send(res, 200, { ok: true, minDays: minD, total: list.length, list: list.slice(0, 100) });
+      }
+      // ===== ㉖v63 AGV 运力体检：近N天任务底仓——车均负载/单趟均时/峰值并发/忙时分布 =====
+      if (req.method === 'GET' && p === '/api/agv/capacity') {
+        const N = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7));
+        const cut = Date.now() - N * 864e5;
+        const tasks = Object.values(db.agvTasks || {}).filter((t) => (t.fin || 0) >= cut);
+        const byCar = {};
+        for (const t of tasks) { const c = t.car || 0; const b = byCar[c] = byCar[c] || { car: c, n: 0, dur: 0, dn: 0, out: 0, in: 0 }; b.n++; if (t.dur > 0) { b.dur += t.dur; b.dn++; } if (t.ck === 'out') b.out++; else if (t.ck === 'in') b.in++; }
+        // 峰值并发：ex..fin 区间扫描线（30 分钟粒度采样，防内存爆）
+        let peak = 0, peakAt = 0;
+        const evs = [];
+        for (const t of tasks) { if (!t.ex || !t.fin || t.fin <= t.ex) continue; evs.push([t.ex, 1], [t.fin, -1]); }
+        evs.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+        let cur = 0; for (const [ts, d] of evs) { cur += d; if (cur > peak) { peak = cur; peakAt = ts; } }
+        // 忙时分布（按完成小时聚合）
+        const hours = Array(24).fill(0);
+        for (const t of tasks) { const h0 = new Date(t.fin).getHours(); if (h0 >= 0 && h0 < 24) hours[h0]++; }
+        const cars = Object.values(byCar).map((b) => ({ ...b, avg: b.dn ? Math.round(b.dur / b.dn) : 0 })).sort((x, y) => y.n - x.n);
+        const totalDur = tasks.reduce((s, t) => s + (t.dur || 0), 0);
+        return send(res, 200, { ok: true, days: N, total: tasks.length, avgDur: tasks.length ? Math.round(totalDur / tasks.length) : 0, peak, peakAt, cars, hours });
+      }
       if (req.method === 'GET' && p === '/api/ground-slots') {
         return send(res, 200, { ok: true, slots: db.groundSlots || {}, rows: db.gndZoneRows || {}, offs: db.gndRowOff || {}, def: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols } }); // ㉖v59 附按区排数/停用排/默认参数
       }
@@ -3612,7 +3718,8 @@ return send(res, 200, {
             const k = boxKeyOf(l); const pn = String(l.p).toUpperCase();
             (_boxOf[pn] = _boxOf[pn] || new Set()).add(k);
           }
-          const list = Object.values(agg).map((a) => ({ ...a, inBoxes: _boxOf[a.pn] ? _boxOf[a.pn].size : 0 }))
+          let _risk = {}; try { for (const x of stockRiskOf(60).list) _risk[x.pn] = x.daysLeft; } catch (_) {} // ㉖v63 断料天数并入常领chip
+          const list = Object.values(agg).map((a) => ({ ...a, inBoxes: _boxOf[a.pn] ? _boxOf[a.pn].size : 0, daysLeft: _risk[a.pn] === undefined ? null : _risk[a.pn] }))
             .sort((x, y) => (y.n * 1000 + y.last / 864e5) - (x.n * 1000 + x.last / 864e5)).slice(0, 30);
           return send(res, 200, { ok: true, list, days: 60 });
         }
