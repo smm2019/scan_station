@@ -1070,7 +1070,7 @@ function autoEnqueueOnAccept(r, byName, byId) {
       const code = String((bx.codes && bx.codes[0]) || '').toUpperCase();
       if (!code) continue;
       if (bx.codes.some((c) => db.agvQueue.some((q) => String(q.code).toUpperCase() === String(c).toUpperCase() && !['完成', '取消', '失败'].includes(q.state)))) continue; // 同框已在队
-      db.agvQueue.push({ code, fromLoc: l, palletType: String(bx.f || ''), stationManual: '', reqId: r.id, reqNo: r.no, by: byName, state: '排队', rush: lineRush(r, it), auto: 1, station: '', at: Date.now(), updAt: Date.now() }); // v55 行级急料（靠前=加急；旧单无行标回退整单）
+      db.agvQueue.push({ code, fromLoc: l, palletType: String(bx.f || ''), stationManual: '', reqId: r.id, reqNo: r.no, by: byName, state: '排队', rush: lineRush(r, it), rushBy: lineRush(r, it) ? String(r.rushBy || r.byName || '') : '', auto: 1, station: '', at: Date.now(), updAt: Date.now() }); // v55 行级急料（靠前=加急；旧单无行标回退整单）㉖v61 急料带插队人
       it.agvCalled = (it.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code);
       it.agvCalled.push({ c: code, s: '', q: 1, by: byId, t: new Date().toISOString() }); // 登记叫车标记（建议区变🚗排队）
       n++;
@@ -2058,7 +2058,7 @@ const server = http.createServer(async (req, res) => {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station)).map((s) => { const m = stnMetaOf(s.station); return { ...s, alias: m.alias || '', role: ['any', 'out', 'in', 'insp'].includes(m.role) ? m.role : 'any', off: m.off === true }; }); // ㉖⑫ 附站台身份（PDA 站台页/叫车/检验选台按此显示与过滤）
         const aliases = {}; for (const c of AGV_STNS) { const a = stnAlias(c); if (a) aliases[c] = a; }
         const holdAvg = {}; for (const [k, v] of Object.entries(db.rcsHoldStat || {})) holdAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
-        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), recent: (db.agvQueue || []).filter((q) => ['完成', '取消'].includes(q.state)).sort((a, b) => (b.updAt || 0) - (a.updAt || 0)).slice(0, 60), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, cfgRev: db.cfgRev || 0 }); // ㉖ recent=完成/取消终态（留2小时；失败项仍在 queue 活跃表带原因展示），队列控制台"最近任务"卡片数据源
+        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), recent: (db.agvQueue || []).filter((q) => ['完成', '取消'].includes(q.state)).sort((a, b) => (b.updAt || 0) - (a.updAt || 0)).slice(0, 60), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, agingMin: P().agingMin, cfgRev: db.cfgRev || 0 }); // ㉖ recent=完成/取消终态（留2小时；失败项仍在 queue 活跃表带原因展示），队列控制台"最近任务"卡片数据源；㉖v61 agingMin透传前端同口径排
       }
       // ===== ㉖⑫ 站台看板：每台实时状态+身份(别名/用途/停用)+今日吞吐+在途占用明细（指挥舱新页签，全端共用） =====
       if (req.method === 'GET' && p === '/api/agv/stboard') {
@@ -3570,6 +3570,7 @@ return send(res, 200, {
             assigneeId: assignee ? assignee.id : '', assigneeName: assignee ? assignee.name : '',
             assignOpenAt: assignee ? new Date(now.getTime() + P().assignMin * 60000).toISOString() : '',
             rush: b.rush === true || clean.some((i) => i.rush), // 急料：调度优先插队+催扫5分钟广播（v55 任一行急=整单急）
+            rushBy: (b.rush === true || clean.some((i) => i.rush)) ? u.name : '', // ㉖v61 标急人（入队与队列控制台展示"插队·谁"）
             needDate: /^\d{4}-\d{2}-\d{2}$/.test(String(b.needDate || '')) ? String(b.needDate) : '', // 第3档 期望到货日期（PDA默认值可预填）
           };
           db.requisitions.push(r);
@@ -3787,7 +3788,8 @@ return send(res, 200, {
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可标记急料' });
             if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可标记` });
             r.rush = b.rush === true;
-            for (const q of db.agvQueue || []) { if (String(q.reqId) === r.id && q.state === '排队') q.rush = r.rush; }
+            if (r.rush) r.rushBy = u.name; else delete r.rushBy; // ㉖v61 记录插队人
+            for (const q of db.agvQueue || []) { if (String(q.reqId) === r.id && q.state === '排队') { q.rush = r.rush; if (r.rush) q.rushBy = u.name; else delete q.rushBy; } } // ㉖v61 单级：整单排队框统一急标+插队人
             hpush(r.rush ? `标记急料（${u.name}）` : `取消急料（${u.name}）`);
             if (r.rush) db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled && x.id !== u.id).forEach((x) =>
               notify(x.id, 'req_new', `🔥 急料单 ${r.no}（${r.byName}），请优先备料`, r.id));
@@ -4787,8 +4789,12 @@ async function agvDispatch(nowMs, runT) {
   save(); // ㉖ 对账+兜底的状态变更当轮落盘（旧实现依赖下一轮 rcsPoll 的 save，重启会丢刚推进的终态）
   if (!waiting.length) return;
   // 置顶最高优先（网页队列控制台）；急料插队；普通项等待超10分钟自动升级（aging防饿死）；同级保持FIFO
-  const effRush = (q) => !!q.rush || (nowMs - (q.at || 0) > P().agingMin * 60 * 1000);
-  waiting.sort((a, b) => ((b.prio || 0) - (a.prio || 0)) || (effRush(b) ? 1 : 0) - (effRush(a) ? 1 : 0) || (a.at || 0) - (b.at || 0));
+  // ㉖v61 单级整单插队：一张单任一框急/任一框老化 → 该单全部排队框一起按急处理且相邻出队（同单不被别单撕碎穿插）
+  const _qKey = (q) => String(q.reqId || q.reqNo || ('C|' + q.code));
+  const _grp = {};
+  for (const q of waiting) { const g = (_grp[_qKey(q)] = _grp[_qKey(q)] || { rush: false, at: Infinity }); if (q.rush || (nowMs - (q.at || 0) > P().agingMin * 60000)) g.rush = true; if ((q.at || 0) < g.at) g.at = q.at || 0; }
+  const _grpOf = (q) => _grp[_qKey(q)];
+  waiting.sort((a, b) => ((b.prio || 0) - (a.prio || 0)) || (_grpOf(b).rush ? 1 : 0) - (_grpOf(a).rush ? 1 : 0) || (_grpOf(a).at - _grpOf(b).at) || (a.at || 0) - (b.at || 0));
   const live = (db.agvDispatchMode || 'dry') === 'live';
   const assigned = [];
   for (const q of waiting) {
