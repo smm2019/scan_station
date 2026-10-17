@@ -488,6 +488,9 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   bool _rush = false; // 急料：AGV优先排队+到站5分钟催扫广播
   final List<String> _order = []; // v55 已选物料行序（靠前=加急，入队按此序）
   final Set<String> _rushLines = {}; // v55 行级急料开关
+  List<Map> _freq = []; // ㉖v62 常领清单（近60天本人聚合，服务端排序）
+  List<Map> _tpls = []; // v62 产线模板（私有+共享）
+  String _myUid = ""; // v62 当前用户id（判断模板归属：自己的才显示删除）
 
   /// v55 数量变化同步已选区：填>0入选（追加到队尾），清空即除名；零件下架由提交时兜底过滤
   void _syncChosen(String partNo) {
@@ -549,6 +552,181 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
         _applyAssignee();
       }
     });
+    // ㉖v62 建单提效：并行拉常领清单与产线模板（失败静默，不影响正常建单）
+    AuthStore.user().then((au) {
+      if (mounted && au != null) setState(() => _myUid = au.id);
+    });
+    AuthApi.reqFrequent().then((r) {
+      if (!mounted) return;
+      if (r["ok"] == true) setState(() => _freq = List<Map>.from(r["list"] ?? []));
+    });
+    AuthApi.tplList().then((r) {
+      if (!mounted) return;
+      if (r["ok"] == true) setState(() => _tpls = List<Map>.from(r["list"] ?? []));
+    });
+  }
+
+  /// ㉖v62 建单提效：常领一键加（近60天本人聚合）+ 产线模板整单载入
+  void _toast(String m, {bool err = true}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(m),
+        duration: const Duration(seconds: 2),
+        backgroundColor: err ? Colors.red.shade700 : Colors.blueGrey));
+  }
+
+  /// ㉖v62 一键把常领零件加入已选（数量默认=上次领用，可改）；已在清单里的跳过
+  void _addFrequent(List<String> pns) {
+    final byPn = {for (final p in widget.parts) p.partNo: p};
+    final fm = {for (final f in _freq) f["pn"].toString(): f};
+    int added = 0;
+    for (final pn in pns) {
+      if (byPn[pn] == null) continue; // 当前无在架，不加
+      if (_order.contains(pn)) continue;
+      final last = (fm[pn]?["lastQty"] as num?)?.toInt() ?? 1;
+      _qtyCtrl[pn] = TextEditingController(text: "$last");
+      _syncChosen(pn);
+      added++;
+    }
+    if (added > 0) setState(() {});
+  }
+
+  /// ㉖v62 存为产线模板：取当前已选行（零件号+数量），起名并可勾选共享给同事
+  void _saveAsTpl() {
+    final items = _chosenItems()
+        .map((e) => {"partNo": e["partNo"], "itemName": e["itemName"], "qty": e["qty"]})
+        .toList();
+    if (items.isEmpty) return;
+    final nameCtrl = TextEditingController();
+    bool shared = false;
+    showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (mctx) => Padding(
+            padding: EdgeInsets.fromLTRB(
+                16, 14, 16, MediaQuery.of(mctx).viewInsets.bottom + 16),
+            child: StatefulBuilder(builder: (mctx2, setS) => Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text("存为产线模板（${items.length} 行）",
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  TextField(
+                      controller: nameCtrl,
+                      maxLength: 20,
+                      decoration: const InputDecoration(
+                          hintText: "模板名，如：焊装一线常领",
+                          isDense: true,
+                          counterText: "",
+                          border: OutlineInputBorder())),
+                  CheckboxListTile(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      value: shared,
+                      onChanged: (v) => setS(() => shared = v ?? false),
+                      title: const Text("共享给同事（同产线的人可直接用）",
+                          style: TextStyle(fontSize: 13))),
+                  const SizedBox(height: 4),
+                  Row(children: [
+                    Expanded(
+                        child: OutlinedButton(
+                            onPressed: () => Navigator.pop(mctx),
+                            child: const Text("取消"))),
+                    const SizedBox(width: 10),
+                    Expanded(
+                        flex: 2,
+                        child: ElevatedButton(
+                            onPressed: () async {
+                              final nm = nameCtrl.text.trim();
+                              if (nm.isEmpty) {
+                                _toast("请给模板起个名字", err: false);
+                                return;
+                              }
+                              final r = await AuthApi.tplSave(nm, items, shared);
+                              if (!mctx.mounted) return;
+                              Navigator.pop(mctx);
+                              if (r["ok"] == true) {
+                                _toast("模板「$nm」已保存", err: false);
+                                final g = await AuthApi.tplList();
+                                if (mounted && g["ok"] == true) setState(() =>
+                                    _tpls = List<Map>.from(g["list"] ?? []));
+                              } else {
+                                _toast(r["msg"]?.toString() ?? "保存失败");
+                              }
+                            },
+                            child: const Text("保存"))),
+                  ]),
+                ]))));
+  }
+
+  /// ㉖v62 产线模板弹层：点模板整单载入（无在架行自动跳过并提示），左滑删除
+  void _showTplSheet() {
+    showModalBottomSheet(
+        context: context,
+        builder: (mctx) => SafeArea(
+            child: ListView(shrinkWrap: true, children: [
+          const Padding(
+              padding: EdgeInsets.all(12),
+              child: Text("产线模板 · 点击整单载入",
+                  style: TextStyle(fontWeight: FontWeight.bold))),
+          ..._tpls.map((t) {
+            final items = List<Map>.from(t["items"] ?? []);
+            final mine = t["byName"]?.toString();
+            return ListTile(
+              dense: true,
+              leading: CircleAvatar(
+                  radius: 15,
+                  backgroundColor: t["shared"] == true
+                      ? const Color(0xFF26A69A)
+                      : const Color(0xFF5C6BC0),
+                  child: Text("${items.length}",
+                      style: const TextStyle(fontSize: 12, color: Colors.white))),
+              title: Text(t["name"]?.toString() ?? "",
+                  style: const TextStyle(fontSize: 14)),
+              subtitle: Text(
+                  "${t["shared"] == true ? "共享" : "私有"} · ${mine ?? ""} · 用过${t["use"] ?? 0}次",
+                  style: const TextStyle(fontSize: 11)),
+              trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (t["by"] == _myUid)
+                      IconButton(
+                          icon: const Icon(Icons.delete_outline,
+                              size: 20, color: Colors.redAccent),
+                          onPressed: () async {
+                            await AuthApi.tplDelete(t["id"].toString());
+                            final r = await AuthApi.tplList();
+                            if (mounted && r["ok"] == true) setState(() =>
+                                _tpls = List<Map>.from(r["list"] ?? []));
+                            if (mctx.mounted) Navigator.pop(mctx);
+                          }),
+                    const Icon(Icons.chevron_right, size: 20),
+                  ]),
+              onTap: () {
+                Navigator.pop(mctx);
+                final miss = <String>[];
+                for (final it in items) {
+                  final pn = it["partNo"].toString();
+                  if (!widget.parts.any((p) => p.partNo == pn)) {
+                    miss.add(pn);
+                    continue;
+                  }
+                  if (_order.contains(pn)) continue;
+                  final q = (it["qty"] as num?)?.toInt() ?? 1;
+                  _qtyCtrl[pn] = TextEditingController(text: "$q");
+                  _syncChosen(pn);
+                }
+                setState(() {});
+                AuthApi.tplUse(t["id"].toString());
+                if (miss.isNotEmpty)
+                  _toast("模板中 ${miss.join("、")} 当前无在架，已跳过", err: false);
+              },
+            );
+          }),
+        ])));
   }
 
   /// 第3档 开「默认沿用上次指定」且上次的人仍有效时自动带上（网络与本地偏好都就绪才决断）
@@ -610,6 +788,59 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                   prefixIcon: Icon(Icons.search, size: 20),
                   border: OutlineInputBorder()),
             ),
+            // ㉖v62 建单提效：常领一键加（近60天本人聚合）+ 产线模板整单载入
+            if (_freq.isNotEmpty || _tpls.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              SizedBox(
+                height: 40,
+                child: ListView(scrollDirection: Axis.horizontal, children: [
+                  if (_tpls.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ActionChip(
+                        avatar: const Icon(Icons.folder_copy_outlined,
+                            size: 16, color: Color(0xFF3949AB)),
+                        label: Text("产线模板(${_tpls.length})",
+                            style: const TextStyle(fontSize: 12)),
+                        onPressed: _showTplSheet,
+                      ),
+                    ),
+                  if (_freq.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: ActionChip(
+                        avatar: const Icon(Icons.bolt,
+                            size: 16, color: Color(0xFFEF6C00)),
+                        label: const Text("常领", style: TextStyle(fontSize: 12)),
+                        onPressed: () => _addFrequent(
+                            _freq.map((f) => f["pn"].toString()).toList()),
+                      ),
+                    ),
+                  ..._freq.take(12).map((f) {
+                    final pn = f["pn"].toString();
+                    final inStock =
+                        widget.parts.any((p) => p.partNo == pn);
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: ActionChip(
+                        backgroundColor: inStock
+                            ? const Color(0xFFFFF3E0)
+                            : const Color(0xFFF1F1F1),
+                        label: Text(
+                            "${pn.length > 6 ? pn.substring(pn.length - 6) : pn} ×${f["lastQty"] ?? 1}",
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: inStock
+                                    ? const Color(0xFF6D4C41)
+                                    : Colors.grey),
+                            overflow: TextOverflow.ellipsis),
+                        onPressed: inStock ? () => _addFrequent([pn]) : null,
+                      ),
+                    );
+                  }),
+                ]),
+              ),
+            ],
             if (_warehouses.isNotEmpty) ...[
               const SizedBox(height: 6),
               InkWell(
@@ -945,6 +1176,19 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                   ])),
             ),
             const SizedBox(height: 10),
+            if (chosen.isNotEmpty) // ㉖v62 把本单物料存成产线模板，下次一键载入
+              Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                      onPressed: _saveAsTpl,
+                      style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          visualDensity: VisualDensity.compact),
+                      icon: const Icon(Icons.folder_open_outlined,
+                          size: 16, color: Color(0xFF3949AB)),
+                      label: const Text("存为产线模板",
+                          style:
+                              TextStyle(fontSize: 12, color: Color(0xFF3949AB))))),
             Row(children: [
               Expanded(
                   child: OutlinedButton(

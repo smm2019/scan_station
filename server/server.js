@@ -51,6 +51,7 @@ function defaultDb() {
     watchlist: [], // ⑮预约来料
     inspects: [], seenIn: {}, seenOut: {}, // ㉖④检验工单 / ①②标签生命周期索引 [{userId,partNo,at}]
     groundSlots: {}, // ⑮地面排格数覆盖 {"NB03-A-11":13}，缺省12
+    reqTemplates: [], // ㉖v62 产线领料模板 {id,name,by,byName,shared,items,use,at}
     gndZoneRows: {}, // ㉖v59 地面按区排数覆盖 {"A":15,"B":10}，缺省=每区排数参数；0=整区不用
     gndRowOff: {}, // ㉖v59 地面停用排 {"NB03-A-01":1}，停用排地图灰显、不计入格位统计（账本有货仍显示提醒）
     stockAlert: {}, // ⑮断料告警去重 {零件号: 最近告警日}
@@ -3584,11 +3585,78 @@ return send(res, 200, {
         if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'car_alarm', ' PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常（' + clean.length + ' 条记录）'); }
         return send(res, 200, { ok: true, count: clean.length });
       }
-      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/notifications' || p.startsWith('/api/notifications/')) {
+      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/req-templates' || p.startsWith('/api/req-templates/') || p === '/api/notifications' || p.startsWith('/api/notifications/')) { // ㉖v62 模板路由并入领料块（此前落入管理员闸门）
         const canReq = (db.features[u.role] || {}).requisition === true;
         const canRcv = (db.features[u.role] || {}).receive_confirm === true;
         const isWh = u.role === 'warehouse' || u.role === 'admin';
 
+// ㉖v62 建单提效：常领清单（近60天本人聚合） + 产线模板（私有+共享）
+        // 常领：频次×最近加权排序，带上次数量与在架托数，物料员一键加单不输零件号
+        if (req.method === 'GET' && p === '/api/requisitions/frequent') {
+          const cut = Date.now() - 60 * 864e5;
+          const agg = {}; // partNo -> {pn,nm,n,last,lastQty,lastNo}
+          for (const r of db.requisitions) {
+            if (r.by !== u.id) continue;
+            const t = Date.parse(r.createdAt || ''); if (!(t > cut)) continue;
+            for (const it of (r.items || [])) {
+              const pn = String(it.partNo || '').toUpperCase(); if (!pn) continue;
+              const a = agg[pn] = agg[pn] || { pn, nm: it.itemName || '', n: 0, last: 0, lastQty: 0, lastNo: '' };
+              a.n++;
+              if (t >= a.last) { a.last = t; a.lastQty = Number(it.qty) || 0; a.lastNo = r.no; if (it.itemName) a.nm = it.itemName; }
+            }
+          }
+          // 在架托数：账本按框键归并（框=托口径）
+          const _boxOf = {};
+          for (const l of Object.values(db.ledger || {})) {
+            if (!l.p) continue;
+            const k = boxKeyOf(l); const pn = String(l.p).toUpperCase();
+            (_boxOf[pn] = _boxOf[pn] || new Set()).add(k);
+          }
+          const list = Object.values(agg).map((a) => ({ ...a, inBoxes: _boxOf[a.pn] ? _boxOf[a.pn].size : 0 }))
+            .sort((x, y) => (y.n * 1000 + y.last / 864e5) - (x.n * 1000 + x.last / 864e5)).slice(0, 30);
+          return send(res, 200, { ok: true, list, days: 60 });
+        }
+        // 产线模板：本人私有 + 同事共享（shared 标记）；每人上限10个，单模板≤20行
+        if (p === '/api/req-templates') {
+          db.reqTemplates = db.reqTemplates || [];
+          if (req.method === 'GET') {
+            const mine = db.reqTemplates.filter(t => t.by === u.id || (t.shared && t.status !== 'off'));
+            return send(res, 200, { ok: true, list: mine.map(t => ({ id: t.id, name: t.name, by: t.by, byName: t.byName, shared: !!t.shared, items: t.items, use: t.use || 0, at: t.at })) });
+          }
+          if (req.method === 'POST') {
+            const b = await readBody(req);
+            const name = String(b.name || '').trim().slice(0, 20);
+            if (!name) return send(res, 400, { ok: false, msg: '模板名必填' });
+            const items = [];
+            for (const it of (Array.isArray(b.items) ? b.items : [])) {
+              const pn = String(it.partNo || '').trim().toUpperCase(); const qty = Number(it.qty);
+              if (!pn || !(qty > 0)) continue;
+              items.push({ partNo: pn, itemName: String(it.itemName || '').slice(0, 40), qty });
+            }
+            if (!items.length) return send(res, 400, { ok: false, msg: '模板至少一行有效零件号+数量' });
+            if (items.length > 20) return send(res, 400, { ok: false, msg: '单模板最多20行' });
+            const mineCnt = db.reqTemplates.filter(t => t.by === u.id).length;
+            if (mineCnt >= 10) return send(res, 400, { ok: false, msg: '每人最多10个模板，请先删除旧的' });
+            const t = { id: newId('rtpl'), name, by: u.id, byName: u.name, shared: b.shared === true, items, use: 0, at: new Date().toISOString() };
+            db.reqTemplates.push(t); save();
+            console.log(`[rtpl] ${u.name} 存模板「${name}」${items.length}行${t.shared ? '(共享)' : ''}`);
+            return send(res, 200, { ok: true, id: t.id });
+          }
+          if (req.method === 'DELETE') {
+            const id = String(url.searchParams.get('id') || '');
+            const t = db.reqTemplates.find(x => x.id === id);
+            if (!t) return send(res, 404, { ok: false, msg: '模板不存在' });
+            if (t.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '只能删除自己的模板' });
+            db.reqTemplates = db.reqTemplates.filter(x => x.id !== id); save();
+            return send(res, 200, { ok: true });
+          }
+        }
+        if (req.method === 'POST' && /^\/api\/req-templates\/[\w-]+\/use$/.test(p)) {
+          db.reqTemplates = db.reqTemplates || [];
+          const t = db.reqTemplates.find(x => x.id === p.split('/')[3]);
+          if (t) { t.use = (t.use || 0) + 1; save(); }
+          return send(res, 200, { ok: true });
+        }
         // 下单（可选 assigneeId 指定仓管员：通知只推指定人，30分钟未接自动放开给全员）
         if (req.method === 'POST' && p === '/api/requisitions') {
           if (!canReq) return send(res, 403, { ok: false, msg: '当前角色未开通领料下单' });

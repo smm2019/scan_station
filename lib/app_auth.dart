@@ -218,6 +218,20 @@ class AuthApi {
   static Future<Map> reqWarehouseUsers() async =>
       _req("GET", "/api/requisitions/warehouse-users",
           token: await AuthStore.token());
+  /// ㉖v62 建单提效：本人近60天常领清单（频次×最近排序，带上次数量与在架托数）
+  static Future<Map> reqFrequent() async =>
+      _req("GET", "/api/requisitions/frequent", token: await AuthStore.token());
+  /// ㉖v62 产线模板：列表（本人私有+同事共享）
+  static Future<Map> tplList() async =>
+      _req("GET", "/api/req-templates", token: await AuthStore.token());
+  static Future<Map> tplSave(String name, List<Map> items, bool shared) async =>
+      _req("POST", "/api/req-templates",
+          token: await AuthStore.token(),
+          body: {"name": name, "items": items, "shared": shared});
+  static Future<Map> tplDelete(String id) async => _req(
+      "DELETE", "/api/req-templates?id=$id", token: await AuthStore.token());
+  static Future<void> tplUse(String id) async => _req(
+      "POST", "/api/req-templates/$id/use", token: await AuthStore.token());
   static Future<Map> reqList({String scope = ""}) async => _req("GET",
       scope.isEmpty ? "/api/requisitions" : "/api/requisitions?scope=$scope",
       token: await AuthStore.token());
