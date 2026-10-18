@@ -242,9 +242,31 @@ async function invPrint(bid){const j=await api('/api/inventory/get?batchId='+bid
  w.document.close();setTimeout(()=>{try{w.focus();w.print()}catch(_){}},400)}
 async function togglePA(on){if(on&&!confirm('开启后：未登录设备将无法直开 /board 看板与打印页（会跳回登录）。\n注意：旧版 PDA 门户内嵌领料页会白屏——确认已出新版 APK 再开。'))return;
  try{const j=await api('/api/admin/pageauth',{method:'POST',body:{on}});T(j.ok?(on?'✅ 门禁已开启':'门禁已关闭'):('❌ '+(j.msg||'失败')));if(j.ok)pgDash()}catch(_){T('操作失败')}}
+// ===== ㉖v64 网页产线模板管理：全量列表（含共享）、使用量排序、行明细、本人/管理员可改名与共享、删除 =====
+async function tplCardLoad(){const box=$('#tplcard');if(!box)return;
+ let d=null;try{d=await api('/api/req-templates')}catch(_){}
+ if(!d||!d.ok){box.innerHTML='<div class="card" style="color:var(--sub);font-size:12px">产线模板：接口未响应（服务重启后可用）</div>';return}
+ const L=(d.list||[]).slice().sort((a,b)=>(b.use||0)-(a.use||0));
+ box.innerHTML=`<div class="card"><div class="row" style="align-items:center"><b style="font-size:13px">📁 产线模板</b><span style="font-size:11.5px;color:var(--sub)">共 ${L.length} 个（我的+同事共享）· 按使用次数排序 · PDA 建单页可一键载入</span></div>
+ ${L.length?`<div style="overflow:auto;max-height:34vh;margin-top:6px"><table><thead><tr><th>模板</th><th>归属</th><th>范围</th><th>行数</th><th>用过</th><th>创建</th><th></th></tr></thead><tbody>${L.map(t=>`<tr style="border-top:1px solid var(--line)"><td><b>${_esc(t.name)}</b></td><td style="font-size:12px">${_esc(t.byName||'')}</td><td><span class="tag ${t.shared?'t-r':'t-x'}" style="font-size:10.5px">${t.shared?'共享':'私有'}</span></td><td>${(t.items||[]).length}</td><td>${t.use||0} 次</td><td style="font-size:11px;color:var(--sub)">${(t.at||'').slice(5,10)}</td><td style="white-space:nowrap"><a href="javascript:void 0" onclick="tplRows('${_esc(t.id)}')">看行</a>${(t.by===U.id||U.role==='admin')?` · <a href="javascript:void 0" onclick="tplEdit('${_esc(t.id)}')">改名/共享</a> · <a href="javascript:void 0" style="color:var(--bad)" onclick="tplDel('${_esc(t.id)}','${_esc(t.name)}')">删</a>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--sub);font-size:12px;margin-top:6px">还没有模板。在 PDA 建单页选好物料后点「存为产线模板」即可创建（可勾选共享给同事）。</div>'}</div>`;
+ window._tplAll=L;
+}
+function tplRows(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t){T('模板已刷新，请重试');return}
+ dlg(`<h3>📁 ${_esc(t.name)}（${(t.items||[]).length} 行）</h3><div style="overflow:auto;max-height:50vh"><table><thead><tr><th>零件号</th><th>物料名</th><th>默认数量</th></tr></thead><tbody>${(t.items||[]).map(i=>`<tr><td class="mono">${_esc(i.partNo)}</td><td>${_esc(i.itemName||'')}</td><td>${i.qty}</td></tr>`).join('')}</tbody></table></div><div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill" onclick="$('#mask').classList.add('hide')">关闭</button></div>`,1)}
+function tplEdit(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t)return;
+ dlg(`<h3>✏ 编辑模板</h3><label>名称</label><input id="te_n" value="${_esc(t.name)}" maxlength="20"><label style="margin-top:8px"><input type="checkbox" id="te_s" ${t.shared?'checked':''}> 共享给同事</label><div class="row" style="margin-top:6px;font-size:11.5px;color:var(--sub)">改物料行请在 PDA 建单页操作：载入模板→调整→存为新模板（或直接编辑你自己的）。</div><div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill" onclick="tplEditSave('${_esc(t.id)}')">保存</button></div>`)}
+async function tplEditSave(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t)return;
+ const name=$('#te_n').value.trim(),shared=$('#te_s').checked;
+ if(!name){T('名称不能为空');return}
+ const j=await api('/api/req-templates',{method:'POST',body:{id,name,shared,items:t.items}});
+ $('#mask').classList.add('hide');
+ T(j.ok?'✅ 已更新':'❌ '+(j.msg||'失败'),j.ok?1:0);if(j.ok)tplCardLoad()}
+async function tplDel(id,name){if(!confirm('删除模板「'+name+'」？同事将不能再载入。'))return;
+ const j=await api('/api/req-templates?id='+encodeURIComponent(id),{method:'DELETE'});
+ T(j.ok?'✅ 已删除':'❌ '+(j.msg||'失败'),j.ok?1:0);if(j.ok)tplCardLoad()}
 async function pgReqs(){const q=TM.q||'';
- $('#main').innerHTML=`<div class="card"><div class="row"><input id="rq" placeholder="搜单号/零件/人" value="${q}" style="flex:1;min-width:180px"><select id="rs"><option value="">全部状态</option>${Object.entries(ST).map(([k,v])=>`<option ${TM.s==k?'selected':''} value="${k}">${v[0]}</option>`).join('')}</select><button class="pill" onclick="TM.q=$('#rq').value;TM.s=$('#rs').value;pgReqs()">查询</button><button class="pill q" title="清空关键字/状态/过滤，回到全部" onclick="TM.q='';TM.s='';TM.mine=0;TM.rush=0;TM.late=0;pgReqs()">↺ 重置</button><button class="pill ${TM.mine?'':'q'}" title="只看与我相关的单" onclick="TM.mine=!TM.mine;pgReqs()">👤我的待办</button><button class="pill ${TM.rush?'':'q'}" title="只看急料" onclick="TM.rush=!TM.rush;pgReqs()">🔥急料</button><button class="pill ${TM.late?'':'q'}" title="待签收超30分" onclick="TM.late=!TM.late;pgReqs()">⏰超30分</button><button class="pill ${TM.view=='kanban'?'':'q'}" onclick="TM.view=TM.view=='kanban'?'list':'kanban';pgReqs()">${TM.view=='kanban'?'☰ 列表':'▦ 看板'}</button>${(U.features||{}).requisition?'<button class="pill g" onclick="newReqDlg()">＋ 新建领料单</button>':''}</div><div id="rlist">加载中…</div></div>`;
- const j=await api('/api/requisitions');window._reqs=j.reqs||[];let rs=j.reqs||[];
+ $('#main').innerHTML=`<div class="card"><div class="row"><input id="rq" placeholder="搜单号/零件/人" value="${q}" style="flex:1;min-width:180px"><select id="rs"><option value="">全部状态</option>${Object.entries(ST).map(([k,v])=>`<option ${TM.s==k?'selected':''} value="${k}">${v[0]}</option>`).join('')}</select><button class="pill" onclick="TM.q=$('#rq').value;TM.s=$('#rs').value;pgReqs()">查询</button><button class="pill q" title="清空关键字/状态/过滤，回到全部" onclick="TM.q='';TM.s='';TM.mine=0;TM.rush=0;TM.late=0;pgReqs()">↺ 重置</button><button class="pill ${TM.mine?'':'q'}" title="只看与我相关的单" onclick="TM.mine=!TM.mine;pgReqs()">👤我的待办</button><button class="pill ${TM.rush?'':'q'}" title="只看急料" onclick="TM.rush=!TM.rush;pgReqs()">🔥急料</button><button class="pill ${TM.late?'':'q'}" title="待签收超30分" onclick="TM.late=!TM.late;pgReqs()">⏰超30分</button><button class="pill ${TM.view=='kanban'?'':'q'}" onclick="TM.view=TM.view=='kanban'?'list':'kanban';pgReqs()">${TM.view=='kanban'?'☰ 列表':'▦ 看板'}</button>${(U.features||{}).requisition?'<button class="pill g" onclick="newReqDlg()">＋ 新建领料单</button>':''}</div><div id="rlist">加载中…</div></div><div id="tplcard" style="margin-top:10px"></div>`;
+ const j=await api('/api/requisitions');window._reqs=j.reqs||[];tplCardLoad();let rs=j.reqs||[];
  if(TM.s)rs=rs.filter(r=>r.status==TM.s);
  if(TM.rush)rs=rs.filter(r=>r.rush);
 
