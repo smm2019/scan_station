@@ -1815,6 +1815,17 @@ const server = http.createServer(async (req, res) => {
         pushOps(u, '改自己密码', u.username, '');
         save(); return send(res, 200, { ok: true, msg: '密码已修改' });
       }
+      // ㉖v67 个人中心：改自己的姓名（验原密码防手持机被临时拿去改资料；2-20字去控制符）
+      if (req.method === 'POST' && p === '/api/change_name') {
+        const b = await readBody(req);
+        if (!u.salt || !u.passHash) return send(res, 403, { ok: false, code: 'pwBroken', msg: '该账号密码数据异常，请联系管理员重置密码' }); // ㉖v59 无盐防御同款
+        if (hashPw(String(b.password || ''), u.salt) !== u.passHash) return send(res, 400, { ok: false, msg: '原密码错误' });
+        const name = String(b.name || '').replace(/\s+/g, ' ').trim();
+        if (name.length < 2 || name.length > 20) return send(res, 400, { ok: false, msg: '姓名需2-20字' });
+        const old = u.name; u.name = name;
+        pushOps(u, '改自己姓名', u.username, old + '→' + name);
+        save(); return send(res, 200, { ok: true, msg: '姓名已修改', user: safeUser(u) });
+      }
 
       // ================= 货位账本同步（PDA 全量推送；仓管/管理员可写，读取走公开接口） =================
       if (req.method === 'POST' && p === '/api/ledger/sync') {

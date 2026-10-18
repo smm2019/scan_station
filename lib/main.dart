@@ -4828,6 +4828,15 @@ class SettingsMenuPage extends StatelessWidget {
           const Divider(height: 24),
           _settingTile(
             context,
+            icon: Icons.person_outline,
+            color: const Color(0xFF3F51B5),
+            title: "个人中心",
+            subtitle: "改名 / 改密 / 我的登录设备（发现陌生设备可下线）",
+            onTap: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const PersonalPage())),
+          ),
+          _settingTile(
+            context,
             icon: Icons.cloud_outlined,
             color: const Color(0xFF515BD4),
             title: "账号与权限",

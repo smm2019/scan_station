@@ -172,6 +172,16 @@ class AuthApi {
       _req("POST", "/api/change_password",
           body: {"oldPassword": oldPw, "newPassword": newPw},
           token: await AuthStore.token());
+  // ㉖v67 个人中心：改自己姓名（验原密码）+ 我的登录设备/会话（本人可看可踢）
+  static Future<Map> changeName(String pw, String name) async => _req("POST",
+      "/api/change_name",
+      body: {"password": pw, "name": name},
+      token: await AuthStore.token());
+  static Future<Map> myDevices() async =>
+      _req("GET", "/api/me/devices", token: await AuthStore.token());
+  static Future<Map> kickDevice(String dev) async =>
+      _req("POST", "/api/me/devices/kick",
+          body: {"dev": dev}, token: await AuthStore.token());
   static Future<Map> users() async =>
       _req("GET", "/api/users", token: await AuthStore.token());
   static Future<Map> createUser(
@@ -907,6 +917,226 @@ class _LoginPageState extends State<LoginPage> {
 }
 
 // ===================== 账号与权限（设置页入口） =====================
+// ㉖v67 PDA 个人中心：改名（验原密码）/改密（复用弹窗）/我的登录设备与会话（本人可踢，当前设备除外）
+class PersonalPage extends StatefulWidget {
+  const PersonalPage({super.key});
+  @override
+  State<PersonalPage> createState() => _PersonalPageState();
+}
+
+class _PersonalPageState extends State<PersonalPage> {
+  Map? _dev; // /api/me/devices 结果
+  bool _devBusy = false;
+
+  Future<void> _loadDev() async {
+    setState(() => _devBusy = true);
+    final r = await AuthApi.myDevices();
+    if (!mounted) return;
+    setState(() {
+      _devBusy = false;
+      _dev = r;
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDev();
+  }
+
+  Future<void> _doRename() async {
+    final u = Auth.user;
+    if (u == null) return;
+    final pw = TextEditingController(), nm = TextEditingController(text: u.name);
+    final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+            title: const Text("修改姓名"),
+            content: SizedBox(
+                width: 320,
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  TextField(
+                      controller: pw,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                          labelText: "当前密码",
+                          isDense: true,
+                          border: OutlineInputBorder())),
+                  const SizedBox(height: 10),
+                  TextField(
+                      controller: nm,
+                      decoration: const InputDecoration(
+                          labelText: "新姓名（2-20字）",
+                          isDense: true,
+                          border: OutlineInputBorder())),
+                ])),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(c, false),
+                  child: const Text("取消")),
+              FilledButton(
+                  onPressed: () => Navigator.pop(c, true),
+                  child: const Text("确认修改")),
+            ]));
+    if (ok != true) return;
+    final r = await AuthApi.changeName(pw.text, nm.text.trim());
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+            (r["msg"] ?? (r["ok"] == true ? "姓名已修改" : "修改失败")).toString()),
+        backgroundColor: r["ok"] == true ? Colors.green : Colors.red));
+    if (r["ok"] == true) {
+      // 就地重建会话用户并回写缓存：静态成员 final 字段不能改，整体换新实例
+      final nu = AuthUser(
+          id: u.id,
+          username: u.username,
+          name: nm.text.trim(),
+          role: u.role,
+          mustChangePw: u.mustChangePw);
+      Auth.user = nu;
+      await AuthStore.saveSession(await AuthStore.token(), nu, Auth.features);
+      setState(() {});
+    }
+  }
+
+  Future<void> _kick(String dev, String label) async {
+    final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+            title: const Text("下线该设备"),
+            content: Text("确认下线「$label」？该设备需重新登录。"),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(c, false),
+                  child: const Text("取消")),
+              FilledButton(
+                  onPressed: () => Navigator.pop(c, true),
+                  child: const Text("确认下线")),
+            ]));
+    if (ok != true) return;
+    final r = await AuthApi.kickDevice(dev);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(r["ok"] == true
+            ? "已下线 ${r["kicked"]} 个会话"
+            : (r["msg"] ?? "下线失败").toString()),
+        backgroundColor: r["ok"] == true ? Colors.green : Colors.red));
+    _loadDev();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final u = Auth.user;
+    if (u == null) return const Scaffold(body: Center(child: Text("未登录")));
+    final sessions = (_dev?["sessions"] as List?) ?? [];
+    return Scaffold(
+      appBar: AppBar(
+          title: const Text("个人中心"),
+          backgroundColor: const Color(0xFF515BD4)),
+      body: ListView(padding: const EdgeInsets.all(16), children: [
+        Card(
+            child: ListTile(
+          leading: CircleAvatar(
+              backgroundColor: const Color(0xFF515BD4).withOpacity(0.12),
+              child: Icon(Icons.person, color: const Color(0xFF515BD4))),
+          title: Text("${u.name}（${u.username}）"),
+          subtitle: Text("角色：${u.roleName} · 功能权限："
+              "${Auth.features.entries.where((e) => e.value).length} 项开启"),
+        )),
+        if (u.mustChangePw)
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.shade200)),
+            child: const Text("首次登录建议立即修改初始密码",
+                style: TextStyle(color: Colors.deepOrange)),
+          ),
+        const SizedBox(height: 12),
+        Card(
+            child: Column(children: [
+          ListTile(
+              leading: const Icon(Icons.badge_outlined),
+              title: const Text("修改姓名"),
+              subtitle: const Text("需验证当前密码；改完本机即时生效"),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: _doRename),
+          const Divider(height: 1),
+          ListTile(
+              leading: const Icon(Icons.password),
+              title: const Text("修改密码"),
+              subtitle: const Text("需验证原密码；新密码至少6位"),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => showDialog(
+                  context: context,
+                  builder: (_) => const _ChangePwDialog())),
+        ])),
+        const SizedBox(height: 12),
+        Card(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: Row(children: [
+                  const Text("我的登录设备",
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const Spacer(),
+                  IconButton(
+                      onPressed: _devBusy ? null : _loadDev,
+                      icon: const Icon(Icons.refresh, size: 20)),
+                ]),
+              ),
+              if (_devBusy && sessions.isEmpty)
+                const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Center(
+                        child: SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2)))),
+              if (!_devBusy && _dev != null && sessions.isEmpty)
+                const Padding(
+                    padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    child: Text("暂无其他登录会话",
+                        style: TextStyle(color: Colors.grey))),
+              for (final s in sessions)
+                ListTile(
+                  dense: true,
+                  leading: Icon(
+                      s["kind"] == "web"
+                          ? Icons.computer
+                          : Icons.phone_android,
+                      size: 20,
+                      color: const Color(0xFF515BD4)),
+                  title: Text(
+                      "${s["kind"] == "web" ? "网页" : "手持机"} · ${s["ip"]}"),
+                  subtitle: Text(
+                      "最近活跃 ${DateTime.fromMillisecondsSinceEpoch((s["lastSeen"] ?? 0) is int ? (s["lastSeen"] as int) : 0)}"
+                      "${s["current"] == true ? "（当前设备）" : ""}"),
+                  trailing: s["current"] == true
+                      ? const Icon(Icons.check_circle,
+                          size: 18, color: Colors.green)
+                      : IconButton(
+                          icon: const Icon(Icons.logout,
+                              size: 20, color: Colors.red),
+                          onPressed: () => _kick(
+                              (s["dev"] ?? "").toString(),
+                              "${s["kind"] == "web" ? "网页" : "手持机"} ${s["ip"]}")),
+                ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: Text("发现不是自己的设备？点红色按钮下线它，对方需重新登录。",
+                    style: TextStyle(fontSize: 11, color: Colors.grey)),
+              ),
+            ])),
+      ]),
+    );
+  }
+}
+
 class AccountPage extends StatefulWidget {
   const AccountPage({super.key});
   @override
