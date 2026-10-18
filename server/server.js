@@ -225,6 +225,17 @@ function loadDb() {
   if (!d.devices || typeof d.devices !== 'object' || Array.isArray(d.devices)) { d.devices = {}; added = true; } // ㉖v56 登录设备注册表
   if (!Array.isArray(d.devAudit)) { d.devAudit = []; added = true; } // ㉖v56 设备审计（登录/踢出/信任/拉黑留痕）
   if (!Array.isArray(d.containerTypes) || !d.containerTypes.length) { d.containerTypes = defaultDb().containerTypes; added = true; } // ㉖ 容器类型配置（旧库补齐默认5项）
+  if (!d.seenOutFixV68) { // ㉖v68 历史出库索引自愈：旧版同步误把 code（零件号）当键登记，按标签查"曾出库"永远落空——
+    // 只清"键=零件号且该零件确实在出库单出现过"的误写条目（防误删领料转MES路径写入的正确标签键），再按在用出库单标签全量补登记
+    const _pcSet = new Set();
+    for (const o of Object.values(d.outbound || {})) for (const it of (o.items || [])) { const p1 = String(it.code || '').toUpperCase(); if (p1) _pcSet.add(p1); }
+    let _clr = 0;
+    for (const [k0, v0] of Object.entries(d.seenOut || {})) { if (_pcSet.has(String(k0).toUpperCase()) && !/[A-Z]\d{6,}/.test(String(k0))) { delete d.seenOut[k0]; _clr++; } }
+    let _add = 0;
+    for (const o of Object.values(d.outbound || {})) { for (const it of (o.items || [])) { const c1 = String(it.barcode || '').toUpperCase(); if (c1 && !d.seenOut[c1]) { d.seenOut[c1] = { at: Number(o.createdAt) || Date.now(), no: String(o.orderNo || '') }; _add++; } } }
+    d.seenOutFixV68 = 1; added = true;
+    console.log('[migrate] v68 历史出库索引自愈：清除零件号误键 ' + _clr + ' 个，按出库单补登标签 ' + _add + ' 个');
+  }
   if (added) { saveDb(d); console.log('[init] 已补齐领料单/通知/货位账本集合'); }
   try { walkSec(d, (o, k) => { o[k] = decSec(o[k]); }); } catch (_) {} // ㉕F6 载入解密（明文旧数据直通，下次save自动转密）
   updateSafeCopy(d); // ㉖v56 启动加载成功后刷新不脱敏安全副本（兜底回滚源）
@@ -835,7 +846,7 @@ function labelStatus(codeRaw) {
   const inIssued = []; for (const r of db.requisitions || []) for (const it of (r.items || [])) for (const e of (it.issued || [])) if (String(typeof e === 'string' ? e : (e.c || '')).toUpperCase() === code) inIssued.push(r.no);
   const inQueue = (db.agvQueue || []).filter((q) => String(q.code || '').toUpperCase() === code && ['排队', '下发中', '已下发', '到站'].includes(q.state));
   const inInspect = (db.inspects || []).filter((q) => String(q.code || '').toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state));
-  const everOut = !!(db.seenOut || {})[code];
+  const everOut = (db.seenOut || {})[code] || null; // ㉖v68 保留登记对象（含 at/no）：旧版 !! 布尔化使下游 st.everOut.at 恒为 undefined，提示只能显示"历史"
   const everIn = !!(db.seenIn || {})[code]; // ㉖ 历史录过（当前不在架也可能曾在上游批次）
   return { code, inLedger, inScanlog, inOutbound, inIssued, inQueue, inInspect, everOut, everIn, inMeta: (db.seenIn || {})[code] || null };
 }
@@ -3673,7 +3684,7 @@ return send(res, 200, {
         const b = await readBody(req);
         const no = String(b.orderNo || '').trim();
         if (!no) return send(res, 400, { ok: false, msg: '缺少 orderNo' });
-        for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.code || itx.barcode || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; } // ㉖② 历史出库登记（标签生命周期防复用）
+        for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.barcode || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; } // ㉖② 历史出库登记（标签生命周期防复用）；㉖v68 修复：键只取标签号 barcode（旧版误取 code=零件号，按标签查曾出库永远落空）
         db.outbound[no] = { orderNo: no, createdAt: Number(b.createdAt) || 0, toLoc: String(b.toLoc || ''), operator: String(b.operator || ''), status: Number(b.status) || 0, linkReqNo: String(b.linkReqNo || ''), items: Array.isArray(b.items) ? b.items : [] };
         // ㉖v61 写入清洗：剥离 U+FFFD 与控制字符（PDA/WMAS 推送编码丢失所致），与账本同步乱码清洗同口径；防止脏 name 再沉淀进字典
         { const _cb = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g; const _cl = (s0) => String(s0 == null ? '' : s0).replace(_cb, '').replace(/\s+/g, ' ').trim();

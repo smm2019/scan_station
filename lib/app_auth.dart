@@ -375,6 +375,14 @@ class AuthApi {
   static Future<Map> agvTaskOf(String code) async =>
       _req("GET", "/api/agv/taskOf?c=${Uri.encodeComponent(code)}",
           token: await AuthStore.token());
+  // ㉖v68 全链路聚合（对齐网页版）：任意种子（框码/零件号/出库单/领料单/AGV任务）→ 时间线事件流
+  static Future<Map> trace(String q) async =>
+      _req("GET", "/api/trace?q=${Uri.encodeComponent(q)}",
+          token: await AuthStore.token());
+  // ㉖v68 服务器侧零件档案（按框归并在架+采集+出库明细+在途领料需求）
+  static Future<Map> partProfile(String pn) async =>
+      _req("GET", "/api/part/profile?pn=${Uri.encodeComponent(pn)}",
+          token: await AuthStore.token());
   // ⑮预约来料 + 地面排格数
   static Future<Map> watchlistGet() async =>
       _req("GET", "/api/watchlist", token: await AuthStore.token());
@@ -917,14 +925,14 @@ class _LoginPageState extends State<LoginPage> {
 }
 
 // ===================== 账号与权限（设置页入口） =====================
-// ㉖v67 PDA 个人中心：改名（验原密码）/改密（复用弹窗）/我的登录设备与会话（本人可踢，当前设备除外）
-class PersonalPage extends StatefulWidget {
-  const PersonalPage({super.key});
+// ㉖v68 与"个人中心"合并为单页单入口：改名（验原密码）/改密（复用弹窗）/我的登录设备与会话 + 用户管理/角色功能/退出
+class AccountPage extends StatefulWidget {
+  const AccountPage({super.key});
   @override
-  State<PersonalPage> createState() => _PersonalPageState();
+  State<AccountPage> createState() => _AccountPageState();
 }
 
-class _PersonalPageState extends State<PersonalPage> {
+class _AccountPageState extends State<AccountPage> {
   Map? _dev; // /api/me/devices 结果
   bool _devBusy = false;
 
@@ -1031,7 +1039,7 @@ class _PersonalPageState extends State<PersonalPage> {
     final sessions = (_dev?["sessions"] as List?) ?? [];
     return Scaffold(
       appBar: AppBar(
-          title: const Text("个人中心"),
+          title: const Text("账号与权限"),
           backgroundColor: const Color(0xFF515BD4)),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         Card(
@@ -1132,144 +1140,93 @@ class _PersonalPageState extends State<PersonalPage> {
                     style: TextStyle(fontSize: 11, color: Colors.grey)),
               ),
             ])),
-      ]),
-    );
-  }
-}
-
-class AccountPage extends StatefulWidget {
-  const AccountPage({super.key});
-  @override
-  State<AccountPage> createState() => _AccountPageState();
-}
-
-class _AccountPageState extends State<AccountPage> {
-  @override
-  Widget build(BuildContext context) {
-    final u = Auth.user;
-    if (u == null) return const Scaffold(body: Center(child: Text("未登录")));
-    return Scaffold(
-      appBar: AppBar(title: const Text("账号与权限")),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
+        const SizedBox(height: 12),
+        if (u.role == "admin")
           Card(
               child: ListTile(
-            leading: CircleAvatar(
-                backgroundColor: const Color(0xFF3F51B5).withOpacity(0.12),
-                child: Icon(Icons.person, color: const Color(0xFF3F51B5))),
-            title: Text("${u.name}（${u.username}）"),
-            subtitle: Text(
-                "角色：${u.roleName} · 功能权限：${Auth.features.entries.where((e) => e.value).length} 项开启"),
-          )),
-          const SizedBox(height: 12),
-          if (u.mustChangePw)
-            Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                  color: Colors.orange.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.orange.shade200)),
-              child: const Text("首次登录建议立即修改初始密码",
-                  style: TextStyle(color: Colors.deepOrange)),
-            ),
-          Card(
-              child: Column(children: [
-            ListTile(
-                leading: const Icon(Icons.password),
-                title: const Text("修改密码"),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => showDialog(
-                    context: context, builder: (_) => const _ChangePwDialog())),
-            if (u.role == "admin")
-              ListTile(
                   leading: const Icon(Icons.admin_panel_settings,
                       color: Color(0xFF3F51B5)),
                   title: const Text("用户与功能管理（管理员）"),
+                  subtitle: const Text("建号/停用/角色与功能权限分配"),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) => const UserManagePage()))),
-          ])),
-          const SizedBox(height: 12),
-          Card(
-              child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
-                  child: Text("当前角色功能",
-                      style: TextStyle(fontWeight: FontWeight.bold))),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                child: Wrap(spacing: 8, runSpacing: 8, children: [
-                  for (final e in {
-                    "collect": "采集录入",
-                    "inventory": "盘点模式",
-                    "export": "导出下载",
-                    "mes_query": "MES查询",
-                    "direct_transfer": "直调转单",
-                    "requisition": "领料下单",
-                    "receive_confirm": "签收确认",
-                    "location_reg": "位置登记",
-                    "agv_monitor": "AGV监控",
-                    "agv_control": "AGV车辆控制",
-                    "admin_panel": "管理后台"
-                  }.entries)
-                    Chip(
-                      label: Text(e.value,
-                          style: TextStyle(
-                              fontSize: 12,
-                              color: Auth.can(e.key)
-                                  ? const Color(0xFF3F51B5)
-                                  : Colors.grey)),
-                      backgroundColor: Auth.can(e.key)
-                          ? const Color(0xFF3F51B5).withOpacity(0.08)
-                          : Colors.grey.withOpacity(0.08),
-                      side: BorderSide(
-                          color: Auth.can(e.key)
-                              ? const Color(0xFF3F51B5).withOpacity(0.4)
-                              : Colors.grey.shade300),
-                    ),
-                ]),
-              ),
-            ],
-          )),
-          const SizedBox(height: 8),
-          OutlinedButton.icon(
-            icon: const Icon(Icons.logout, color: Colors.red),
-            label: const Text("退出登录", style: TextStyle(color: Colors.red)),
-            style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.red)),
-            onPressed: () async {
-              final yes = await showDialog<bool>(
-                  context: context,
-                  builder: (_) => AlertDialog(
-                          title: const Text("退出登录"),
-                          content: const Text("退出后需重新输入账号密码登录。"),
-                          actions: [
-                            TextButton(
-                                onPressed: () => Navigator.pop(context, false),
-                                child: const Text("取消")),
-                            TextButton(
-                                onPressed: () => Navigator.pop(context, true),
-                                child: const Text("退出"))
-                          ]));
-              if (yes != true || !context.mounted) return;
-              await AuthApi.logout();
-              Auth.user = null;
-              Auth.features = {}; // 清空全局会话，防残留身份
-              if (!context.mounted) return;
-              // 清会话后重建 AuthGate：无会话自动落到登录页
-              Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
-                  MaterialPageRoute(builder: (_) => const AuthGate()),
-                  (r) => false);
-            },
-          ),
-        ],
-      ),
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const UserManagePage())))),
+        if (u.role == "admin") const SizedBox(height: 12),
+        Card(
+            child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+                padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+                child: Text("当前角色功能",
+                    style: TextStyle(fontWeight: FontWeight.bold))),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Wrap(spacing: 8, runSpacing: 8, children: [
+                for (final e in {
+                  "collect": "采集录入",
+                  "inventory": "盘点模式",
+                  "export": "导出下载",
+                  "mes_query": "MES查询",
+                  "direct_transfer": "直调转单",
+                  "requisition": "领料下单",
+                  "receive_confirm": "签收确认",
+                  "location_reg": "位置登记",
+                  "agv_monitor": "AGV监控",
+                  "agv_control": "AGV车辆控制",
+                  "admin_panel": "管理后台"
+                }.entries)
+                  Chip(
+                    label: Text(e.value,
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Auth.can(e.key)
+                                ? const Color(0xFF3F51B5)
+                                : Colors.grey)),
+                    backgroundColor: Auth.can(e.key)
+                        ? const Color(0xFF3F51B5).withOpacity(0.08)
+                        : Colors.grey.withOpacity(0.08),
+                    side: BorderSide(
+                        color: Auth.can(e.key)
+                            ? const Color(0xFF3F51B5).withOpacity(0.4)
+                            : Colors.grey.shade300),
+                  ),
+              ]),
+            ),
+          ],
+        )),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.logout, color: Colors.red),
+          label: const Text("退出登录", style: TextStyle(color: Colors.red)),
+          style: OutlinedButton.styleFrom(
+              side: const BorderSide(color: Colors.red)),
+          onPressed: () async {
+            final yes = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                        title: const Text("退出登录"),
+                        content: const Text("退出后需重新输入账号密码登录。"),
+                        actions: [
+                          TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: const Text("取消")),
+                          TextButton(
+                              onPressed: () => Navigator.pop(context, true),
+                              child: const Text("退出"))
+                        ]));
+            if (yes != true || !context.mounted) return;
+            await AuthApi.logout();
+            Auth.user = null;
+            Auth.features = {}; // 清空全局会话，防残留身份
+            if (!context.mounted) return;
+            // 清会话后重建 AuthGate：无会话自动落到登录页
+            Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const AuthGate()),
+                (r) => false);
+          },
+        ),
+      ]),
     );
   }
 }

@@ -378,6 +378,11 @@ class _InventoryStockPageState extends State<InventoryStockPage>
                 icon: const Icon(Icons.swap_horiz, color: Color(0xFFEF6C00)),
                 onPressed: () => showTransferDialog(context)),
           IconButton(
+              tooltip: "出入库全链路查询",
+              icon: const Icon(Icons.route, color: Color(0xFF515BD4)),
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const TracePage()))),
+          IconButton(
               tooltip: "刷新（与电脑账本对齐）",
               icon: const Icon(Icons.refresh, color: Color(0xFF515BD4)),
               onPressed: _autoPullThenReload),
@@ -849,11 +854,21 @@ class _FlowTabState extends State<_FlowTab> {
                           style: TextStyle(
                               fontSize: 11,
                               color: r.cancelled ? Colors.red : null)),
-                      trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-                        Text(_invRelTime(t),
-                            style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
-                        Text("${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}",
-                            style: TextStyle(fontSize: 9.5, color: Colors.grey.shade400)),
+                      trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+                          Text(_invRelTime(t),
+                              style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+                          Text("${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}",
+                              style: TextStyle(fontSize: 9.5, color: Colors.grey.shade400)),
+                        ]),
+                        IconButton(
+                            tooltip: "全链路",
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.route,
+                                size: 17, color: Color(0xFF515BD4)),
+                            onPressed: () => Navigator.push(context,
+                                MaterialPageRoute(
+                                    builder: (_) => TracePage(seed: r.barcode)))),
                       ]),
                     );
                   },
@@ -1100,6 +1115,7 @@ class _PPData {
   int inBoxes = 0, outBoxes = 0, cancelBoxes = 0;
   bool serverOk = false; // 服务器数据合并成功（B）
   final List<_PPBox> boxes = [];
+  final List<Map> demand = []; // ㉖v68 在途领料需求（pending/accepted 未满足行）
 }
 
 Future<_PPData> loadPartProfile(String partNo) async {
@@ -1138,7 +1154,10 @@ Future<_PPData> loadPartProfile(String partNo) async {
             "op": o["operator"]?.toString() ?? "",
             "move": (e["move"] ?? "").toString(),
             "from": (e["fromLoc"] ?? "").toString(),
-            "link": o["linkReqNo"]?.toString() ?? ""
+            "link": o["linkReqNo"]?.toString() ?? "",
+            "code": (e["code"] ?? "").toString(),
+            "qty": (e["qty"] as num?) ?? 0,
+            "name": (e["name"] ?? "").toString()
           };
         }
       }
@@ -1157,7 +1176,10 @@ Future<_PPData> loadPartProfile(String partNo) async {
           "op": o.operator,
           "move": (m["move"] ?? "").toString(),
           "from": (m["fromLoc"] ?? "").toString(),
-          "link": o.linkReqNo
+          "link": o.linkReqNo,
+          "code": (m["code"] ?? "").toString(),
+          "qty": (m["qty"] as num?) ?? 0,
+          "name": (m["name"] ?? "").toString()
         };
       }
     } catch (_) {}
@@ -1252,6 +1274,28 @@ Future<_PPData> loadPartProfile(String partNo) async {
     seen.add(p.goodsCode.toUpperCase());
     d.boxes.add(b);
   }
+  // ㉖v68 修复：出库台账里有、但入库流水/账本里没有的框（入库在别台设备且超出流水限、或更早归档），
+  // 补建为"已出库"框——否则累计出库与"已出库"筛选会因缺入库记录而整框消失、显示 0
+  for (final entry in outHit.entries) {
+    final bc = entry.key;
+    if (seen.contains(bc)) continue;
+    final oh = entry.value;
+    if ((oh["code"]?.toString().toUpperCase() ?? "") != key) continue;
+    final b = _PPBox()
+      ..barcode = bc
+      ..qty = (oh["qty"] as num?)?.toDouble() ?? 0
+      ..itemName = oh["name"]?.toString() ?? ""
+      ..outTime = DateTime.fromMillisecondsSinceEpoch(oh["t"] as int)
+      ..outOrder = oh["no"].toString()
+      ..outTo = oh["to"].toString()
+      ..outOperator = oh["op"].toString()
+      ..outMove = oh["move"].toString()
+      ..outFrom = oh["from"].toString()
+      ..outLink = oh["link"].toString();
+    if (d.itemName.isEmpty) d.itemName = b.itemName;
+    seen.add(bc);
+    d.boxes.add(b);
+  }
   for (final op in await isar.inventoryOpenings.where().findAll()) {
     if (op.partNo.toUpperCase() == key) d.opening += op.qty;
   }
@@ -1327,6 +1371,13 @@ Future<_PPData> loadPartProfile(String partNo) async {
       }
     } catch (_) {}
   }
+  // ㉖v68 在途领料需求（对齐网页零件档案：pending/accepted 未满足领料行）；服务器不通静默=不显示
+  try {
+    final pp = await AuthApi.partProfile(key).timeout(const Duration(seconds: 8));
+    if (pp["ok"] == true && pp["demand"] is List) {
+      d.demand.addAll(List<Map>.from(pp["demand"] as List));
+    }
+  } catch (_) {}
   return d;
 }
 
@@ -1577,6 +1628,40 @@ class _PartProfilePageState extends State<PartProfilePage> {
   }
 
   /// v56 框级出入库全链路：采集入库→检验→AGV节点→扫码发料→出库出账（并行拉四源按时间线合并）
+  /// ㉖v68 服务器优先全链路（同托兄弟归并+领料/调度/RCS/出库全事件），失败静默回退本地四源拼接
+  Future<List<List<Object?>>> _traceServerFirst(String code) async {
+    try {
+      final r = await AuthApi.trace(code).timeout(const Duration(seconds: 8));
+      if (r["ok"] == true) {
+        final evs =
+            (r["events"] is List) ? List<Map>.from(r["events"]) : <Map>[];
+        if (evs.isNotEmpty) {
+          String fmt(int n) {
+          final dt = DateTime.fromMillisecondsSinceEpoch(n);
+          String p(int x) => x.toString().padLeft(2, "0");
+          return "${p(dt.month)}-${p(dt.day)} ${p(dt.hour)}:${p(dt.minute)}";
+        }
+        return evs.map((e) {
+          final k = e["kind"]?.toString() ?? "";
+          final tt = (e["t"] as num?)?.toInt() ?? 0;
+          final t1 = e["title"]?.toString() ?? "";
+          final det = [
+            e["detail"]?.toString() ?? "",
+            e["actor"]?.toString() ?? ""
+          ].where((s) => s.isNotEmpty).join(" · ");
+          return <Object?>[
+            _TracePageState._kIcon[k] ?? Icons.circle,
+            _TracePageState._kCol[k] ?? Colors.blueGrey,
+            tt > 0 ? "${fmt(tt)}  $t1" : t1,
+            det
+          ];
+        }).toList();
+        }
+      }
+    } catch (_) {}
+    return _traceNodes(code); // 本地兜底
+  }
+
   Future<void> _ppTrace(_PPBox b) async {
     final code = b.barcode.toUpperCase();
     showDialog(
@@ -1586,7 +1671,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
             content: SizedBox(
                 width: double.maxFinite,
                 child: FutureBuilder<List<List<Object?>>>(
-                    future: _traceNodes(code),
+                    future: _traceServerFirst(code),
                     builder: (ctx, snap) {
                       if (snap.connectionState != ConnectionState.done)
                         return const Center(
@@ -1696,6 +1781,14 @@ class _PartProfilePageState extends State<PartProfilePage> {
           actions: [
             TextButton.icon(
                 style: TextButton.styleFrom(foregroundColor: Colors.white),
+                onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => TracePage(seed: widget.partNo))),
+                icon: const Icon(Icons.route, size: 18, color: Colors.white),
+                label: const Text("全链路", style: TextStyle(fontSize: 12))),
+            TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
                 onPressed: _toggleWatch,
                 icon: Icon(
                     _watched
@@ -1786,6 +1879,30 @@ class _PartProfilePageState extends State<PartProfilePage> {
                                             ? Colors.blueGrey
                                             : Colors.orange)),
                               ])))),
+              if (d.demand.isNotEmpty)
+                Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                    child: Card(
+                        margin: EdgeInsets.zero,
+                        color: const Color(0xFFFFF4E5),
+                        child: Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text("📋 在途领料需求（未满足）",
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w700,
+                                          color: Color(0xFFE65100))),
+                                  ...d.demand.map((x) => Padding(
+                                      padding: const EdgeInsets.only(top: 3),
+                                      child: Text(
+                                          "${x["no"]}  ·  还需 ${_fmtInvNum((x["need"] as num?)?.toDouble() ?? 0)} 件  ·  ${x["by"]}（${x["status"] == "pending" ? "待接单" : "已接单"}）",
+                                          style: const TextStyle(
+                                              fontSize: 11.5,
+                                              color: Color(0xFF8D5000))))),
+                                ])))),
               Padding(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -2131,4 +2248,227 @@ class _WatchTabState extends State<_WatchTab> {
 class _PnHit {
   final String partNo, itemName;
   const _PnHit(this.partNo, this.itemName);
+}
+
+// ===================== 全链路追踪页（对齐网页版 /api/trace 事件流） =====================
+class TracePage extends StatefulWidget {
+  final String seed; // 框码/零件号/出库单/领料单/AGV任务号；空=进页面手输
+  const TracePage({super.key, this.seed = ""});
+  @override
+  State<TracePage> createState() => _TracePageState();
+}
+
+class _TracePageState extends State<TracePage> {
+  late final TextEditingController _q;
+  Map? _res;
+  bool _loading = false;
+  String _err = "";
+  static const _kIcon = <String, IconData>{
+    "scan": Icons.login, "scanx": Icons.block, "req": Icons.assignment,
+    "out": Icons.logout, "queue": Icons.hourglass_bottom, "trace": Icons.explore,
+    "station": Icons.flag, "agv": Icons.forklift, "shelf": Icons.inventory_2,
+  };
+  static const _kCol = <String, Color>{
+    "scan": Color(0xFF2E7D32), "scanx": Color(0xFF9E9E9E), "req": Color(0xFF3949AB),
+    "out": Color(0xFFE65100), "queue": Color(0xFFE65100), "trace": Color(0xFF6A1B9A),
+    "station": Color(0xFF00897B), "agv": Color(0xFFEF6C00), "shelf": Color(0xFF00897B),
+  };
+  static const _seedName = <String, String>{
+    "task": "AGV任务", "order": "单据", "box": "框码", "part": "零件号", "unknown": "未知",
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _q = TextEditingController(text: widget.seed);
+    if (widget.seed.trim().isNotEmpty) _go(widget.seed);
+  }
+
+  @override
+  void dispose() { _q.dispose(); super.dispose(); }
+
+  Future<void> _go([String? s]) async {
+    final q = (s ?? _q.text).trim();
+    if (q.isEmpty) {
+      if (mounted) setState(() { _err = "请输入框码 / 零件号 / 单号"; _res = null; });
+      return;
+    }
+    setState(() { _loading = true; _err = ""; });
+    try {
+      final r = await AuthApi.trace(q).timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+      if (r["ok"] == true) {
+        setState(() { _res = r; _loading = false; });
+      } else {
+        setState(() { _loading = false; _err = (r["msg"] ?? "查询失败").toString(); _res = null; });
+      }
+    } catch (_) {
+      if (!mounted) return;
+      setState(() { _loading = false; _err = "服务器未连通，请检查网络后重试"; _res = null; });
+    }
+  }
+
+  static String _fmtT(DateTime dt) {
+    String p(int x) => x.toString().padLeft(2, "0");
+    return "${p(dt.month)}-${p(dt.day)} ${p(dt.hour)}:${p(dt.minute)}";
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final evs = (_res?["events"] is List) ? List<Map>.from(_res!["events"]) : <Map>[];
+    final kind = _res?["kind"]?.toString() ?? "";
+    final count = (_res?["count"] as num?)?.toInt() ?? evs.length;
+    final onShelf = (_res?["onShelf"] as num?)?.toInt() ?? 0;
+    final st = _res?["state"]?.toString() ?? "";
+    return Scaffold(
+      backgroundColor: const Color(0xFFF4F6FA),
+      appBar: AppBar(
+          backgroundColor: const Color(0xFF515BD4),
+          foregroundColor: Colors.white,
+          title: const Text("出入库全链路", style: TextStyle(fontSize: 15))),
+      body: Column(children: [
+        Padding(
+            padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
+            child: Row(children: [
+              Expanded(
+                  child: TextField(
+                controller: _q,
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => _go(),
+                decoration: InputDecoration(
+                    hintText: "框码 / 零件号 / 出库单 / 领料单 / AGV任务号",
+                    isDense: true,
+                    filled: true,
+                    fillColor: Colors.white,
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    suffixIcon: IconButton(
+                        icon: const Icon(Icons.arrow_forward,
+                            size: 18, color: Color(0xFF515BD4)),
+                        onPressed: () => _go()),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8)),
+              ))),
+            ])),
+        if (_res != null)
+          Padding(
+              padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+              child: Row(children: [
+                Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                        color: const Color(0xFF515BD4).withOpacity(.1),
+                        borderRadius: BorderRadius.circular(7)),
+                    child: Text("识别为：${_seedName[kind] ?? kind}",
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFF515BD4),
+                            fontWeight: FontWeight.w600))),
+                const SizedBox(width: 8),
+                Expanded(
+                    child: Text(
+                        "$count 个事件 · 在架 $onShelf 框"
+                        "${st.isNotEmpty ? " · 队列：$st" : ""}",
+                        style: const TextStyle(
+                            fontSize: 11.5, color: Colors.blueGrey))),
+              ])),
+        Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _err.isNotEmpty
+                    ? Center(
+                        child: Text(_err,
+                            style: const TextStyle(
+                                color: Colors.grey, fontSize: 13)))
+                    : _res == null
+                        ? const Center(
+                            child: Padding(
+                                padding: EdgeInsets.all(30),
+                                child: Text(
+                                    "输入框码 / 零件号 / 单号，查看该货物从采集入库到出库的完整时间线",
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                        color: Colors.grey, fontSize: 13))))
+                        : evs.isEmpty
+                            ? const Center(
+                                child: Text("未查到相关事件",
+                                    style: TextStyle(color: Colors.grey)))
+                            : ListView.builder(
+                                padding:
+                                    const EdgeInsets.fromLTRB(10, 0, 10, 16),
+                                itemCount:
+                                    evs.length + (count > evs.length ? 1 : 0),
+                                itemBuilder: (ctx, i) {
+                                  if (i >= evs.length) {
+                                    return Padding(
+                                        padding: const EdgeInsets.all(12),
+                                        child: Text(
+                                            "事件较多，仅显示最近 ${evs.length} 条（共 $count 条）",
+                                            textAlign: TextAlign.center,
+                                            style: const TextStyle(
+                                                fontSize: 11.5,
+                                                color: Colors.grey)));
+                                  }
+                                  final e = evs[i];
+                                  final k = e["kind"]?.toString() ?? "";
+                                  final c = _kCol[k] ?? Colors.blueGrey;
+                                  final tt = (e["t"] as num?)?.toInt() ?? 0;
+                                  final dt = tt > 0
+                                      ? DateTime.fromMillisecondsSinceEpoch(tt)
+                                      : null;
+                                  final title = e["title"]?.toString() ?? "";
+                                  final detail = e["detail"]?.toString() ?? "";
+                                  final actor = e["actor"]?.toString() ?? "";
+                                  final head =
+                                      dt == null ? title : "${_fmtT(dt)}  $title";
+                                  return Padding(
+                                      padding: const EdgeInsets.only(top: 7),
+                                      child: Row(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Container(
+                                                padding:
+                                                    const EdgeInsets.all(4),
+                                                decoration: BoxDecoration(
+                                                    color: c.withOpacity(0.12),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            5)),
+                                                child: Icon(
+                                                    _kIcon[k] ?? Icons.circle,
+                                                    size: 14,
+                                                    color: c)),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                                child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    children: [
+                                                  Text(head,
+                                                      style: TextStyle(
+                                                          fontSize: 12,
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                          color: c)),
+                                                  if (detail.isNotEmpty)
+                                                    Text(detail,
+                                                        style: const TextStyle(
+                                                            fontSize: 11.5,
+                                                            color: Colors
+                                                                .blueGrey,
+                                                            height: 1.35)),
+                                                  if (actor.isNotEmpty)
+                                                    Text(actor,
+                                                        style: const TextStyle(
+                                                            fontSize: 11,
+                                                            color:
+                                                                Colors.grey)),
+                                                ])),
+                                          ]));
+                                })),
+      ]),
+    );
+  }
 }
