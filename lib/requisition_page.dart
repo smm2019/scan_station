@@ -478,7 +478,6 @@ class _ReqCreateSheet extends StatefulWidget {
 
 class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   final Map<String, TextEditingController> _qtyCtrl = {}; // partNo -> qty 输入控制器
-  final _remarkCtrl = TextEditingController();
   String _search = "";
   List<Map> _warehouses = []; // 可选仓管员（指定备料）
   String _assigneeId = "";
@@ -780,24 +779,11 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
       setState(() => _assigneeId = _lastAsg);
   }
 
-  Future<void> _pickDate() async {
-    final now = DateTime.now();
-    final p = await showDatePicker(
-        context: context,
-        initialDate: DateTime.tryParse(_needDate) ?? now,
-        firstDate: now.subtract(const Duration(days: 1)),
-        lastDate: now.add(const Duration(days: 365)));
-    if (p != null)
-      setState(() => _needDate =
-          "${p.year.toString().padLeft(4, "0")}-${p.month.toString().padLeft(2, "0")}-${p.day.toString().padLeft(2, "0")}");
-  }
-
   @override
   void dispose() {
     for (final c in _qtyCtrl.values) {
       c.dispose();
     }
-    _remarkCtrl.dispose();
     super.dispose();
   }
 
@@ -826,10 +812,15 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
             const SizedBox(height: 8),
             TextField(
               onChanged: (v) => setState(() => _search = v),
+              style: const TextStyle(fontSize: 13),
               decoration: const InputDecoration(
                   hintText: "搜索零件号/物料名",
                   isDense: true,
-                  prefixIcon: Icon(Icons.search, size: 20),
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  prefixIcon: Icon(Icons.search, size: 18),
+                  prefixIconConstraints:
+                      BoxConstraints(minWidth: 34, minHeight: 0),
                   border: OutlineInputBorder()),
             ),
             // ㉖v62 建单提效：常领一键加（近60天本人聚合）+ 产线模板整单载入
@@ -952,7 +943,8 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
             const SizedBox(height: 8),
             if (_order.isNotEmpty)
               SizedBox(
-                  height: 40.0 + 52.0 * (_order.length > 5 ? 5 : _order.length),
+                  height: 40.0 +
+                      54.0 * (_order.length > 6 ? 6 : _order.length), // ㉖v68 取消5行上限：6行内全显、更多滚动，行内双行布局零件号完整可见
                   child: Column(children: [
                     const Text("已选物料（拖把手调序 · 靠前先出库 · 首位=🔥加急 · 数量填框数）",
                         maxLines: 1,
@@ -1019,14 +1011,34 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                                           FontWeight.bold))),
                                           const SizedBox(width: 8),
                                           Expanded(
-                                              child: Text(
-                                                  "$pn · ${p?.itemName ?? ''}",
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: const TextStyle(
-                                                      fontSize: 12.5,
-                                                      fontWeight:
-                                                          FontWeight.w600))),
+                                              child: Column(
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment.start,
+                                                  mainAxisAlignment:
+                                                      MainAxisAlignment
+                                                          .center,
+                                                  children: [
+                                                    Text(pn,
+                                                        maxLines: 1,
+                                                        overflow:
+                                                            TextOverflow
+                                                                .ellipsis,
+                                                        style: const TextStyle(
+                                                            fontSize: 13,
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600)),
+                                                    Text(
+                                                        p?.itemName ?? '',
+                                                        maxLines: 1,
+                                                        overflow:
+                                                            TextOverflow
+                                                                .ellipsis,
+                                                        style: const TextStyle(
+                                                            fontSize: 10.5,
+                                                            color: Color(
+                                                                0xFF78909C))),
+                                                  ])),
                                           SizedBox(
                                               width: 52,
                                               child: TextField(
@@ -1173,32 +1185,6 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
               }),
             ])),
             const SizedBox(height: 6),
-            TextField(
-              controller: _remarkCtrl,
-              decoration: const InputDecoration(
-                  hintText: "备注（用途/产线，可选）",
-                  isDense: true,
-                  border: OutlineInputBorder()),
-            ),
-            InkWell(
-              onTap: _pickDate,
-              child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(vertical: 7, horizontal: 2),
-                  child: Row(children: [
-                    const Icon(Icons.event_note,
-                        size: 20, color: Color(0xFF515BD4)),
-                    const SizedBox(width: 6),
-                    Text("期望到货：${_needDate.isEmpty ? "点选日期" : _needDate}",
-                        style: const TextStyle(
-                            fontSize: 13,
-                            color: Color(0xFF3949AB),
-                            fontWeight: FontWeight.w600)),
-                    const SizedBox(width: 4),
-                    const Text("（可改）",
-                        style: TextStyle(fontSize: 11, color: Colors.grey)),
-                  ])),
-            ),
             InkWell(
               onTap: () => setState(() => _rush = !_rush),
               child: Padding(
@@ -1257,7 +1243,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                             }
                             Navigator.pop(context, {
                               "items": items,
-                              "remark": _remarkCtrl.text.trim(),
+                              "remark": "", // ㉖v68 建单不再收集备注
                               "rush": _rush,
                               "needDate": _needDate,
                               "assigneeId": _assigneeId,

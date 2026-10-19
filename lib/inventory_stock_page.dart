@@ -649,65 +649,196 @@ Widget _kpiCard(String t, String v, Color c) => Container(
       Text(t, style: const TextStyle(fontSize: 10, color: Colors.black54)),
     ]));
 
-// ---------- Tab2 货架库位（预留：现阶段人工 Excel 维护，本页只读展示） ----------
-class _ShelfTab extends StatelessWidget {
-  final _StockAgg agg;
-  const _ShelfTab({required this.agg});
+// ---------- Tab2 货架库位（㉖v69 对齐网页版货位账本：一框一行·同托多码归并·可搜索） ----------
+class _ShelfTab extends StatefulWidget {
+  final _StockAgg? agg; // 仅借用提示"未登记占用的在库框"
+  const _ShelfTab({this.agg});
+  @override
+  State<_ShelfTab> createState() => _ShelfTabState();
+}
+
+class _LedgerBox {
+  String loc = "";
+  final List<String> codes = [];
+  String partNo = "", itemName = "", container = "", lot = "", operator = "";
+  double qty = 0;
+  int regAt = 0; // 最早登记时刻
+}
+
+class _ShelfTabState extends State<_ShelfTab> {
+  String _q = "";
+  List<_LedgerBox>? _boxes;
+  int _labels = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final isar = _globalIsar;
+    final placements = await isar.shelfPlacements.where().findAll();
+    final extras = {
+      for (final e in await isar.recordExtras.where().findAll()) e.goodsCode: e
+    };
+    final infos = {
+      for (final e in await isar.labelInfos.where().findAll()) e.goodsCode: e
+    };
+    final group = <String, _LedgerBox>{};
+    for (final p in placements) {
+      final code = p.goodsCode.toUpperCase();
+      final info = infos[p.goodsCode] ?? infos[code];
+      final ex = extras[p.goodsCode] ?? extras[code];
+      final partNo = info?.partNo ?? "";
+      final pid = ex?.palletId ?? "";
+      // 框键口径与网页/服务器一致：托号优先，其次同货位同零件号，都缺一码一框
+      final key = pid.isNotEmpty
+          ? "P|$pid"
+          : (p.loc.isNotEmpty && partNo.isNotEmpty
+              ? "L|${p.loc.toUpperCase()}|$partNo"
+              : "C|$code");
+      final b = group.putIfAbsent(key, _LedgerBox.new);
+      if (b.loc.isEmpty) b.loc = p.loc;
+      b.codes.add(p.goodsCode);
+      if (b.partNo.isEmpty) b.partNo = partNo;
+      if (b.itemName.isEmpty && info != null) b.itemName = info.itemName;
+      if (b.lot.isEmpty && info != null) {
+        b.lot = lotFromPrintDate(info.createTime, info.lotNo);
+      }
+      if (b.container.isEmpty) b.container = p.container;
+      if (b.operator.isEmpty) b.operator = p.operator;
+      b.qty += info?.qty ?? 0; // 框数量=框内各标签之和（与服务器账本同口径）
+      if (b.regAt == 0 || p.assignedAt < b.regAt) b.regAt = p.assignedAt;
+    }
+    final list = group.values.toList()
+      ..sort((a, x) {
+        final c = a.loc.compareTo(x.loc);
+        return c != 0 ? c : a.codes.first.compareTo(x.codes.first);
+      });
+    if (!mounted) return;
+    setState(() {
+      _boxes = list;
+      _labels = placements.length;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
-    final locs = agg.byLoc.keys.toList()..sort();
-    return ListView(padding: const EdgeInsets.all(10), children: [
-      Card(
-        margin: const EdgeInsets.symmetric(vertical: 4),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Row(children: [
-              Icon(Icons.construction, color: Colors.orange, size: 18),
-              SizedBox(width: 6),
-              Text("货架库位 · 预留功能",
-                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-            ]),
-            const SizedBox(height: 6),
-            const Text(
-                "AGV 货架层位占用现阶段仍由人工在 Excel 台账维护；本页数据结构（一货位一框）已预留，后续需要时可直接在 App 内登记分配。",
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-            const SizedBox(height: 6),
-            Text(
-                "App 内已登记：${locs.isEmpty ? "无" : "${locs.length} 个库位"} ｜ 未登记占用的在库框：${agg.unplaced.length} 个",
-                style: const TextStyle(fontSize: 12)),
-          ]),
-        ),
-      ),
-      ...locs.map((l) => Card(
-            margin: const EdgeInsets.symmetric(vertical: 4),
-            child: ExpansionTile(
-              initiallyExpanded: true,
-              tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-              leading: const Icon(Icons.shelves, color: Color(0xFF515BD4)),
-              title: Text(l,
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w600)),
-              subtitle: Text(
-                  "${agg.byLoc[l]!.length} 框 · ${agg.byLoc[l]!.map((b) => b.partNo).toSet().join("、")}",
-                  style: const TextStyle(fontSize: 11)),
-              children: agg.byLoc[l]!
-                  .map((b) => ListTile(
-                        dense: true,
-                        title: Text(b.barcode,
-                            style: const TextStyle(
-                                fontSize: 12, fontFamily: "monospace")),
-                        subtitle: Text(
-                            "${b.partNo} ${b.itemName} · ${_fmtInvNum(b.qty)} · ${b.container}",
-                            style: const TextStyle(fontSize: 11)),
-                      ))
-                  .toList(),
-            ),
-          )),
-      const SizedBox(height: 30),
-    ]);
+    final k = _q.trim().toUpperCase();
+    final all = _boxes ?? const <_LedgerBox>[];
+    final shown = k.isEmpty
+        ? all
+        : all
+            .where((b) =>
+                b.loc.toUpperCase().contains(k) ||
+                b.partNo.toUpperCase().contains(k) ||
+                b.itemName.toUpperCase().contains(k) ||
+                b.codes.any((c) => c.toUpperCase().contains(k)))
+            .toList();
+    final locs = shown.map((b) => b.loc).toSet().length;
+    return RefreshIndicator(
+        onRefresh: _load,
+        child: ListView(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 30),
+            children: [
+              TextField(
+                onChanged: (v) => setState(() => _q = v),
+                style: const TextStyle(fontSize: 13),
+                decoration: InputDecoration(
+                    hintText: "搜货位/标签/零件号/物料（支持前缀，如 NB02-B）",
+                    isDense: true,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                    prefixIcon:
+                        const Icon(Icons.search, size: 18),
+                    prefixIconConstraints:
+                        const BoxConstraints(minWidth: 34, minHeight: 0),
+                    suffixIcon: _q.isEmpty
+                        ? null
+                        : IconButton(
+                            icon: const Icon(Icons.clear, size: 16),
+                            onPressed: () => setState(() => _q = "")),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8))),
+              ),
+              Padding(
+                  padding: const EdgeInsets.fromLTRB(2, 8, 2, 4),
+                  child: Text(
+                      "共 $_labels 个标签 · ${all.length} 框 · $locs 个货位"
+                      "${k.isNotEmpty ? " ｜ 匹配 ${shown.length} 框" : ""}"
+                      "${widget.agg != null && widget.agg!.unplaced.isNotEmpty ? " · 未登记占用的在库框 ${widget.agg!.unplaced.length}" : ""}",
+                      style: const TextStyle(
+                          fontSize: 11.5, color: Colors.blueGrey))),
+              if (shown.isEmpty)
+                const Padding(
+                    padding: EdgeInsets.all(30),
+                    child: Center(
+                        child: Text("账本为空：请在「位置登记」页导入或登记库位，\n同步后这里自动出现数据",
+                            textAlign: TextAlign.center,
+                            style:
+                                TextStyle(fontSize: 12.5, color: Colors.grey))))
+              else
+                ...shown.map((b) {
+                  final exact = k.isNotEmpty &&
+                      b.codes
+                          .any((c) => c.toUpperCase() == k); // 精确标签命中高亮
+                  final reg = b.regAt > 0
+                      ? DateTime.fromMillisecondsSinceEpoch(b.regAt)
+                      : null;
+                  return Card(
+                      margin: const EdgeInsets.symmetric(vertical: 3),
+                      color: exact ? const Color(0xFFFFF3CD) : null,
+                      child: Padding(
+                          padding:
+                              const EdgeInsets.fromLTRB(10, 8, 10, 9),
+                          child: Column(
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  Text(b.loc.isEmpty ? "未分配" : b.loc,
+                                      style: const TextStyle(
+                                          fontSize: 13.5,
+                                          fontWeight: FontWeight.w800,
+                                          fontFamily: "monospace",
+                                          color: Color(0xFF2456C9))),
+                                  const Spacer(),
+                                  if (b.codes.length > 1)
+                                    Text("${b.codes.length}码1框",
+                                        style: const TextStyle(
+                                            fontSize: 10.5,
+                                            fontWeight: FontWeight.w700,
+                                            color: Color(0xFFE65100))),
+                                ]),
+                                Text(b.codes.join(" / "),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 11.5,
+                                        fontFamily: "monospace")),
+                                Text(
+                                    "${b.partNo}${b.itemName.isNotEmpty ? " · ${b.itemName}" : ""}",
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600)),
+                                const SizedBox(height: 2),
+                                Text(
+                                    "${_fmtInvNum(b.qty)} 件"
+                                    "${b.lot.isNotEmpty ? " · 批次 ${b.lot}" : ""}"
+                                    "${b.container.isNotEmpty ? " · ${b.container}" : ""}"
+                                    "${reg != null ? " · ${reg.month}-${reg.day.toString().padLeft(2, "0")} ${reg.hour.toString().padLeft(2, "0")}:${reg.minute.toString().padLeft(2, "0")} 登记" : ""}"
+                                    "${b.operator.isNotEmpty ? " · ${b.operator}" : ""}",
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        color: Color(0xFF78909C))),
+                              ])));
+                }),
+            ]));
   }
 }
 
