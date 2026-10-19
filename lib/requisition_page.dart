@@ -943,8 +943,8 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
             const SizedBox(height: 8),
             if (_order.isNotEmpty)
               SizedBox(
-                  height: 40.0 +
-                      54.0 * (_order.length > 6 ? 6 : _order.length), // ㉖v68 取消5行上限：6行内全显、更多滚动，行内双行布局零件号完整可见
+                  height: 22.0 +
+                      47.0 * (_order.length > 8 ? 8 : _order.length), // ㉖v69b 行高按实测单行47配足（旧公式54<实际60致第6行被裁不显示），8行内全显、更多滚动
                   child: Column(children: [
                     const Text("已选物料（拖把手调序 · 靠前先出库 · 首位=🔥加急 · 数量填框数）",
                         maxLines: 1,
@@ -1011,34 +1011,14 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                                           FontWeight.bold))),
                                           const SizedBox(width: 8),
                                           Expanded(
-                                              child: Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  mainAxisAlignment:
-                                                      MainAxisAlignment
-                                                          .center,
-                                                  children: [
-                                                    Text(pn,
-                                                        maxLines: 1,
-                                                        overflow:
-                                                            TextOverflow
-                                                                .ellipsis,
-                                                        style: const TextStyle(
-                                                            fontSize: 13,
-                                                            fontWeight:
-                                                                FontWeight
-                                                                    .w600)),
-                                                    Text(
-                                                        p?.itemName ?? '',
-                                                        maxLines: 1,
-                                                        overflow:
-                                                            TextOverflow
-                                                                .ellipsis,
-                                                        style: const TextStyle(
-                                                            fontSize: 10.5,
-                                                            color: Color(
-                                                                0xFF78909C))),
-                                                  ])),
+                                              child: Text(pn, // ㉖v69b 按要求去物料名：单行零件号完整显示，行高降为单行
+                                                  maxLines: 1,
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                  style: const TextStyle(
+                                                      fontSize: 13.5,
+                                                      fontWeight:
+                                                          FontWeight.w600))),
                                           SizedBox(
                                               width: 52,
                                               child: TextField(
