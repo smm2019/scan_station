@@ -503,6 +503,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   }
 
   /// v55 提交行集：按已选顺序输出，零件中途清零/下架跳过（沿用 v53 防崩口径）
+  /// ㉖v71b 单位统一：输入框=框数，服务器/详情/发料进度=件数——提交按平均件/框换算（修"填10框提交变10件"）
   List<Map> _chosenItems() {
     final out = <Map>[];
     for (final pn in _order) {
@@ -511,10 +512,15 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
       final q = int.tryParse(_qtyCtrl[pn]?.text.trim() ?? "") ?? 0;
       if (q <= 0) continue;
       final p = found.first;
-      out.add({"partNo": p.partNo, "itemName": p.itemName, "qty": q, "rush": _rushLines.contains(pn)});
+      final qtyPieces = p.perBoxQty > 0 ? (q * p.perBoxQty).round() : q; // 框数→件数（无框均值时兜底原值）
+      out.add({"partNo": p.partNo, "itemName": p.itemName, "qty": qtyPieces, "rush": _rushLines.contains(pn)});
     }
     return out;
   }
+
+  /// ㉖v71b 件数→框数（预填用，向上取整至少1框）
+  int _boxesFromPieces(double pieces, double perBox) =>
+      pieces > 0 && perBox > 0 ? (pieces / perBox).ceil() : (pieces > 0 ? pieces.round() : 1);
 
   @override
   void initState() {
@@ -525,7 +531,10 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
       for (final p in widget.parts) {
         final q = pf[p.partNo];
         if (q != null && q.isNotEmpty) {
-          _qtyCtrl[p.partNo] = TextEditingController(text: q);
+          // ㉖v71b 原单qty=件数，预填换算回框数（输入框口径=框）
+          final pieces = double.tryParse(q) ?? 0;
+          final boxes = _boxesFromPieces(pieces, p.perBoxQty);
+          _qtyCtrl[p.partNo] = TextEditingController(text: "$boxes");
           _syncChosen(p.partNo); // v55 预填行同步入已选区
         }
       }
@@ -582,8 +591,10 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
     for (final pn in pns) {
       if (byPn[pn] == null) continue; // 当前无在架，不加
       if (_order.contains(pn)) continue;
-      final last = (fm[pn]?["lastQty"] as num?)?.toInt() ?? 1;
-      _qtyCtrl[pn] = TextEditingController(text: "$last");
+      final last = (fm[pn]?["lastQty"] as num?)?.toDouble() ?? 0; // 上次领用=件数
+      // ㉖v71b 件数换算回框数填入（输入框口径=框）
+      final boxes = _boxesFromPieces(last, byPn[pn]!.perBoxQty);
+      _qtyCtrl[pn] = TextEditingController(text: "$boxes");
       _syncChosen(pn);
       added++;
     }
@@ -592,10 +603,17 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
 
   /// ㉖v62 存/编辑产线模板：edit=null 新建（取当前已选行）；edit=模板 原地编辑我的（显示模板自身行，只改名/共享；要改行请用载入后另存）
   void _saveAsTpl({Map? edit}) {
+    // ㉖v71b 模板口径固定=框数（与载入端直接填框一致，兼容 v62 旧模板）；_chosenItems 已改存件数，此处不可复用
     final items = edit != null
         ? List<Map>.from(edit["items"] ?? [])
-        : _chosenItems()
-            .map((e) => {"partNo": e["partNo"], "itemName": e["itemName"], "qty": e["qty"]})
+        : _order
+            .map((pn) {
+              final p = widget.parts.where((x) => x.partNo == pn).firstOrNull;
+              final q = int.tryParse(_qtyCtrl[pn]?.text.trim() ?? "") ?? 0;
+              if (p == null || q <= 0) return null;
+              return {"partNo": p.partNo, "itemName": p.itemName, "qty": q};
+            })
+            .whereType<Map>()
             .toList();
     if (items.isEmpty) return;
     final nameCtrl = TextEditingController(text: edit?["name"]?.toString() ?? "");
@@ -853,8 +871,14 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                     ),
                   ..._freq.take(12).map((f) {
                     final pn = f["pn"].toString();
-                    final inStock =
-                        widget.parts.any((p) => p.partNo == pn);
+                    final pp = widget.parts
+                        .where((p) => p.partNo == pn)
+                        .firstOrNull;
+                    final inStock = pp != null;
+                    // ㉖v71b chip 显示框数（与点击填入、输入框口径统一；lastQty=件数按均值换算）
+                    final boxes = _boxesFromPieces(
+                        (f["lastQty"] as num?)?.toDouble() ?? 0,
+                        pp?.perBoxQty ?? 0);
                     return Padding(
                       padding: const EdgeInsets.only(right: 6),
                       child: ActionChip(
@@ -862,7 +886,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                             ? const Color(0xFFFFF3E0)
                             : const Color(0xFFF1F1F1),
                         label: Text(
-                            "${pn.length > 6 ? pn.substring(pn.length - 6) : pn} ×${f["lastQty"] ?? 1}",
+                            "${pn.length > 6 ? pn.substring(pn.length - 6) : pn} ×${boxes}框",
                             style: TextStyle(
                                 fontSize: 11.5,
                                 color: inStock
@@ -1396,7 +1420,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                     context: mctx,
                     builder: (c2) => AlertDialog(
                           title: const Text("清空本单队列"),
-                          content: const Text("取消本单全部未下发的排队项（已下发给AGV的任务不受影响，需逐条点「撤销任务」）。确认？"),
+                          content: const Text("未下发的直接取消；已下发的逐条向 AGV 系统申请撤单（车还没叉货则撤成功，已叉出会保留并告知原因）。确认？"),
                           actions: [
                             TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消")),
                             FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.red), onPressed: () => Navigator.pop(c2, true), child: const Text("清空"))
@@ -1404,9 +1428,17 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                         ));
                 if (yes != true || !mctx.mounted) return;
                 final r = await AuthApi.agvQueueCancel(const [], reqId: _r["id"].toString());
-                widget.toast(r["ok"] == true ? r["msg"].toString() : "清空失败：${r["msg"]}", err: r["ok"] != true);
-                if (r["ok"] == true && mctx.mounted) Navigator.pop(mctx);
-                else await _reload();
+                if (!mctx.mounted) return;
+                // ㉖v72 有内容必提示；全部撤净才关窗，有被拒/到站项留在弹层让用户看见并逐条处置
+                final msg = (r["msg"] ?? "").toString();
+                if (r["ok"] != true) { widget.toast("清空失败：${r["msg"] ?? ""}"); return; }
+                if (msg.isNotEmpty) widget.toast(msg, err: false);
+                final denied = List.from(r["denied"] ?? []);
+                if (denied.isEmpty && (r["atStation"] ?? 0) == 0) {
+                  if (mctx.mounted) Navigator.pop(mctx);
+                } else {
+                  await _reload();
+                }
               }
               final canCtl = Auth.can("agv_control");
               return Column(mainAxisSize: MainAxisSize.min, children: [

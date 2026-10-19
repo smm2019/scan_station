@@ -836,6 +836,8 @@ function ckDistRack() { // 每货架列(区-排)到最近CK站台的Dijkstra距�
   return _ckd;
 }
 const stnBook = {}; // 站台时间窗预约 {stn:{until,by}}
+let _outRecAt = 0; // ㉖v72 出库负向对账节流戳
+function releaseStnBook(code) { const c = String(code || '').toUpperCase(); if (!c) return; for (const [k, v] of Object.entries(stnBook)) { if (String(v.by || '').toUpperCase() === c) delete stnBook[k]; } } // ㉖v72 队列项取消/失败→立即作废其站台预约：车不来了不该继续锁台
 function stnHoldUntil(stn, nowMs) { const s2 = (db.rcsStations || {})[stn]; if (s2 && (s2.state === '有货' || s2.state === '占用中')) return Infinity; const b = stnBook[stn]; return b && b.until > nowMs ? b.until : 0; }
 function stnEtaMs(fromLoc, stn) { let trav = 90; try { const dd = NetMap.dist(fromLoc, stn); if (dd > 0) trav = dd / 0.8; } catch (_) {} const hs = (db.rcsHoldStat || {})[stn]; const holdSec = hs && hs.n ? (hs.sum / hs.n) * 60 * P().stnWinPct / 100 : 120 * P().stnWinPct / 100; return Math.round((trav + 60 + holdSec) * 1000); }
 function labelStatus(codeRaw) {
@@ -2308,6 +2310,17 @@ return send(res, 200, {
         const m = M[op]; if (!m) return send(res, 400, { ok: false, msg: '未知操作' });
         const path = m[1] + encodeURIComponent(no) + (m[2] === null ? '' : ('&detailId=' + m[2]));
         const r = await rcsReq2(path, m[0], m[0] === 'DELETE' ? no : null);
+        if (r.ok && op === 'delete') { // ㉖v72 删除联动义务：WMAS 记录一并停（防僵尸任务占用容器池），调度器队列项同步取消（三层状态收敛）
+          try {
+            const rt = (db.rcsRun || []).find((x) => String(x.no) === no);
+            const wms = rt ? String(rt.wms || '') : '';
+            const hit = (db.agvQueue || []).find((q) => ['下发中', '已下发'].includes(q.state) && (String(q.wmsTask || '') === no || (wms && String(q.wmsTask || '') === wms)));
+            const _tk = await wmasToken();
+            if (_tk && (wms || no)) await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', _tk, [wms || no]); // ㉖v72 真实签名：cancelTask+任务号数组（探测实测：旧 /cancel+{taskNos} 恒被拒）
+            if (hit) { retireQueueItem(hit, '取消', '任务已在RCS被人工删除（调度器已同步取消）'); inspQueueRollback(hit, u); save(); r.msg = (r.msg || '已删除') + '；调度器已同步取消框 ' + hit.code + ' 的任务'; }
+            pushOps(u, 'RCS删除联动', no, hit ? '队列项 ' + hit.code + ' 已同步取消' : '未匹配到活跃队列项（出库对账兜底）');
+          } catch (_) {}
+        }
         if (r.ok && (op === 'top' || op === 'cancelTop')) { // ㉖v52 置顶回读校验：RCS 常回空 data 成功，前端此前"点了没反应"；现回读队列给出位次反馈
           try {
             const t = await rcsReq2('/task/getTaskInfo');
@@ -2419,38 +2432,45 @@ return send(res, 200, {
         if (q && q.state === '完成') chain.cleared = q.updAt || 0;
         return send(res, 200, { ok: true, task: task ? { no: task.no, sp: task.sp, ep: task.ep, car: task.car || null, stateText: stText, tl } : null, queueState: q ? q.state : '', queueErr: q ? (q.err || '') : '', qType: q ? (q.type || '') : '', chain });
       }
-      if (req.method === 'POST' && p === '/api/agv/queue/cancel') { // 取消排队项；传 reqId 则清空该单全部未下发项
+      if (req.method === 'POST' && p === '/api/agv/queue/cancel') { // ㉖v72 取消排队项/撤销已下发；传 reqId 则整单逐条处理（未下发直接取消，已下发逐条试撤 WMAS）
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const reqId = String(b.reqId || '').trim();
         const codes = new Set((Array.isArray(b.codes) ? b.codes : []).map((c) => String(c).toUpperCase()));
-        if (reqId) {
-          let n = 0, dispatched = 0;
-          for (const q of db.agvQueue || []) {
-            if (String(q.reqId) !== reqId) continue;
-            if (q.state === '排队' || q.state === '失败') { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(reqId, q.code); n++; }
-            else if (['下发中', '已下发', '到站'].includes(q.state)) dispatched++; // 已进AGV系统，需去RCS取消
+        const targets = (db.agvQueue || []).filter((q) => reqId ? String(q.reqId) === reqId : codes.has(String(q.code).toUpperCase()));
+        // 单项撤销（下发中/已下发）：先反查 WMAS 任务号再撤，撤得掉（未叉出）才取消；查无记录=任务从未建成，可本地取消但留痕核查
+        async function cancelDispatched(q, denied) {
+          const tk = await wmasToken();
+          if (!tk) { denied.push(q.code + '（WMAS 未连通，未执行撤销——请检查 AGV 系统设置或现场处理）'); return false; }
+          const tn = await wmasTaskNoOf(q, tk);
+          if (tn === null) { denied.push(q.code + '（WMAS 任务查询无响应，未执行撤销——请稍后重试或现场确认）'); return false; }
+          if (!tn) {
+            retireQueueItem(q, '取消', ''); inspQueueRollback(q, u);
+            (q.trace = q.trace || []).push('WMAS查无该任务记录，仅调度器侧取消，请现场确认车辆未动作');
+            return true;
           }
-          save();
-          return send(res, 200, { ok: true, cancelled: n, msg: n ? `已取消 ${n} 框排队${dispatched ? `；另有 ${dispatched} 框已下发AGV，请到RCS调度界面取消任务` : ''}` : (dispatched ? `${dispatched} 框已下发AGV，需在RCS界面取消任务` : '本单没有排队项') });
+          if (!q.wmsTask) q.wmsTask = tn;
+          const cr = await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [tn]); // ㉖v72 真实签名（探测实测）
+          if (wmasOk(cr)) { retireQueueItem(q, '取消', ''); inspQueueRollback(q, u); return true; }
+          const why = (cr && (cr.message || cr.msg)) || 'WMAS拒绝';
+          if (String(why).includes('不存在')) { // 任务已被下游删除（RCS旁路等）：无单可撤=调度器侧取消即可，留痕核查
+            retireQueueItem(q, '取消', ''); inspQueueRollback(q, u);
+            (q.trace = q.trace || []).push('WMAS任务已不存在（或已被删除），调度器侧同步取消');
+            return true;
+          }
+          denied.push(q.code + '（撤销被拒：' + String(why).slice(0, 40) + (q.station ? '，车正送往 ' + q.station : '') + '）');
+          return false;
         }
-        let n = 0, denied = [];
-        for (const q of db.agvQueue || []) {
-          if (!codes.has(String(q.code).toUpperCase())) continue;
-          if (q.state === '排队' || q.state === '失败') { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); inspQueueRollback(q, u); n++; continue; } // ㉖ 检验队列项取消→工单回退待协助
-          if (q.state === '到站') { denied.push(q.code + '（已到站台，请扫码发料/入库清台，不能取消）'); continue; }
-          if (['下发中', '已下发'].includes(q.state)) { // ㉖ 撤销已下发：先撤 WMAS 任务，撤得掉（未叉出）才取消
-            const tn = q.wmsTask || '';
-            if (!tn) { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); inspQueueRollback(q, u); n++; continue; }
-            const tk = await wmasToken();
-            const cr = tk ? await wmasHttp('POST', '/api/logistics/agv-task/cancel', tk, { taskNos: [tn] }) : null;
-            if (wmasOk(cr)) { q.state = '取消'; q.updAt = Date.now(); clearQueueCall(q.reqId, q.code); inspQueueRollback(q, u); n++; }
-            else denied.push(q.code + '（AGV 任务撤销被拒，可能已叉出货，需人工处理）');
-            continue;
-          }
+        let n = 0, atStn = 0; const denied = [];
+        for (const q of targets) {
+          if (q.state === '排队' || q.state === '失败') { retireQueueItem(q, '取消', ''); inspQueueRollback(q, u); n++; continue; }
+          if (q.state === '到站') { atStn++; continue; } // 货已在台上，取消无意义：扫码发料/清台接管
+          if (q.state === '下发中' || q.state === '已下发') { if (await cancelDispatched(q, denied)) n++; continue; }
         }
         save();
-        return send(res, 200, { ok: true, cancelled: n, denied, msg: n ? `已取消 ${n} 项${denied.length ? '；' + denied.join('；') : ''}` : (denied.length ? denied.join('；') : '未找到可取消的排队项') });
+        const head = n ? `已取消 ${n} 项` : (denied.length || atStn ? '' : reqId ? '本单没有可取消的排队项' : '未找到可取消的排队项');
+        const tail = [denied.length ? '未撤掉：' + denied.join('；') : '', atStn ? `另有 ${atStn} 框已到站台，请扫码发料或清台` : ''].filter(Boolean).join('；');
+        return send(res, 200, { ok: true, cancelled: n, denied, atStation: atStn, msg: [head, tail].filter(Boolean).join('；') });
       }
       if (req.method === 'POST' && p === '/api/agv/queue/prio') { // ㉔队列置顶：给排队项打 prio 标记，调度出队优先
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
@@ -3201,7 +3221,7 @@ return send(res, 200, {
         const oid = String(b.id || '');
         const item = (db.agvQueue || []).find(function (x) { return x.type === 'transfer' && String(x.at) === oid; });
         if (!item) return send(res, 400, { ok: false, msg: '未找到该移库任务（可能已完成/取消）' });
-        if (item.taskNo) { const tk = await wmasToken(); if (tk) { try { await wmasHttp('POST', '/api/logistics/agv-task/cancel', tk, { taskNos: [item.taskNo] }); } catch (_) {} } }
+        if (item.taskNo) { const tk = await wmasToken(); if (tk) { try { await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [item.taskNo]); } catch (_) {} } } // ㉖v72 真实签名（探测实测：旧 /cancel+{taskNos} 恒被拒=从未撤成功过）
         item.state = '取消'; item.updAt = Date.now(); save();
         return send(res, 200, { ok: true, msg: '已请求取消（若WMAS已叉出则无法撤回，需人工处理）' });
       }
@@ -3357,7 +3377,7 @@ return send(res, 200, {
         if (tn) {
           const tk = await wmasToken();
           if (!tk) return send(res, 400, { ok: false, msg: 'WMAS 未配置/登录失败，无法撤销已派 AGV 任务' });
-          const cr = await wmasHttp('POST', '/api/logistics/agv-task/cancel', tk, { taskNos: [tn] }); // wmasHttp 失败返回 null（不抛异常）
+          const cr = await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [tn]); // ㉖v72 真实签名；wmasHttp 失败返回 null（不抛异常）
           if (!wmasOk(cr)) return send(res, 400, { ok: false, msg: 'AGV 任务撤销未成功（可能已叉出，需人工处理）：' + ((cr && (cr.message || cr.code)) || 'WMAS无响应') });
         }
         if (st0 === 'returning') { // ㉖ 归位途中撤单=框仍在站台（未叉出才撤得掉）→ 退回待检态，工单继续有效，可再次协助归位
@@ -4933,6 +4953,59 @@ function clearQueueCall(reqId, code) { // 队列项取消/失败出队 → 解�
     }
   }
 }
+// ㉖v72 队列项终态统一回收：叫车标记 + 站台时间窗预约一并释放（取消/失败/判消失共用，杜绝"车不来了台还锁着"）
+function retireQueueItem(q, st, err) {
+  q.state = st; q.err = err || ''; q.updAt = Date.now();
+  (q.trace = q.trace || []).push((st === '取消' ? '已取消' : '判失败') + (err ? '：' + err : ''));
+  if (q.trace.length > 8) q.trace = q.trace.slice(-8);
+  clearQueueCall(q.reqId, q.code); releaseStnBook(q.code);
+}
+// ㉖v72 WMAS 任务号兜底反查：wmsTask 缺失时按容器号查最近一条任务（建单响应没回 taskNo 的历史项/竞态项）
+// 返回：任务号=命中 / ''=确认查无（可判消失） / null=查询失败（网络抖动，本轮跳过下轮再核，绝不误杀）
+async function wmasTaskNoOf(q, tk) {
+  if (q.wmsTask) return String(q.wmsTask);
+  const cn = String(q.taskNo || '').trim(); if (!cn) return '';
+  try {
+    const lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&containerNo=' + encodeURIComponent(cn), tk);
+    if (!lr) return null; // 接口无响应：不可判定
+    const recs = (lr.data && lr.data.records) || []; if (!recs.length) return '';
+    const live = recs.find((z) => ['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(String(z.status || '').toUpperCase()));
+    return String((live || recs[0]).taskNo || '');
+  } catch (_) { return null; }
+}
+// ㉖v72 出库"已下发"负向对账：WMAS 任务被取消/驳回/删除查无 → 判失败释放资源，调度器 1 轮内自愈对齐。
+// RCS 旁路删除、WMAS 侧人工清理、车故障 reset 等一切下游变动不再等 40 分钟 watchdog。
+// 防误杀三重闸：接口无响应不可判定跳过；站台已有该框货走正向回收；RCS 运行表仍有该起点在途任务不动。
+async function outboundReconcile(nowMs) {
+  const _out = (db.agvQueue || []).filter((q) => (!q.type || q.type === 'outbound') && q.state === '已下发' && q.sentAt && nowMs - q.sentAt > 120000); // 2分钟建单竞态宽限
+  if (!_out.length) return;
+  const tk = await wmasToken(); if (!tk) return; // WMAS 不可达：本轮跳过，不误杀在途任务
+  for (const q of _out) {
+    try {
+      const tn = await wmasTaskNoOf(q, tk);
+      if (tn === null) continue; // 查询无响应（接口抖动）：不可判定，下轮再核
+      let gone = false, st = '';
+      if (!tn) gone = true; // 任务号与容器号双缺：WMAS 从未有此任务记录
+      else {
+        if (!q.wmsTask) q.wmsTask = tn; // 回填，下轮直查
+        const lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(tn), tk);
+        if (!lr) continue; // 无响应：不可判定
+        const rec = ((lr.data && lr.data.records) || []).find((z) => String(z.taskNo) === String(tn));
+        if (!rec) gone = true; // 接口正常但查无此任务：已被删除
+        else { st = String(rec.status || '').toUpperCase(); if (st.includes('CANCEL') || st.includes('REJECT')) gone = true; }
+      }
+      if (!gone) continue;
+      const s = (db.rcsStations || {})[q.station];
+      const has = s && Array.isArray(s.codes) && s.codes.map((c) => String(c).toUpperCase()).includes(String(q.code).toUpperCase());
+      if (has) continue; // 货已到台：交给正向"到站"回收
+      const rcsLive = (db.rcsRun || []).some((t) => String(t.sp || '').toUpperCase() === String(q.fromLoc || '').toUpperCase());
+      if (rcsLive) continue; // RCS 仍有该起点在途调度任务：WMAS 记录异常但车在动，交超时兜底与正向回收
+      retireQueueItem(q, '失败', tn ? 'AGV任务已不在系统（' + (st || 'WMAS查无记录') + '，可能已在RCS/WMAS删除），货位未变动，可重新叫车' : 'AGV任务在WMAS查无记录（从未建成或被删除），请核查货位后重新叫车');
+      pushEvent('出库任务消失', q.code || '', (q.fromLoc || '') + '→' + (q.station || '?') + ' ' + (st || '查无'), nowMs);
+      console.log('[out-rec] ' + q.code + ' 任务消失(' + (st || 'no-rec') + ')，判失败并释放资源');
+    } catch (_) {}
+  }
+}
 // ---- ㉖ 单项下发（调度器与 carry 共用同一份逻辑，杜绝两套代码漂移）----
 // 返回 true=本轮已处理（下发/演算/失败），false=暂无空闲目的地需继续排队
 // ㉖ 检验下架/归位入队：与 carry 同款——先局部试发（manualOnly 指定台不可用则排队等待绝不改派），结果入全局队列统一治理
@@ -5038,6 +5111,8 @@ async function agvDispatch(nowMs, runT) {
     const _rk = String(_q.wmsTask || ''), _rt = (db.agvTasks || {})[_rk] || (() => { const _sp = String(_q.fromLoc || '').toUpperCase(), _lo = (_q.sentAt || _q.at || 0) - 60000; let _b = null; for (const t of Object.values(db.agvTasks || {})) { if (t.ck !== 'in' || String(t.sp || '').toUpperCase() !== _sp || (t.fin || 0) < _lo) continue; if (!_b || (t.fin || 0) > (_b.fin || 0)) _b = t; } return _b; })();
     if (_rt && _rt.fin) { _q.state = '完成'; _q.dockAt = _rt.fin; _q.updAt = nowMs; continue; }
     const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_q.wmsTask), _itk); const _rec = ((_lr && _lr.data && _lr.data.records) || []).find((z) => String(z.taskNo) === String(_q.wmsTask)); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { _q.state = '失败'; _q.err = (_q.type === 'inspback' ? '检验归位超' : '入库搬运超') + P().staleMin + '分钟未完成，请核查'; _q.updAt = nowMs; } } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { _q.state = '取消'; _q.updAt = nowMs; } else { _q.state = '完成'; _q.dockAt = nowMs; _q.updAt = nowMs; } } else if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { _q.state = '失败'; _q.err = 'WMAS任务记录不可查，请核对货位'; _q.updAt = nowMs; } } catch (_) {} } } }
+  // ㉖v72 出库负向对账（WMAS取消/驳回/查无→队列同步+资源回收），必须赶在超时兜底前跑；30秒节流防 WMAS 接口高频
+  if (nowMs - _outRecAt > 30000) { _outRecAt = nowMs; try { await outboundReconcile(nowMs); } catch (_) {} }
   // ㉖ 超时兜底必须在上面出库(3663)/入库对账【之后】执行，且要 await：
   // 旧实现由 rcsPoll 同步段先跑，对账还没推进状态就把"已下发"判超时（实测成功入库被误报）。
   try { await dispatchWatchdog(nowMs); } catch (_) {}
@@ -5070,7 +5145,7 @@ async function dispatchWatchdog(nowMs) {
     const toTxt = (isIn || isIB) ? (q.station || q.stationManual || '货架位') : (q.station || '待分配');
     const verb = (isIn || isIO || isIB) ? '未完成' : '未到站';
     q.state = '失败'; q.err = (isIn ? '入库搬运' : isIO ? '检验下架' : isIB ? '检验归位' : '出库') + '下发超' + P().staleMin + '分钟' + verb + '，请核查'; q.updAt = nowMs; q.trace = (q.trace || []); q.trace.push('超' + P().staleMin + '分钟' + verb + '，判失败并通知（RCS可能卡死）');
-    clearQueueCall(q.reqId, q.code);
+    clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); // ㉖v72 超时判失败同步作废站台预约，车不来了不该继续锁台
     pushEvent(kind, q.code || '', (q.fromLoc || '') + '→' + toTxt + ' 下发超' + P().staleMin + '分钟' + verb, nowMs);
     const msg = `⏰ AGV任务超时：框 ${q.code}（${q.fromLoc}→${toTxt}）下发超${P().staleMin}分钟${verb}${isIn || isIB ? '上架' : ''}，请到RCS核查是否卡死`;
     db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, q.reqId || ''));
