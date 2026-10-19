@@ -3221,9 +3221,16 @@ return send(res, 200, {
         const oid = String(b.id || '');
         const item = (db.agvQueue || []).find(function (x) { return x.type === 'transfer' && String(x.at) === oid; });
         if (!item) return send(res, 400, { ok: false, msg: '未找到该移库任务（可能已完成/取消）' });
-        if (item.taskNo) { const tk = await wmasToken(); if (tk) { try { await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [item.taskNo]); } catch (_) {} } } // ㉖v72 真实签名（探测实测：旧 /cancel+{taskNos} 恒被拒=从未撤成功过）
-        item.state = '取消'; item.updAt = Date.now(); save();
-        return send(res, 200, { ok: true, msg: '已请求取消（若WMAS已叉出则无法撤回，需人工处理）' });
+        if (item.taskNo) {
+          const tk = await wmasToken();
+          const cr = tk ? await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [item.taskNo]) : null; // ㉖v72 真实签名（探测实测）
+          if (!tk) return send(res, 400, { ok: false, msg: 'WMAS 未连通，未执行撤销——请稍后重试或现场确认' });
+          if (!wmasOk(cr) && !String((cr && (cr.message || cr.msg)) || '').includes('不存在')) {
+            return send(res, 400, { ok: false, msg: 'AGV 任务撤销被拒（货架可能已叉出，车正送往 ' + (item.to || item.station || '?') + '）：' + String((cr && (cr.message || cr.msg)) || 'WMAS无响应').slice(0, 60) });
+          }
+        }
+        retireQueueItem(item, '取消', ''); releaseStnBook(item.code); save(); // ㉖v72b 统一回收（无 taskNo 的排队移库项也走此处）
+        return send(res, 200, { ok: true, msg: '已取消' });
       }
       // ---- ㉖ 检验搜索：按零件号/物料名片段列在库框（含AGV货架位判定/可下架性），并附空闲站台清单 ----
       if (req.method === 'GET' && p === '/api/inspect/search') {
@@ -3372,7 +3379,7 @@ return send(res, 200, {
         const st0 = rec.state;
         if (!['waitOut', 'toStation', 'returning'].includes(st0)) return send(res, 400, { ok: false, msg: '当前状态[' + st0 + ']不可取消：站台在检/待归位/待退货请走归位或退货通道，已结束无需取消' });
         // ㉖ 反向联动：作废该工单的排队队列项（排队/失败态可直接取消，防调度器随后又发车）
-        for (const qi of db.agvQueue || []) { if (qi.inspId === rec.id && (qi.state === '排队' || qi.state === '失败')) { qi.state = '取消'; qi.updAt = Date.now(); } }
+        for (const qi of db.agvQueue || []) { if (qi.inspId === rec.id && (qi.state === '排队' || qi.state === '失败')) retireQueueItem(qi, '取消', ''); } // ㉖v72b 统一回收
         const tn = st0 === 'returning' ? (rec.taskNo2 || '') : (rec.taskNo || '');
         if (tn) {
           const tk = await wmasToken();
@@ -4181,7 +4188,7 @@ return send(res, 200, {
             let qn = 0, qd = 0;
             for (const q of db.agvQueue || []) {
               if (String(q.reqId) !== r.id) continue;
-              if (q.state === '排队' || q.state === '失败') { q.state = '取消'; q.updAt = Date.now(); qn++; }
+              if (q.state === '排队' || q.state === '失败') { retireQueueItem(q, '取消', ''); qn++; } // ㉖v72b 统一回收：清叫车标记+站台预约，防单消后标记残留拦重新叫车
               else if (['下发中', '已下发', '到站'].includes(q.state)) qd++;
             }
             if (qn || qd) hpush(`AGV队列：取消 ${qn} 框排队${qd ? `，${qd} 框已下发需到RCS取消` : ''}`);
@@ -4977,7 +4984,7 @@ async function wmasTaskNoOf(q, tk) {
 // RCS 旁路删除、WMAS 侧人工清理、车故障 reset 等一切下游变动不再等 40 分钟 watchdog。
 // 防误杀三重闸：接口无响应不可判定跳过；站台已有该框货走正向回收；RCS 运行表仍有该起点在途任务不动。
 async function outboundReconcile(nowMs) {
-  const _out = (db.agvQueue || []).filter((q) => (!q.type || q.type === 'outbound') && q.state === '已下发' && q.sentAt && nowMs - q.sentAt > 120000); // 2分钟建单竞态宽限
+  const _out = (db.agvQueue || []).filter((q) => (!q.type || q.type === 'outbound' || q.type === 'insp') && q.state === '已下发' && q.sentAt && nowMs - q.sentAt > 120000); // 2分钟建单竞态宽限；㉖v72b 含检验下架（终点站台走正向回收，被删同样需负向兜底）
   if (!_out.length) return;
   const tk = await wmasToken(); if (!tk) return; // WMAS 不可达：本轮跳过，不误杀在途任务
   for (const q of _out) {
@@ -5001,7 +5008,8 @@ async function outboundReconcile(nowMs) {
       const rcsLive = (db.rcsRun || []).some((t) => String(t.sp || '').toUpperCase() === String(q.fromLoc || '').toUpperCase());
       if (rcsLive) continue; // RCS 仍有该起点在途调度任务：WMAS 记录异常但车在动，交超时兜底与正向回收
       retireQueueItem(q, '失败', tn ? 'AGV任务已不在系统（' + (st || 'WMAS查无记录') + '，可能已在RCS/WMAS删除），货位未变动，可重新叫车' : 'AGV任务在WMAS查无记录（从未建成或被删除），请核查货位后重新叫车');
-      pushEvent('出库任务消失', q.code || '', (q.fromLoc || '') + '→' + (q.station || '?') + ' ' + (st || '查无'), nowMs);
+      inspQueueRollback(q, null); // ㉖v72b 检验下架任务判死→工单回退待协助
+      pushEvent(q.type === 'insp' ? '检验任务消失' : '出库任务消失', q.code || '', (q.fromLoc || '') + '→' + (q.station || '?') + ' ' + (st || '查无'), nowMs);
       console.log('[out-rec] ' + q.code + ' 任务消失(' + (st || 'no-rec') + ')，判失败并释放资源');
     } catch (_) {}
   }
@@ -5017,15 +5025,14 @@ async function inspEnqueue(rec, leg, u, from, to, ref) {
   db.agvQueue.push(item);
   return item;
 }
-// ㉖ 检验队列项被取消 → 工单回退待协助态（清排队标记，催办恢复计时）
+// ㉖ 检验队列项被取消/任务判死 → 工单回退待协助态（清排队标记，催办恢复计时）
+// ㉖v72b 放宽：toStation/returning 也回退并清任务号——调用时机均为"任务确认已死（取消/查无）货未叉动"，回退后可重新协助
 function inspQueueRollback(q, u) {
   if (!q.inspId) return;
   const rec = (db.inspects || []).find((x) => x.id === q.inspId);
   if (!rec) return;
-  if (q.type === 'insp' && rec.state === 'waitOut') { rec.outQueued = 0; rec.notified = false; }
-  else if (q.type === 'insp' && rec.state === 'toStation' && !rec.taskNo) { rec.state = 'waitOut'; rec.outQueued = 0; rec.notified = false; }
-  else if (q.type === 'inspback' && rec.state === 'waitBack') { rec.backQueued = 0; rec.notified2 = false; }
-  else if (q.type === 'inspback' && rec.state === 'returning' && !rec.taskNo2) { rec.state = 'waitBack'; rec.backQueued = 0; rec.notified2 = false; }
+  if (q.type === 'insp' && ['waitOut', 'toStation'].includes(rec.state)) { if (rec.state === 'toStation') rec.taskNo = ''; rec.state = 'waitOut'; rec.outQueued = 0; rec.notified = false; }
+  else if (q.type === 'inspback' && ['waitBack', 'returning'].includes(rec.state)) { if (rec.state === 'returning') rec.taskNo2 = ''; rec.state = 'waitBack'; rec.backQueued = 0; rec.notified2 = false; }
   if (u) pushOps(u, '检验队列取消', rec.code, rec.from + '→' + (rec.station || '') + '（工单回退 ' + rec.state + '）');
 }
 async function dispatchOne(q, nowMs, runT, assigned, live) {
@@ -5084,11 +5091,11 @@ async function agvDispatch(nowMs, runT) {
     const has = s && Array.isArray(s.codes) && s.codes.map((c) => String(c).toUpperCase()).includes(q.code);
     if (q.state === '下发中') {
       // 下发中超过5分钟无回执（进程中断/异常残留）→ 判失败可重试，防止永久封死该站台
-      if (nowMs - (q.updAt || q.at) > P().sendTimeoutMin * 60 * 1000) { q.state = '失败'; q.err = '下发超时未回执，请重新叫车'; q.updAt = nowMs; q.trace = (q.trace || []); q.trace.push('下发超' + P().sendTimeoutMin + '分钟无回执，判失败可重试'); }
+      if (nowMs - (q.updAt || q.at) > P().sendTimeoutMin * 60 * 1000) retireQueueItem(q, '失败', '下发超时未回执，请重新叫车'); // ㉖v72b 统一回收（原仅改状态，叫车标记滞留30分钟）
     } else if (q.state === '已下发') {
-      if (s && s.state === '有货' && has) q.state = '到站'; // 按标签匹配（容器号尾6位≠RCS任务号尾6位，不能用via比对）
+      if (s && s.state === '有货' && has) { q.state = '到站'; releaseStnBook(q.code); } // ㉖v72b 货已上台：预约失去意义立即作废（按标签匹配，容器号尾6位≠RCS任务号尾6位，不能用via比对）
     } else if (q.state === '到站') {
-      if (!has) q.state = '完成'; // 该框已不在台上（发走/清台）
+      if (!has) { q.state = '完成'; q.dockAt = q.dockAt || nowMs; clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); } // ㉖v72b 任务闭环：货离台=发走/清台，清叫车标记允许该框未来重新入队
     }
   }
   // 失败项保留30分钟供查看原因后自动出队（重新一键叫车即可再入队）；完成/取消保留2小时
@@ -5100,7 +5107,7 @@ async function agvDispatch(nowMs, runT) {
   });
   const waiting = db.agvQueue.filter((q) => q.state === '排队');
   const _trf = (db.agvQueue || []).filter(function (x) { return x.type === 'transfer' && !x.dry && ['下发中', '已下发'].includes(x.state) && x.taskNo; });
-  if (_trf.length) { const _ttk = await wmasToken(); if (_ttk) { for (const _t of _trf) { try { const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_t.taskNo), _ttk); const _rec = (_lr && _lr.data && _lr.data.records || []).find(function (z) { return String(z.taskNo) === String(_t.taskNo); }); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { /* 仍在途 */ } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { _t.state = '取消'; _t.updAt = nowMs; (_t.trace = _t.trace || []).push('WMAS任务被取消/驳回'); } else { _t.state = '完成'; _t.updAt = nowMs; const moved = applyTransferLedger(_t); if (!moved) { _t.err = '已到达但账本未自动更新，请用位置登记核对'; } (_t.trace = _t.trace || []).push(moved ? 'WMAS到达，账本已自动改位' : 'WMAS到达但账本未自动更新，请位置登记核对'); } } else { _t.state = '完成'; _t.updAt = nowMs; _t.err = 'WMAS任务记录已不可查，未自动改账，请核对货位'; (_t.trace = _t.trace || []).push('WMAS记录不可查，按完成处理未改账'); } if (nowMs - (_t.sentAt || _t.at) > P().staleMin * 60000) { _t.state = '失败'; _t.err = '超时未完成'; _t.updAt = nowMs; (_t.trace = _t.trace || []).push('超' + P().staleMin + '分钟未完成，判失败'); } } catch (_) {} } } }
+  if (_trf.length) { const _ttk = await wmasToken(); if (_ttk) { for (const _t of _trf) { try { const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_t.taskNo), _ttk); const _rec = (_lr && _lr.data && _lr.data.records || []).find(function (z) { return String(z.taskNo) === String(_t.taskNo); }); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { /* 仍在途 */ } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { retireQueueItem(_t, '取消', 'AGV任务已在下游取消（RCS/WMAS侧操作），资源已释放'); releaseStnBook(_t.code); } else { _t.state = '完成'; _t.updAt = nowMs; releaseStnBook(_t.code); const moved = applyTransferLedger(_t); if (!moved) { _t.err = '已到达但账本未自动更新，请用位置登记核对'; } (_t.trace = _t.trace || []).push(moved ? 'WMAS到达，账本已自动改位' : 'WMAS到达但账本未自动更新，请位置登记核对'); } } else { _t.state = '完成'; _t.updAt = nowMs; releaseStnBook(_t.code); _t.err = 'WMAS任务记录已不可查，未自动改账，请核对货位'; (_t.trace = _t.trace || []).push('WMAS记录不可查，按完成处理未改账'); } if (nowMs - (_t.sentAt || _t.at) > P().staleMin * 60000 && ['下发中', '已下发'].includes(_t.state)) { retireQueueItem(_t, '失败', '超时未完成'); (_t.trace = _t.trace || []).push('超' + P().staleMin + '分钟未完成，判失败'); } } catch (_) {} } } }
   // ㉖⑰ 入库搬运对账：站台→货架，终点非站台不走"到站清台"，按 WMAS 任务状态推进（账本已在扫码时登记，搬运不改账本）；㉖ 检验归位(inspback)同款并入
   const _inb = (db.agvQueue || []).filter((x) => (x.type === 'inbound' || x.type === 'inspback') && ['下发中', '已下发'].includes(x.state) && x.wmsTask);
   if (_inb.length) { const _itk = await wmasToken(); if (_itk) { for (const _q of _inb) { try {
@@ -5110,7 +5117,7 @@ async function agvDispatch(nowMs, runT) {
     // 直查基本命不中 → 与 /api/agv/taskOf 同口径：按 方向in + 起点=fromLoc + fin≥下发时刻 取最近一条。
     const _rk = String(_q.wmsTask || ''), _rt = (db.agvTasks || {})[_rk] || (() => { const _sp = String(_q.fromLoc || '').toUpperCase(), _lo = (_q.sentAt || _q.at || 0) - 60000; let _b = null; for (const t of Object.values(db.agvTasks || {})) { if (t.ck !== 'in' || String(t.sp || '').toUpperCase() !== _sp || (t.fin || 0) < _lo) continue; if (!_b || (t.fin || 0) > (_b.fin || 0)) _b = t; } return _b; })();
     if (_rt && _rt.fin) { _q.state = '完成'; _q.dockAt = _rt.fin; _q.updAt = nowMs; continue; }
-    const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_q.wmsTask), _itk); const _rec = ((_lr && _lr.data && _lr.data.records) || []).find((z) => String(z.taskNo) === String(_q.wmsTask)); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { _q.state = '失败'; _q.err = (_q.type === 'inspback' ? '检验归位超' : '入库搬运超') + P().staleMin + '分钟未完成，请核查'; _q.updAt = nowMs; } } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { _q.state = '取消'; _q.updAt = nowMs; } else { _q.state = '完成'; _q.dockAt = nowMs; _q.updAt = nowMs; } } else if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { _q.state = '失败'; _q.err = 'WMAS任务记录不可查，请核对货位'; _q.updAt = nowMs; } } catch (_) {} } } }
+    const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_q.wmsTask), _itk); const _rec = ((_lr && _lr.data && _lr.data.records) || []).find((z) => String(z.taskNo) === String(_q.wmsTask)); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { retireQueueItem(_q, '失败', (_q.type === 'inspback' ? '检验归位超' : '入库搬运超') + P().staleMin + '分钟未完成，请核查'); } } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { retireQueueItem(_q, '取消', 'AGV任务已在下游取消（RCS/WMAS侧操作），资源已释放'); inspQueueRollback(_q, null); } else { _q.state = '完成'; _q.dockAt = nowMs; _q.updAt = nowMs; clearQueueCall(_q.reqId, _q.code); releaseStnBook(_q.code); } } else if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { retireQueueItem(_q, '失败', 'WMAS任务记录不可查，请核对货位'); inspQueueRollback(_q, null); } } catch (_) {} } } }
   // ㉖v72 出库负向对账（WMAS取消/驳回/查无→队列同步+资源回收），必须赶在超时兜底前跑；30秒节流防 WMAS 接口高频
   if (nowMs - _outRecAt > 30000) { _outRecAt = nowMs; try { await outboundReconcile(nowMs); } catch (_) {} }
   // ㉖ 超时兜底必须在上面出库(3663)/入库对账【之后】执行，且要 await：
@@ -5146,6 +5153,7 @@ async function dispatchWatchdog(nowMs) {
     const verb = (isIn || isIO || isIB) ? '未完成' : '未到站';
     q.state = '失败'; q.err = (isIn ? '入库搬运' : isIO ? '检验下架' : isIB ? '检验归位' : '出库') + '下发超' + P().staleMin + '分钟' + verb + '，请核查'; q.updAt = nowMs; q.trace = (q.trace || []); q.trace.push('超' + P().staleMin + '分钟' + verb + '，判失败并通知（RCS可能卡死）');
     clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); // ㉖v72 超时判失败同步作废站台预约，车不来了不该继续锁台
+    inspQueueRollback(q, null); // ㉖v72b 检验下架/归位超时→工单回退待协助，可再次叫车（否则工单永远卡 toStation/returning）
     pushEvent(kind, q.code || '', (q.fromLoc || '') + '→' + toTxt + ' 下发超' + P().staleMin + '分钟' + verb, nowMs);
     const msg = `⏰ AGV任务超时：框 ${q.code}（${q.fromLoc}→${toTxt}）下发超${P().staleMin}分钟${verb}${isIn || isIB ? '上架' : ''}，请到RCS核查是否卡死`;
     db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_arrive', msg, q.reqId || ''));
