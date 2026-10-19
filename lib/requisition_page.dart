@@ -993,32 +993,33 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                               index: i,
                                               child: const Padding(
                                                   padding: EdgeInsets.symmetric(
-                                                      horizontal: 6),
+                                                      horizontal: 3),
                                                   child: Icon(Icons.drag_handle,
-                                                      size: 22,
+                                                      size: 20,
                                                       color:
                                                           Colors.blueGrey))),
                                           CircleAvatar(
-                                              radius: 10,
+                                              radius: 9,
                                               backgroundColor: r
                                                   ? const Color(0xFFE65100)
                                                   : const Color(0xFF90A4AE),
                                               child: Text("${i + 1}",
                                                   style: const TextStyle(
-                                                      fontSize: 10.5,
+                                                      fontSize: 10,
                                                       color: Colors.white,
                                                       fontWeight:
                                                           FontWeight.bold))),
-                                          const SizedBox(width: 8),
+                                          const SizedBox(width: 6),
                                           Expanded(
-                                              child: Text(pn, // ㉖v69b 按要求去物料名：单行零件号完整显示，行高降为单行
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: const TextStyle(
-                                                      fontSize: 13.5,
-                                                      fontWeight:
-                                                          FontWeight.w600))),
+                                              child: FittedBox(
+                                                  fit: BoxFit.scaleDown,
+                                                  alignment: Alignment.centerLeft, // ㉖v70b 零件号按可用宽自动缩放，10位完整显示不再截断
+                                                  child: Text(pn,
+                                                      maxLines: 1,
+                                                      style: const TextStyle(
+                                                          fontSize: 13.5,
+                                                          fontWeight:
+                                                              FontWeight.w600)))),
                                           SizedBox(
                                               width: 52,
                                               child: TextField(
@@ -1185,9 +1186,11 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                 _rush ? FontWeight.bold : FontWeight.normal)),
                   ])),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 4),
             if (chosen.isNotEmpty) // ㉖v62 把本单物料存成产线模板，下次一键载入
               Align(
+                  widthFactor: 1.0,
+                  heightFactor: 1.0, // ㉖v70b 修复：Align 不设 factor 会撑满 Column 剩余空间，致急料与存模板之间大片空白
                   alignment: Alignment.centerRight,
                   child: TextButton.icon(
                       onPressed: _saveAsTpl,
