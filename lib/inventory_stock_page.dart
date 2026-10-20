@@ -548,6 +548,11 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
             const SizedBox(width: 6),
             chip('loc', '📍按分散度', const Color(0xFF00897B)),
             const Spacer(),
+            TextButton.icon(
+                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6), visualDensity: VisualDensity.compact, foregroundColor: const Color(0xFF07C160)),
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortageReportPage())),
+                icon: const Icon(Icons.share, size: 15),
+                label: const Text("缺料分享", style: TextStyle(fontSize: 11.5))),
             Text('${rows.length} 项',
                 style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
           ])),

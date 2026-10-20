@@ -17,6 +17,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart'; //新增导入
 // =========【👉 在这里粘贴 RSA加密 + mesLogin 代码！！】=========
 import 'dart:typed_data';
+import 'dart:ui' as ui; // ㉖v74 缺料反馈图片分享：RenderRepaintBoundary 截取 PNG
+import 'package:flutter/rendering.dart'; // ㉖v74 RenderRepaintBoundary 类型（material 不导出）
 import 'dart:math' as math; // 地图页三角函数（part文件共享主库导入）
 
 import 'package:pointycastle/export.dart' hide Padding, State;
@@ -53,6 +55,7 @@ part 'agv_report_page.dart'; // ⑦AGV效率报表
 part 'update_page.dart'; // ⑬APK自动更新
 part 'console_web_page.dart'; // ㉖⑯ 网页控制台驾驶舱（内嵌全功能）
 part 'notify_service.dart'; // ⑭系统通知+语音播报
+part 'shortage_report_page.dart'; // ㉖v74 缺料反馈：一键生成生产部格式缺料单，分享微信
 
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);

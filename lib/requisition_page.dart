@@ -335,6 +335,11 @@ class _RequisitionPageState extends State<RequisitionPage>
               icon: const Icon(Icons.groups_outlined),
               tooltip: "备料排队看板",
               onPressed: _showQueueBoard),
+          IconButton(
+              icon: const Icon(Icons.share_outlined, color: Color(0xFF07C160)),
+              tooltip: "缺料反馈分享（微信）",
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const ShortageReportPage()))),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _load), // ㉖ 顶栏铃铛按用户要求移除（消息入口保留在底部"消息"页签）
         ],
       ),
