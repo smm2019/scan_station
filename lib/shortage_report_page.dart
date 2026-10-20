@@ -1,9 +1,10 @@
 part of 'main.dart';
 
 // ===================== ㉖v74 缺料反馈：一键生成生产部格式缺料单，分享微信 =====================
-// 口径：零库存 + 在途领料欠料（pending/accepted 需求−已发）+ 低水位（阈值可设，默认关）
+// ㉖v74b 全厂口径（换设备结果一致）：在库=服务器货位账本（各PDA合并），需求=领料单，零件全集=采集流水背书
+// 判定：零库存（入过库/有人要而现在全厂无货）+ 欠料（需求−在库>0）+ 低水位（阈值可设，默认关）
 // 版式：一物一单（反馈日期/车型/批次号/物料号/物料名称/异常描述/反馈单位/反馈人/责任单位/确认人/确认日期/@人员）
-// 分享：文字（多单拼一条消息）或 图片（每单一张 PNG，系统分享面板直达微信）；数据不出本机
+// 分享：文字（多单拼一条消息）或 图片（多单合成一张长图，系统分享面板直达微信）；数据不出本机
 
 class _ShortageItem {
   final String partNo;
@@ -63,6 +64,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
   bool _showZero = true, _showShort = true; // 口径开关
   final List<_ShortageItem> _items = [];
   bool _loading = true, _busy = false;
+  String _err = ""; // 全厂账本拉取失败提示（缺料判定地基，失败必须可见）
   int _mode = 0; // 0文字 1图片（多单合成一张长图）
   final GlobalKey _allKey = GlobalKey(); // 长图整体截取用
 
@@ -85,9 +87,36 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
   }
 
   Future<void> _load() async {
-    setState(() => _loading = true);
-    final agg = await computeStock();
-    // 在途需求聚合：pending/accepted 领料单逐行 需求−已发
+    setState(() { _loading = true; _err = ""; });
+    // ㉖v74b 全厂口径（换设备结果一致）：在库=服务器货位账本（各PDA合并），需求=领料单，零件全集=采集流水出现过
+    final stock = <String, double>{}; // partNo → 全厂在库件数
+    final boxes = <String, Set<String>>{}; // partNo → 框键集（托号优先，同账本归并口径）
+    final names = <String, String>{};
+    final lastLot = <String, String>{}, lastLotT = <String, int>{}; // 最近登记批次（有零头时预填）
+    try {
+      final lg = await AuthApi.ledgerGet().timeout(const Duration(seconds: 10));
+      if (lg["ok"] != true) throw Exception(lg["msg"]?.toString() ?? "查询失败");
+      for (final x in List<Map>.from(lg["items"] ?? [])) {
+        final pn = (x["p"]?.toString() ?? "").trim().toUpperCase();
+        if (pn.isEmpty) continue;
+        stock[pn] = (stock[pn] ?? 0) + ((x["q"] as num?)?.toDouble() ?? 0);
+        final pid = (x["pid"]?.toString() ?? "").toUpperCase();
+        final loc = (x["l"]?.toString() ?? "").toUpperCase();
+        final code = (x["c"]?.toString() ?? "").toUpperCase();
+        (boxes[pn] ??= <String>{})
+            .add(pid.isNotEmpty ? "P|$pid" : (loc.isNotEmpty ? "L|$loc|$pn" : "C|$code"));
+        final nm = x["n"]?.toString() ?? "";
+        if (nm.isNotEmpty && (names[pn] ?? "").isEmpty) names[pn] = nm;
+        final t = (x["t"] as num?)?.toInt() ?? 0;
+        final b = x["b"]?.toString() ?? "";
+        if (b.isNotEmpty && t >= (lastLotT[pn] ?? 0)) { lastLotT[pn] = t; lastLot[pn] = b; }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() { _loading = false; _err = "全厂货位账本拉取失败：$e"; });
+      return; // 账本是缺料判定的地基，拉不到必须报错，绝不静默显示"没有缺料"
+    }
+    // 在途需求：pending/accepted 领料单逐行 需求−已发（拉失败降级=只报零库存，不阻塞）
     final needMap = <String, double>{};
     final needFromMap = <String, List<String>>{};
     try {
@@ -98,9 +127,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
           for (final it in List<Map>.from(q["items"] ?? [])) {
             final pn = (it["partNo"]?.toString() ?? "").toUpperCase();
             if (pn.isEmpty) continue;
-            final issued = (it["issued"] is List)
-                ? List.from(it["issued"] as List)
-                : const [];
+            final issued = (it["issued"] is List) ? List.from(it["issued"] as List) : const [];
             double got = 0;
             for (final e in issued) {
               if (e is Map) got += (e["q"] as num?)?.toDouble() ?? 0;
@@ -113,25 +140,41 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         }
       }
     } catch (_) {}
+    // 零件全集佐证：采集流水出现过的零件（全厂入过库）——零库存必须有它或需求背书，防账本脏零件号刷屏
+    final hist = <String>{};
+    try {
+      final sl = await AuthApi.scanlogGet().timeout(const Duration(seconds: 8));
+      if (sl["ok"] == true) {
+        for (final s in List<Map>.from(sl["items"] ?? [])) {
+          final pn = (s["pn"]?.toString() ?? "").toUpperCase();
+          if (pn.isEmpty) continue;
+          hist.add(pn);
+          final nm = s["nm"]?.toString() ?? "";
+          if (nm.isNotEmpty && (names[pn] ?? "").isEmpty) names[pn] = nm;
+        }
+      }
+    } catch (_) {}
     final out = <_ShortageItem>[];
-    for (final row in agg.parts.values) {
-      final pn = row.partNo.toUpperCase();
-      if (pn.isEmpty) continue;
-      final zero = row.inStockQty <= 1e-9;
-      final short = (needMap[pn] ?? 0) - row.inStockQty > 1e-9;
-      final low = _lowLine > 0 && row.inStockQty > 1e-9 && row.inStockQty < _lowLine;
+    for (final pn in {...stock.keys, ...needMap.keys, ...hist}) {
+      final st = stock[pn] ?? 0;
+      final nd = needMap[pn] ?? 0;
+      final zero = st <= 1e-9;
+      final short = nd - st > 1e-9;
+      final low = _lowLine > 0 && st > 1e-9 && st < _lowLine;
       if (!((zero && _showZero) || (short && _showShort) || low)) continue;
-      final it = _ShortageItem(row.partNo)
-        ..itemName = row.itemName
-        ..inStockQty = row.inStockQty
-        ..inBoxes = row.inBoxes
-        ..needQty = needMap[pn] ?? 0
-        ..needFrom = (needFromMap[pn] ?? []).take(3).join("、");
-      it.carModel = _carRe.firstMatch(row.itemName)?.group(1) ?? "";
-      final tail = it.needQty > 0 ? "，待领 ${_fmtInvNum(it.needQty)} 件" : "";
+      if (zero && !hist.contains(pn) && nd <= 1e-9) continue; // 从未入库也无人要：不是缺料
+      final it = _ShortageItem(pn)
+        ..itemName = names[pn] ?? ""
+        ..inStockQty = st
+        ..inBoxes = (boxes[pn] ?? const {}).length
+        ..needQty = nd
+        ..needFrom = (needFromMap[pn] ?? []).take(3).join("、")
+        ..lot = zero ? "" : (lastLot[pn] ?? "");
+      it.carModel = _carRe.firstMatch(it.itemName)?.group(1) ?? "";
+      final tail = nd > 0 ? "，待领 ${_fmtInvNum(nd)} 件" : "";
       it.desc = zero
           ? "报缺，仓库无单件$tail"
-          : (short ? "报缺，在库仅 ${_fmtInvNum(row.inStockQty)} 件，低于待领需求$tail" : "库存偏低，在库 ${_fmtInvNum(row.inStockQty)} 件$tail");
+          : (short ? "报缺，全厂在库仅 ${_fmtInvNum(st)} 件，低于待领需求$tail" : "库存偏低，全厂在库 ${_fmtInvNum(st)} 件$tail");
       it.initCtrls();
       out.add(it);
     }
@@ -314,9 +357,20 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                   ])),
               Expanded(
                   child: _items.isEmpty
-                      ? const Center(
-                          child: Text("当前没有符合口径的缺料零件",
-                              style: TextStyle(color: Colors.grey)))
+                      ? Center(
+                          child: _err.isNotEmpty
+                              ? Column(mainAxisSize: MainAxisSize.min, children: [
+                                  Text(_err,
+                                      textAlign: TextAlign.center,
+                                      style: const TextStyle(color: Colors.red, fontSize: 13)),
+                                  const SizedBox(height: 10),
+                                  OutlinedButton.icon(
+                                      onPressed: _load,
+                                      icon: const Icon(Icons.refresh, size: 16),
+                                      label: const Text("重试")),
+                                ])
+                              : const Text("当前没有符合口径的缺料零件",
+                                  style: TextStyle(color: Colors.grey)))
                       : ListView.builder(
                           padding: const EdgeInsets.all(10),
                           itemCount: _items.length,
