@@ -467,12 +467,17 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
     } else if (_flt == "zero") {
       rows = rows.where((r) => r.inBoxes == 0 && r.stock <= 0).toList();
     }
-    rows.sort(_flt == "loc"
-        ? (x, y) => y.byLocDist.length.compareTo(x.byLocDist.length)
-        : (x, y) => x.partNo.compareTo(y.partNo));
-    // ㉖v69 界面优化：零库存沉底成组（在库零件在前，长尾零库存统一紧凑展示）
-    rows.sort((x, y) =>
-        (x.inBoxes == 0 && x.stock <= 0 ? 1 : 0).compareTo(y.inBoxes == 0 && y.stock <= 0 ? 1 : 0));
+    // ㉖v69 界面优化：零库存沉底成组（单次稳定排序：组间沉底、组内保持零件号/分散度次序，避免两轮sort打乱）
+    rows.sort((x, y) {
+      final xz = (x.inBoxes == 0 && x.stock <= 0) ? 1 : 0;
+      final yz = (y.inBoxes == 0 && y.stock <= 0) ? 1 : 0;
+      if (xz != yz) return xz - yz;
+      if (_flt == "loc") {
+        final d = y.byLocDist.length.compareTo(x.byLocDist.length);
+        if (d != 0) return d;
+      }
+      return x.partNo.compareTo(y.partNo);
+    });
     final firstEmpty = rows
         .indexWhere((r) => r.inBoxes == 0 && r.stock <= 0);
     // ㉖v52 新鲜度点/分布摘要一次预计算（列表逐帧不重复扫 byLoc）

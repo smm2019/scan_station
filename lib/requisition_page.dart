@@ -84,6 +84,7 @@ class _RequisitionPageState extends State<RequisitionPage>
     _listTimer = Timer.periodic(
         const Duration(seconds: 30), (_) => _loadSilent()); // ⑪自动刷新
     kReqJump.addListener(_onJump); // ㉖通知点击直达详情
+    kReqAgain.addListener(_onAgain); // ㉖v76 领料账本一键续领
   }
 
   bool _jumping = false;
@@ -110,10 +111,25 @@ class _RequisitionPageState extends State<RequisitionPage>
     });
   }
 
+  // ㉖v76 领料账本"一键续领"：零件号|件数 → 开建单弹层预填（弹层自动按均值换算框数）
+  void _onAgain() {
+    final v = kReqAgain.value;
+    if (v.isEmpty) return;
+    kReqAgain.value = "";
+    final seg = v.split("|");
+    if (seg.length < 2) return;
+    if (!Auth.can("requisition")) {
+      _toast("当前角色无领料下单权限");
+      return;
+    }
+    _create(prefill: {seg[0]: seg[1]});
+  }
+
   @override
   void dispose() {
     _listTimer?.cancel();
     kReqJump.removeListener(_onJump);
+    kReqAgain.removeListener(_onAgain);
     super.dispose();
   }
 
@@ -331,6 +347,11 @@ class _RequisitionPageState extends State<RequisitionPage>
         title: const Text("领料单"),
         toolbarHeight: 44,
         actions: [
+          IconButton(
+              icon: const Icon(Icons.query_stats_outlined),
+              tooltip: "领料账本（消耗聚合/撑几天/呆滞榜/报告分享）",
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const ReqLedgerPage()))),
           IconButton(
               icon: const Icon(Icons.groups_outlined),
               tooltip: "备料排队看板",
@@ -1684,6 +1705,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final flat = List<Map>.from(
         sg["flatBoxes"] ?? sg["boxes"] ?? []); // 兼容旧服务器：无 flatBoxes 时退回标签级
     final total = (sg["total"] as num?)?.toDouble() ?? 0;
+    final over = (sg["over"] as num?)?.toDouble() ?? 0; // ㉖v69 整框发料超发件数（多备件，剩余可返架）
     final inStock = (sg["inStock"] as num?)?.toInt() ?? 0;
     final noInfo = (sg["noInfoQty"] as num?)?.toInt() ?? 0;
     if (flat.isEmpty) {
@@ -1716,7 +1738,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         Row(children: [
           Expanded(
               child: Text(
-                  "💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件 · ${canCtl ? '点标签单独叫车' : '点标签复制'}",
+                  "💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件${over > 0 ? "（含超发 ${_fmtInvNum(over)} 件，整框发料余料可返架）" : ""} · ${canCtl ? '点标签单独叫车' : '点标签复制'}",
                   style: const TextStyle(
                       fontSize: 11,
                       color: Color(0xFF3949AB),

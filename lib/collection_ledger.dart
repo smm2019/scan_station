@@ -223,7 +223,7 @@ extension CollectionLedgerExt on _MainPageState {
                         Expanded(
                             child: Text(
                                 _myQueue.isEmpty
-                                    ? "我的AGV任务：暂无活跃任务（点看最近叫车记录）"
+                                    ? "我的AGV任务：暂无活跃任务（叫车后排队/在途/到站实时显示在这）"
                                     : "我的AGV任务：${_qSeg("排队")}排 · ${_qSeg("下发中") + _qSeg("已下发")}在途 · ${_qSeg("到站")}到站${_qSeg("失败") > 0 ? " · ${_qSeg("失败")}失败" : ""}",
                                 style: const TextStyle(
                                     fontSize: 12.5,
@@ -324,6 +324,7 @@ extension CollectionLedgerExt on _MainPageState {
                                     "排队" => const Color(0xFFE3F2FD),
                                     "下发中" || "已下发" => const Color(0xFFFFF3E0),
                                     "到站" => const Color(0xFFE8F5E9),
+                                    "完成" => const Color(0xFFE8F5E9),
                                     "失败" => const Color(0xFFFFEBEE),
                                     _ => const Color(0xFFFAFAFA)
                                   },
@@ -332,6 +333,7 @@ extension CollectionLedgerExt on _MainPageState {
                                         "排队" => "排",
                                         "下发中" || "已下发" => "途",
                                         "到站" => "站",
+                                        "完成" => "✔",
                                         "失败" => "✕",
                                         _ => "·"
                                       },
