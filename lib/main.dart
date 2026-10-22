@@ -56,6 +56,7 @@ part 'update_page.dart'; // ⑬APK自动更新
 part 'console_web_page.dart'; // ㉖⑯ 网页控制台驾驶舱（内嵌全功能）
 part 'notify_service.dart'; // ⑭系统通知+语音播报
 part 'shortage_report_page.dart'; // ㉖v74 缺料反馈：一键生成生产部格式缺料单，分享微信
+part 'req_ledger_page.dart'; // ㉖v76 领料账本：时间窗消耗聚合/撑几天预警/一键续领/呆滞榜/报告分享
 
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
@@ -1223,6 +1224,7 @@ Future<Map<String, dynamic>> _mesQueryOnce(String labelNo) async {
       if (rows.isEmpty)
         return {
           'ok': false,
+          'found': false, // ㉖v69 明确"查无此码"（区别于网络/登录失败），采集/盘点据此禁止录入
           'msg':
               'MES查询结果为空(recordsTotal=${decoded["data"]["recordsTotal"]})，OrgId=$orgIdHdr ModuleId=$moduleId，请确认该货码在MES中有在库标签且组织范围正确'
         };
@@ -1254,6 +1256,16 @@ Future<Map<String, dynamic>> _mesQueryOnce(String labelNo) async {
   } catch (e) {
     return {'ok': false, 'msg': 'MES查询异常：$e'};
   }
+}
+
+/// ㉖v69 标签号格式闸（采集录入/盘点共用，用户拍板）：必须 N 开头 + 总长恰好 10 位
+/// 返回 null=合法；否则返回给用户看的拒绝原因
+String? labelFormatErr(String code) {
+  final c = code.trim().toUpperCase();
+  if (c.isEmpty) return "标签号为空";
+  if (!c.startsWith("N")) return "标签号「$c」不是 N 开头，请核对实物标签";
+  if (c.length != 10) return "标签号「$c」长度 ${c.length} 位（要求 N+9 位共 10 位），请核对是否漏扫/多扫";
+  return null;
 }
 
 // ===================== 盘点·任务/基准/差异服务 =====================
@@ -1405,6 +1417,7 @@ class _MainPageState extends State<MainPage>
       TextEditingController(); //采集页顺手登记：货位账本编码（选填）
   Timer? _ledgerSyncTimer; //账本同步防抖：连扫攒一批再全量推
   String _autoCallTip = ""; // ㉒自动叫车结果状态条（常驻，防SnackBar被"采集保存成功"顶掉）
+  String _autoCallCode = ""; // ㉖v69 提示条对应的货物标签号：队列刷新时校验任务是否还活着，没了就自动撤提示
   // ㉖ 采集页 AGV 队列：本账号活跃任务计数与明细（叫车结果/在途位置可见，与领料页同交互）
   List<Map> _myQueue = [];
   Map<String, int> _myQueueCnt = {};
@@ -2155,6 +2168,27 @@ class _MainPageState extends State<MainPage>
 
   Future<void> _saveRecord(String code) async {
     if (_isSaving) return;
+    // ㉖v69 标签格式闸（用户拍板）：N开头+10位，不符禁止录入
+    {
+      final fmtErr = labelFormatErr(code);
+      if (fmtErr != null) {
+        if (mounted) {
+          showDialog(
+              context: context,
+              builder: (dc) => AlertDialog(
+                    icon: const Icon(Icons.block, color: Colors.red, size: 34),
+                    title: const Text("标签号不符合规则"),
+                    content: Text("$fmtErr\n\n规则：N 开头，总长 10 位。请核对实物标签或重新扫码。"),
+                    actions: [
+                      FilledButton(onPressed: () => Navigator.pop(dc), child: const Text("知道了"))
+                    ],
+                  ));
+          _goodsInputCtrl.clear();
+          _goodsFocusNode.requestFocus();
+        }
+        return;
+      }
+    }
     // 服务端功能门禁：角色未开通"采集录入"则拒绝保存
     if (!Auth.can("collect")) {
       if (mounted)
@@ -2287,6 +2321,27 @@ class _MainPageState extends State<MainPage>
             ScaffoldMessenger.of(context)
                 .showSnackBar(const SnackBar(content: Text("MES登录已自动续期，查询正常")));
           }
+        } else if (mesResult["found"] == false) {
+          // ㉖v69 查无此码（用户拍板）：弹窗并禁止录入，防错码/私码混入账本
+          if (mounted) {
+            showDialog(
+                context: context,
+                builder: (dc) => AlertDialog(
+                      icon: const Icon(Icons.search_off,
+                          color: Colors.deepOrange, size: 34),
+                      title: const Text("MES 查无此标签"),
+                      content: Text(
+                          "标签「$code」在 MES 中查不到在库记录，已禁止录入。\n\n请核对：\n① 标签是否贴错/串托\n② 是否 MES 未打印入库的私码\n③ 重新扫码确认无误读"),
+                      actions: [
+                        FilledButton(
+                            onPressed: () => Navigator.pop(dc),
+                            child: const Text("知道了"))
+                      ],
+                    ));
+            _goodsInputCtrl.clear();
+            _goodsFocusNode.requestFocus();
+          }
+          return;
         } else if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text("MES查询失败：${mesResult["msg"]}，仅保存本地采集信息")));

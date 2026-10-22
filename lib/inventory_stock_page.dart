@@ -470,6 +470,11 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
     rows.sort(_flt == "loc"
         ? (x, y) => y.byLocDist.length.compareTo(x.byLocDist.length)
         : (x, y) => x.partNo.compareTo(y.partNo));
+    // ㉖v69 界面优化：零库存沉底成组（在库零件在前，长尾零库存统一紧凑展示）
+    rows.sort((x, y) =>
+        (x.inBoxes == 0 && x.stock <= 0 ? 1 : 0).compareTo(y.inBoxes == 0 && y.stock <= 0 ? 1 : 0));
+    final firstEmpty = rows
+        .indexWhere((r) => r.inBoxes == 0 && r.stock <= 0);
     // ㉖v52 新鲜度点/分布摘要一次预计算（列表逐帧不重复扫 byLoc）
     final dots = <String, List<Widget>>{};
     final dotSeen = <String>{}; // 同托多码只画一点（与"框数"口径一致）
@@ -495,6 +500,7 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
     }
     final totalBoxes = agg.parts.values.fold<int>(0, (s, r) => s + r.inBoxes);
     final totalQty = agg.parts.values.fold<double>(0, (s, r) => s + r.inStockQty);
+    final hasHdr = _flt != "zero" && firstEmpty >= 0; // ㉖v69 零库存分组头（筛选零库存时不折叠）
     chip(String key, String txt, Color c) => ChoiceChip(
         label: Text(txt, style: TextStyle(fontSize: 11.5, color: _flt == key ? Colors.white : c)),
         selected: _flt == key,
@@ -562,10 +568,55 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
                   child: Text("暂无库存数据", style: TextStyle(color: Colors.grey)))
               : ListView.builder(
                   padding: const EdgeInsets.all(10),
-                  itemCount: rows.length,
+                  itemCount: rows.length + (hasHdr ? 1 : 0),
                   itemBuilder: (ctx, i) {
-                    final r = rows[i];
+                    if (hasHdr && i == firstEmpty) {
+                      return Padding(
+                          padding: const EdgeInsets.only(top: 12, bottom: 2),
+                          child: Row(children: [
+                            Text("⛔ 零库存 ${rows.length - firstEmpty} 项 · 不在架",
+                                style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.grey.shade600)),
+                            const SizedBox(width: 8),
+                            Expanded(child: Divider(color: Colors.grey.shade300)),
+                          ]));
+                    }
+                    final r = rows[hasHdr && i > firstEmpty ? i - 1 : i];
                     final empty = r.inBoxes == 0;
+                    // ㉖v69 纯零库存（无期初）沉底紧凑单行；筛选"零库存"时保留完整卡片
+                    if (empty && r.stock <= 0 && _flt != "zero") {
+                      return InkWell(
+                          onTap: () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                  builder: (_) =>
+                                      PartProfilePage(partNo: r.partNo))),
+                          child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 7),
+                              decoration: BoxDecoration(
+                                  border: Border(
+                                      bottom:
+                                          BorderSide(color: Colors.grey.shade200))),
+                              child: Row(children: [
+                                const Icon(Icons.remove_circle_outline,
+                                    size: 13, color: Color(0xFF9E9E9E)),
+                                const SizedBox(width: 6),
+                                Expanded(
+                                    child: Text("${r.partNo}  ${r.itemName}",
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            fontSize: 11.5,
+                                            color: Colors.black54))),
+                                Text("0",
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.grey.shade400,
+                                        fontWeight: FontWeight.w600)),
+                              ])));
+                    }
                     // 分布摘要：NB02-A×3 · NB03-B×2（巷道级，最多列 3 处）
                     final dist = distOf[r.partNo] ?? const [];
                     final distTxt = dist

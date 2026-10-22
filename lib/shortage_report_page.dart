@@ -151,20 +151,36 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         }
       }
     } catch (_) {}
-    // 零件全集佐证：采集流水出现过的零件（全厂入过库）——零库存必须有它或需求背书，防账本脏零件号刷屏
+    // 零件全集佐证：㉖v69 改用服务器背书接口（字典∪账本∪流水∪出库∪领料）——旧版拉本机流水前5000条，
+    // 数据迁移清空流水后零库存零件全部丢失背书被误过滤（"库存汇总很多零库存、缺料反馈却没有"根因）
     final hist = <String>{};
     try {
-      final sl = await AuthApi.scanlogGet().timeout(const Duration(seconds: 8));
-      if (sl["ok"] == true) {
-        for (final s in List<Map>.from(sl["items"] ?? [])) {
-          final pn = (s["pn"]?.toString() ?? "").toUpperCase();
+      final bk = await AuthApi.partsBacking().timeout(const Duration(seconds: 8));
+      if (bk["ok"] == true) {
+        for (final x in List<Map>.from(bk["list"] ?? [])) {
+          final pn = (x["pn"]?.toString() ?? "").toUpperCase();
           if (pn.isEmpty) continue;
           hist.add(pn);
-          final nm = s["nm"]?.toString() ?? "";
+          final nm = x["nm"]?.toString() ?? "";
           if (nm.isNotEmpty && (names[pn] ?? "").isEmpty) names[pn] = nm;
         }
       }
     } catch (_) {}
+    if (hist.isEmpty) {
+      // 背书接口失败降级：仍拉全厂流水（旧口径），保证零库存判定有兜底
+      try {
+        final sl = await AuthApi.scanlogGet(limit: 20000).timeout(const Duration(seconds: 8));
+        if (sl["ok"] == true) {
+          for (final s in List<Map>.from(sl["items"] ?? [])) {
+            final pn = (s["pn"]?.toString() ?? "").toUpperCase();
+            if (pn.isEmpty) continue;
+            hist.add(pn);
+            final nm = s["nm"]?.toString() ?? "";
+            if (nm.isNotEmpty && (names[pn] ?? "").isEmpty) names[pn] = nm;
+          }
+        }
+      } catch (_) {}
+    }
     final out = <_ShortageItem>[];
     for (final pn in {...stock.keys, ...needMap.keys, ...hist}) {
       final st = stock[pn] ?? 0;

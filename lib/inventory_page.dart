@@ -690,6 +690,23 @@ class _InvScanPageState extends State<_InvScanPage> {
     if (_busy) return;
     code = code.trim();
     if (code.isEmpty) return;
+    // ㉖v69 标签格式闸（与采集同口径）：N开头+10位，不符禁止录入
+    final fmtErr = labelFormatErr(code);
+    if (fmtErr != null) {
+      if (mounted) {
+        showDialog(
+            context: context,
+            builder: (dc) => AlertDialog(
+                  icon: const Icon(Icons.block, color: Colors.red, size: 34),
+                  title: const Text("标签号不符合规则"),
+                  content: Text("$fmtErr\n\n规则：N 开头，总长 10 位。请核对实物标签或重新扫码。"),
+                  actions: [
+                    FilledButton(onPressed: () => Navigator.pop(dc), child: const Text("知道了"))
+                  ],
+                ));
+      }
+      return;
+    }
     if (_curLoc.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先绑定当前盘点货位！")));
       return;
@@ -707,6 +724,22 @@ class _InvScanPageState extends State<_InvScanPage> {
       } else {
         // 2. MES 反查
         final mes = await mesQueryLabel(code);
+        if (mes["found"] == false) {
+          // ㉖v69 查无此码（用户拍板）：弹窗禁止录入，不再挂起入账
+          if (mounted) {
+            showDialog(
+                context: context,
+                builder: (dc) => AlertDialog(
+                      icon: const Icon(Icons.search_off, color: Colors.deepOrange, size: 34),
+                      title: const Text("MES 查无此标签"),
+                      content: Text("标签「$code」在 MES 中查不到在库记录，已禁止录入盘点。\n\n请核对标签是否贴错/串托，或重新扫码确认无误读。"),
+                      actions: [
+                        FilledButton(onPressed: () => Navigator.pop(dc), child: const Text("知道了"))
+                      ],
+                    ));
+          }
+          return;
+        }
         if (mes["ok"] != true) {
           rec.flag = 2;
           rec.remark = mes["msg"].toString();

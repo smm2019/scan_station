@@ -202,8 +202,8 @@ extension CollectionLedgerExt on _MainPageState {
                                 ? Colors.orange.shade900
                                 : Colors.blueGrey))),
               )),
-        // ㉖ 我的AGV任务统计行（AGV模式且有活跃任务时显示；点开面板看每框状态与在途位置，与领料页同交互）
-        if (isAgv && _myQueue.isNotEmpty)
+        // ㉖ 我的AGV任务统计行（AGV模式常驻：有任务看进度，没任务也留入口随时查叫车结果；与领料页同交互）
+        if (isAgv)
           Padding(
               padding: const EdgeInsets.only(top: 6),
               child: InkWell(
@@ -222,7 +222,9 @@ extension CollectionLedgerExt on _MainPageState {
                         const SizedBox(width: 6),
                         Expanded(
                             child: Text(
-                                "我的AGV任务：${_qSeg("排队")}排 · ${_qSeg("下发中") + _qSeg("已下发")}在途 · ${_qSeg("到站")}到站${_qSeg("失败") > 0 ? " · ${_qSeg("失败")}失败" : ""}",
+                                _myQueue.isEmpty
+                                    ? "我的AGV任务：暂无活跃任务（点看最近叫车记录）"
+                                    : "我的AGV任务：${_qSeg("排队")}排 · ${_qSeg("下发中") + _qSeg("已下发")}在途 · ${_qSeg("到站")}到站${_qSeg("失败") > 0 ? " · ${_qSeg("失败")}失败" : ""}",
                                 style: const TextStyle(
                                     fontSize: 12.5,
                                     fontWeight: FontWeight.w600,
@@ -256,6 +258,16 @@ extension CollectionLedgerExt on _MainPageState {
       for (final q in mine) {
         final s = q["state"]?.toString() ?? "?";
         cnt[s] = (cnt[s] ?? 0) + 1;
+      }
+      // ㉖v69 提示条存活校验：叫车成功提示对应的货物，其队列项已被删除/已完成 → 提示自动撤销（防"任务没了还显示叫车成功"）
+      if (_autoCallTip.startsWith("🚗") && _autoCallCode.isNotEmpty) {
+        final alive = mine.any((q) =>
+            (q["code"] ?? "").toString().toUpperCase() == _autoCallCode &&
+            q["state"] != "完成");
+        if (!alive) {
+          _autoCallTip = "";
+          _autoCallCode = "";
+        }
       }
       setState(() {
         _myQueue = mine;
@@ -659,8 +671,10 @@ extension CollectionLedgerExt on _MainPageState {
         _colCalled.add(loc);
         kAgvQueueTick.value++; // ㉖ 叫车成功→采集页队列统计即时刷新
         LocalLog.op('自动入库叫车', "$st→$loc 容器$cn");
-        if (mounted)
+        if (mounted) {
+          _autoCallCode = (codes0.isNotEmpty ? codes0.first : "").toUpperCase(); // ㉖v69 记录货物码：任务被删/完成时提示条自动撤销
           setState(() => _autoCallTip = "🚗 自动叫车成功：$st → $loc（容器 $cn）");
+        }
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text("🚗 自动叫车：${r["msg"]}"),
@@ -1415,6 +1429,7 @@ Future<void> scanRecordCancel(Isar isar, ScanRecord r) async {
     // 该标签已无生效采集：整框从账本拣下(墓碑同步服务器) + 撤回 seenIn 防重允许重扫
     await ledgerRemoveBoxAndPush(up);
     unawaited(AuthApi.labelUnsee(up));
+    unawaited(AuthApi.agvQueueCancel([up])); // ㉖v69 作废即撤车：该货物在排队/已下发的AGV任务同步取消，防车白跑一趟
   }
   unawaited(scanPushNow()); // 作废即刻上墙，网页入库流水秒级变"作废"
 }

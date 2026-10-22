@@ -920,12 +920,12 @@ const PARAMS = {
   notifKeep:      { grp: '数据保留', name: '通知保留条数', unit: '条', min: 100, max: 5000, d: 500, tip: '消息中心滚动保留最近多少条通知（超出丢弃最旧）' },
   archDays:       { grp: '数据保留', name: '流水归档窗口', unit: '天', min: 30, max: 365, d: 90, tip: '采集流水/出库单超期挪归档目录（主库瘦身；导出勾「含归档」仍可查全史）；原硬编码180' },
   reqArchDays:    { grp: '数据保留', name: '领料单归档窗口', unit: '天', min: 90, max: 730, d: 365, tip: '已终结(签收/拒单/取消)领料单超期挪归档，主库只留在途与近一年；未终结单永不归档' },
-  rackCount:      { grp: '存储配置', name: '高架货架数', unit: '架', min: 1, max: 40, d: 8, tip: 'NB02 高位货架台数（现场 8 台：A~H 一个字母一台，货位码 NB02-字母-列-层 的字母段即架号）' },
-  rackCols:       { grp: '存储配置', name: '每架列数', unit: '列', min: 4, max: 60, d: 16, tip: '每台货架横向格列数（现场 16 列）；总格位=架数×列数×层数' },
-  rackTiers:      { grp: '存储配置', name: '每架层数', unit: '层', min: 1, max: 10, d: 4, tip: '每台货架纵向层数（现场 4 层：1F-4F）' },
-  gndZones:       { grp: '存储配置', name: '地面区数', unit: '区', min: 1, max: 20, d: 6, tip: 'NB03 地面货区数量（现场 A/B/C/F/G/H 六区）；地面总格位=区数×每区排数×每排格数' },
-  gndRows:        { grp: '存储配置', name: '每区排数', unit: '排', min: 1, max: 40, d: 18, tip: '每个地面区的默认排数（现场排号到 18）；可在「地面排配置」按区单独覆盖（如 B 区 15 排），并支持停用指定排（如 A-01 不用）' },
-  gndCols:        { grp: '存储配置', name: '每排格数', unit: '格', min: 1, max: 60, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数）' },
+  rackCount:      { grp: '存储配置', hide: 1, name: '高架货架数', unit: '架', min: 1, max: 40, d: 8, tip: 'NB02 高位货架台数（现场 8 台：A~H 一个字母一台，货位码 NB02-字母-列-层 的字母段即架号）' },
+  rackCols:       { grp: '存储配置', hide: 1, name: '每架列数', unit: '列', min: 4, max: 60, d: 16, tip: '每台货架横向格列数（现场 16 列）；总格位=架数×列数×层数' },
+  rackTiers:      { grp: '存储配置', hide: 1, name: '每架层数', unit: '层', min: 1, max: 10, d: 4, tip: '每台货架纵向层数（现场 4 层：1F-4F）' },
+  gndZones:       { grp: '存储配置', hide: 1, name: '地面区数', unit: '区', min: 1, max: 20, d: 6, tip: 'NB03 地面货区数量（现场 A/B/C/F/G/H 六区）；地面总格位=区数×每区排数×每排格数' },
+  gndRows:        { grp: '存储配置', hide: 1, name: '每区排数', unit: '排', min: 1, max: 40, d: 18, tip: '每个地面区的默认排数（现场排号到 18）；可在「地面排配置」按区单独覆盖（如 B 区 15 排），并支持停用指定排（如 A-01 不用）' },
+  gndCols:        { grp: '存储配置', hide: 1, name: '每排格数', unit: '格', min: 1, max: 60, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数）' },
   abcWindow:      { grp: '调度策略', name: 'ABC周转统计窗', unit: '天', min: 7, max: 365, d: 30, tip: '出库单+采集流水的统计窗口，用于给零件打周转分' },
   abcTop:         { grp: '调度策略', name: 'A类件比例', unit: '%', min: 0, max: 80, d: 20, tip: '周转分前N%判为A类：入库自动分配时优先靠近CK站台的货架列（0=关闭该策略）' },
   aisleCap:       { grp: '调度策略', name: '巷道并发上限', unit: '任务', min: 0, max: 8, d: 2, tip: '同一货架巷道(区-排)在途搬运任务数上限，达到则新出库任务本轮不放行、入库分配避开（0=关闭节流）' },
@@ -1137,10 +1137,24 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
     if (needQty > 0 && acc >= needQty) break;
     if (pick.length >= 24) break; // 最多建议 24 框（大单一筐20件×25框也能覆盖大半）
   }
+  // ㉖v69 末框最小化超发：贪心够数后，若最后一框明显过大，用未选框中"能补足剩余需求且件数最小"的框替换（批次不晚于它，守 FIFO 大序）
+  if (needQty > 0 && acc > needQty && pick.length) {
+    const last = pick[pick.length - 1];
+    const needLast = acc - last.q; // 去掉末框后的累计
+    const remain = needQty - needLast; // 末框需覆盖的件数
+    const cand = boxes.filter(x => !pick.includes(x) && x.q >= remain && x.q < last.q && String(x.b || '9999') <= String(last.b || '9999'))
+      .sort((a, b) => a.q - b.q || String(a.b || '9999').localeCompare(String(b.b || '9999')))[0];
+    if (cand) {
+      const called2 = cand.allCodes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || '';
+      cand.agv = called2;
+      pick[pick.length - 1] = cand; acc = needLast + cand.q;
+    }
+  }
+  const over = Math.max(0, Math.round((acc - needQty) * 100) / 100); // 超发件数（整框发料无法精确凑数时，供UI提示"多备N件/可返架"）
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   const noInfoKeys = new Set();
   for (const x of match) if (!x.q) noInfoKeys.add(boxKeyOf(x));
-  return { boxes: pick, flatBoxes, total: acc, inStock: boxes.length, noInfoQty: noInfoKeys.size };
+  return { boxes: pick, flatBoxes, total: acc, over, inStock: boxes.length, noInfoQty: noInfoKeys.size };
 }
 function reqView(r) {
   const items = (r.items || []).map(i => {
@@ -3087,6 +3101,16 @@ return send(res, 200, {
         pushOps(u, '容器类型配置', clean.length + ' 项', clean.map((x) => x.show).join('、'));
         return send(res, 200, { ok: true, types: clean, msg: '已保存，全端下次进入采集页生效' });
       }
+      // ---- ㉖v69 零件全集背书：字典∪账本∪流水∪出库∪领料 出现过的全部零件号（缺料反馈判"零库存"的地基，不随流水清空而丢失）----
+      if (req.method === 'GET' && p === '/api/parts/backing') {
+        const s = new Set();
+        for (const pn of Object.keys(db.itemDict || {})) s.add(pn);
+        for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase().trim(); if (pn) s.add(pn); }
+        for (const st of Object.values(db.scanlog || {})) { const pn = String(st.pn || '').toUpperCase().trim(); if (pn) s.add(pn); }
+        for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) { const pn = String(i.code || i.pn || '').toUpperCase().trim(); if (pn) s.add(pn); }
+        for (const r of db.requisitions || []) for (const it of (r.items || [])) { const pn = String(it.partNo || '').toUpperCase().trim(); if (pn) s.add(pn); }
+        return send(res, 200, { ok: true, total: s.size, list: [...s].map((pn) => ({ pn, nm: (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || '' })) });
+      }
       // ===== ㉖v63 断料预测：日均耗用（近N天出库）÷ 在架 = 还能撑几天，红<3/黄3~7/绿>7 =====
       if (req.method === 'GET' && p === '/api/stock/risk') {
         const r = stockRiskOf(url.searchParams.get('days'));
@@ -4245,7 +4269,7 @@ return send(res, 200, {
       }
       if (req.method === 'GET' && p === '/api/admin/params') {
         const cur = P();
-        const items = Object.entries(PARAMS).map(([k, d]) => ({ k, grp: d.grp || '其他', name: d.name, unit: d.unit, min: d.min, max: d.max, def: d.d, val: cur[k], tip: d.tip, set: (db.params || {})[k] !== undefined }));
+        const items = Object.entries(PARAMS).filter(([, d]) => !d.hide).map(([k, d]) => ({ k, grp: d.grp || '其他', name: d.name, unit: d.unit, min: d.min, max: d.max, def: d.d, val: cur[k], tip: d.tip, set: (db.params || {})[k] !== undefined })); // ㉖v69 hide=下架不展示（存储配置：高架固定/地面有专区）
         return send(res, 200, { ok: true, items, cfgRev: db.cfgRev || 0 });
       }
       // ---- ㉖ 系统错误日志：服务器自身异常留痕（请求500/后台任务/未捕获），供控制后台定位 ----

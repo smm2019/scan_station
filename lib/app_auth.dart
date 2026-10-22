@@ -302,6 +302,9 @@ class AuthApi {
 
   /// 拉取电脑服务器上的账本全量（公开只读；含墓碑，PDA 合并用）
   static Future<Map> ledgerGet() async => _req("GET", "/api/ledger");
+  /// ㉖v69 零件全集背书（字典∪账本∪流水∪出库∪领料）：缺料反馈判零库存的地基
+  static Future<Map> partsBacking() async =>
+      _req("GET", "/api/parts/backing", token: await AuthStore.token());
   static Future<Map> ledgerGetByCode(String c) async =>
       _req("GET", "/api/ledger?c=" + Uri.encodeComponent(c),
           token: await AuthStore.token());
