@@ -291,9 +291,14 @@ class AuthApi {
   // ---- 货位账本同步（PDA ↔ 电脑服务器，增量合并：新者胜+墓碑删除） ----
   /// items: [{c:标签, l:货位, f:料框, t:毫秒, pid:托号}]；del: [{c:标签, t:删除时间}] 墓碑
   static Future<Map> ledgerSync(List<Map> items,
-          {List<Map> del = const []}) async =>
+          {List<Map> del = const [], String epoch = ""}) async =>
       _req("POST", "/api/ledger/sync",
-          body: {"items": items, "del": del}, token: await AuthStore.token());
+          body: {
+            "items": items,
+            "del": del,
+            if (epoch.isNotEmpty) "epoch": epoch
+          }, // ㉖v69 世代：服务器据此拦旧缓存防污染新账本
+          token: await AuthStore.token());
 
   /// 拉取电脑服务器上的账本全量（公开只读；含墓碑，PDA 合并用）
   static Future<Map> ledgerGet() async => _req("GET", "/api/ledger");

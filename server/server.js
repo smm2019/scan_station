@@ -213,6 +213,8 @@ function loadDb() {
     }
     if (_fx) { added = true; console.log('[migrate] 出库流水乱码自愈 ' + _fx + ' 处（name 反查回填/替换符剥离，move 归一）'); }
   }
+  // ㉖v69 账本世代标记：数据迁移整表替换盖章一次；旧版PDA缓存凭世代对比清理旧数据，推送侧拦旧世代防污染新账本（今后任何整表重置都换一个新值）
+  if (!d.ledgerEpoch) { d.ledgerEpoch = 'IMP-20261022'; d.ledgerEpochAt = Date.now(); added = true; }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.cyclePlans !== 'object' || d.cyclePlans === null || Array.isArray(d.cyclePlans)) { d.cyclePlans = {}; added = true; } // ㉖v63 循环盘点当日计划
   if (typeof d.cycleLog !== 'object' || d.cycleLog === null || Array.isArray(d.cycleLog)) { d.cycleLog = {}; added = true; } // ㉖v63 验证留痕 {日:{格:{r,by,at,note}}}
@@ -1723,7 +1725,7 @@ const server = http.createServer(async (req, res) => {
       if (fz) list = list.filter(x => String(x.c).toUpperCase().includes(fz) || String(x.l).toUpperCase().includes(fz) || String(x.p || '').toUpperCase().includes(fz) || String(x.n || '').toUpperCase().includes(fz));
       if (fc) list = list.filter(x => String(x.c).toUpperCase().startsWith(fc));
       if (fl) list = list.filter(x => String(x.l).toUpperCase().startsWith(fl));
-      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, items: list, tomb: db.ledgerTomb || [] });
+      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, epoch: db.ledgerEpoch || '', items: list, tomb: db.ledgerTomb || [] }); // ㉖v69 世代标记：PDA旧缓存凭此识别清理
     }
 
     // ---- 货位账本：电脑查询页（表格地图式：按货位排序，同位多标签并排显示）----
@@ -1848,6 +1850,8 @@ const server = http.createServer(async (req, res) => {
         if (!Array.isArray(b.del)) b.del = [];
         if (!raw.length && !b.del.length) return send(res, 400, { ok: false, msg: 'items/del 均为空，已拒绝（防止误清空白账本）' });
         if (raw.length > 20000) return send(res, 400, { ok: false, msg: '条目超过2万，疑似异常' });
+        // ㉖v69 世代闸：账本整表替换（数据迁移）后，旧版PDA的旧缓存不得推回服务器污染新账本；旧世代须先拉取对齐（拉取侧会自动清旧缓存）
+        if (db.ledgerEpoch && String(b.epoch || '').trim() !== db.ledgerEpoch) return send(res, 200, { ok: false, code: 'epochStale', epoch: db.ledgerEpoch, msg: '本机账本为旧世代（服务器账本已整表替换），请先拉取对齐后再推送' });
         const seen = new Set(); const clean = [];
         for (const it of raw) {
           const c = String((it && it.c) || '').trim().toUpperCase();
@@ -1864,6 +1868,8 @@ const server = http.createServer(async (req, res) => {
         // ㉔S1 时间戳双轨（F2加固）：指纹=登记时刻+内容（含t）；"无新到达"=与本机上次推送一致(含已删行的旧副本)
         // 或与服务器现值完全一致(首拉旧副本重放)——一律不动服务器；真改动(内容/t变)按到达时刻rec裁决，墓碑按t拦截早于它的重登
         const rec0 = Date.now(); const _diffs = []; const _seen = (db.seenIn = db.seenIn || {}); // ㉖方案4.2：服务器diff自动留痕（谁把X从A改到B，字段级前值→后值）
+        // ㉖v69 旧版PDA兼容闸：不带世代的推送=未升级设备；迁移时刻之前的旧缓存行一律丢弃（防旧账本回灌/撞改新行），迁移后的新登记照常受理
+        const _staleCut = (db.ledgerEpoch && String(b.epoch || '').trim() !== db.ledgerEpoch) ? (Number(db.ledgerEpochAt) || 0) : 0; let _staleDrop = 0;
         const _preCounts = partBoxCounts(); // ⑮合并前在架快照（断料检测基线）
         const cur = new Map(db.ledger.map(x => [String(x.c).toUpperCase(), x]));
         const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), { t: Number(x.t) || 0, rec: Number(x.rec) || 0 }]));
@@ -1879,6 +1885,7 @@ const server = http.createServer(async (req, res) => {
           const tm = tomb.get(key);
           const tombT = tm ? tm.t : 0;
           const h = _hash(it);
+          if (_staleCut && it.t > 0 && it.t < _staleCut) { _staleDrop++; skipped++; continue; } // ㉖v69 旧世代切割：迁移前旧缓存行丢弃
           // 无新到达闸：①与本机上次视图一致（未来时钟的旧副本重放也在这挡死）②与服务器现值逐字段一致（首拉后原样重放）
           // ③命中该行服务器历史值（本机从未推过该行的旧快照回填——PDA真改动必更新t，旧( t,h )组合只可能是过期副本）
           if (_fpOld[key] === h || (old && _hash(old) === h) || (old && (old.hist || []).some((e) => e.t === (Number(it.t) || 0) && e.h === h))) { _fpNew[key] = h; kept++; continue; }
@@ -5274,4 +5281,5 @@ process.on('beforeExit', () => { try { flushSave(); } catch (_) {} }); // 自然
 server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认keep-alive 5s短于浏览器连接池复用窗口，POST落在服务端已关连接上被reset且不自动重试；抬到65s(长于常见代理60s)
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
+server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
 server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); } catch (_) {} backupDb(); archiveOld(); });

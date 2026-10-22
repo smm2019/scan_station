@@ -893,6 +893,9 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
 Timer? _pushLedgerTimer;
 bool _ledgerPushPending = false; // ㉖⑰ 有未推送的账本变更
 bool get ledgerPushPending => _ledgerPushPending;
+// ㉖v69 账本世代：服务器整表替换（数据迁移）会盖世代章；本机世代不符先清旧缓存再同步，防旧账本残留本机/推回服务器
+const _kLedgerEpoch = "ledger_epoch_v69";
+String? _ledgerEpochSeen; // 本进程已对齐的世代；null=尚未对齐
 void scheduleLedgerPush({int seconds = 15}) {
   _ledgerPushPending = true;
   // ㉖⑰ 节流不重置：原实现每次登记重置定时器，连续扫码账本永远推不出去（网页"查不到新料"根因）
@@ -907,6 +910,18 @@ void _ledgerPushRetry() {
 
 Future<Map> ledgerPushNow() async {
   try {
+    // ㉖v69 世代闸：本机世代与服务器不符（服务器账本被整表替换过）→ 先拉取对齐（拉取侧清旧缓存）再重试推送
+    final sp0 = await SharedPreferences.getInstance();
+    final ep0 = sp0.getString(_kLedgerEpoch) ?? "";
+    if (ep0.isNotEmpty && _ledgerEpochSeen != ep0) {
+      final pr = await ledgerPullMerge(force: true);
+      if (pr["ok"] == true && (sp0.getString(_kLedgerEpoch) ?? "") == ep0) {
+        _ledgerEpochSeen = ep0;
+        return ledgerPushNow();
+      }
+      _ledgerPushRetry();
+      return {"ok": false, "msg": "账本世代不一致，对齐失败，稍后自动重试"};
+    }
     final all = await _globalIsar.shelfPlacements.where().findAll();
     final infos = {
       for (final e in await _globalIsar.labelInfos.where().findAll())
@@ -980,7 +995,8 @@ Future<Map> ledgerPushNow() async {
     }).toList();
     final del = await ledgerTombs();
     if (items.isEmpty && del.isEmpty) return {"ok": false, "msg": "账本为空"};
-    final r = await AuthApi.ledgerSync(items, del: del);
+    final r = await AuthApi.ledgerSync(items, del: del,
+        epoch: sp0.getString(_kLedgerEpoch) ?? ""); // ㉖v69 带世代：服务器据此拦旧缓存
     // ⑲改位冲突提示：推送被他人更新数据压过的标签=本机登记未生效，弹窗提醒重新登记
     final rej = r["rejected"];
     if (r["ok"] == true && rej is List && rej.isNotEmpty) {
@@ -1006,7 +1022,12 @@ Future<Map> ledgerPushNow() async {
     if (r["ok"] == true) {
       await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
       _ledgerPushPending = false; // ㉖⑰ 推送成功清 pending
+      _ledgerEpochSeen = sp0.getString(_kLedgerEpoch) ?? ""; // ㉖v69 推送成功=与当前世代对齐
     } else {
+      if (r["code"] == "epochStale") {
+        _ledgerEpochSeen = null; // ㉖v69 双保险：被服务器世代闸拦下 → 强制重新对齐清旧缓存
+        unawaited(ledgerPullMerge(force: true));
+      }
       _ledgerPushRetry(); // 失败30秒后自动重试
     }
     return r;
@@ -1121,6 +1142,24 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
     final r = await AuthApi.ledgerGet();
     if (r["ok"] != true)
       return {"ok": false, "msg": (r["msg"] ?? "拉取失败").toString()};
+    // ㉖v69 世代对齐：服务器世代变化（账本整表替换）→ 先清空本机旧缓存（含墓碑/已发料缓存）再合并，杜绝新旧叠加
+    final epSrv = (r["epoch"] ?? "").toString();
+    if (epSrv.isNotEmpty) {
+      final sp = await SharedPreferences.getInstance();
+      if ((sp.getString(_kLedgerEpoch) ?? "") != epSrv) {
+        await _globalIsar.writeTxn(() async {
+          await _globalIsar.shelfPlacements.where().deleteAll();
+          await _globalIsar.labelInfos.where().deleteAll();
+          await _globalIsar.scanRecords.where().deleteAll();
+          await _globalIsar.recordExtras.where().deleteAll();
+          await _globalIsar.outboundOrders.where().deleteAll();
+        });
+        await sp.remove("req_issued_barcodes"); // 领料已发料缓存（与 requisition_page 私有常量同值）
+        await _saveTombs({}); // 旧墓碑会挡住新账本行拉入，一并清
+        await sp.setString(_kLedgerEpoch, epSrv);
+      }
+      _ledgerEpochSeen = epSrv;
+    }
     final items = List<Map>.from(r["items"] ?? []);
     final tomb = List<Map>.from(r["tomb"] ?? []);
     final local = await _globalIsar.shelfPlacements.where().findAll();
