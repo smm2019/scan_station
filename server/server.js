@@ -309,6 +309,47 @@ function loadDb() {
       }
       if (_gf) { added = true; console.log('[migrate] 流水初始货位自愈：' + _gf + ' 条粗码已按账本对齐完整格位'); }
     }
+    // ㉖v85c 地面入库账本自愈：旧版PDA地面模式"选区自动落格"是死代码（选区在调用前已被清空），
+    // 扫完只留粗码流水（gl=H9）、账本无行 → 网页⚠未登记且库存查无（实测 N26J230458/459 19:53 两框）。
+    // 对流水粗码、账本缺行、无出库史、无墓碑的框：按该排首个空格位（groundSlots 格数）自动补登账本并把流水升到完整格位。
+    // 幂等：补登后 gl 已是完整格位，下次启动不再命中；PDA 端 v85c APK 上线后新扫在源头即落格，本通道只兜底存量与未升级设备
+    {
+      const _shipAll = new Set();
+      for (const o of Object.values(d.outbound || {})) for (const it of (o.items || [])) String(it.barcode || '').split(/[;；]/).forEach((b) => { const s2 = b.trim().toUpperCase(); if (s2) _shipAll.add(s2); });
+      for (const r of d.requisitions || []) for (const it of (r.items || [])) for (const e of (it.issued || [])) String(typeof e === 'string' ? e : (e.c || '')).split(/[;；]/).forEach((b) => { const s2 = b.trim().toUpperCase(); if (s2) _shipAll.add(s2); });
+      const _tombAll = new Set((d.ledgerTomb || []).map((x) => String(x.c || '').toUpperCase()));
+      const _ledCodes = new Set((d.ledger || []).map((x) => String(x.c || '').toUpperCase()));
+      const _occByRow = {}; // 'NB03-H-09' → Set('01','02'...)
+      for (const x of d.ledger || []) {
+        const m2 = String(x.l || '').match(/^(NB\d{2})-([A-H])-(\d{1,2})-(\d{1,2})$/); // 仅地面数字格位（高架3F等不匹配=天然排除）
+        if (!m2) continue;
+        const pref = m2[1] + '-' + m2[2] + '-' + m2[3].padStart(2, '0');
+        (_occByRow[pref] = _occByRow[pref] || new Set()).add(m2[4].padStart(2, '0'));
+      }
+      const _gs = d.groundSlots || {};
+      let _rg = 0;
+      for (const s of Object.values(d.scanlog || {})) {
+        if (s.cx || Number(s.wt) !== 1) continue;
+        const gm = String(s.gl || '').match(/^([A-H])-?(\d{1,2})$/); // 粗码 H9 / H-09 等
+        if (!gm) continue;
+        const code = String(s.code || '').trim().toUpperCase();
+        if (!code || _ledCodes.has(code) || _tombAll.has(code) || _shipAll.has(code)) continue; // 已登记/已消账/已出库不动
+        const prefix = 'NB03-' + gm[1] + '-' + gm[2].padStart(2, '0');
+        const maxSlot = Number(_gs[prefix]) || 12;
+        const occ = _occByRow[prefix] || new Set();
+        let slot = '';
+        for (let i = 1; i <= maxSlot; i++) { const ss = String(i).padStart(2, '0'); if (!occ.has(ss)) { slot = ss; break; } }
+        if (!slot) continue; // 该区排满：留给人工处理，不臆造跨区
+        const full = prefix + '-' + slot;
+        occ.add(slot);
+        (d.ledger = d.ledger || []).push({ c: code, l: full, f: String(s.ct || ''), t: Number(s.t) || Date.now(), p: String(s.pn || ''), n: String(s.nm || ''), q: Number(s.q) || 0, b: String(s.batch || '').slice(0, 20), pid: '', mv: '人工', src: String(s.gl), by: String(s.op || '系统自愈'), rec: Date.now(), hist: [] });
+        _ledCodes.add(code);
+        s.gl = full;
+        _rg++;
+        console.log('[migrate] 地面入库自愈补登 ' + code + ' → ' + full);
+      }
+      if (_rg) { added = true; console.log('[migrate] 地面入库账本自愈：补登 ' + _rg + ' 框（粗码流水升完整格位）'); }
+    }
   }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.cyclePlans !== 'object' || d.cyclePlans === null || Array.isArray(d.cyclePlans)) { d.cyclePlans = {}; added = true; } // ㉖v63 循环盘点当日计划

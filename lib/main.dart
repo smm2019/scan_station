@@ -2421,6 +2421,9 @@ class _MainPageState extends State<MainPage>
           mesPartNo: rec.mesPartNo ?? "", qty: rec.mesQty ?? 0);
       _goodsInputCtrl.clear();
       final lastCtype = _containerType; // ㉖⑬ 清空前捕获容器，供手动「提交任务」
+      // ㉖v85c 清空前捕获地面选区：原自动落格分支读 _selectedGroundLoc，但它在下方 setState 已被置空，
+      // 条件恒为假=死代码（实测 10/23 宋明明选 H9 后流水只落粗码、账本无行）；与站台 autoCallSt 同款先捕获再传参
+      final lastGroundZone = _selectedGroundLoc ?? "";
       setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
         _remarkInputCtrl.clear();
@@ -2441,7 +2444,8 @@ class _MainPageState extends State<MainPage>
         });
       }
       await _ledgerRegisterOnSave(code,
-          autoCallStation: autoCallSt); //顺手登记货位账本（选填，不影响采集主流程）
+          autoCallStation: autoCallSt,
+          groundZone: lastGroundZone); //顺手登记货位账本（选填，不影响采集主流程）
       scheduleScanPush(); //采集流水定时同步电脑数据库
       await _refreshRecord();
       await _refreshBatchStat();
@@ -2472,7 +2476,7 @@ class _MainPageState extends State<MainPage>
   ///采集页顺手登记：保存成功时若填了「货位账本编码」，把本标签（整托含兄弟码）写入账本，并预约全量同步电脑。
   ///留空则不写账本，与改动前行为完全一致；编码格式不符或货位已被他人占用时只提示不写入。
   Future<void> _ledgerRegisterOnSave(String code,
-      {String autoCallStation = ""}) async {
+      {String autoCallStation = "", String groundZone = ""}) async {
     try {
       if (_ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO') {
         //自动分配：先按零件号定货位并回填
@@ -2480,15 +2484,14 @@ class _MainPageState extends State<MainPage>
       }
       var loc = _ledgerLocCtrl.text.trim().toUpperCase();
       if (loc == 'AUTO') return; //AUTO 分配失败的情形，不写账本
-      if (loc.isEmpty &&
-          _workType == 1 &&
-          (_selectedGroundLoc ?? "").isNotEmpty) {
+      if (loc.isEmpty && _workType == 1 && groundZone.isNotEmpty) {
         // 地面模式未填编码：在人选的区内自动分配第一个空格位
-        final auto = await this.nb03AutoSlot(_selectedGroundLoc!);
+        // ㉖v85c 读调用方清空前捕获的 groundZone（原读 _selectedGroundLoc 恒为空=死代码）
+        final auto = await this.nb03AutoSlot(groundZone);
         if (auto == null) {
           if (mounted)
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text("$_selectedGroundLoc 区 12 格位已满，请在货位账本登记框手动指定其他区"),
+                content: Text("$groundZone 区 12 格位已满，请在货位账本登记框手动指定其他区"),
                 backgroundColor: Colors.orange));
           return;
         }
