@@ -2389,7 +2389,7 @@ const server = http.createServer(async (req, res) => {
         const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station)).map((s) => { const m = stnMetaOf(s.station); return { ...s, alias: m.alias || '', role: ['any', 'out', 'in', 'insp'].includes(m.role) ? m.role : 'any', off: m.off === true }; }); // ㉖⑫ 附站台身份（PDA 站台页/叫车/检验选台按此显示与过滤）
         const aliases = {}; for (const c of AGV_STNS) { const a = stnAlias(c); if (a) aliases[c] = a; }
         const holdAvg = {}; for (const [k, v] of Object.entries(db.rcsHoldStat || {})) holdAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
-        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)), recent: (db.agvQueue || []).filter((q) => ['完成', '取消'].includes(q.state)).sort((a, b) => (b.updAt || 0) - (a.updAt || 0)).slice(0, 60), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, agingMin: P().agingMin, cfgRev: db.cfgRev || 0 }); // ㉖ recent=完成/取消终态（留2小时；失败项仍在 queue 活跃表带原因展示），队列控制台"最近任务"卡片数据源；㉖v61 agingMin透传前端同口径排
+        return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).map((q) => Object.assign({}, q, { stage: agvStage(q) })), recent: (db.agvQueue || []).filter((q) => ['完成', '取消'].includes(q.state)).sort((a, b) => (b.updAt || 0) - (a.updAt || 0)).slice(0, 60).map((q) => Object.assign({}, q, { stage: agvStage(q) })), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, agingMin: P().agingMin, cfgRev: db.cfgRev || 0 }); // ㉖ recent=完成/取消终态（留2小时；失败项仍在 queue 活跃表带原因展示），队列控制台"最近任务"卡片数据源；㉖v61 agingMin透传前端同口径排
       }
       // ===== ㉖⑫ 站台看板：每台实时状态+身份(别名/用途/停用)+今日吞吐+在途占用明细（指挥舱新页签，全端共用） =====
       if (req.method === 'GET' && p === '/api/agv/stboard') {
@@ -2401,7 +2401,7 @@ const server = http.createServer(async (req, res) => {
           const s = stn[code] || {}, meta = stnMetaOf(code);
           const todayOut = tasks.filter((t) => t.ck === 'out' && (t.fin || 0) >= today0 && String(t.ep || '').toUpperCase() === code).length;
           const todayIn = tasks.filter((t) => t.ck === 'in' && (t.fin || 0) >= today0 && String(t.sp || '').toUpperCase() === code).length;
-          const qs = qAll.filter((q) => ((q.station || q.to) === code || (q.type === 'inbound' && String(q.fromLoc || '').toUpperCase() === code)) && ['排队', '下发中', '已下发'].includes(q.state)).map((q) => ({ code: q.code || '', by: q.by || '', reqNo: q.reqNo || '', state: q.state, dir: q.type === 'inbound' ? 'in' : 'out', at: q.at || 0, sentAt: q.sentAt || 0 })); // ㉖⑰ 入库任务起点=站台，也计入本台占用明细
+          const qs = qAll.filter((q) => ((q.station || q.to) === code || (q.type === 'inbound' && String(q.fromLoc || '').toUpperCase() === code)) && ['排队', '下发中', '已下发'].includes(q.state)).map((q) => ({ code: q.code || '', by: q.by || '', reqNo: q.reqNo || '', state: q.state, stage: agvStage(q), dir: q.type === 'inbound' ? 'in' : 'out', at: q.at || 0, sentAt: q.sentAt || 0 })); // ㉖⑰ 入库任务起点=站台，也计入本台占用明细
           const isp = insp.filter((q) => q.station === code && ['waitOut', 'toStation', 'atStation', 'waitBack', 'returning', 'waitReturn'].includes(q.state)).map((q) => ({ code: q.code, state: q.state, by: q.by || '' }));
           const hold = (db.rcsHoldStat || {})[code];
           return { code, alias: String(meta.alias || ''), role: ['any', 'out', 'in', 'insp'].includes(meta.role) ? meta.role : 'any', off: meta.off === true,
@@ -5150,6 +5150,24 @@ startRcsTimer();
 // 模式 db.agvDispatchMode：'dry'(默认，只演算记 plan 不真发) / 'live'(真下发)。PDA 设置页切换。
 const AGV_STNS = Array.from({ length: 12 }, (_, i) => 'NB02-CK-' + String(i + 1).padStart(2, '0')); // ㉖ 启用一二三四号台：出库/检验站台白名单扩为 CK-01~12 全部12台
 // ---- ㉖⑫ 站台身份：别名/用途/停用（网页指挥舱「站台看板」可编辑，全端按此显示与调度）----
+// ㉖v91 统一搬运阶段（权威源 agvQueue.state + RCS在途节点 + 站台codes 归并）：1排队待派 2AGV已接单 3在架叉取中 4载货在途 5到站待清台 6压站滞留 0完成 -1失败 -2取消
+// 与 /api/agv/pipeline 六段同口径；队列出口注入 q.stage 后，网页队列控制台/站台看板/PDA 全部按此统一渲染，消除四套异体状态词
+function agvStage(q) {
+  const st = q.state;
+  if (st === '完成') return 0;
+  if (st === '失败') return -1;
+  if (st === '取消') return -2;
+  const code = String(q.code || '').toUpperCase();
+  let stc = 0;
+  for (const v of Object.values(db.rcsStations || {})) { if ((v.codes || []).some((c) => String(c).toUpperCase() === code)) { stc = v.state === '有货' ? 5 : 4; break; } }
+  if (st === '到站') return stc === 4 ? 4 : 5;
+  if (st === '排队') return stc || 1;
+  if (stc) return stc;
+  const rr = (db.rcsRun || []).find((r) => String(r.no) === String(q.taskNo || ''));
+  if (rr && (rr.pickAt || 0) > 0) return 4;
+  if (st === '下发中' || st === '已下发') return rr ? 3 : 2;
+  return 2;
+}
 function stnMetaOf(stn) { return (db.stnMeta || {})[String(stn || '').toUpperCase()] || {}; }
 function stnAlias(stn) { return String(stnMetaOf(stn).alias || '').slice(0, 12); }
 function stnOff(stn) { return stnMetaOf(stn).off === true; }

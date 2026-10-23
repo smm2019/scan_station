@@ -1323,6 +1323,20 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   final Map<String, Map<String, dynamic>> _boxData = {}; // 标签 -> 转单所需MES数据
   Map<String, dynamic>? _lastBoxData; // 本次扫码抓到的MES数据
   Map<String, String> _agvStat = {}; // "起点|站台" → 排队/在途/已到站（哈工库讯RCS实时状态）
+  // ㉖v91 统一状态：优先用服务端权威 stage 归并成粗粒度3态（排队/在途/已到站），无 stage 回退 state
+  static String agvCoarse(Map q) {
+    final stg = q["stage"];
+    if (stg is int) {
+      if (stg == 1) return "排队";
+      if (stg == 5 || stg == 6) return "已到站";
+      if (stg == 0) return "完成";
+      if (stg == -1) return "失败";
+      if (stg == -2) return "取消";
+      return "在途";
+    }
+    final s0 = q["state"]?.toString() ?? "?";
+    return s0 == "排队" ? "排队" : s0 == "到站" ? "已到站" : s0 == "完成" ? "完成" : s0 == "失败" ? "失败" : s0 == "取消" ? "取消" : "在途";
+  }
   String _queueStat = ""; // 本单AGV队列状态摘要（一键叫车后显示）
   Timer? _agvTimer;
 
@@ -1379,7 +1393,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         .toList();
     final cnt = <String, int>{};
     for (final q in mine) {
-      final s = q["state"]?.toString() ?? "?";
+      final s = agvCoarse(q); // ㉖v91 粗粒度3态计数，与网页/流水线同源
       cnt[s] = (cnt[s] ?? 0) + 1;
     }
     // 活跃队列项注入配送状态：chip key为"起点|站台"，未分配站台时登记在"起点|已叫"下
@@ -1390,7 +1404,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       final from = (q["fromLoc"] ?? "").toString().toUpperCase(),
           stn = (q["station"] ?? "").toString().toUpperCase();
       if (from.isEmpty) continue;
-      final txt = s0 == "排队" ? "排队" : (s0 == "到站" ? "已到站" : "在途");
+      final txt = agvCoarse(q); // ㉖v91 统一粗粒度（排队/在途/已到站）
       if (stn.isNotEmpty) m2["$from|$stn"] = txt;
       if (!m2.containsKey("$from|已叫")) m2["$from|已叫"] = txt;
     }
