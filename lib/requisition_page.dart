@@ -1734,6 +1734,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       );
     }
     final canCtl = Auth.can("agv_control"); // 叫车是车辆控制权限：物料员只见建议不露叫车按钮
+    // ㉖v82 严重超发警告：整筐最小方案也超发过需求本身（如补109件却要叫2400大筐）——红字劝退，建议改小批凑单或留待下次
+    final severeOver = sg["severeOver"] == true;
     // 同货位标签总数（>1 即同托多码），用于 chip 上标注"同托多码"
     final perBoxCodes = <String, int>{};
     for (final b in boxes) {

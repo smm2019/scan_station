@@ -1226,10 +1226,12 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
     }
   }
   const over = Math.max(0, Math.round((acc - needQty) * 100) / 100); // 超发件数（整框发料无法精确凑数时，供UI提示"多备N件/可返架"）
+  // ㉖v82 严重超发判定：超发 > 需求本身（如一筐2400只为补109件）——建议区红字劝退+接单即派不自动派这种框，人工拍板
+  const severeOver = needQty > 0 && pick.length > 0 && over > needQty;
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   const noInfoKeys = new Set();
   for (const x of match) if (!x.q) noInfoKeys.add(boxKeyOf(x));
-  return { boxes: pick, flatBoxes, total: acc, over, need: Math.max(0, Math.round((needQty - acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size };
+  return { boxes: pick, flatBoxes, total: acc, over, severeOver, need: Math.max(0, Math.round((needQty - acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size };
 }
 function reqView(r) {
   const items = (r.items || []).map(i => {
@@ -1250,6 +1252,8 @@ function autoEnqueueOnAccept(r, byName, byId) {
   for (const it of r.items || []) {
     const excl = new Set(((it.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
     const sg = pickSuggest(it.partNo, Number(it.qty) || 0, excl, agvMapOf(it));
+    // ㉖v82 严重超发闸：一筐顶几倍需求的框不自动派（事故：需1949自动派1840+2400两筐，发完一筐第二筐2400骑虎难下），建议区红字提示人工拍板
+    if (sg.severeOver) { console.log(`[auto派] ${r.no} 行 ${it.partNo} 严重超发(需${it.qty}最小整筐超发${sg.over})，不自动派单`); continue; }
     for (const bx of sg.boxes) {
       const l = String(bx.l || '').toUpperCase();
       if (!l.startsWith('NB02-') || l.includes('-CK-')) continue; // 只派货架框；地面/已在站台不动
