@@ -2537,6 +2537,19 @@ class _MainPageState extends State<MainPage>
               backgroundColor: Colors.orange));
         return; //保留输入内容，改正后可直接重扫标签再保存
       }
+      // ㉖v69c 模式与货位一致性闸：AGV站台模式目的地只能是 NB02 高架（AGV跑不到地面区），
+      // 残留/误填的 NB03 地面码在此拦下，从源头杜绝"库位不在WMAS主档"叫车失败 + 账本污染
+      if (_workType == 0 && loc.startsWith('NB03-')) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(
+                  "AGV站台模式不能登记地面货位 $loc（AGV只到NB02高架）\n请点「选位」重选高架格或输 AUTO 自动分配"),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 5)));
+          _ledgerLocCtrl.clear();
+        }
+        return;
+      }
       final ctype = _containerType ??
           _lastScanContainer ??
           ""; // ㉖⑳ 修自动叫车不触发：本函数在保存清空 _containerType 之后才被调用，须回退扫码时捕获的容器（与手动「提交任务」同口径）
@@ -4256,6 +4269,7 @@ class _MainPageState extends State<MainPage>
           _saveWorkMode(type); // ②记住本账号工作模式
           _lastScanStation = null;
           _lastScanContainer = null;
+          _ledgerLocCtrl.clear(); // ㉖v69c 切模式清空货位编码输入框：地面NB03残留会流进AGV模式致叫车"库位不在WMAS主档"
           if (type == 0) {
             _selectedGroundLoc = null;
           } else {
