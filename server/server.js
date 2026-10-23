@@ -99,6 +99,8 @@ function latestGoodBackup() { // 从新到旧找第一个完好的备份
   } catch (_) {}
   return null;
 }
+// ㉖v80 本地时间戳（yyyyMMddHHmmss）：单号/文件名与现场对时一致，替代 toISOString 的 UTC 差8小时问题
+function localTs(d) { d = d || new Date(); const p = (n) => String(n).padStart(2, '0'); return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); }
 function archiveCorrupt(reason) { // 把损坏主文件归档留证（不删），返回是否归档
   try {
     if (!fs.existsSync(DB_FILE)) return false;
@@ -1276,9 +1278,11 @@ function queueBoardOf(nowReq) {
 function issuedOf(i) { return (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0, l: '' } : { c: String(x.c || ''), q: Number(x.q) || 0, l: String(x.l || '') }); }
 function uniqCodes(arr) { return [...new Set(arr.map(s => String(s).toUpperCase()))]; }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+// ㉖v80 ISO串→本地 'YYYY-MM-DD HH:mm'（打印页/看板直显用；旧版直接slice UTC串差8小时）
+function localDT(s, len) { const d = new Date(s); if (isNaN(d.getTime())) return String(s || '').slice(0, len || 16).replace('T', ' '); const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + (len > 16 ? ':' + p(d.getSeconds()) : ''); }
 // 领料单打印页（A4，含零件号/物料名/申请数/已发数 + 手写货位/标签空栏；复制零件号可选文本）
 function renderReqPrint(r) {
-  const time = (r.createdAt || '').slice(0, 16).replace('T', ' ');
+  const time = localDT(r.createdAt);
   const rows = r.items.map((i, idx) => {
     const got = issuedOf(i).reduce((s, e) => s + e.q, 0);
     const codes = issuedOf(i).map(e => e.c).join(' ');
@@ -1421,7 +1425,7 @@ function renderLedgerBoard() {
   }
   const boxRows = [...g.values()].sort((a, b) => String(a[0].l).localeCompare(String(b[0].l)) || String(a[0].c).localeCompare(String(b[0].c)));
   const meta = `共 ${db.ledger.length} 个标签 · ${boxRows.length} 框 · ${new Set(db.ledger.map(x => x.l)).size} 个货位有货`;
-  const info = db.ledgerAt ? `最后同步 ${esc(String(db.ledgerAt).slice(0, 19).replace('T', ' '))}（${esc(db.ledgerBy || '-')}，v${db.ledgerRev}）` : '尚未从 PDA 同步过';
+  const info = db.ledgerAt ? `最后同步 ${esc(localDT(db.ledgerAt, 19))}（${esc(db.ledgerBy || '-')}，v${db.ledgerRev}）` : '尚未从 PDA 同步过';
   const bodyRows = boxRows.map(xs => {
     const first = xs[0];
     const q = Math.max(...xs.map(x => Number(x.q) || 0)); // 每码数量都是整框数→取单码值不求和
@@ -3933,7 +3937,7 @@ return send(res, 200, {
             if (!assignee) return send(res, 400, { ok: false, msg: '指定的备料人不存在/未启用/非仓管员（管理员不参与备料）' });
           }
           const now = new Date();
-          const ts = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
+          const ts = localTs(now); // ㉖v80 单号=本地时间（旧版toISOString=UTC，10:43的单显示0243差8小时）
           const r = {
             id: newId('rq'), no: `LL${ts}${String(db.requisitions.length % 100).padStart(2, '0')}`,
             by: u.id, byName: u.name, items: clean, status: 'pending',
