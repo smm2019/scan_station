@@ -1928,16 +1928,19 @@ const server = http.createServer(async (req, res) => {
         // ㉖v69 世代闸：账本整表替换（数据迁移）后，旧版PDA的旧缓存不得推回服务器污染新账本；旧世代须先拉取对齐（拉取侧会自动清旧缓存）
         if (db.ledgerEpoch && String(b.epoch || '').trim() !== db.ledgerEpoch) return send(res, 200, { ok: false, code: 'epochStale', epoch: db.ledgerEpoch, msg: '本机账本为旧世代（服务器账本已整表替换），请先拉取对齐后再推送' });
         const seen = new Set(); const clean = [];
-        for (const it of raw) {
-          const c = String((it && it.c) || '').trim().toUpperCase();
-          const l = String((it && it.l) || '').trim().toUpperCase();
-          if (!c || !l) continue;
-          if (seen.has(c)) continue; // 标签重复取首行，与 PDA 账本唯一索引一致
-          seen.add(c);
-          clean.push({ c, l, f: String((it && it.f) || '').slice(0, 40), t: Number(it && it.t) || 0,
-            p: String((it && it.p) || '').slice(0, 40), n: String((it && it.n) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 80), // ㉓乱码清洗（㉖v61b 扩控制字符）
-            q: Number(it && it.q) || 0, b: String((it && it.b) || '').slice(0, 40), pid: String((it && it.pid) || '').slice(0, 40),
-            mv: (() => { const s0 = String((it && it.mv) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: String((it && it.src) || '').slice(0, 40) }); // ㉖v61b mv乱码清洗+归一枚举（对账包搬运方式列数据源）
+        // ㉖v80 拼接码防线：PDA 重启前缓存的 Excel 拼接行（"A; B"）会随推送复活，与服务器已拆单码行双计（实测 D-01-2F 双计315件）。
+        // 到达即拆成单码行（q均分同迁移口径，t/内容一致→指纹闸自然判"未变"幂等跳过）；已出库码由墓碑闸拦截
+        const _pushClean = (it) => {
+          const c0 = String((it && it.c) || '').trim().toUpperCase();
+          if (!c0.includes(';') && !c0.includes('；')) { clean.push(it); return; }
+          const cs = c0.split(/[;；]/).map((s) => s.trim()).filter(Boolean);
+          if (cs.length < 2) { clean.push(Object.assign({}, it, { c: cs[0] || '' })); return; }
+          const tot = Number(it && it.q) || 0; const per = Math.floor(tot / cs.length); let rem = tot - per * cs.length;
+          for (const cc of cs) { const one = Object.assign({}, it, { c: cc, q: per + (rem > 0 ? 1 : 0) }); if (rem > 0) rem--; clean.push(one); }
+        };
+        for (const it0 of raw) {
+          const it = (() => { const c = String((it0 && it0.c) || '').trim().toUpperCase(); const l = String((it0 && it0.l) || '').trim().toUpperCase(); if (!c || !l) return null; if (seen.has(c)) return null; seen.add(c); return { c, l, f: String((it0 && it0.f) || '').slice(0, 40), t: Number(it0 && it0.t) || 0, p: String((it0 && it0.p) || '').slice(0, 40), n: String((it0 && it0.n) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 80), q: Number(it0 && it0.q) || 0, b: String((it0 && it0.b) || '').slice(0, 40), pid: String((it0 && it0.pid) || '').slice(0, 40), mv: (() => { const s0 = String((it0 && it0.mv) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: String((it0 && it0.src) || '').slice(0, 40) }; })(); // ㉓乱码清洗+㉖v61b mv归一（对账包搬运方式列数据源）
+          if (it) _pushClean(it);
         }
         // 增量合并：按标签号 upsert + 墓碑删除，多PDA互不覆盖
         // ㉔S1 时间戳双轨（F2加固）：指纹=登记时刻+内容（含t）；"无新到达"=与本机上次推送一致(含已删行的旧副本)
