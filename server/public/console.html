@@ -679,7 +679,7 @@ function ctHourB(x){const bt=Number(x&&x.bt)||0;if(bt)return Math.max(0,Math.flo
 function ctAgeTxt(h){if(h<0)return '<span style="color:var(--sub)">时刻缺失</span>';if(h<1)return '刚刚入库';if(h<24)return h+' 小时';const d=Math.floor(h/24);return d+' 天'+(h%24?' '+(h%24)+' 小时':'')}
 async function pgCtn(){
  $('#main').innerHTML=`<div class="card"><div class="row"><input id="ctq" placeholder="标签号 / 货位 / 零件号 / 物料名" value="${TM.ctq||''}" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter')ctSearch()"><button class="pill" onclick="ctSearch()">查询</button><button class="pill q" title="清空搜索与筛选" onclick="TM.ctq='';TM.ctf='';TM.ctmE=0;ctSearch()">↺ 重置</button><button class="pill" style="${_ctv==='map'?'':'background:#78909c'}" title="库区×巷道×格的真实形状——框住在哪一格，空位在哪" onclick="ctSeg('map')">🗺 库位地图</button><button class="pill" style="${_ctv==='ov'?'':'background:#78909c'}" title="KPI·类型健康卡·明细清单" onclick="ctSeg('ov')">📋 概览清单</button><button class="pill" style="${_ctv==='risk'?'':'background:#78909c'}" title="日均耗用÷在架=还能撑几天：红<3天 黄3~7天" onclick="ctSeg('risk')"> 断料预测</button><button class="pill" style="${_ctv==='slow'?'':'background:#78909c'}" title="≥14天没动的格位按零件排行，可一键移地面" onclick="ctSeg('slow')">🐢 呆滞料</button><button class="pill" style="${_ctv==='cycle'?'':'background:#78909c'}" title="每天随机抽查20格，仓管到场扫码验证账实" onclick="ctSeg('cycle')">🔍 循环盘点</button><span id="ctc" style="color:var(--sub);font-size:12px"></span></div><div id="ctbody">加载中…</div></div>`;
- if(!CTN.style)document.head.insertAdjacentHTML('beforeend','<style id="ctgs">.ctg{display:inline-flex;align-items:center;justify-content:center;width:27px;height:21px;border-radius:4px;font-size:10px;font-weight:700;color:#fff;cursor:pointer;margin:1px;position:relative}.ctg:hover{transform:scale(1.35);z-index:3;box-shadow:0 2px 8px rgba(0,0,0,.3)}.ctg-g{background:#43a047}.ctg-o{background:#fb8c00}.ctg-r{background:#e53935;animation:ctPulse 1.6s infinite}.cte{background:transparent;border:1.5px dashed #b6c2d4;color:#a5b3c8;font-weight:400}.cte:hover{border-color:#26a69a}.ctg-em{background:#26a69a;border:none;color:#fff;animation:ctPulse 1.6s infinite}.cte.em{border-color:#26a69a;border-style:solid;background:rgba(38,166,154,.16);color:#00897b}.ctg-em:hover,.cte:hover{transform:scale(1.35)}.cth{outline:2.5px solid #1a237e;box-shadow:0 0 8px 2px rgba(48,63,159,.6);z-index:2}.dimc{opacity:.22}@keyframes ctPulse{50%{box-shadow:0 0 0 3px rgba(229,57,53,.35)}}.ctcol{position:absolute;display:flex;flex-direction:column;gap:1px;padding:2px;border:1px solid rgba(120,140,170,.35);border-radius:4px;background:rgba(255,255,255,.72);cursor:pointer;transition:transform .12s}.ctcol:hover{transform:translate(-50%,-50%) scale(1.45)!important;z-index:5;box-shadow:0 3px 12px rgba(0,0,0,.28)}.ctcol-n{font-size:8px;color:var(--sub);text-align:center;line-height:1;margin-top:1px}.ctb{width:13px;height:9px;border-radius:2px;cursor:pointer}.ctb-g{background:#43a047}.ctb-o{background:#fb8c00}.ctb-r{background:#e53935}.ctb-e{background:transparent;border:1px dashed #b6c2d4}.ctb-em{background:#26a69a;border:none;animation:ctPulse 1.6s infinite}.ctb-em:hover{transform:scale(1.6)}.ctrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;margin:4px 0}.ctf{font-family:Consolas,monospace;font-size:12px;font-weight:700;color:var(--pri);width:26px}</style>');
+ if(!CTN.style)document.head.insertAdjacentHTML('beforeend','<style id="ctgs">.ctg{display:inline-flex;align-items:center;justify-content:center;width:27px;height:21px;border-radius:4px;font-size:10px;font-weight:700;color:#fff;cursor:pointer;margin:1px;position:relative}.ctg:hover{transform:scale(1.35);z-index:3;box-shadow:0 2px 8px rgba(0,0,0,.3)}.ctg-g{background:#43a047}.ctg-o{background:#fb8c00}.ctg-r{background:#e53935;animation:ctPulse 1.6s infinite}.cte{background:transparent;border:1.5px dashed #b6c2d4;color:#a5b3c8;font-weight:400}.cte:hover{border-color:#26a69a}.ctg-em{background:#26a69a;border:none;color:#fff;animation:ctPulse 1.6s infinite}.cte.em{border-color:#26a69a;border-style:solid;background:rgba(38,166,154,.16);color:#00897b}.ctg-em:hover,.cte:hover{transform:scale(1.35)}.cth{outline:2.5px solid #1a237e;box-shadow:0 0 8px 2px rgba(48,63,159,.6);z-index:2}.dimc{opacity:.22}@keyframes ctPulse{50%{box-shadow:0 0 0 3px rgba(229,57,53,.35)}}.ctcol{position:absolute;display:flex;flex-direction:column;gap:1px;padding:2px;border:1px solid rgba(120,140,170,.35);border-radius:4px;background:rgba(255,255,255,.72);cursor:pointer;transition:transform .12s}.ctcol:hover{transform:translate(-50%,-50%) scale(1.45)!important;z-index:5;box-shadow:0 3px 12px rgba(0,0,0,.28)}.ctcol-n{font-size:8px;color:var(--sub);text-align:center;line-height:1;margin-top:1px}.ctb{width:13px;height:9px;border-radius:2px;cursor:pointer}.ctb-g{background:#43a047}.ctb-o{background:#fb8c00}.ctb-r{background:#e53935}.ctb-e{background:transparent;border:1px dashed #b6c2d4}.ctb-em{background:#26a69a;border:none;animation:ctPulse 1.6s infinite}.ctb-em:hover{transform:scale(1.6)}.mxc{display:inline-block;width:12px;height:9px;border-radius:2px;margin:.5px;cursor:pointer;vertical-align:middle}.mxc:hover{transform:scale(1.8);position:relative;z-index:3}.mxc-e{background:#2bb3a3}.mxc-x{background:#d32f2f}.mxc-g{background:#43a047}.mxc-o{background:#fb8c00}.mxc-r{background:#e53935}.cte.occE{background:#2bb3a3;border-style:solid;color:#0b5d52}.ctg-x{background:#d32f2f}.ctrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;margin:4px 0}.ctf{font-family:Consolas,monospace;font-size:12px;font-weight:700;color:var(--pri);width:26px}</style>');
  CTN.style=1;
  if(!Object.keys(CTN.types).length)await ctTypes();
  await ctData();
@@ -850,8 +850,8 @@ async function ctMap(){
  if(!CTN.gslots){try{const g=await api('/api/ground-slots');CTN.gslots=(g&&g.slots)||{}}catch(_){CTN.gslots={}}}
  const q=(TM.ctq||'').trim().toUpperCase();
  const {rows,zoneSt,total,used,miscN,miscB}=ctSlotStats();
- const zf=CTN.zf||'';const hunt=!!TM.ctmE;
- $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+(按批次) ▢灰虚线 空位 ｜ 货架/排=横条带，带间=AGV巷道'}</span></div>`;
+ const zf=CTN.zf||'';const hunt=!!TM.ctmE;const cmode=CTN.cmode||'age'; // v89 配色口径：age=滞留热力 / occ=占用红青
+ $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<button class="pill" style="padding:3px 10px;font-size:11.5px;margin-left:6px" title="切换配色口径：滞留热力(绿/橙/红) ↔ 占用总览(红=被占用/青=空货位，对齐现场看板)" onclick="CTN.cmode=(CTN.cmode==='occ')?'age':'occ';ctMap()">${cmode==='occ'?'🎨 占用(红/青)':'🎨 滞留(绿/橙/红)'}</button><span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':(cmode==='occ'?'■红 被占用 ■青 空货位 ｜ 货架/排=横条带，带间=AGV巷道':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+(按批次) ▢灰虚线 空位 ｜ 货架/排=横条带，带间=AGV巷道')}</span></div>`;
  // 单格渲染（两区共用）：空格/占格、寻宝高亮、搜索命中
  const renderCells=(R,maxHi)=>{
    let s='';
@@ -861,8 +861,8 @@ async function ctMap(){
      const hit=R.cells[c];
      const full=hit?hit.loc:R.rowid+'-'+String(c).padStart(2,'0')+(R.rack?'-'+R.tier:'');
      const locHit=q&&String(full).toUpperCase().includes(q);
-     if(!hit){s+=`<span class="ctg ${hunt?'ctg-em':'cte'}${locHit?' em':''}" title="${_esc(full)} · 空格位${hunt?'（可停放新框）':''}" onclick="ctFreeSlot('${_esc(full)}')">${(locHit||hunt)?'·':'&nbsp;'}</span>`;continue}
-     const bs=hit.boxes,worst=bs.some(b=>b._h>=168)?'r':(bs.some(b=>b._h>=72)?'o':'g');
+     if(!hit){s+=`<span class="ctg ${hunt?'ctg-em':'cte'}${(cmode==='occ'&&!hunt)?' occE':''}${locHit?' em':''}" title="${_esc(full)} · 空格位${hunt?'（可停放新框）':''}" onclick="ctFreeSlot('${_esc(full)}')">${(locHit||hunt)?'·':'&nbsp;'}</span>`;continue}
+     const bs=hit.boxes,worst=cmode==='occ'?'x':(bs.some(b=>b._h>=168)?'r':(bs.some(b=>b._h>=72)?'o':'g'));
      const mk=rowHit||locHit;
      const tip=_esc(full+'｜'+bs.length+'框 '+bs.reduce((a,b)=>a+b.lc,0)+'标签｜'+bs.map(b=>(b.p||b._fl)+'×'+b.q+' '+ctAgeTxt(b._h).replace(/<[^>]+>/g,'')).join('；').slice(0,120));
      s+=`<span class="ctg ctg-${worst}${mk?' cth':''}${(hunt&&!mk)?' dimc':''}" ${mk?'':'style="opacity:'+(hunt?'.22':'.85')+'"'} title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;
@@ -875,6 +875,54 @@ async function ctMap(){
  const zrows=Object.keys(rows).filter(k=>!zf||rows[k].zone===zf).map(k=>rows[k]);
  const rack=zrows.filter(R=>R.rack), gnd=zrows.filter(R=>!R.rack);
  let h='';
+ // ===== ㉖v89 占用总览矩阵：高架=立面(行:列号01→16,格:层1F→4F) · 地面=平面(行:排,格:位)；红占青空对齐现场看板，每架/区带占用率条 =====
+ const RC=CTN.rack||{};
+ const mxCell=(R,c,pre,suf)=>{
+   const hit=R&&R.cells[c];
+   const full=hit?String(hit.loc||'').toUpperCase():pre+'-'+String(c).padStart(2,'0')+(suf||'');
+   if(!hit)return '<span class="mxc mxc-e" title="'+_esc(full)+' · 空货位（点击复制编号）" onclick="ctFreeSlot(\''+_esc(full)+'\')"></span>';
+   const bs=hit.boxes,cls=cmode==='occ'?'mxc-x':(bs.some(b=>b._h>=168)?'mxc-r':(bs.some(b=>b._h>=72)?'mxc-o':'mxc-g'));
+   const tip=full+'｜'+bs.length+'框 '+bs.map(b=>((b.p||b._fl)||'')+'×'+b.q).join('、').slice(0,90);
+   return '<span class="mxc '+cls+'" title="'+_esc(tip)+'" onclick="ctCell(\''+_esc(full)+'\')"></span>';
+ };
+ const occBar=(pct)=>'<div style="height:4px;background:#eef1f8;border-radius:2px;margin:2px 0 4px;overflow:hidden"><div style="height:4px;width:'+pct+'%;background:'+(pct>=90?'#e53935':pct>=70?'#fb8c00':'#26a69a')+'"></div></div>';
+ let mx='';
+ {
+   const byS={};Object.values(rows).forEach(R=>{if(R.rack)(byS[R.rowid]=byS[R.rowid]||{})[R.tier]=R});
+   const tl=[];for(let t=1;t<=(Number(RC.tiers)||4);t++)tl.push(t+'F');
+   const keys=Object.keys(byS);
+   for(let i=0;i<(Number(RC.count)||8);i++){const k='NB02-'+String.fromCharCode(65+i);if(!byS[k]){byS[k]={};keys.push(k)}}
+   keys.sort();
+   keys.forEach(k=>{
+     const T=byS[k];const cols=Math.max(Number(RC.cols)||16,...Object.values(T).map(R=>R.hi||0));
+     let occ=0;tl.forEach(t=>{const R=T[t];if(R)for(let c=1;c<=cols;c++)if(R.cells[c])occ++});
+     const tot=tl.length*cols,pct=Math.round(occ/tot*100);
+     let tb='<div style="white-space:nowrap"><span style="display:inline-block;width:16px"></span>'+tl.map(t=>'<span style="display:inline-block;width:13px;text-align:center;font-size:8px;color:var(--sub)">'+t[0]+'</span>').join('')+'</div>';
+     for(let c=1;c<=cols;c++){
+       let line='';tl.forEach(t=>{line+=mxCell(T[t],c,k+'-'+String(c).padStart(2,'0'),'-'+t)});
+       tb+='<div style="white-space:nowrap;display:flex;align-items:center"><span class="mono" style="width:14px;font-size:8px;color:var(--sub);text-align:right;margin-right:2px">'+String(c).padStart(2,'0')+'</span>'+line+'</div>';
+     }
+     mx+='<div style="border:1px solid var(--line);border-radius:8px;padding:5px 7px;background:#fff"><div class="mono" style="font-size:11px;font-weight:700">'+k.replace('NB02-','')+'架 <span style="color:'+(pct>=90?'var(--bad)':pct>=70?'var(--warn)':'var(--ok)')+'">'+pct+'%</span><span style="font-weight:400;color:var(--sub);font-size:10px"> '+occ+'/'+tot+'格</span></div>'+occBar(pct)+tb+'</div>';
+   });
+ }
+ {
+   const gZ={};Object.values(rows).forEach(R=>{if(!R.rack){const z=R.rowid.split('-').slice(0,2).join('-');(gZ[z]=gZ[z]||[]).push(R)}});
+   Object.keys(gZ).sort().forEach(z=>{
+     const rs=gZ[z].sort((a,b)=>(Number(a.rowid.split('-').pop())||0)-(Number(b.rowid.split('-').pop())||0));
+     const cols=Math.max(12,...rs.map(R=>R.hi||0));
+     let occ=0,tot=0,body='';
+     rs.forEach(R=>{
+       const rn=R.rowid.split('-').pop();
+       let line='';
+       if(R.off){line='<span style="font-size:9.5px;color:#78909c">已停用'+(R.offCells?'（⚠️仍有'+R.offCells+'格有货）':'')+'</span>'}
+       else{tot+=cols;for(let c=1;c<=cols;c++){if(R.cells[c])occ++;line+=mxCell(R,c,R.rowid+'-'+String(c).padStart(2,'0'))}}
+       body+='<div style="white-space:nowrap;display:flex;align-items:center"><span class="mono" style="width:14px;font-size:8px;color:var(--sub);text-align:right;margin-right:2px">'+rn+'</span>'+line+'</div>';
+     });
+     const pct=tot?Math.round(occ/tot*100):0;
+     mx+='<div style="border:1px solid var(--line);border-radius:8px;padding:5px 7px;background:#fff"><div class="mono" style="font-size:11px;font-weight:700">'+z+' 区 <span style="color:'+(pct>=90?'var(--bad)':pct>=70?'var(--warn)':'var(--ok)')+'">'+pct+'%</span><span style="font-weight:400;color:var(--sub);font-size:10px"> '+occ+'/'+tot+'格</span></div>'+occBar(pct)+body+'</div>';
+   });
+ }
+ if(mx)h+='<div class="card" style="margin:8px 0"><div class="row" style="align-items:center;flex-wrap:wrap"><b style="font-size:13px">🧮 占用总览矩阵</b><span style="font-size:11px;color:var(--sub);margin-left:8px">高架=立面（行:列号 · 格:层号）｜地面=平面（行:排 · 格:位）｜'+(cmode==='occ'?'红=被占用 青=空货位':'绿=新鲜 橙=满3天 红=滞留 · 青=空位')+'｜点格看明细，空格点击复制编号</span></div><div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px">'+mx+'</div></div>';
  // ===== NB02 高位货架：每台货架=层条带（顶F→1F），货架之间=AGV 巷道 =====
  const byA={};rack.forEach(R=>{(byA[R.rowid]=byA[R.rowid]||[]).push(R)});
  const aisles=Object.keys(byA).sort();
