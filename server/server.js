@@ -54,6 +54,7 @@ function defaultDb() {
     reqTemplates: [], // ㉖v62 产线领料模板 {id,name,by,byName,shared,items,use,at}
     gndZoneRows: {}, // ㉖v59 地面按区排数覆盖 {"A":15,"B":10}，缺省=每区排数参数；0=整区不用
     gndRowOff: {}, // ㉖v59 地面停用排 {"NB03-A-01":1}，停用排地图灰显、不计入格位统计（账本有货仍显示提醒）
+  gndZoneList: {}, // ㉖v90 地面真实排号清单 {"A":[11,12,...],"G":[4,5,6,7,8,9,11]}——现场各区排号不连续（如A区只有11-18），配置后地图/统计按清单画；未配置区沿用按区排数
     stockAlert: {}, // ⑮断料告警去重 {零件号: 最近告警日}
     prefs: {}, // ㉕F5 个人偏好 {userId:{key:{v,at}}}（后写覆盖=方案"到达序新者胜"）
     prefTemplates: [], // ㉕F5 管理员配置模板 [{name,prefs,by,at}]
@@ -200,6 +201,7 @@ function loadDb() {
   if (typeof d.groundSlots !== 'object' || d.groundSlots === null || Array.isArray(d.groundSlots)) { d.groundSlots = {}; added = true; }
   if (typeof d.gndZoneRows !== 'object' || d.gndZoneRows === null || Array.isArray(d.gndZoneRows)) { d.gndZoneRows = {}; added = true; } // ㉖v59 按区排数覆盖（旧库补齐）
   if (typeof d.gndRowOff !== 'object' || d.gndRowOff === null || Array.isArray(d.gndRowOff)) { d.gndRowOff = {}; added = true; } // ㉖v59 停用排（旧库补齐）
+  if (typeof d.gndZoneList !== 'object' || d.gndZoneList === null || Array.isArray(d.gndZoneList)) { d.gndZoneList = {}; added = true; } // ㉖v90 真实排号清单（旧库补齐）
   // ㉖v61 出库流水乱码自愈：PDA/WMAS 推送编码丢失产生的 U+FFFD 与控制字符——name 按标签反查流水/账本/字典回填干净名，查不到则剥替换符；move 归一 AGV/人工
   {
     const _bad = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
@@ -1074,6 +1076,23 @@ const PARAMS = {
   lowTier:        { grp: '调度策略', name: '入库常用层上限', unit: '层', min: 1, max: 4, d: 3, tip: 'AUTO自动分配的硬性层约束：只在1~N层找空位（同架/同区集中也在层圈内生效），圈内全满才上更高层；4=不限。AGV叉高层耗时且重心高风险大，建议3' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
+// ㉖v90 排号清单解析："11-18,20" / [11,12,...] / 数组字符串 → 去重排序的 1~40 数字数组；空/非法 → null（=未配置，沿用排数逻辑）
+function parseRowList(v) {
+  try {
+    if (Array.isArray(v)) v = v.join(',');
+    const s = String(v == null ? '' : v).trim();
+    if (!s || s === '-' || s === 'null') return null;
+    const out = new Set();
+    for (const seg of s.split(/[,，、;；\s]+/)) {
+      if (!seg) continue;
+      const rg = seg.match(/^(\d+)\s*[-~至到]\s*(\d+)$/);
+      if (rg) { const a = Number(rg[1]), b = Number(rg[2]); for (let i = Math.min(a, b); i <= Math.max(a, b); i++) if (i >= 1 && i <= 40) out.add(i); continue; }
+      const n = Number(seg);
+      if (Number.isFinite(n) && n >= 1 && n <= 40) out.add(Math.round(n));
+    }
+    return out.size ? [...out].sort((a, b) => a - b) : null;
+  } catch (_) { return null; }
+}
 
 // ---- ㉖ 系统错误环形日志：服务器自身异常（请求500/后台任务吞错/未捕获）统一留痕，控制后台"系统错误"页可查、凭栈定位 ----
 let SYS_ERR_MAX = 500;
@@ -3271,8 +3290,8 @@ return send(res, 200, {
       }
       // ===== ㉖ 容器类型可配置：GET 登录即可读（采集页按钮数据源）；POST 仓管/管理员整表保存（留痕） =====
       if (req.method === 'GET' && p === '/api/containers') {
-        const _gzr = db.gndZoneRows || {}, _goff = db.gndRowOff || {}; // ㉖v59 按区排数覆盖+停用排下发（zoneRows=各区有效排数，offs=停用排键集）
-        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols, zoneRows: _gzr, offs: _goff } }); // ㉖v56 高架+地面格位规格下发（参数可调）
+        const _gzr = db.gndZoneRows || {}, _goff = db.gndRowOff || {}, _glist = db.gndZoneList || {}; // ㉖v59 按区排数覆盖+停用排下发（zoneRows=各区有效排数，offs=停用排键集）；v90 lists=真实排号清单
+        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols, zoneRows: _gzr, lists: _glist, offs: _goff } }); // ㉖v56 高架+地面格位规格下发（参数可调）
       }
       if (req.method === 'POST' && p === '/api/containers') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
@@ -3369,7 +3388,7 @@ return send(res, 200, {
         return send(res, 200, { ok: true, days: N, total: tasks.length, avgDur: tasks.length ? Math.round(totalDur / tasks.length) : 0, peak, peakAt, cars, hours });
       }
       if (req.method === 'GET' && p === '/api/ground-slots') {
-        return send(res, 200, { ok: true, slots: db.groundSlots || {}, rows: db.gndZoneRows || {}, offs: db.gndRowOff || {}, def: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols } }); // ㉖v59 附按区排数/停用排/默认参数
+        return send(res, 200, { ok: true, slots: db.groundSlots || {}, rows: db.gndZoneRows || {}, offs: db.gndRowOff || {}, lists: db.gndZoneList || {}, def: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols } }); // ㉖ v90 lists=真实排号清单v59 附按区排数/停用排/默认参数
       }
       if (req.method === 'POST' && p === '/api/ground-slots') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
@@ -3395,6 +3414,15 @@ return send(res, 200, {
           if (!Number.isFinite(v) || v < 0 || v > 40) continue;
           db.gndZoneRows[z] = v;
         }
+        // ㉖v90 真实排号清单：{"zone":"A","rows":"11-18"或[11,..]}；rows 空/null=清除清单回退排数模式
+        const listEntries = Array.isArray(b.listEntries) ? b.listEntries : [];
+        db.gndZoneList = db.gndZoneList || {};
+        for (const e of listEntries) {
+          const z = String(e.zone || '').trim().toUpperCase();
+          if (!/^[A-Z]$/.test(z)) continue;
+          const arr = parseRowList(e.rows);
+          if (arr) db.gndZoneList[z] = arr; else delete db.gndZoneList[z];
+        }
         // ㉖v59 停用排：off=true 停用（如 A-01 不用），off=false 恢复
         const offEntries = Array.isArray(b.offEntries) ? b.offEntries : [];
         db.gndRowOff = db.gndRowOff || {};
@@ -3406,7 +3434,7 @@ return send(res, 200, {
         const _cr = cfgBump();
         save();
         pushOps(u,'改格数配置','','地面排格数/排数/停用排已更新');
-        return send(res, 200, { ok: true, cfgRev: _cr, slots: db.groundSlots, rows: db.gndZoneRows, offs: db.gndRowOff });
+        return send(res, 200, { ok: true, cfgRev: _cr, slots: db.groundSlots, rows: db.gndZoneRows, offs: db.gndRowOff, lists: db.gndZoneList });
       }
       if (req.method === 'POST' && p === '/api/agv/transfer') {
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });

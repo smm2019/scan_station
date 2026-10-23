@@ -597,28 +597,31 @@ async function prmSave(btn){const v={};for(const x of ((window._prv||{}).items||
 let GC=null;
 async function gndCfg(){const box=$('#gndcfg');if(!box)return;
  try{const j=await api('/api/ground-slots');if(!j.ok||j.def===undefined){box.innerHTML='';return}
-  GC={def:j.def||{zones:6,rows:18,cols:12},rows:Object.assign({},j.rows||{}),offs:Object.assign({},j.offs||{})};
-  GC.rowsOrig=Object.assign({},GC.rows);GC.offsOrig=Object.assign({},GC.offs);GC.rev=((window._prv||{}).cfgRev)||null;gndRender();
+  GC={def:j.def||{zones:6,rows:18,cols:12},rows:Object.assign({},j.rows||{}),offs:Object.assign({},j.offs||{}),lists:Object.assign({},j.lists||{})};
+  GC.rowsOrig=Object.assign({},GC.rows);GC.offsOrig=Object.assign({},GC.offs);GC.listsOrig=JSON.parse(JSON.stringify(GC.lists));GC.rev=((window._prv||{}).cfgRev)||null;gndRender();
  }catch(e){box.innerHTML='<div class="card" style="color:var(--sub)">地面排配置：需服务重启加载新版后启用（旧版无此接口字段）</div>'}}
 function gndZoneEff(z){const v=GC.rows[z];return v===undefined||v===null?Number(GC.def.rows):Math.max(0,Number(v)||0)}
 function gndRender(){const box=$('#gndcfg');if(!box||!GC)return;const Z='ABCDEFGH';
  box.innerHTML=`<div class="card" style="margin-top:10px"><b style="font-size:13px">🟩 地面排配置（NB03）</b> <span style="font-size:11.5px;color:var(--sub)">默认每区 ${GC.def.rows} 排 × ${GC.def.cols} 格（全局默认按现场固定）。这里给单个区设不同排数、停用整区或停用指定排；库位地图与占用统计即时按此计算，停用排若仍有货会标 ⚠️ 提醒移走。</span>
- <div style="margin-top:8px;overflow:auto"><table><thead><tr><th>区</th><th title="留空=用全局默认；0=整区停用；数字=该区实际排数">排数覆盖</th><th>停用排（点排号切换，✕=停用）</th></tr></thead><tbody>${
+ <div style="margin-top:8px;overflow:auto"><table><thead><tr><th>区</th><th title="留空=用全局默认；0=整区停用；数字=该区实际排数">排数覆盖</th><th title="㉖v90 现场排号不连续时按实际填写，如 11-18 或 4-9,11-13；配置后优先于排数，地图/统计只画清单内排" style="min-width:170px">真实排号清单</th><th>停用排（点排号切换，✕=停用）</th></tr></thead><tbody>${
   Z.split('').map(z=>{const n=gndZoneEff(z);
-   const chips=n<=0?'<span style="color:#78909c;font-size:11px">整区已停用</span>':Array.from({length:n},(_,i)=>i+1).map(r=>{const key='NB03-'+z+'-'+String(r).padStart(2,'0'),off=GC.offs[key];return `<span class="pill${off?' r':''}" style="padding:1px 7px;font-size:11px;margin:1px;cursor:pointer" title="${off?'已停用 · 点击恢复':'点击停用本排'}" onclick="gndToggleOff('${key}')">${off?'✕':''}${r}</span>`}).join('');
-   return `<tr><td class="mono" style="font-weight:700">${z}</td><td><input type="number" id="gz_${z}" value="${(GC.rows[z]===undefined||GC.rows[z]===null)?'':GC.rows[z]}" placeholder="默认${GC.def.rows}" min="0" max="40" style="width:88px;padding:3px 6px" oninput="gndZoneChange('${z}')"></td><td>${chips}</td></tr>`;
+   const _lst=GC.lists[z];const rowArr=(_lst&&_lst.length)?_lst:(n<=0?[]:Array.from({length:n},(_,i)=>i+1));
+   const chips=n<=0&&!(_lst&&_lst.length)?'<span style="color:#78909c;font-size:11px">整区已停用</span>':rowArr.map(r=>{const key='NB03-'+z+'-'+String(r).padStart(2,'0'),off=GC.offs[key];return `<span class="pill${off?' r':''}" style="padding:1px 7px;font-size:11px;margin:1px;cursor:pointer" title="${off?'已停用 · 点击恢复':'点击停用本排'}" onclick="gndToggleOff('${key}')">${off?'✕':''}${r}</span>`}).join('');
+   return `<tr><td class="mono" style="font-weight:700">${z}</td><td><input type="number" id="gz_${z}" value="${(GC.rows[z]===undefined||GC.rows[z]===null)?'':GC.rows[z]}" placeholder="默认${GC.def.rows}" min="0" max="40" style="width:88px;padding:3px 6px" oninput="gndZoneChange('${z}')"></td><td><input id="gl_${z}" value="${_lst?_lst.join(','):''}" placeholder="留空=按排数；如 11-18" style="width:150px;padding:3px 6px;font-family:Consolas,monospace;font-size:11.5px" onchange="gndListChange('${z}')"></td><td>${chips}</td></tr>`;
   }).join('')
  }</tbody></table></div>
  <div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill q" onclick="gndCfg()">↺ 放弃改动</button><button class="pill g" onclick="gndSave(this)">保存地面排配置</button></div></div>`;}
 function gndZoneChange(z){const el=$('#gz_'+z);const v=String(el.value).trim();if(v===''){GC.rows[z]=undefined}else{const n=Number(v);GC.rows[z]=Number.isFinite(n)?Math.max(0,Math.min(40,Math.round(n))):undefined}const n=gndZoneEff(z);for(let r=n+1;r<=40;r++){delete GC.offs['NB03-'+z+'-'+String(r).padStart(2,'0')]}gndRender();const e2=$('#gz_'+z);if(e2){e2.focus();e2.select()}}
 function gndToggleOff(key){if(GC.offs[key])delete GC.offs[key];else GC.offs[key]=1;gndRender()}
+function gndListChange(z){const el=$('#gl_'+z);const s=String(el.value||'').trim();if(!s||s==='-'||s==='清空'){delete GC.lists[z]}else{const out=new Set();for(const seg of s.split(/[,，、;；\s]+/)){if(!seg)continue;const rg=seg.match(/^(\d+)\s*[-~至到]\s*(\d+)$/);if(rg){const a=Number(rg[1]),b=Number(rg[2]);for(let i=Math.min(a,b);i<=Math.max(a,b);i++)if(i>=1&&i<=40)out.add(i);continue}const n=Number(seg);if(Number.isFinite(n)&&n>=1&&n<=40)out.add(Math.round(n))}if(out.size)GC.lists[z]=[...out].sort((a,b)=>a-b);else delete GC.lists[z]}gndRender()}
 async function gndSave(btn){if(!GC)return;const Z='ABCDEFGH';
  const rowEntries=Z.split('').filter(z=>(GC.rows[z]===undefined?undefined:GC.rows[z])!==(GC.rowsOrig[z]===undefined?undefined:GC.rowsOrig[z])).map(z=>({zone:z,count:GC.rows[z]===undefined?null:GC.rows[z]}));
  const keys=new Set([...Object.keys(GC.offs),...Object.keys(GC.offsOrig)]);
  const offEntries=[...keys].filter(k=>!!GC.offs[k]!==!!GC.offsOrig[k]).map(k=>({prefix:k,off:!!GC.offs[k]}));
- if(!rowEntries.length&&!offEntries.length){T('没有地面排改动');return}
+ const _lz='ABCDEFGH';const listEntries=_lz.split('').filter(z=>JSON.stringify(GC.lists[z]||null)!==JSON.stringify(GC.listsOrig[z]||null)).map(z=>({zone:z,rows:GC.lists[z]||null}));
+ if(!rowEntries.length&&!offEntries.length&&!listEntries.length){T('没有地面排改动');return}
  if(!confirm('确认保存地面排配置？库位地图与占用统计将即时按新排数/停用排计算。'))return;btn.disabled=true;
- try{const j=await api('/api/ground-slots',{method:'POST',body:{rowEntries,offEntries,baseRev:GC.rev}});btn.disabled=false;
+ try{const j=await api('/api/ground-slots',{method:'POST',body:{rowEntries,offEntries,listEntries,baseRev:GC.rev}});btn.disabled=false;
   if(j.ok){T('✅ 地面排配置已保存',1);GC.rev=j.cfgRev||GC.rev;gndCfg()}else{T('❌ '+(j.msg||'保存失败'),1);if(j.code==='conflict')setTimeout(()=>gndCfg(),1200)}}catch(_){btn.disabled=false;T('保存失败')}}
 
 let _ledT=null;
@@ -827,15 +830,16 @@ function ctSlotStats(){
   if(col>R.max)R.max=col;
  });
  // ㉖v59 地面：按"每区有效排数"枚举补齐空排（现场排号到18但地图只见有货的排），停用排打标
- const G=CTN.gnd||{},gOff=G.offs||{},gZr=G.zoneRows||{};
+ const G=CTN.gnd||{},gOff=G.offs||{},gZr=G.zoneRows||{},gList=G.lists||{}; // ㉖v90 lists=真实排号清单（优先于排数）
  const zoneLetter=(rowid)=>String(rowid).split('-')[1]||''; // NB03-A → A
  const rowsOfZone=(z)=>{const v=gZr[z];return v===undefined||v===null||!Number.isFinite(Number(v))?Math.max(1,Number(G.rows)||18):Math.max(0,Number(v));}; // 区覆盖>全局参数；0=整区不用
- Object.keys(rows).forEach(k=>{const R=rows[k];if(R.rack)return;const rn=Number(R.rowid.split('-').pop())||0;R.off=!!gOff[R.rowid];R.over=rn>rowsOfZone(zoneLetter(R.rowid));});
- const zrZones={};Object.entries(gZr).forEach(([z,v])=>{zrZones['NB03-'+z]=Math.max(0,Number(v)||0)});
- if(Object.keys(gOff).length||Object.keys(gZr).length||G.rows){ // 有地面配置才补空排（旧服务端无 zoneRows/offs 时行为不变）
-  Object.keys(zrZones).forEach(rowid=>{const n=zrZones[rowid];for(let i=1;i<=n;i++){const rowid2=rowid+'-'+String(i).padStart(2,'0');if(gOff[rowid2])continue;const label=rowid2+' 排';if(!rows[label])rows[label]={zone:rowid.split('-')[0],rack:false,rowid:rowid2,tier:String(i),cells:{},max:0,off:false,over:false};}});
-  const zn=new Set();Object.values(rows).forEach(R=>{if(!R.rack)zn.add(R.rowid.split('-').slice(0,2).join('-'))});
-  zn.forEach(rowid=>{const n=rowsOfZone(zoneLetter(rowid));for(let i=1;i<=n;i++){const rowid2=rowid+'-'+String(i).padStart(2,'0');if(gOff[rowid2])continue;const label=rowid2+' 排';if(!rows[label])rows[label]={zone:rowid.split('-')[0],rack:false,rowid:rowid2,tier:String(i),cells:{},max:0,off:false,over:false};}});
+ const rowsArrOf=(z)=>{const l=gList[z];if(Array.isArray(l)&&l.length)return l.map((r)=>Number(r));return Array.from({length:rowsOfZone(z)},(_,i)=>i+1);}; // 清单优先；否则 1..排数
+ Object.keys(rows).forEach(k=>{const R=rows[k];if(R.rack)return;const rn=Number(R.rowid.split('-').pop())||0;const z=zoneLetter(R.rowid);R.off=!!gOff[R.rowid];R.over=Array.isArray(gList[z])&&gList[z].length?!gList[z].includes(rn):rn>rowsOfZone(z);});
+ const zn=new Set();Object.values(rows).forEach(R=>{if(!R.rack)zn.add(R.rowid.split('-').slice(0,2).join('-'))});
+ Object.keys(gList).forEach((z)=>{if(Array.isArray(gList[z])&&gList[z].length)zn.add('NB03-'+z)}); // 配置了清单的区即使暂无货也上地图
+ Object.keys(gZr).forEach((z)=>{if(Number(gZr[z])>0)zn.add('NB03-'+z)}); // 只设了排数覆盖、暂无货的区同样上地图（旧行为保留）
+ if(Object.keys(gOff).length||Object.keys(gZr).length||Object.keys(gList).length||G.rows){ // 有地面配置才补空排（旧服务端无配置时行为不变）
+  zn.forEach((rowid)=>{const z=zoneLetter(rowid);rowsArrOf(z).forEach((i)=>{const rowid2=rowid+'-'+String(i).padStart(2,'0');const label=rowid2+' 排';if(!rows[label])rows[label]={zone:rowid.split('-')[0],rack:false,rowid:rowid2,tier:String(i),cells:{},max:0,off:!!gOff[rowid2],over:false};});});
  }
  const zoneSt={};let total=0,used=0;
  // ㉖v52 货架巷道：同一货架各层物理列数相同→按巷道最大列对齐（立面成矩形，统计口径与渲染一致）
@@ -938,7 +942,7 @@ async function ctMap(){
      h+='<div style="border:1px solid var(--line);border-radius:8px;padding:6px 8px 7px;background:linear-gradient(180deg,rgba(81,91,212,.05),transparent)">';
      tiers.forEach(R=>{const o=Object.keys(R.cells).length;h+=rowLine(R.tier+(o?'':' 空'),R,maxCol,o)});
      h+='</div>';
-     if(ai<aisles.length-1)h+=aisle('巷道','AGV 通行');
+     // ㉖v90 应用户要求去巷道装饰条（与现场对照无信息量）：aisle() 保留供他处引用
    });
  }
  // ===== NB03 地面：按区分组，排=横条，每两排之间一条巷道 =====
@@ -956,7 +960,7 @@ async function ctMap(){
    h+=`<div style="display:flex;gap:0;margin-bottom:2px">${ruler}</div>`;
    rs.forEach((R,ri)=>{const rn=R.rowid.split('-').pop(),o=Object.keys(R.cells).length;
      if(R.off){h+=`<div style="display:flex;align-items:center;gap:6px;margin:1px 0;opacity:.55"><span class="mono" style="font-size:11px;width:66px;color:#78909c;text-align:right">第${rn}排</span><span class="tag t-x" style="font-size:10px">已停用${o?` · ⚠️仍有 ${o} 格有货（${R.offCells||o}框）请移走`:''}</span></div>`;return;} // ㉖v59 停用排灰显不画格
-     h+=rowLine('第'+rn+'排'+(R.over?' ⚠️超配':(o?'':' 空')),R,R.hi,o);if(ri%2===1&&ri<rs.length-1)h+=aisle('巷道')});
+     h+=rowLine('第'+rn+'排'+(R.over?' ⚠️不在清单':(o?'':' 空')),R,R.hi,o)});
    h+='</div>';
  });
  $('#ctmap').innerHTML=h||'<div style="color:var(--sub);padding:20px">账本为空——地图无格可画</div>';
