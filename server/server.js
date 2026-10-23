@@ -702,7 +702,7 @@ function dailySnap() {
     const dir = path.join(DATA_DIR, 'snapshots'); fs.mkdirSync(dir, { recursive: true });
     const f = path.join(dir, 'ledger-' + key + '.json');
     if (fs.existsSync(f)) return;
-    fs.writeFileSync(f + '.tmp', JSON.stringify({ at: d.toISOString(), items: db.ledger })); fs.renameSync(f + '.tmp', f);
+    fs.writeFileSync(f + '.tmp', JSON.stringify({ at: d.toISOString(), epoch: db.ledgerEpoch || '', items: db.ledger })); fs.renameSync(f + '.tmp', f); // ㉖v89b 盖世代章：整表替换(迁移)后跨快照对比无意义，reconcile 按章拒比
     const all = fs.readdirSync(dir).filter((x) => /^ledger-\d{8}\.json$/.test(x)).sort();
     while (all.length > 90) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} }
     console.log('[snap] 每日账本快照 ' + key + '（' + db.ledger.length + ' 条）');
@@ -3773,7 +3773,14 @@ return send(res, 200, {
         const dir = path.join(DATA_DIR, 'snapshots'); let fsn = [];
         try { fsn = fs.readdirSync(dir).filter((x) => /^ledger-\d{8}\.json$/.test(x)).sort(); } catch (_) { return send(res, 200, { ok: true, days: [], msg: '暂无快照（服务运行满一天后自动生成）' }); }
         const pick = (f) => { try { return JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); } catch (_) { return null; } };
-        const two = fsn.slice(-2); if (two.length < 2) return send(res, 200, { ok: true, days: two, msg: '快照不足两份，无法对比' });
+        // ㉖v89b 世代闸：账本整表替换（WPS导入/迁移）后，新旧快照的码集几乎零重叠，朴素对比会把"换血"全报成幽灵+蒸发
+        // （10/23实测：幽灵404/蒸发387，全是迁移前旧码"消失"+迁移后新码"新增"，无一真异常）——只允许同世代快照互比
+        // 无章历史快照按快照时刻归代：早于最近一次整表替换时刻=PRE-GEN（10/23复盘：现存两份旧快照均无章，
+        // 朴素按 'LEGACY' 归一会被放行互比——正是截图幽灵404/蒸发387的来源）
+        const _ep = (o) => { if (!o) return ''; const e = String(o.epoch || ''); if (e) return e; const t = Date.parse(o.at || '') || 0; const cut = Number(db.ledgerEpochAt) || 0; return (cut && t && t < cut) ? 'PRE-GEN' : (String(db.ledgerEpoch || '') || 'LEGACY'); };
+        let two = fsn.slice(-2);
+        while (two.length === 2 && _ep(pick(two[0])) !== _ep(pick(two[1]))) two = [two[1]]; // 末两份跨世代→最新那份当基线等待
+        if (two.length < 2) return send(res, 200, { ok: true, days: fsn.slice(-1), msg: '账本已整表替换（世代变更），跨世代对比无意义；以最新快照为新基线，自下一份同世代快照起恢复正常对账' });
         const A = pick(two[0]), B = pick(two[1]); if (!A || !B) return send(res, 500, { ok: false, msg: '快照读取失败' });
         const ma = {}, mb = {}; for (const x of A.items || []) ma[String(x.c).toUpperCase()] = x; for (const x of B.items || []) mb[String(x.c).toUpperCase()] = x;
         const ghosts = [], evap = [], moved = [], qtyCh = [];
