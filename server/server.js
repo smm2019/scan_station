@@ -4089,7 +4089,19 @@ return send(res, 200, {
             if (q <= 0) return send(res, 400, { ok: false, msg: '缺少该标签的件数(qty)' });
             target.issued = normIssued(target);
             const em = b.emergency === true;
-            target.issued.push(Object.assign({ c: code, q, l: String(b.fromLoc || '').trim().toUpperCase() }, em ? { e: 1, by: u.name, why: String(b.why || '').trim() } : {}));
+            // ㉖v79c 服务器权威兜底：旧版PDA本地无该标签行（导入行早于测试墓碑被拉取跳过等）→ fromLoc 传空，
+            // 旧版靠PDA本地拣下推送，PDA没行就不拣——发完框仍在架：向导卡"叫AGV"、出库流水缺原货位、库存虚高三连
+            let _fl = String(b.fromLoc || '').trim().toUpperCase();
+            const _ledRow = (db.ledger || []).find(x => String(x.c || '').toUpperCase() === code.toUpperCase());
+            if (!_fl && _ledRow) _fl = String(_ledRow.l || '').toUpperCase();
+            target.issued.push(Object.assign({ c: code, q, l: _fl }, em ? { e: 1, by: u.name, why: String(b.why || '').trim() } : {}));
+            if (_ledRow) { // 服务器直接拣下（单码，方案B口径）+ 墓碑 + 释放预占，不依赖PDA本地状态
+              const _ix = db.ledger.indexOf(_ledRow);
+              if (_ix >= 0) db.ledger.splice(_ix, 1);
+              (db.ledgerTomb = db.ledgerTomb || []).push({ c: code.toUpperCase(), t: Date.now(), rec: Date.now() });
+              db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
+              if (db.locReserve) delete db.locReserve[String(_ledRow.l || '').toUpperCase()];
+            }
             const got = issuedQty(target);
             hpush(`${em ? '⚠️应急发料' : '发料'} ${b.partNo} 标签 ${code}（${q}件，累计 ${got}/${target.qty}）${em ? ' · MES不可用改人工录入（' + u.name + (String(b.why || '').trim() ? '：' + String(b.why || '').trim() : '') + '）' : ''}`);
             const ff = b.fifo; if (ff && ff.ok) pushEvent('FIFO违反', String(b.partNo || ''), `标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);

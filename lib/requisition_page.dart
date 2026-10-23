@@ -2088,6 +2088,73 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       widget.toast("请先扫描转入货位");
       return;
     }
+    // ㉖v79c SYS 补录框（源表无标签号、MES 从未建过码）：转MES必"查不到在库信息"死路——
+    // 货实际已发走，走本地转单：不回传 MES，只回写行 transferred + 落出库台账，仓库账闭环
+    if (codes.every((c) => c.toUpperCase().startsWith('SYS'))) {
+      final yes = await showDialog<bool>(
+          context: context,
+          builder: (dctx) => AlertDialog(
+                icon: const Icon(Icons.inventory_2_outlined,
+                    color: Colors.teal, size: 32),
+                title: const Text("本地转单（补录框 · 不回传 MES）"),
+                content: Text(
+                    "零件号 $partNo\n已扫 ${codes.length} 箱（${_fmtInvNum(_issuedQtyOf(item))} 件）为账本补录标签（SYS 号），MES 无此码。\n\n本操作仅在本系统闭环出库账（转单+出库台账），不同步 MES。产线对账如需 MES 记录，请让计划按实补打标签。确认？"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dctx, false),
+                      child: const Text("取消")),
+                  TextButton(
+                      onPressed: () => Navigator.pop(dctx, true),
+                      child: const Text("确认本地转单"))
+                ],
+              ));
+      if (yes != true || !mounted) return;
+      setState(() => _busy = true);
+      try {
+        final res = await AuthApi.reqAction(
+            _r["id"].toString(), "transfer", {"partNo": partNo});
+        if (res["ok"] != true)
+          throw Exception("服务器回写失败：${res["msg"]}");
+        final fromLocs = <String, String>{};
+        final bars = <Map<String, dynamic>>[];
+        for (final x in List.from(item["issued"] ?? [])) {
+          if (x is! Map) continue;
+          final c0 = x["c"]?.toString().toUpperCase() ?? "";
+          final l0 = x["l"]?.toString() ?? "";
+          if (c0.isEmpty) continue;
+          if (l0.isNotEmpty) fromLocs[c0] = l0;
+          bars.add({
+            "SCAN_BARCODE": c0,
+            "MITEM_CODE": partNo,
+            "QTY": (x["q"] as num?)?.toDouble() ?? 0,
+          });
+        }
+        final rows = [
+          {
+            "PART_NO": partNo,
+            "MITEM_CODE": partNo,
+            "MITEM_NAME": item["itemName"]?.toString() ?? "",
+            "REQ_QTY": _issuedQtyOf(item),
+            "Barcodes": bars,
+          }
+        ];
+        final ob = await createOutboundOrder(rows, _to,
+            linkReqNo: _r["no"].toString(), fromLocs: fromLocs);
+        LocalLog.op('本地转单', '$partNo ${ob.orderNo}（SYS补录框）');
+        widget.toast(
+            "已本地转单（${_fmtInvNum(_issuedQtyOf(item))}件），出库单 ${ob.orderNo}",
+            err: false);
+        setState(() {
+          _r = Map.from(res["req"]);
+          _issuePart = null;
+        });
+      } catch (e) {
+        widget.toast("本地转单失败：${e.toString().replaceFirst("Exception: ", "")}");
+      } finally {
+        if (mounted) setState(() => _busy = false);
+      }
+      return;
+    }
     final yes = await showDialog<bool>(
         context: context,
         builder: (dctx) => AlertDialog(
