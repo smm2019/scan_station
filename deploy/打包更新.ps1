@@ -1,9 +1,7 @@
 ﻿# =====================================================================
-#  本地打包脚本（在开发机跑，不需要管理员）
-#  生成两个 zip：
-#    wmas-deploy.zip   首次安装完整包（install.ps1 + update.ps1 + nssm + code）
-#    wmas-update.zip   日常更新包（update.ps1 + code）
-#  用法：右键「使用 PowerShell 运行」，或 powershell -File 打包更新.ps1
+#  【已废弃 2026-10-17】本目录工具链已并入 D:\work_app\deploy（唯一部署根目录）
+#  请改用 D:\work_app\deploy\pack_server.ps1 打包、那里的一键安装/一键更新/迁移数据.cmd
+#  本脚本保留仅为历史兼容，不再维护。
 # =====================================================================
 $ErrorActionPreference = 'Stop'
 $proj = Split-Path -Parent $MyInvocation.MyCommand.Path   # ...\scan_station\deploy
