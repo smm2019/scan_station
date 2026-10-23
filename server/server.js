@@ -294,6 +294,21 @@ function loadDb() {
     for (const [c, l] of Object.entries(_histEvi)) if (!_locOf[c]) _locOf[c] = l;
     for (const o of Object.values(d.outbound || {})) for (const it of (o.items || [])) { const c = String(it.barcode || '').trim().toUpperCase(); if (!it.fromLoc && c && _locOf[c]) { it.fromLoc = _locOf[c]; _bf++; } }
     if (_bf) { added = true; console.log('[migrate] 出库明细原货位回填 ' + _bf + ' 行（拼接拆分/队列起点）'); }
+    // ㉖v85b 流水初始货位自愈：PDA只扫到区排时流水gl是粗码（实测A16/C11/H7×4条挂⚠未登记），
+    // 账本同码已是完整格位（网页补录/修正过）→ 启动时对齐升级。10/23复盘：gl2手工补丁脚本未生效且一次性脚本不可靠，
+    // 固化进 migrate 后每次启动自动收敛，配合推送侧实时对齐，彻底摆脱人工修数
+    {
+      const _fullL = {};
+      for (const x of d.ledger || []) { const l = String(x.l || ''); if (/^NB\d{2}-[A-Z]-\d+-/.test(l)) _fullL[String(x.c || '').toUpperCase()] = l.toUpperCase(); }
+      let _gf = 0;
+      for (const s of Object.values(d.scanlog || {})) {
+        if (s.cx) continue;
+        const gl = String(s.gl || '');
+        if (!gl || /^NB\d{2}-[A-Z]-\d+-/.test(gl)) continue; // 空值不动（无证据），已是完整格位不动
+        if (_fullL[String(s.code || '').toUpperCase()]) { s.gl = _fullL[String(s.code || '').toUpperCase()]; _gf++; }
+      }
+      if (_gf) { added = true; console.log('[migrate] 流水初始货位自愈：' + _gf + ' 条粗码已按账本对齐完整格位'); }
+    }
   }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.cyclePlans !== 'object' || d.cyclePlans === null || Array.isArray(d.cyclePlans)) { d.cyclePlans = {}; added = true; } // ㉖v63 循环盘点当日计划
@@ -2113,11 +2128,17 @@ const server = http.createServer(async (req, res) => {
         }
         if (!Object.keys(snap).length) return send(res, 400, { ok: false, msg: '无有效条目（需 k 主键）' });
         db.scanlog = Object.assign(db.scanlog || {}, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
-        // ㉖v84 gl防降级：旧PDA本地缓存的粗码流水（gl=A16 只到区排）会把网页/服务器补录的完整格位覆盖回粗码
-        // （实测 N26J220037 补录 NB03-C-11-06 后被宋明明PDA推送打回 C11）——推送键里 gl 非完整格位而库里已是完整格位时，保留库内值
+        // v85b gl粗码实时对齐（v84防降级超集）：推送gl非完整格位时——①库里已是完整格位→保留库内值（防旧缓存打回）
+        // ②库内也没有但账本同码有完整格位（网页补录过）→ 直接升级，PDA再推粗码也不会让⚠未登记复现
+        const _isFullGl = (g) => /^NB\d{2}-[A-Z]-\d+-/.test(String(g || ''));
+        let _glIdx = null;
         for (const [k, v] of Object.entries(snap)) {
-          const old = (db.scanlog && db.scanlog[k]);
-          if (old && /^NB03-/.test(String(old.gl || '')) && !/^NB03-/.test(String(v.gl || ''))) { v.gl = old.gl; db.scanlog[k] = v; }
+          if (_isFullGl(v.gl)) continue;
+          const old = db.scanlog && db.scanlog[k];
+          if (old && _isFullGl(old.gl)) { v.gl = old.gl; db.scanlog[k] = v; continue; }
+          if (!_glIdx) { _glIdx = {}; for (const x of db.ledger || []) { const l = String(x.l || ''); if (_isFullGl(l)) _glIdx[String(x.c || '').toUpperCase()] = l.toUpperCase(); } }
+          const f = _glIdx[String(v.code || '').toUpperCase()];
+          if (f) { v.gl = f; db.scanlog[k] = v; }
         }
         for (const s of Object.values(snap)) feedDict(s.pn, s.nm, '采集流水'); // ㉒G7 字典沉淀
         db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
