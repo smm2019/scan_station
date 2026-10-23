@@ -50,6 +50,13 @@ bool invLocInScope(String locCode, List<String> scope) {
   return scope.contains(invZoneOf(locCode)) || scope.contains(locCode.trim().toUpperCase()) || scope.contains(invShelfOf(locCode));
 }
 
+/// ㉖v86 盘点选位弹窗返回值：zone 非空=整区盘点（扫码自动归位），否则 loc=单货位盘点
+class _LocSel {
+  final String zone;
+  final String loc;
+  const _LocSel({this.zone = "", this.loc = ""});
+}
+
 class InvDiffResult {
   final List<InvPartDiff> parts = [];
   final List<InvLocDiff> locs = [];
@@ -628,6 +635,8 @@ class _InvScanPageState extends State<_InvScanPage> {
   final _codeCtrl = TextEditingController();
   final _codeFocus = FocusNode();
   String _curLoc = "";
+  String _curZone = ""; // ㉖v86 整区盘点：非空=绑定的货区，扫码后按台账自动归位到区内具体货位
+  bool get _bound => _curLoc.isNotEmpty || _curZone.isNotEmpty;
   bool _busy = false;
   final List<InventoryScan> _recent = [];
   InvJudge? _lastJudge;
@@ -659,22 +668,38 @@ class _InvScanPageState extends State<_InvScanPage> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("货位基准未绑定或无货位数据，请在创建任务时绑定货位基准")));
       return;
     }
-    final sel = await showModalBottomSheet<String>(
+    // ㉖v86 两段式：整区盘点（推荐，免逐位切换）/ 单货位盘点（原有精确口径）
+    final zones = opts.map(invZoneOf).toSet().toList()..sort();
+    final sel = await showModalBottomSheet<_LocSel>(
       context: context,
       builder: (ctx) => SafeArea(
         child: ListView(
           children: [
-            const Padding(padding: EdgeInsets.all(14), child: Text("选择当前盘点货位", style: TextStyle(fontWeight: FontWeight.bold))),
+            const Padding(padding: EdgeInsets.fromLTRB(14, 14, 14, 4), child: Text("整区盘点 · 自动归位（推荐）", style: TextStyle(fontWeight: FontWeight.bold, color: Color(0xFF00695C)))),
+            Padding(padding: const EdgeInsets.fromLTRB(14, 0, 14, 6), child: Text("绑定货区后连续扫码，系统按台账把每框自动归到区内登记货位；零件不在该区台账时挂本区并提示串位", style: TextStyle(fontSize: 11.5, color: Colors.grey))),
+            ...zones.map((z) => ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.dashboard_outlined, color: Color(0xFF00897B), size: 20),
+                  title: Text(z, style: const TextStyle(fontFamily: "monospace")),
+                  subtitle: Text("${opts.where((c) => invZoneOf(c) == z).length} 个货位", style: const TextStyle(fontSize: 11)),
+                  trailing: z == _curZone ? const Icon(Icons.check, color: Color(0xFF515BD4)) : null,
+                  onTap: () => Navigator.pop(ctx, _LocSel(zone: z)),
+                )),
+            const Divider(height: 20),
+            const Padding(padding: EdgeInsets.fromLTRB(14, 4, 14, 4), child: Text("单货位盘点（精确口径，逐位扫码时手选）", style: TextStyle(fontWeight: FontWeight.bold))),
             ...opts.map((o) => ListTile(
-                  title: Text(o),
-                  trailing: o == _curLoc ? const Icon(Icons.check, color: Color(0xFF515BD4)) : null,
-                  onTap: () => Navigator.pop(ctx, o),
+                  dense: true,
+                  title: Text(o, style: const TextStyle(fontFamily: "monospace")),
+                  onTap: () => Navigator.pop(ctx, _LocSel(loc: o)),
                 )),
           ],
         ),
       ),
     );
-    if (sel != null && mounted) setState(() => _curLoc = sel);
+    if (sel != null && mounted) setState(() {
+      _curZone = sel.zone;
+      _curLoc = sel.loc;
+    });
   }
 
   Future<void> _loadRecent() async {
@@ -707,8 +732,8 @@ class _InvScanPageState extends State<_InvScanPage> {
       }
       return;
     }
-    if (_curLoc.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先绑定当前盘点货位！")));
+    if (!_bound) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先绑定盘点货位或货区！")));
       return;
     }
     _busy = true;
@@ -716,7 +741,8 @@ class _InvScanPageState extends State<_InvScanPage> {
       // 1. 重复码检测（同任务）
       final dupRows = await _globalIsar.inventoryScans
           .filter().taskIdEqualTo(widget.task.batchId).goodsCodeEqualTo(code).findAll();
-      final rec = InventoryScan(taskId: widget.task.batchId, goodsCode: code, scanTime: DateTime.now(), locCode: _curLoc);
+      // ㉖v86 整区盘点：先挂区名占位，MES 反查拿到零件号后归位到区内具体货位（单货位模式行为不变）
+      final rec = InventoryScan(taskId: widget.task.batchId, goodsCode: code, scanTime: DateTime.now(), locCode: _curLoc.isNotEmpty ? _curLoc : _curZone);
       InvJudge judge;
       if (dupRows.isNotEmpty) {
         rec.flag = 1;
@@ -751,11 +777,27 @@ class _InvScanPageState extends State<_InvScanPage> {
           rec.qty = mes["qty"];
           // 3. 账内外 + 串位 + 超量
           final bookHit = await _globalIsar.baselineBooks.filter().partNoEqualTo(rec.partNo).findAll();
+          // ㉖v86 整区归位：零件在该区有台账货位→归到具体位（多处取第一条并备注）；无→挂区名走串位口径
+          String effLoc = _curLoc;
+          if (_curLoc.isEmpty && _curZone.isNotEmpty) {
+            final zoneRows = (await _globalIsar.baselineLocs
+                    .filter().partNoEqualTo(rec.partNo).findAll())
+                .where((e) => invZoneOf(e.locCode) == _curZone)
+                .toList();
+            if (zoneRows.isNotEmpty) {
+              effLoc = zoneRows.first.locCode.toUpperCase();
+              rec.locCode = effLoc; //归位改写：报表/差异按具体货位聚合
+              if (zoneRows.length > 1) rec.remark = "该区多处登记此零件，归至 ${zoneRows.map((e) => e.locCode).take(3).join("、")}";
+            } else {
+              // 零件在本区台账无登记位：挂区名（与 rec.locCode 占位一致），串位提示显示"货区「NB03-A-11」"而非空货位
+              effLoc = _curZone;
+            }
+          }
           final locHit = await _globalIsar.baselineLocs
-              .filter().locCodeEqualTo(_curLoc).partNoEqualTo(rec.partNo).findAll();
+              .filter().locCodeEqualTo(effLoc).partNoEqualTo(rec.partNo).findAll();
           double scannedInLoc = rec.qty;
           final priorRows = await _globalIsar.inventoryScans
-              .filter().taskIdEqualTo(widget.task.batchId).locCodeEqualTo(_curLoc).partNoEqualTo(rec.partNo).findAll();
+              .filter().taskIdEqualTo(widget.task.batchId).locCodeEqualTo(effLoc).partNoEqualTo(rec.partNo).findAll();
           for (final s in priorRows.where((s) => s.flag != 1)) {
             scannedInLoc += s.qty;
           }
@@ -783,7 +825,7 @@ class _InvScanPageState extends State<_InvScanPage> {
           } else if (bookHit.isEmpty) {
             if (widget.task.invBookKey.isEmpty) {
               rec.flag = 0;
-              judge = InvJudge(0, "green", "已记录：${rec.partNo} ${_fmtInvNum(rec.qty)} 件 @ $_curLoc（未绑账面基准，不判账外/超量）");
+              judge = InvJudge(0, "green", "已记录：${rec.partNo} ${_fmtInvNum(rec.qty)} 件 @ $effLoc（未绑账面基准，不判账外/超量）");
             } else {
               rec.flag = 3;
               judge = InvJudge(3, "red", "账外物料：零件「${rec.partNo}」不在账面基准，仍已记录");
@@ -797,14 +839,15 @@ class _InvScanPageState extends State<_InvScanPage> {
               locBookQty: locBook,
             );
             rec.flag = judge.flag;
-            if (judge.flag == 4) judge = InvJudge(4, "yellow", "串位提示：货位「$_curLoc」台账无零件「${rec.partNo}」，仍已记录");
+            if (judge.flag == 4) judge = InvJudge(4, "yellow", "串位提示：${effLoc == _curZone ? "货区「$_curZone」" : "货位「$effLoc」"}台账无零件「${rec.partNo}」，仍已记录");
             if (judge.flag == 5) {
               judge = widget.task.blindMode
-                  ? InvJudge(5, "yellow", "超量提示：「$_curLoc」该零件实扫已超台账（盲盘，账面数结束后可见）")
-                  : InvJudge(5, "yellow", "超量提示：「$_curLoc」该零件已扫 ${_fmtInvNum(scannedInLoc)}，台账 ${_fmtInvNum(locBook)}");
+                  ? InvJudge(5, "yellow", "超量提示：「$effLoc」该零件实扫已超台账（盲盘，账面数结束后可见）")
+                  : InvJudge(5, "yellow", "超量提示：「$effLoc」该零件已扫 ${_fmtInvNum(scannedInLoc)}，台账 ${_fmtInvNum(locBook)}");
             }
-            if (judge.flag == 0 && !_curLoc.isEmpty) {
-              judge = InvJudge(0, "green", "正常：${rec.partNo} ${_fmtInvNum(rec.qty)} 件 @ $_curLoc");
+            if (judge.flag == 0 && effLoc.isNotEmpty) {
+              final autoTag = _curLoc.isEmpty && _curZone.isNotEmpty ? "（自动归位）" : "";
+              judge = InvJudge(0, "green", "正常：${rec.partNo} ${_fmtInvNum(rec.qty)} 件 @ $effLoc$autoTag");
             }
           }
         }
@@ -925,7 +968,9 @@ class _InvScanPageState extends State<_InvScanPage> {
   Widget build(BuildContext context) {
     final total = _recent.length;
     final abnormal = _recent.where((s) => s.flag != 0).length;
-    final inLoc = _recent.where((s) => s.locCode == _curLoc && s.flag != 1).length;
+    final inLoc = _curLoc.isNotEmpty
+        ? _recent.where((s) => s.locCode == _curLoc && s.flag != 1).length
+        : _recent.where((s) => (s.locCode == _curZone || invZoneOf(s.locCode) == _curZone) && s.flag != 1).length; // ㉖v86 整区模式按区聚合
     return Scaffold(
       appBar: AppBar(
         backgroundColor: const Color(0xFF515BD4),
@@ -953,15 +998,15 @@ class _InvScanPageState extends State<_InvScanPage> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       decoration: BoxDecoration(
-                        color: _curLoc.isEmpty ? Colors.red.shade50 : const Color(0xFFE8EAF6),
+                        color: _bound ? const Color(0xFFE8EAF6) : Colors.red.shade50,
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: _curLoc.isEmpty ? Colors.red : const Color(0xFF515BD4)),
+                        border: Border.all(color: _bound ? const Color(0xFF515BD4) : Colors.red),
                       ),
                       child: Row(
                         children: [
-                          Icon(Icons.location_on, size: 18, color: _curLoc.isEmpty ? Colors.red : const Color(0xFF515BD4)),
+                          Icon(_curLoc.isEmpty ? Icons.dashboard : Icons.location_on, size: 18, color: _bound ? const Color(0xFF515BD4) : Colors.red),
                           const SizedBox(width: 6),
-                          Expanded(child: Text(_curLoc.isEmpty ? "未绑定货位，点击选择（必须先绑货位才能扫码）" : "当前货位：$_curLoc（点击更换）", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _curLoc.isEmpty ? Colors.red : const Color(0xFF3949AB)))),
+                          Expanded(child: Text(_curLoc.isNotEmpty ? "当前货位：$_curLoc（点击更换）" : (_curZone.isNotEmpty ? "整区盘点：$_curZone · 自动归位（点击更换）" : "未绑定，点击选择货区（整区·推荐）或货位"), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _bound ? const Color(0xFF3949AB) : Colors.red))),
                           const Icon(Icons.swap_horiz, size: 18),
                         ],
                       ),
@@ -975,7 +1020,7 @@ class _InvScanPageState extends State<_InvScanPage> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: Row(
               children: [
-                _chip("本货位 $inLoc", const Color(0xFFE8EAF6), const Color(0xFF3949AB)),
+                _chip(_curLoc.isNotEmpty ? "本货位 $inLoc" : "本区已扫 $inLoc", const Color(0xFFE8EAF6), const Color(0xFF3949AB)),
                 const SizedBox(width: 8),
                 _chip("总扫码 $total", Colors.grey.shade200, Colors.black87),
                 const SizedBox(width: 8),
@@ -993,10 +1038,10 @@ class _InvScanPageState extends State<_InvScanPage> {
                     controller: _codeCtrl,
                     focusNode: _codeFocus,
                     autofocus: true,
-                    enabled: _curLoc.isNotEmpty,
+                    enabled: _bound,
                     textInputAction: TextInputAction.done,
                     decoration: InputDecoration(
-                      hintText: _curLoc.isEmpty ? "请先绑定货位" : "扫码枪扫货物标签 / 手输后回车",
+                      hintText: _bound ? "扫码枪扫货物标签 / 手输后回车" : "请先绑定货区或货位",
                       border: const OutlineInputBorder(),
                       isDense: true,
                       prefixIcon: const Icon(Icons.qr_code_scanner),
@@ -1006,7 +1051,7 @@ class _InvScanPageState extends State<_InvScanPage> {
                 ),
                 const SizedBox(width: 8),
                 IconButton(
-                  onPressed: _curLoc.isEmpty ? null : _openCamera,
+                  onPressed: _bound ? _openCamera : null,
                   style: IconButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
                   icon: const Icon(Icons.photo_camera),
                 ),
