@@ -2054,10 +2054,17 @@ const server = http.createServer(async (req, res) => {
           if (dir === 'out' && (db.inspects || []).some((q) => String(q.code).toUpperCase() === code && ['waitOut', 'toStation', 'atStation', 'waitBack', 'returning'].includes(q.state))) return send(res, 200, { ok: false, msg: '框 ' + code + ' 正在检验中，禁止出库叫车（请先完成检验归位）' });
         }
         // 防重：同容器/同标签在途、同站台60秒内刚被叫车——与 claim 同口径
+        // ㉖v79c 入库指定货架位占用校验（服务器权威）：该 NB02 格位账本已有别的框→拒绝叫车
+        // （dispatchOne 对非CK终点不做占用判断，旧版PDA输入框残留会把车叫到占用位/拿错框码）
+        if (dir === 'in' && code && /^NB02-/.test(to) && !/-CK-/.test(to)) {
+          const _rows = (db.ledger || []).filter((x) => String(x.l || '').toUpperCase() === to);
+          if (_rows.length && !_rows.some((x) => String(x.c || '').toUpperCase() === code)) return send(res, 200, { ok: false, msg: '货架位 ' + to + ' 已被框 ' + _rows.map((x) => x.c).join('/') + ' 占用，不能叫车到占用位——请「选位」重选空格位' });
+        }
         if (b.container) {
           const cn = String(b.container).trim().toUpperCase();
           const liveQ = db.agvQueue.filter((q) => ['排队', '下发中', '已下发'].includes(q.state));
-          if (liveQ.some((q) => String(q.taskNo || '').toUpperCase() === cn)) return send(res, 200, { ok: false, msg: '容器 ' + cn + ' 已有在途搬运任务，请勿重复叫车' });
+          const _occ = liveQ.find((q) => String(q.taskNo || '').toUpperCase() === cn); // ㉖v79c 占用详情：谁、哪框、什么状态——旧版只报"请勿重复"，物料员不知道要等多久、等谁
+          if (_occ) return send(res, 200, { ok: false, msg: '容器 ' + cn + ' 正被在途任务占用（框 ' + _occ.code + ' ' + _occ.state + '，' + (_occ.by || '') + ' ' + new Date(_occ.at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5) + ' 叫车）；站台不限量，限的是容器号——多台并发请在AGV主档为该框型增登容器号' });
           const ck = 'carry|' + cn;
           const old = (db.agvClaims || {})[ck];
           if (old && Date.now() - (old.at || 0) < 15 * 60 * 1000) return send(res, 200, { ok: false, msg: '容器 ' + cn + ' ' + Math.round((Date.now() - old.at) / 1000) + '秒前刚叫过车（' + old.by + '），请勿重复叉取' });

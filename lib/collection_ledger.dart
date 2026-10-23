@@ -720,6 +720,21 @@ extension CollectionLedgerExt on _MainPageState {
       return warn("货位 $loc 本会话已叫过车，请勿重复；如需重叫请先到AGV系统核对该托盘任务");
     final codes = (await _ledgerByLoc())[loc] ?? const <String>[];
     if (codes.isEmpty) return warn("货位 $loc 还没有扫码入账——请先扫描货物标签，再叫车（防止叫车忘扫码）");
+    // ㉖v79c 叫车对象校验：旧版直接取"该货位账本首码"，输入框残留上一单货位时会把别框当本框叫车
+    // （事故还原：扫N26J220220入账被占失败→点提交→拿残留位D-16-1F的首码SYS000254建任务→AGV按错框名义搬运）
+    // 现以最近一次生效扫码为准：该码必须在目标货位账本里，否则拒绝并提示重选
+    final allRecs = await _isar.scanRecords.where().findAll();
+    allRecs.sort((a, b) => b.scanTime.compareTo(a.scanTime));
+    String expect = "";
+    for (final r in allRecs) {
+      if (!r.isCancel) {
+        expect = r.goodsCode.toUpperCase();
+        break;
+      }
+    }
+    if (expect.isNotEmpty && !codes.map((c) => c.toUpperCase()).contains(expect)) {
+      return warn("刚扫的框 $expect 并不在货位 $loc（该位是 ${codes.join('/')}）\n货位框可能残留上一单——请点「选位」重选本次货位，或先扫标签入账再提交");
+    }
     if (!mounted) return;
     showDialog(
         context: context,
