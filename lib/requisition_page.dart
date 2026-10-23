@@ -1708,6 +1708,18 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final over = (sg["over"] as num?)?.toDouble() ?? 0; // ㉖v69 整框发料超发件数（多备件，剩余可返架）
     final inStock = (sg["inStock"] as num?)?.toInt() ?? 0;
     final noInfo = (sg["noInfoQty"] as num?)?.toInt() ?? 0;
+    // ㉖v79c 发齐（剩余需求≤0）：服务器返回done标记，显示完成态不再列框（旧版发满还挂着建议框，照着叫就超发）
+    if (sg["done"] == true) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 6),
+        child: Text(
+            "✅ 该行已发齐 ${_fmtInvNum(total + ((sg["need"] as num?)?.toDouble() ?? 0))} 件——无需再叫车，点「转MES出库」收尾",
+            style: const TextStyle(
+                fontSize: 11,
+                color: Color(0xFF2E7D32),
+                fontWeight: FontWeight.w600)),
+      );
+    }
     if (flat.isEmpty) {
       return Padding(
         padding: const EdgeInsets.only(top: 6),
@@ -1738,7 +1750,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         Row(children: [
           Expanded(
               child: Text(
-                  "💡 取货建议（FIFO）：在架 $inStock 框，建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件${over > 0 ? "（含超发 ${_fmtInvNum(over)} 件，整框发料余料可返架）" : ""} · ${canCtl ? '点标签单独叫车' : '点标签复制'}",
+                  "💡 取货建议（FIFO）：在架 $inStock 框，还差 ${_fmtInvNum((sg["need"] as num?)?.toDouble() ?? 0)} 件，本轮建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件${over > 0 ? "（含超发 ${_fmtInvNum(over)} 件，整框发料余料可返架）" : ""} · ${canCtl ? '点标签单独叫车' : '点标签复制'}",
                   style: const TextStyle(
                       fontSize: 11,
                       color: Color(0xFF3949AB),

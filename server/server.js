@@ -1136,6 +1136,9 @@ function agvMapOf(i) { const m = {}; for (const e of ((i && i.agvCalled) || []))
 function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   const agv = agvMap || {};
   const ex = excludeCodes || new Set();
+  // ㉖v79c 剩余需求≤0=该行已发齐/跳过：不再给任何建议框。
+  // 旧版按【原始需求】算——已发600/600仍显示"建议2框≈600件"，物料员照着再叫2框车直接超发（重大bug）
+  if (!(needQty > 0)) return { boxes: [], flatBoxes: [], total: 0, over: 0, inStock: 0, noInfoQty: 0, need: 0, done: true };
   const match = ledgerView().filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase()); // ㉖ 用派生批次视图：FIFO 按 MES 打印日期先后（YYYY-MM-DD 字典序=时间序）
   const boxes = [];
   for (const bx of groupLedgerBoxes(match)) { // ㉖v59 方案B：框内已发码剔除、剩余码保留（逐码发料，半发框继续出现在建议里）；全发完才整框消失
@@ -1173,12 +1176,14 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   const noInfoKeys = new Set();
   for (const x of match) if (!x.q) noInfoKeys.add(boxKeyOf(x));
-  return { boxes: pick, flatBoxes, total: acc, over, inStock: boxes.length, noInfoQty: noInfoKeys.size };
+  return { boxes: pick, flatBoxes, total: acc, over, need: Math.max(0, Math.round((needQty - acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size };
 }
 function reqView(r) {
   const items = (r.items || []).map(i => {
     const excl = new Set(((i.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
-    return { ...i, suggest: pickSuggest(i.partNo, Number(i.qty) || 0, excl, agvMapOf(i)) };
+    // ㉖v79c 建议口径=【剩余需求】（原始需求−已发件数），发齐即空；旧版传原始需求致"发完还建议"超发隐患
+    const _got = (i.issued || []).reduce((s, x) => s + (typeof x === 'string' ? 0 : (Number(x.q) || 0)), 0);
+    return { ...i, suggest: pickSuggest(i.partNo, Math.max(0, (Number(i.qty) || 0) - _got), excl, agvMapOf(i)) };
   });
   return { ...r, items, statusText: REQ_STATUS_TEXT[r.status] || r.status };
 }
@@ -2060,15 +2065,9 @@ const server = http.createServer(async (req, res) => {
           const _rows = (db.ledger || []).filter((x) => String(x.l || '').toUpperCase() === to);
           if (_rows.length && !_rows.some((x) => String(x.c || '').toUpperCase() === code)) return send(res, 200, { ok: false, msg: '货架位 ' + to + ' 已被框 ' + _rows.map((x) => x.c).join('/') + ' 占用，不能叫车到占用位——请「选位」重选空格位' });
         }
-        if (b.container) {
-          const cn = String(b.container).trim().toUpperCase();
-          const liveQ = db.agvQueue.filter((q) => ['排队', '下发中', '已下发'].includes(q.state));
-          const _occ = liveQ.find((q) => String(q.taskNo || '').toUpperCase() === cn); // ㉖v79c 占用详情：谁、哪框、什么状态——旧版只报"请勿重复"，物料员不知道要等多久、等谁
-          if (_occ) return send(res, 200, { ok: false, msg: '容器 ' + cn + ' 正被在途任务占用（框 ' + _occ.code + ' ' + _occ.state + '，' + (_occ.by || '') + ' ' + new Date(_occ.at).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5) + ' 叫车）；站台不限量，限的是容器号——多台并发请在AGV主档为该框型增登容器号' });
-          const ck = 'carry|' + cn;
-          const old = (db.agvClaims || {})[ck];
-          if (old && Date.now() - (old.at || 0) < 15 * 60 * 1000) return send(res, 200, { ok: false, msg: '容器 ' + cn + ' ' + Math.round((Date.now() - old.at) / 1000) + '秒前刚叫过车（' + old.by + '），请勿重复叉取' });
-        }
+        // ㉖v79c 容器号不再拦叫车（用户拍板）：现场同款铁框物理容器号只有一个，WMAS手动下任务也不按容器拦；
+        // 旧版"容器在途/容器15分钟防抖"两道闸把第二单合法叫车挡死（物料员"再次扫码叫车就不行"根因）。
+        // 防重复叉取只认框标签号（上方 code 在途闸）；同框兄弟码由 agv 端点登记闸另行防护。
         // ㉖⑲ 入队 + 立即下发：复用调度器同一 dispatchOne（遵守 dry/live、manualOnly 不改派、纳入统一状态机与批量/优先级治理）
         const live = (db.agvDispatchMode || 'dry') === 'live';
         const item = { id: newId('cq'), code: code || String(b.container || '').toUpperCase(), fromLoc: from, stationManual: to, station: '', palletType, type: dir === 'in' ? 'inbound' : 'outbound', manualOnly: true, container: b.container ? String(b.container).trim().toUpperCase() : '', ref: (dir === 'in' ? 'RK-' : 'CK-') + (code || ''), by: u.name, state: '排队', at: Date.now(), updAt: Date.now() };
@@ -2177,7 +2176,8 @@ const server = http.createServer(async (req, res) => {
         for (const k of Object.keys(db.agvClaims)) { if ((db.agvClaims[k].at || 0) + 15 * 60 * 1000 < now) delete db.agvClaims[k]; }
         for (const c of Object.values(db.agvClaims)) {
           const age = now - (c.at || 0);
-          if (c.cn === cn) return send(res, 200, { ok: false, code: 'agv_busy', msg: `容器 ${cn} 已在叫车流程中（${c.by} ${new Date(c.at).toLocaleTimeString('zh-CN', { hour12: false })} 叫往 ${c.stn}），请勿重复叉取` });
+          // ㉖v79c 同容器【同站台】才算重复叉取；同容器不同站台=两托合法并发（旧版按容器一刀切，现场容器号唯一致第二单永远被挡）
+          if (c.cn === cn && c.stn === stn) return send(res, 200, { ok: false, code: 'agv_busy', msg: `容器 ${cn} 已在叫车流程中（${c.by} ${new Date(c.at).toLocaleTimeString('zh-CN', { hour12: false })} 叫往 ${c.stn}），请勿重复叉取` });
           if (c.stn === stn && age < 60 * 1000) return send(res, 200, { ok: false, code: 'agv_busy', msg: `站台 ${stn} ${age < 5000 ? '刚刚' : Math.round(age / 1000) + '秒前'}刚被叫车（${c.by} ← ${c.from}），同一时间只允许一个任务，请等送达或换站台` });
         }
         db.agvClaims[`${cn}|${stn}`] = { cn, stn, from, by: u.name, at: now };
@@ -4796,6 +4796,9 @@ async function rcsPoll() {
         : (db.ledger || []).filter(x => String(x.l).toUpperCase() === sp).map(x => String(x.c || '').toUpperCase()).filter(Boolean);
       const nt2 = nodeTimes(t);
       db.rcsStations[ep] = { station: ep, state: '有货', dir: 'out', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn, pickAt: nt2.pickAt, startAt: nt2.startAt, buildAt: nt2.buildAt };
+      // ㉖v79c RCS改派纠正：任务实际送达 ep ≠ 我们请求的站台（WMAS/RCS 会自行换台，实测 CK-03→CK-12、CK-02→CK-11）
+      // → 队列项目的地改为实际台并留痕，PDA"到站"提示/催扫/领料详情全部跟着对，物料员不再按请求台跑空
+      if (codes.length) { const _qq = (db.agvQueue || []).find((x) => codes.includes(String(x.code || '').toUpperCase()) && ['已下发', '到站'].includes(x.state) && x.station && x.station !== ep); if (_qq) { (_qq.trace = _qq.trace || []).push('RCS实际送达 ' + ep + '（请求 ' + _qq.station + '，已自动纠正）'); _qq.station = ep; _qq.updAt = nowMs; } }
     } else if (isCK(sp) && !isCK(ep)) { // 入库叉回货架 → 仅当入库完成时刻晚于站台现有"有货"到站时刻才清台（防乱序穿越删除）
       const cur = db.rcsStations[sp];
       if (!cur || (cur.ts || 0) <= finTs) delete db.rcsStations[sp];
