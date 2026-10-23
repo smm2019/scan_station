@@ -2798,7 +2798,9 @@ return send(res, 200, {
         const boxes = Object.values(bm).map((b) => ({ loc: Object.keys(b.locs)[0] || '', tags: b.tags, q: b.q, last: b.last })).sort((a, x) => x.last - a.last);
         const qty = boxes.reduce((a, b) => a + b.q, 0);
         const _sl = Object.values(db.scanlog || {}).filter((st) => String(st.pn || '').toUpperCase() === pn).sort((a, x) => (x.t || 0) - (a.t || 0));
-        const inb = _sl.slice(0, 60).map((st) => ({ t: Number(st.t) || 0, code: st.code, q: Number(st.q) || 0, lot: printLot(st.mk, st.lot), loc: (st.wt === 0 ? st.st : st.gl) || '', op: st.op || '', cx: !!st.cx }));
+        // ㉖v83 漏登记标记：地面模式只选区排未落成格位（gl=粗码），或登记步骤失败——未作废、不在账本、也无出库史 = 实物在库系统查无，需去「修正与返架」补登记
+        const _outCodes = new Set(); for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) _outCodes.add(String(i.barcode || '').toUpperCase());
+        const inb = _sl.slice(0, 60).map((st) => ({ t: Number(st.t) || 0, code: st.code, q: Number(st.q) || 0, lot: printLot(st.mk, st.lot), loc: (st.wt === 0 ? st.st : st.gl) || '', op: st.op || '', cx: !!st.cx, unreg: !st.cx && !(db.ledger || []).some((x) => String(x.c || '').toUpperCase() === String(st.code || '').toUpperCase()) && !_outCodes.has(String(st.code || '').toUpperCase()) && !db.seenOut[String(st.code || '').toUpperCase()] }));
         const outAll = [];
         for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) { if (String(i.code || '').toUpperCase() !== pn) continue; outAll.push({ t: Number(o.createdAt) || 0, no: o.orderNo, q: Number(i.qty) || 0, tag: i.barcode || '', from: i.fromLoc || '', to: o.toLoc || '', req: o.linkReqNo || '', by: o.operator || '' }); }
         outAll.sort((a, x) => x.t - a.t);
