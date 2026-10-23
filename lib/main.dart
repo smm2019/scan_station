@@ -2556,11 +2556,29 @@ class _MainPageState extends State<MainPage>
         codes.addAll(mates.map((m) => m.goodsCode.toUpperCase())); //同托多码共用一个货位
       }
       //占用核对：该货位上不属于本托/本码的其他标签才算冲突
-      final prior =
+      // ㉖v82c 先清本机拼接幽灵行（"A; B; C"导入时代遗留，服务器早已拆单码/出库）：
+      // 幽灵行占着空位→本地占用检查误报"已登记给 A; B; C"挡住正常入账（实测 B-02-3F 事故）
+      final ghosts0 = (await _isar.shelfPlacements.where().findAll())
+          .where((p) => p.goodsCode.contains(';') || p.goodsCode.contains('；'))
+          .toList();
+      if (ghosts0.isNotEmpty) {
+        await _isar.writeTxn(() async {
+          await _isar.shelfPlacements.deleteAll(ghosts0.map((e) => e.id).toList());
+        });
+      }
+      var prior =
           await _isar.shelfPlacements.filter().locEqualTo(loc).findAll();
-      final foreign = prior
+      var foreign = prior
           .where((p) => !codes.contains(p.goodsCode.toUpperCase()))
           .toList();
+      if (foreign.isNotEmpty) {
+        // 本机数据可能整体过期：强制与服务器对齐一次再复查，避免拿旧缓存误拦
+        await ledgerPullMerge(force: true);
+        prior = await _isar.shelfPlacements.filter().locEqualTo(loc).findAll();
+        foreign = prior
+            .where((p) => !codes.contains(p.goodsCode.toUpperCase()))
+            .toList();
+      }
       if (foreign.isNotEmpty) {
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
