@@ -5170,6 +5170,17 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
   }
   if (!stn) return false;
   assigned.push(stn); q.station = stn; q.updAt = nowMs;
+  // ㉖v79c 入库重复货位终极防线（所有叫车入口统一过闸）：目的地货架位账本已有别的框→拒绝下发判失败
+  // （carry 端点同款检查只护手动提交；AUTO分配/排队端点/旧版PDA 路径全靠这里兜底，杜绝两框同位撞车）
+  if (q.type === 'inbound' && /^NB02-/.test(stn) && !/-CK-/.test(stn) && q.code) {
+    const _rows = (db.ledger || []).filter((x) => String(x.l || '').toUpperCase() === stn);
+    if (_rows.length && !_rows.some((x) => String(x.c || '').toUpperCase() === String(q.code).toUpperCase())) {
+      q.state = '失败'; q.err = '货架位 ' + stn + ' 已被框 ' + _rows.map((x) => x.c).join('/') + ' 占用，请重选空格位再叫车';
+      q.trace.push('重复货位防线：' + stn + ' 已占(' + _rows[0].c + ')，拒绝下发');
+      console.log(`[agv-q] 拦截 框 ${q.code} → ${stn}：货位已被 ${_rows[0].c} 占用`);
+      return true;
+    }
+  }
   if (!live) { q.plan = stn; q.trace.push('演算模式：计划 ' + stn + '，切真实下发后执行'); console.log(`[agv-q·演算] 框 ${q.code} ${q.fromLoc} → ${stn}（切live后自动下发）`); return true; }
   q.state = '下发中'; q.sentAt = Date.now();
   const tk = await wmasToken();
