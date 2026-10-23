@@ -397,7 +397,7 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
           title: const Text("扫码自动入库叫车",
               style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
           subtitle: const Text(
-              "开启后：扫码保存+账本登记成功即自动建搬运任务（站台→货架位），与手动「提交任务」同校验链；容器多候选弹选择；整托模式不自动（扫完手动提交）；失败只提示不影响账本",
+              "开启后：扫码保存+账本登记成功即自动建搬运任务（站台→货架位），与手动「提交任务」同校验链；容器多候选弹选择；整托模式不自动（点「结束本托」选「结托并叫车」）；失败只提示不影响账本",
               style: TextStyle(fontSize: 11.5, color: Colors.grey)),
           onChanged: (v) async {
             await WmasConfig.setAutoCall(v);

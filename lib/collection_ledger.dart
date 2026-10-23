@@ -171,7 +171,7 @@ extension CollectionLedgerExt on _MainPageState {
                   style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF00897B),
                       foregroundColor: Colors.white),
-                  onPressed: _showWmasCard,
+                  onPressed: () => _showWmasCard(),
                   child: const Text("提交任务"),
                 ),
               ),
@@ -700,13 +700,24 @@ extension CollectionLedgerExt on _MainPageState {
   }
 
   ///WMAS 任务卡：叫车前先强制校验"该货位已扫码入账"，从流程上杜绝"叫了车忘扫码"；本会话已叫过的货位禁止重复叫车
-  Future<void> _showWmasCard() async {
-    final st =
-        _selectedStation ?? _lastScanStation ?? ""; // ㉖⑬ 扫码后站台选中态已清，回退本框扫码时的站台
-    var loc = _ledgerLocCtrl.text.trim().toUpperCase();
+  /// 手动「提交任务」叫车弹窗。㉖v85d 结托复用：可传入清空前捕获的三要素（stPre/locPre/ctypePre），
+  /// 并在叫车成功后回调 onDone（结托场景=释放货位），使「结托+叫车」成为原子操作，消除顺序陷阱。
+  Future<void> _showWmasCard(
+      {String stPre = "",
+      String locPre = "",
+      String ctypePre = "",
+      void Function()? onDone}) async {
+    var st = stPre.isNotEmpty
+        ? stPre
+        : (_selectedStation ?? _lastScanStation ?? ""); // ㉖⑬ 扫码后站台选中态已清，回退本框扫码时的站台
+    var loc = locPre.isNotEmpty
+        ? locPre
+        : _ledgerLocCtrl.text.trim().toUpperCase();
     if (loc.isEmpty || loc == 'AUTO')
       loc = await _latestRegLoc(); // 扫码后输入框清空→回退最近入账货位
-    final ctype = _containerType ?? _lastScanContainer ?? ""; // ㉖⑬ 容器同左回退
+    var ctype = ctypePre.isNotEmpty
+        ? ctypePre
+        : (_containerType ?? _lastScanContainer ?? ""); // ㉖⑬ 容器同左回退
     void warn(String m) {
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
@@ -746,7 +757,8 @@ extension CollectionLedgerExt on _MainPageState {
             startPoint: st,
             endPoint: loc,
             containerType: ctype,
-            cargoCodes: codes));
+            cargoCodes: codes,
+            onCalled: onDone));
   }
 }
 
@@ -754,11 +766,13 @@ extension CollectionLedgerExt on _MainPageState {
 class _WmasCardDialog extends StatefulWidget {
   final String startPoint, endPoint, containerType;
   final List<String> cargoCodes;
+  final void Function()? onCalled; // ㉖v85d 结托场景：叫车成功后释放货位（原子化）
   const _WmasCardDialog(
       {required this.startPoint,
       required this.endPoint,
       required this.containerType,
-      this.cargoCodes = const []});
+      this.cargoCodes = const [],
+      this.onCalled});
   @override
   State<_WmasCardDialog> createState() => _WmasCardDialogState();
 }
@@ -818,6 +832,7 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
       _colCalled.add(widget.endPoint);
       kAgvQueueTick.value++; // ㉖ 叫车成功→采集页队列统计即时刷新
       Navigator.pop(context);
+      widget.onCalled?.call(); // ㉖v85d 结托场景：叫车成功才释放货位，一次点击闭环
     }
   }
 

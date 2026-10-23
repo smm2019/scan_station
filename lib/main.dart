@@ -1813,27 +1813,90 @@ class _MainPageState extends State<MainPage>
     });
   }
 
-  ///【整托：结束当前托，释放货位/站台，准备开下一托】
-  Future<void> _endPallet() async {
+  ///【整托：结束当前托（方案A：结托=叫车+释放货位 原子操作）】
+  /// ㉖v85d 原设计隐性顺序耦合：叫车依赖站台/容器回退值，结托/关模式会清空它们，
+  /// 导致现场必须"先手动提交任务→再取消整托"，顺序反了整托就叫不到车（数据丢失级坑）。
+  /// 现在「结束本托」弹窗里直接提供「结托并叫车」：一次点击复用与手动提交完全相同的校验链，
+  /// 叫车成功才释放货位；叫车前参数缺失只提醒不释放，修好可重试。
+  Future<void> _endPallet({bool alsoOff = false}) async {
     if (_currentPalletId == null) return;
-    final ok = await showDialog<bool>(
+    // 清空前捕获叫车三要素（与「提交任务」同款回退口径）
+    final st = _selectedStation ?? _lastScanStation ?? "";
+    var loc = _ledgerLocCtrl.text.trim().toUpperCase();
+    if (loc.isEmpty || loc == 'AUTO') loc = await _latestRegLoc();
+    final ctype = _containerType ?? _lastScanContainer ?? "";
+    final codes = (loc.isNotEmpty && loc != 'AUTO')
+        ? ((await _ledgerByLoc())[loc] ?? const <String>[])
+        : const <String>[];
+    final canCall = _workType == 0 &&
+        loc.startsWith('NB02-') &&
+        codes.isNotEmpty &&
+        !_colCalled.contains(loc);
+    if (!mounted) return;
+    final choice = await showDialog<int>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text("结束本托"),
-        content: Text("本托已扫 $_palletTotalBoxes 框，确认结束并释放货位，开始下一托？"),
+        title: Text(alsoOff ? "关闭整托模式" : "结束本托"),
+        content: Text((alsoOff ? "当前托尚未结束。" : "") + (canCall
+            ? "本托已扫 $_palletTotalBoxes 框（货位 $loc）。\n「结托并叫车」：建一次 AGV 搬运任务后释放货位；「仅结托」不叫车，可稍后手动「提交任务」。"
+            : (_workType == 0 &&
+                    loc.startsWith('NB02-') &&
+                    _colCalled.contains(loc))
+                ? "本托已扫 $_palletTotalBoxes 框，货位 $loc 本会话已叫过车；确认释放货位${alsoOff ? "并关闭整托模式" : "开始下一托"}？"
+                : "本托已扫 $_palletTotalBoxes 框，确认结束并释放货位${alsoOff ? "并关闭整托模式" : "，开始下一托"}？")),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text("取消")),
+              onPressed: () => Navigator.pop(ctx, 0), child: const Text("取消")),
           TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text("确认结托")),
+              onPressed: () => Navigator.pop(ctx, 1),
+              child: Text(canCall ? "仅结托（不叫车）" : "确认结托")),
+          if (canCall)
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF00897B),
+                  foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(ctx, 2),
+              icon: const Icon(Icons.local_shipping_outlined, size: 16),
+              label: const Text("结托并叫车"),
+            ),
         ],
       ),
     );
-    if (ok != true || !mounted) return;
-    // AGV站台：结托后该站台才算占用完毕，保留选中清除以便扫下一托
+    if (choice == null || choice == 0 || !mounted) return; // 取消：什么都不动
+    if (choice == 2) {
+      // 参数缺失不释放货位——提醒补好后重试，杜绝"点了结托托丢了"
+      if (st.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text("无法叫车：起始站台未选中\n请重选站台后再点「结束本托」，或先「仅结托」再手动提交"),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 5)));
+        return;
+      }
+      if (ctype.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text("无法叫车：容器类型未定\n请补选容器类型后再点「结束本托」"),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 5)));
+        return;
+      }
+      // 复用「提交任务」同一弹窗与校验链；叫车成功回调里才释放货位
+      _showWmasCard(
+          stPre: st,
+          locPre: loc,
+          ctypePre: ctype,
+          onDone: () => _releasePallet(alsoOff: alsoOff));
+      return;
+    }
+    _releasePallet(alsoOff: alsoOff);
+  }
+
+  ///【整托：释放货位/站台，准备开下一托（纯清状态，叫车成功或用户选择仅结托时调用）】
+  void _releasePallet({bool alsoOff = false}) {
+    if (!mounted) return;
     setState(() {
+      if (alsoOff) _palletMode = false; // ㉖v85d 关模式经结托三选一确认后才真正关闭
       _currentPalletId = null;
       _palletSummary = [];
       _palletTotalBoxes = 0;
@@ -1844,30 +1907,18 @@ class _MainPageState extends State<MainPage>
       _containerType = null;
       _ledgerLocCtrl.clear(); //整托结托：顺手登记参数归零
     });
-    ScaffoldMessenger.of(context)
-        .showSnackBar(const SnackBar(content: Text("本托已结束，请选择新货位开下一托")));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(alsoOff ? "整托模式已关闭（本托已结）" : "本托已结束，请选择新货位开下一托")));
   }
 
   ///【整托：开关切换】
   Future<void> _togglePalletMode(bool on) async {
     if (on == _palletMode) return;
+    // ㉖v85d 关模式但本托未结：不再直接清状态失忆，改走「结束本托」三选一
+    // （结托并叫车 / 仅结托 / 取消）——叫车成功或用户明确仅结托后才关闭开关，取消则保持原状
     if (!on && _currentPalletId != null) {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text("关闭整托模式"),
-          content: const Text("当前托尚未结束，关闭将结束本托并释放货位，确认？"),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text("取消")),
-            TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text("确认")),
-          ],
-        ),
-      );
-      if (ok != true || !mounted) return;
+      await _endPallet(alsoOff: true);
+      return;
     }
     setState(() {
       _palletMode = on;
@@ -2632,8 +2683,8 @@ class _MainPageState extends State<MainPage>
           ctype.isNotEmpty &&
           await WmasConfig.autoCallEnabled()) {
         if (_palletMode) {
-          if (mounted) setState(() => _autoCallTip = "ℹ️ 整托模式：扫完本托请手动「提交任务」");
-          // ㉖v80 降噪：整托提示已有常驻内联条，不再弹条
+          if (mounted) setState(() => _autoCallTip = "ℹ️ 整托模式：扫完点「结束本托」→「结托并叫车」一步到位");
+          // ㉖v80 降噪：整托提示已有常驻内联条，不再弹条；㉖v85d 引导改为结托叫车一体
         } else {
           await _autoCallInbound(autoCallStation, loc, ctype);
         }
