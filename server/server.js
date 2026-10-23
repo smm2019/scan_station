@@ -874,8 +874,10 @@ function partTurnover() { // 周转分=窗口内出库件数 + 采集入库件�
   return m;
 }
 function aisleBusy() { // 巷道(区-排)在途任务数：队列活跃项源货位统计
+  // ㉖v80 只算【下发中/已下发】真在途——旧版把"排队"也计入：同巷道≥上限个排队项互相计数互锁，
+  // 谁也发不出去谁也超不了时（排队项无sentAt不进超时兜底），实测 B-12 两框 12 分钟死锁（"一直排队中"根因）
   const m = {};
-  for (const q of db.agvQueue || []) { if (!['排队', '下发中', '已下发'].includes(q.state)) continue; const fl = String(q.fromLoc || '').toUpperCase(); if (!/^NB02-/.test(fl) || /-CK-/.test(fl)) continue; const rk = fl.slice(0, 9); m[rk] = (m[rk] || 0) + 1; }
+  for (const q of db.agvQueue || []) { if (!['下发中', '已下发'].includes(q.state)) continue; const fl = String(q.fromLoc || '').toUpperCase(); if (!/^NB02-/.test(fl) || /-CK-/.test(fl)) continue; const rk = fl.slice(0, 9); m[rk] = (m[rk] || 0) + 1; }
   return m;
 }
 let _ckd = null, _ckdT = 0;
@@ -4784,7 +4786,7 @@ function netmapRefresh() {
   (async () => { const tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin(); if (tk) await NetMap.build((p) => rcsReq(p, 'GET', tk)); })();
 }
 setTimeout(netmapRefresh, 4000).unref(); // 启动后4秒即建网，不等10分钟首tick
-setInterval(netmapRefresh, 10 * 60 * 1000).unref();
+setInterval(netmapRefresh, 60 * 1000).unref(); // ㉖v80 10分钟→60秒：函数自带"已新鲜即返回"，建网失败(启动时RCS接口抖动)后最迟1分钟自愈，实时地图不再白屏干等
 
 let _rcsPolling = 0; // ㉖v79c 防重入锁：定时器/接单即派/排队端点多处触发 rcsPoll，并发轮次各自持有 waiting 列表与 assigned 数组，同一队列项被下发两次（实测 N26J180285 双建任务 0019→CK-12 + 0021→CK-03，两车同框）
 async function rcsPoll() {
