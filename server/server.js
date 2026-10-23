@@ -1957,6 +1957,9 @@ const server = http.createServer(async (req, res) => {
           if (!c || !t) continue;
           const old = cur.get(c);
           const tm = tomb.get(c);
+          // ㉖v69c 世代墓碑闸：早于本次账本整表替换盖章时刻的删除，对现仍在架的行一律拒绝——
+          // 旧版PDA(无世代逻辑)本地缓存的测试期墓碑会随推送反复回灌，不拦截则导入的真货被"复活删除"再吃掉
+          if (old && db.ledgerEpochAt && t < db.ledgerEpochAt) { delSkipped++; _diffs.push(c + ' 拒绝过期墓碑(早于迁移盖章)'); continue; }
           const hist = histAll[c];
           if (hist && hist.t === t && old && (Number(old.rec) || 0) >= hist.rec && (Number(old.t) || 0) >= t) { delSkipped++; continue; } // 删除后又被别机重登：旧墓碑重放不二次删除
           const base = Math.max(tm ? tm.t : 0, old ? (Number(old.rec) || Number(old.t) || 0) : 0);
