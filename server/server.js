@@ -1038,6 +1038,7 @@ const PARAMS = {
   assignMin:      { grp: '调度节奏', name: '指定单超时放开', unit: '分钟', min: 1, max: 240, d: 30, tip: '指定仓管员下单后，超时未接单自动放开给全员' },
   urgeMin:        { grp: '通知治理', name: '催单最小间隔', unit: '分钟', min: 1, max: 120, d: 10, tip: '同一张领料单两次催单的最小间隔，防轰炸' },
   pushMin:        { grp: '通知治理', name: '急料到站催扫', unit: '分钟', min: 1, max: 60, d: 5, tip: '急料框到站台超此时长未扫码→广播全体仓管' },
+  rushRemindMin:  { grp: '通知治理', name: '急料未接单催办', unit: '分钟', min: 1, max: 60, d: 5, tip: '急料单创建后超此时长仍无人接单→催办全体仓管（10/23复盘：插队只作用于AGV队列，接单环节旧版与普通单同文案无感知）' },
   urgeScanMin:    { grp: '通知治理', name: '普通到站催扫', unit: '分钟', min: 1, max: 120, d: 10, tip: '普通框到站台超此时长未扫码→催叫车人' },
   inspUrgeMin:    { grp: '通知治理', name: '检验协助催办', unit: '分钟', min: 1, max: 120, d: 10, tip: '检验工单等待下架/归位超此时长未处理→催办全体协助人' },
   retUrgeMin:     { grp: '通知治理', name: '退货出账催办', unit: '分钟', min: 5, max: 240, d: 30, tip: '判退货的框压站台超此时长未走出库通道→催办仓管' },
@@ -1087,7 +1088,7 @@ function logErr(where, e, extra) {
 
 // ---- ㉕T1 通知治理：同类5分钟静默聚合（并入原条"等N条"）/ 每人每分钟超5条跨类型强制聚合 / 夜间22-6点非急停类按人缓冲，早6点各自一条汇总 ----
 const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
-const URGENT_TYPES = new Set(['car_alarm', 'inspect']);   // 车辆告警（含急停）永不静默
+const URGENT_TYPES = new Set(['car_alarm', 'inspect', 'req_rush']);   // 车辆告警（含急停）与急料单永不夜间静默（v88：夜班急料等早6点才汇总=失去急的意义）
 const NTYPE = { req_new: 'req_new', req_timeout: 'req_new', req_reassign: 'req_new', req_urge: 'req_urge', req_arrive: 'req_arrive', req_accept: 'req_flow', req_ready: 'req_flow', req_ready_wh: 'req_flow', req_done: 'req_flow', req_reject: 'req_flow', req_cancel: 'req_flow', watch_in: 'watch_in', stock_out: 'stock_out' }; // ㉕F5 订阅粒度（car_alarm不在表内=强制必达）
 function notify(toUserId, type, text, reqId) {
   try {
@@ -4075,11 +4076,26 @@ return send(res, 200, {
             needDate: /^\d{4}-\d{2}-\d{2}$/.test(String(b.needDate || '')) ? String(b.needDate) : '', // 第3档 期望到货日期（PDA默认值可预填）
           };
           db.requisitions.push(r);
+          // ㉖v88 急料感知前移：物料员勾选急料的单，创建时刻通知即带🔥标识
+          // （现场复盘 10/23：两笔急料单"创建→接单"仍等 9.5/10.5 分钟——旧版通知与普通单同文案，
+          //   插队只作用于 AGV 队列（接单之后），仓管对"这张单急"毫无感知；另设催办定时器兜底防漏看）
+          const rushTag = r.rush ? '🔥急料｜' : '';
           if (assignee) {
-            notify(assignee.id, 'req_new', `${u.name} 指定你备料：领料单 ${r.no}：${reqItemsSuggestText(r)}（30分钟内未接单将放开给全部仓管）`, r.id);
+            notify(assignee.id, r.rush ? 'req_rush' : 'req_new', `${rushTag}${u.name} 指定你备料：领料单 ${r.no}：${reqItemsSuggestText(r)}（30分钟内未接单将放开给全部仓管）`, r.id);
           } else {
             db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
-              notify(x.id, 'req_new', `${u.name} 提交了领料单 ${r.no}：${reqItemsSuggestText(r)}`, r.id));
+              notify(x.id, r.rush ? 'req_rush' : 'req_new', `${rushTag}${u.name} 提交了领料单 ${r.no}：${reqItemsSuggestText(r)}${r.rush ? '\n请优先接单（AGV 已按急料插队）' : ''}`, r.id));
+          }
+          if (r.rush) {
+            const whIds = () => db.users.filter((x) => x.role === 'warehouse' && x.enabled).map((x) => x.id);
+            setTimeout(() => {
+              try {
+                const cur = db.requisitions.find((x) => x.id === r.id);
+                if (!cur || cur.status !== 'pending') return; // 已接单/取消不再催
+                for (const uid of whIds()) notify(uid, 'req_rush', `⏰ 急料单 ${r.no}（${cur.byName}）已挂 ${P().rushRemindMin} 分钟无人接单，请优先处理`, r.id);
+                console.log(`[rush] 急料单 ${r.no} ${P().rushRemindMin}分钟未接单，催办全体仓管`);
+              } catch (_) {}
+            }, P().rushRemindMin * 60000).unref();
           }
           save();
           console.log(`[req] ${u.name} 下单 ${r.no}${assignee ? ' → 指定 ' + assignee.name : ''}`);
