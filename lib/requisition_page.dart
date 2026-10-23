@@ -2221,6 +2221,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   }
 
   /// 扫转入货位（复用直调同款接口）
+  /// ㉖v79c 独立 _locBusy：旧版与发料/叫车共用 _busy，且入口先 clear 再查忙——
+  /// 上一笔处理中扫货位，码被清空后直接 return，无提示丢失（"扫完货位有时消失"根因之一）
+  bool _locBusy = false;
   Future<void> _scanLoc() async {
     final code = _locCtrl.text.trim().toUpperCase(); // 扫码枪/手输可能小写，MES货位码为大写→归一
     _locCtrl.clear();
@@ -2228,7 +2231,11 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       _refocusLoc();
       return;
     }
-    if (_busy) return;
+    if (_locBusy) {
+      widget.toast("上一笔货位还在处理，稍候自动完成", err: false);
+      return; // 前一笔成功后 _to 会落地，无需重复
+    }
+    _locBusy = true;
     setState(() => _busy = true);
     try {
       final d = await mesLocInfo(code); // ㉖ 与直调同款共用助手：MES 主档大小写不一，查不到自动互换大小写重试
@@ -2259,6 +2266,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       widget.toast("货位查询失败：${e.toString().replaceFirst("Exception: ", "")}");
       _refocusLoc(); // 失败后光标回到货位框，可直接重扫
     } finally {
+      _locBusy = false;
       if (mounted) setState(() => _busy = false);
     }
   }
