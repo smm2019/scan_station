@@ -1586,13 +1586,26 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         context: context,
         builder: (ctx) => AlertDialog(
               title: const Text("一键叫车"),
-              content: Text(
-                  "将 ${its.length} 框加入AGV队列？\n系统自动分配空闲站台，台满自动排队，空了就下发。\n当前模式：${_queueMode == "live" ? "⚠️ 真实下发（入队后会真的叫AGV）" : "演算（只排计划不下发）"}"),
+              content: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+                Text(
+                    "将 ${its.length} 框加入AGV队列？\n系统自动分配空闲站台，台满自动排队，空了就下发。\n当前模式：${_queueMode == "live" ? "⚠️ 真实下发（入队后会真的叫AGV）" : "演算（只排计划不下发）"}"),
+                // ㉖v82 严重超发显式确认：红字列出多搬件数，防"为补109件白搬2400大筐"
+                if (((item["suggest"] as Map?)?["severeOver"]) == true)
+                  Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                          "⛔ 注意严重超发：本轮整筐合计 ${_fmtInvNum(((item["suggest"] as Map?)?["total"] as num?)?.toDouble() ?? 0)} 件，超出需求 ${_fmtInvNum(((item["suggest"] as Map?)?["over"] as num?)?.toDouble() ?? 0)} 件——叫车后要么白搬大筐，要么人工拆框。确定还要叫吗？",
+                          style: const TextStyle(
+                              color: Color(0xFFC62828),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 12))),
+              ]),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(ctx, false),
                     child: const Text("取消")),
                 FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: ((item["suggest"] as Map?)?["severeOver"]) == true ? const Color(0xFFC62828) : null),
                     onPressed: () => Navigator.pop(ctx, true),
                     child: const Text("加入队列"))
               ],
@@ -1771,6 +1784,16 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                     style:
                         TextStyle(fontSize: 11, fontWeight: FontWeight.bold))),
         ]),
+        // ㉖v82 严重超发警告行：整筐最小方案超发仍大于需求本身（如补109件却只能叫2400大筐）
+        if (severeOver)
+          Padding(
+              padding: const EdgeInsets.only(bottom: 3),
+              child: Text(
+                  "⛔ 严重超发：最小整筐 ${_fmtInvNum(total)} 件，还差才 ${_fmtInvNum(total - over)} 件，白搬 ${_fmtInvNum(over)} 件！\n建议：等凑更大单再叫／改叫地面小框／人工拆框发料，别为小尾巴搬大筐",
+                  style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFFC62828),
+                      fontWeight: FontWeight.w700))),
         InkWell(
             onTap: _showQueueSheet,
             child: Padding(
