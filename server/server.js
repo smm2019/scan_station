@@ -1945,8 +1945,11 @@ const server = http.createServer(async (req, res) => {
         if (!Array.isArray(b.del)) b.del = [];
         if (!raw.length && !b.del.length) return send(res, 400, { ok: false, msg: 'items/del 均为空，已拒绝（防止误清空白账本）' });
         if (raw.length > 20000) return send(res, 400, { ok: false, msg: '条目超过2万，疑似异常' });
-        // ㉖v69 世代闸：账本整表替换（数据迁移）后，旧版PDA的旧缓存不得推回服务器污染新账本；旧世代须先拉取对齐（拉取侧会自动清旧缓存）
-        if (db.ledgerEpoch && String(b.epoch || '').trim() !== db.ledgerEpoch) return send(res, 200, { ok: false, code: 'epochStale', epoch: db.ledgerEpoch, msg: '本机账本为旧世代（服务器账本已整表替换），请先拉取对齐后再推送' });
+        // ㉖v69 世代闸：账本整表替换（数据迁移）后，新世代PDA拿旧缓存推送必须先去拉取对齐（拉取侧自动清旧缓存）
+        // ㉖v82c 回审修正：只拦【声称有世代但不匹配】的新PDA；完全不带世代的旧PDA(v75及以前)放行给下方 _staleCut 切割线处理——
+        // 旧版无 epochStale 自愈逻辑，此前一刀切拒绝会把未升级设备的新登记永久挡在门外（与 _staleCut 设计意图矛盾）
+        const _epSent = String(b.epoch || '').trim();
+        if (db.ledgerEpoch && _epSent && _epSent !== db.ledgerEpoch) return send(res, 200, { ok: false, code: 'epochStale', epoch: db.ledgerEpoch, msg: '本机账本为旧世代（服务器账本已整表替换），请先拉取对齐后再推送' });
         const seen = new Set(); const clean = [];
         // ㉖v80 拼接码防线：PDA 重启前缓存的 Excel 拼接行（"A; B"）会随推送复活，与服务器已拆单码行双计（实测 D-01-2F 双计315件）。
         // 到达即拆成单码行（q均分同迁移口径，t/内容一致→指纹闸自然判"未变"幂等跳过）；已出库码由墓碑闸拦截
@@ -4191,12 +4194,18 @@ return send(res, 200, {
             if (_ix < 0) return send(res, 200, { ok: true, req: reqView(r) }); // 幂等：本就不在已发里
             const _ij = target.issued[_ix];
             target.issued.splice(_ix, 1);
-            if (!db.ledger.some((x) => String(x.c || '').toUpperCase() === code)) { // 复挂原位（撤扫≠真出库，货还在站台/架上）
-              db.ledger.push({ c: code, l: String(_ij.l || ''), f: '', t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(target.itemName || ''), q: Number(_ij.q) || 0, b: '', pid: '', mv: '登记', src: '撤扫复位', by: u.name });
+            let _ul = String(_ij.l || '').trim().toUpperCase();
+            if (!_ul) { const _meta = (db.seenIn || {})[code]; _ul = String((_meta && _meta.l) || '').trim().toUpperCase(); } // 兜底：首次入账登记位（旧版PDA发料不带l时也能复挂）
+            if (_ul && !db.ledger.some((x) => String(x.c || '').toUpperCase() === code)) { // 复挂原位（撤扫≠真出库，货还在站台/架上）
+              db.ledger.push({ c: code, l: _ul, f: '', t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(target.itemName || ''), q: Number(_ij.q) || 0, b: '', pid: '', mv: '登记', src: '撤扫复位', by: u.name });
               (db.ledgerTomb = db.ledgerTomb || []).splice(0, db.ledgerTomb.length, ...db.ledgerTomb.filter((x) => String(x.c).toUpperCase() !== code));
               db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
+              hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件退回在架 $_ul，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`);
+            } else if (!_ul) {
+              hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件，原货位未知未复挂——请在PDA「位置登记」补登记该框实际货位，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`); // 无位置不复挂，防账本脏行
+            } else {
+              hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件，账本已有该码不重复复挂，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`);
             }
-            hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件退回在架，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`);
           } else if (act === 'agv') {
             // 叫AGV登记：仓管从货架叫车叉框后记账，建议区该框标"已叫AGV"防重复叫车/漏叫
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可登记' });
