@@ -711,6 +711,11 @@ extension CollectionLedgerExt on _MainPageState {
 
     if (st.isEmpty) return warn("请先选择起始站台");
     if (loc.isEmpty) return warn("还没有扫码入账的货位——请先扫描货物标签，再叫车");
+    // ㉖v69c 地面货位防呆：AGV 只跑 站台↔NB02高架，NB03地面区不在AGV作业区（WMAS主档无此库位，发了必被弹回）
+    if (!loc.startsWith('NB02-')) {
+      warn("地面货位 $loc 不在AGV作业区：AGV只跑 站台↔NB02高架。账本已登记，这框请人工摆到地面位即可");
+      return;
+    }
     if (_colCalled.contains(loc))
       return warn("货位 $loc 本会话已叫过车，请勿重复；如需重叫请先到AGV系统核对该托盘任务");
     final codes = (await _ledgerByLoc())[loc] ?? const <String>[];
