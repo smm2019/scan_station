@@ -1766,7 +1766,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         Row(children: [
           Expanded(
               child: Text(
-                  "💡 取货建议（FIFO）：在架 $inStock 框，还差 ${_fmtInvNum((sg["need"] as num?)?.toDouble() ?? 0)} 件，本轮建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件${over > 0 ? "（含超发 ${_fmtInvNum(over)} 件，整框发料余料可返架）" : ""} · ${canCtl ? '点标签单独叫车' : '点标签复制'}",
+                  "💡 取货建议（FIFO）：在架 $inStock 框，还差 ${_fmtInvNum((sg["left"] as num?)?.toDouble() ?? (sg["need"] as num?)?.toDouble() ?? 0)} 件，本轮建议 ${boxes.length} 框 ≈ ${_fmtInvNum(total)} 件${over > 0 ? "（含超发 ${_fmtInvNum(over)} 件，整框发料余料可返架）" : ""} · ${canCtl ? '点标签单独叫车' : '点标签复制'}",
                   style: const TextStyle(
                       fontSize: 11,
                       color: Color(0xFF3949AB),
@@ -1789,7 +1789,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
           Padding(
               padding: const EdgeInsets.only(bottom: 3),
               child: Text(
-                  "⛔ 严重超发：最小整筐 ${_fmtInvNum(total)} 件，还差才 ${_fmtInvNum(total - over)} 件，白搬 ${_fmtInvNum(over)} 件！\n建议：等凑更大单再叫／改叫地面小框／人工拆框发料，别为小尾巴搬大筐",
+                  "⛔ 严重超发：只差 ${_fmtInvNum((sg["left"] as num?)?.toDouble() ?? (total - over))} 件，最小整筐却要 ${_fmtInvNum(total)} 件，白搬 ${_fmtInvNum(over)} 件！\n建议：等凑更大单再叫／改叫地面小框／人工拆框发料，别为小尾巴搬大筐",
                   style: const TextStyle(
                       fontSize: 11,
                       color: Color(0xFFC62828),

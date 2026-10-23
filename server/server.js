@@ -1231,7 +1231,7 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   const noInfoKeys = new Set();
   for (const x of match) if (!x.q) noInfoKeys.add(boxKeyOf(x));
-  return { boxes: pick, flatBoxes, total: acc, over, severeOver, need: Math.max(0, Math.round((needQty - acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size };
+  return { boxes: pick, flatBoxes, total: acc, over, severeOver, left: Math.max(0, Math.round(needQty * 100) / 100), need: Math.max(0, Math.round((needQty - acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size }; // ㉖v82 left=本轮建议前还差多少（旧"还差"取need=建议后缺口，够数时显示0件易误导）
 }
 function reqView(r) {
   const items = (r.items || []).map(i => {
