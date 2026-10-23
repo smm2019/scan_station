@@ -1713,7 +1713,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       return Padding(
         padding: const EdgeInsets.only(top: 6),
         child: Text(
-            "✅ 该行已发齐 ${_fmtInvNum(total + ((sg["need"] as num?)?.toDouble() ?? 0))} 件——无需再叫车，点「转MES出库」收尾",
+            // ㉖v82 修显示bug：done时total/need均=0，原样打出"已发齐 0 件"——应显示真实已发件数
+            "✅ 该行已发齐 ${_fmtInvNum(_issuedQtyOf(item))} 件——无需再叫车，点「转MES出库」收尾",
             style: const TextStyle(
                 fontSize: 11,
                 color: Color(0xFF2E7D32),

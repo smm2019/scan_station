@@ -1215,6 +1215,16 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
       pick[pick.length - 1] = cand; acc = needLast + cand.q;
     }
   }
+  // ㉖v82 单框最小覆盖：一框就够且超发比多框方案小时，直接只选那一框——
+  // 实测事故：需求1217，贪心按FIFO凑1182+1718两框(超发1683)，物料员扫了1718转单后第二框1182"已转MES不可补扫"卡死，只能人工直调返工
+  // 被跳过的更早批次留在架上，下次需求 FIFO 自然先叫它，不会变呆滞
+  if (needQty > 0 && pick.length > 1) {
+    const one = boxes.filter(x => x.q >= needQty).sort((a, b) => a.q - b.q)[0];
+    if (one && one.q < acc) {
+      one.agv = one.allCodes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || '';
+      pick.length = 0; pick.push(one); acc = one.q;
+    }
+  }
   const over = Math.max(0, Math.round((acc - needQty) * 100) / 100); // 超发件数（整框发料无法精确凑数时，供UI提示"多备N件/可返架"）
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   const noInfoKeys = new Set();
@@ -4139,7 +4149,7 @@ return send(res, 200, {
             }
             const target = r.items.find(i => i.partNo === b.partNo);
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
-            if (target.transferred) return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已转MES，不可再补扫` });
+            if (target.transferred) return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已转MES出库（实发${issuedQty(target)}件），不可再补扫；多叫下来的框请人工返架回库，或走「直调」页出库，或留待下次开单领用` });
             const q = Number(b.qty) || 0;
             if (q <= 0) return send(res, 400, { ok: false, msg: '缺少该标签的件数(qty)' });
             target.issued = normIssued(target);
