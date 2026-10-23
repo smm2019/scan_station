@@ -2494,10 +2494,7 @@ class _MainPageState extends State<MainPage>
         }
         loc = auto;
         if (mounted) setState(() => _ledgerLocCtrl.text = auto);
-        if (mounted)
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text("$_selectedGroundLoc 区内自动分配格位：$auto"),
-              backgroundColor: const Color(0xFF00897B)));
+        // ㉖v80 降噪：分配信息不弹条（后续"✅已入账"内联条已含货位）
       }
       if (loc.isEmpty) {
         // ㉖⑰ 修自动叫车被"必须填货位"绑架：AGV模式留空+自动叫车开 → 自动分配货位继续登记（否则下方叫车永远走不到）
@@ -2518,10 +2515,7 @@ class _MainPageState extends State<MainPage>
           }
           loc = auto;
           if (mounted) setState(() => _ledgerLocCtrl.text = auto);
-          if (mounted)
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text("自动叫车联动分配货位：$auto"),
-                backgroundColor: const Color(0xFF00897B)));
+          // ㉖v80 降噪：联动分配信息不弹条（后续"✅已入账"内联条已含货位）；"货架已无空位"错误提醒保留
         } else {
           return;
         }
@@ -2618,11 +2612,7 @@ class _MainPageState extends State<MainPage>
           await WmasConfig.autoCallEnabled()) {
         if (_palletMode) {
           if (mounted) setState(() => _autoCallTip = "ℹ️ 整托模式：扫完本托请手动「提交任务」");
-          if (mounted)
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text("整托模式不自动叫车：托上全部码扫完后请手动「提交任务」"),
-                backgroundColor: Colors.blueGrey,
-                duration: Duration(seconds: 3)));
+          // ㉖v80 降噪：整托提示已有常驻内联条，不再弹条
         } else {
           await _autoCallInbound(autoCallStation, loc, ctype);
         }
