@@ -1252,9 +1252,15 @@ function autoEnqueueOnAccept(r, byName, byId) {
   for (const it of r.items || []) {
     const excl = new Set(((it.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
     const sg = pickSuggest(it.partNo, Number(it.qty) || 0, excl, agvMapOf(it));
-    // ㉖v82 严重超发闸：一筐顶几倍需求的框不自动派（事故：需1949自动派1840+2400两筐，发完一筐第二筐2400骑虎难下），建议区红字提示人工拍板
-    if (sg.severeOver) { console.log(`[auto派] ${r.no} 行 ${it.partNo} 严重超发(需${it.qty}最小整筐超发${sg.over})，不自动派单`); continue; }
+    // ㉖v82 严重超发闸（事故：需1949自动派1840+2400两筐，发完一筐第二筐2400骑虎难下）：
+    // 逐筐累计，从某筐起累计超发>需求本身→该筐及其后不自动派（红字留给人工拍板），前段照常派
+    const _needQ = Number(it.qty) || 0; let _accQ = 0; const _keep = [];
     for (const bx of sg.boxes) {
+      _accQ += Number(bx.q) || 0;
+      if (_needQ > 0 && _accQ - _needQ > _needQ) { console.log(`[auto派] ${r.no} 行 ${it.partNo} 尾筐 ${bx.codes && bx.codes[0]} 起严重超发(累计${_accQ}/需${_needQ})，不自动派，留人工拍板`); break; }
+      _keep.push(bx);
+    }
+    for (const bx of _keep) {
       const l = String(bx.l || '').toUpperCase();
       if (!l.startsWith('NB02-') || l.includes('-CK-')) continue; // 只派货架框；地面/已在站台不动
       const code = String((bx.codes && bx.codes[0]) || '').toUpperCase();
