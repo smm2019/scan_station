@@ -10,6 +10,8 @@ final ValueNotifier<String> kNotifTap =
     ValueNotifier<String>(''); // 通知点击 → 携带 类型|单号，主页精准直达
 final ValueNotifier<String> kReqJump =
     ValueNotifier<String>(''); // 领料单id → 领料页监听开详情
+final ValueNotifier<String> kReqAgain =
+    ValueNotifier<String>(''); // ㉖v76 一键续领：零件号|件数|时间戳 → 领料页监听开建单弹层预填
 
 class NotifyService {
   static final FlutterLocalNotificationsPlugin _n =
