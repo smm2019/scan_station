@@ -101,6 +101,38 @@ function latestGoodBackup() { // 从新到旧找第一个完好的备份
 }
 // ㉖v80 本地时间戳（yyyyMMddHHmmss）：单号/文件名与现场对时一致，替代 toISOString 的 UTC 差8小时问题
 function localTs(d) { d = d || new Date(); const p = (n) => String(n).padStart(2, '0'); return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()); }
+// ㉖v85 唯一临时名原子写（saveDb/安全副本/恢复/备份共用）。旧实现固定 target+'.tmp'：双实例或维护脚本并发时，
+// 一方 rename 会把另一方刚写好的同名临时文件"偷走"，后者 rename 即 ENOENT（2026-10-22 22:40~23:41 saveDb×30 事故根因；
+// 双实例本身已由 v69 幻影守卫拦截，本改动把文件级串扰整类消除）。失败换名重试一次（防杀软瞬时锁），仍败上抛由 _dirty 重试兜底。
+let _tmpSeq = 0;
+function atomicWrite(target, data) {
+  let lastErr = null;
+  for (let _try = 0; _try < 2; _try++) {
+    const tmp = target + '.tmp-' + process.pid + '-' + (++_tmpSeq);
+    try {
+      fs.writeFileSync(tmp, data, 'utf8');
+      let _fd = -1; try { _fd = fs.openSync(tmp, 'r+'); fs.fsyncSync(_fd); } catch (_) {} finally { if (_fd >= 0) try { fs.closeSync(_fd); } catch (_) {} } // 数据块强制刷盘后再rename（v56 断电加固语义不变）
+      fs.renameSync(tmp, target);
+      let _dfd = -1; try { _dfd = fs.openSync(path.dirname(target), 'r'); fs.fsyncSync(_dfd); } catch (_) {} finally { if (_dfd >= 0) try { fs.closeSync(_dfd); } catch (_) {} } // 目录元数据落盘（NTFS 原子写完整姿势）
+      return;
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch (_) {} // 清掉本次半成品，不留孤儿
+      lastErr = e;
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60); } catch (_) {} // 瞬时锁短等60ms后换名重试
+    }
+  }
+  throw lastErr;
+}
+function cleanOrphanTmp() { // ㉖v85 启动后清理历史孤儿临时文件：只匹配本服务命名模式且 mtime 超60分钟（正常写在途仅毫秒级，绝不误删在途文件）
+  try {
+    const cut = Date.now() - 60 * 60 * 1000;
+    for (const f of fs.readdirSync(DATA_DIR)) {
+      if (!/^db(\.safe)?\.json\.tmp(-\d+-\d+)?$/.test(f)) continue;
+      const fp = path.join(DATA_DIR, f);
+      try { if (fs.statSync(fp).mtimeMs < cut) fs.unlinkSync(fp); } catch (_) {}
+    }
+  } catch (_) {}
+}
 function archiveCorrupt(reason) { // 把损坏主文件归档留证（不删），返回是否归档
   try {
     if (!fs.existsSync(DB_FILE)) return false;
@@ -115,22 +147,14 @@ function restoreFrom(src, label) { // 从源文件恢复到主文件（原子写
   try {
     const raw = fs.readFileSync(src, 'utf8');
     JSON.parse(raw); // 二次确认
-    const tmp = DB_FILE + '.tmp';
-    fs.writeFileSync(tmp, raw, 'utf8');
-    let _fd = -1; try { _fd = fs.openSync(tmp, 'r+'); fs.fsyncSync(_fd); } catch (_) {} finally { if (_fd >= 0) try { fs.closeSync(_fd); } catch (_) {} }
-    fs.renameSync(tmp, DB_FILE);
-    let _dfd = -1; try { _dfd = fs.openSync(DATA_DIR, 'r'); fs.fsyncSync(_dfd); } catch (_) {} finally { if (_dfd >= 0) try { fs.closeSync(_dfd); } catch (_) {} }
+    atomicWrite(DB_FILE, raw); // ㉖v85 唯一临时名
     console.log('[recover] 已从 ' + label + ' 自动恢复主数据文件');
     return true;
   } catch (e) { console.log('[recover] 从 ' + label + ' 恢复失败：', e.message); return false; }
 }
 function updateSafeCopy(d) { // 用内存态写一份不脱敏安全副本（原子+fsync）
   try {
-    const tmp = SAFE_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(d), 'utf8');
-    let _fd = -1; try { _fd = fs.openSync(tmp, 'r+'); fs.fsyncSync(_fd); } catch (_) {} finally { if (_fd >= 0) try { fs.closeSync(_fd); } catch (_) {} }
-    fs.renameSync(tmp, SAFE_FILE);
-    let _dfd = -1; try { _dfd = fs.openSync(DATA_DIR, 'r'); fs.fsyncSync(_dfd); } catch (_) {} finally { if (_dfd >= 0) try { fs.closeSync(_dfd); } catch (_) {} }
+    atomicWrite(SAFE_FILE, JSON.stringify(d)); // ㉖v85 唯一临时名
     _dbHealth.safeAt = Date.now();
   } catch (_) {}
 }
@@ -301,16 +325,13 @@ function loadDb() {
 }
 // ㉖G3 SQLite迁移触发线监控：落盘写耗时滚动统计（近50次 max/avg）
 const _saveStat = { ring: [], max: 0, avg: 0, n: 0 };
-function saveDb(db) { // 原子写：临时文件 + rename
+function saveDb(db) { // ㉖v85 原子写：唯一临时名 + rename（固定 .tmp 在并发写者下 rename 互相偷文件 → ENOENT，10/22 30次事故复盘）
   fs.mkdirSync(DATA_DIR, { recursive: true });
-  const tmp = DB_FILE + '.tmp';
   const _sv = []; // ㉕F6 落盘加密：同步暂换→序列化→还原（单线程无并发观察，免整库深拷贝）
   try { walkSec(db, (o, k) => { const e = encSec(o[k]); if (e !== o[k]) { _sv.push([o, k, o[k]]); o[k] = e; } }); } catch (_) {}
   const _t0 = Date.now();
-  try { fs.writeFileSync(tmp, JSON.stringify(db), 'utf8'); } finally { for (const it of _sv) it[0][it[1]] = it[2]; } // ㉖v56 紧凑序列化：省 40% 体积与近半耗时（读取端 parse 无感）
-  let _fd = -1; try { _fd = fs.openSync(tmp, 'r+'); fs.fsyncSync(_fd); } catch (_) {} finally { if (_fd >= 0) try { fs.closeSync(_fd); } catch (_) {} } // ㉖v56 断电加固：数据块强制刷盘后再rename，根治"全零空洞"类损坏（2026-10-16 17:02 断电事故复盘）
-  fs.renameSync(tmp, DB_FILE);
-  let _dfd = -1; try { _dfd = fs.openSync(DATA_DIR, 'r'); fs.fsyncSync(_dfd); } catch (_) {} finally { if (_dfd >= 0) try { fs.closeSync(_dfd); } catch (_) {} } // ㉖v56 断电加固②：fsync 目录句柄，保证 rename 元数据落盘（否则断电可能回滚到旧文件，NTFS/POSIX 原子写完整姿势）
+  let _data; try { _data = JSON.stringify(db); } finally { for (const it of _sv) it[0][it[1]] = it[2]; } // ㉖v56 紧凑序列化：省 40% 体积与近半耗时（读取端 parse 无感）
+  atomicWrite(DB_FILE, _data); // 内含数据块 fsync + rename + 目录 fsync（v56 断电加固语义不变）
   updateSafeCopy(db); // ㉖v56 每次成功落盘后刷新不脱敏安全副本（db 此时已还原明文）
   try { const ms = Date.now() - _t0; _saveStat.ring.push(ms); if (_saveStat.ring.length > 50) _saveStat.ring.shift(); _saveStat.n++; _saveStat.max = Math.max.apply(null, _saveStat.ring); _saveStat.avg = Math.round(_saveStat.ring.reduce((a, b) => a + b, 0) / _saveStat.ring.length); } catch (_) {}
 }
@@ -330,7 +351,7 @@ function backupDb() {
     if (_bk.rcsConfig) delete _bk.rcsConfig.pwd;
     if (_bk.wmasConfig) delete _bk.wmasConfig.pwd;
     delete _bk.rcsToken; delete _bk.rcsTokenExp; delete _bk.sessions;
-    fs.writeFileSync(p + '.tmp', JSON.stringify(_bk)); fs.renameSync(p + '.tmp', p);
+    atomicWrite(p, JSON.stringify(_bk)); // ㉖v85 唯一临时名
     const all = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).sort();
     while (all.length > 144) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} } // ㉖v56 保留144份=10分钟间隔×24小时（断电事故后加密备份）
   } catch (e) { console.log('[backup] 失败：', e.message); logErr('backupDb', e); }
@@ -5483,4 +5504,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); } catch (_) {} backupDb(); archiveOld(); });
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); });
