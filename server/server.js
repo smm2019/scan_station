@@ -1954,7 +1954,7 @@ const server = http.createServer(async (req, res) => {
           const cs = c0.split(/[;；]/).map((s) => s.trim()).filter(Boolean);
           if (cs.length < 2) { clean.push(Object.assign({}, it, { c: cs[0] || '' })); return; }
           const tot = Number(it && it.q) || 0; const per = Math.floor(tot / cs.length); let rem = tot - per * cs.length;
-          for (const cc of cs) { const one = Object.assign({}, it, { c: cc, q: per + (rem > 0 ? 1 : 0) }); if (rem > 0) rem--; clean.push(one); }
+          for (const cc of cs) { const one = Object.assign({}, it, { c: cc, q: per + (rem > 0 ? 1 : 0), _split: 1 }); if (rem > 0) rem--; clean.push(one); }
         };
         for (const it0 of raw) {
           const it = (() => { const c = String((it0 && it0.c) || '').trim().toUpperCase(); const l = String((it0 && it0.l) || '').trim().toUpperCase(); if (!c || !l) return null; if (seen.has(c)) return null; seen.add(c); return { c, l, f: String((it0 && it0.f) || '').slice(0, 40), t: Number(it0 && it0.t) || 0, p: String((it0 && it0.p) || '').slice(0, 40), n: String((it0 && it0.n) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 80), q: Number(it0 && it0.q) || 0, b: String((it0 && it0.b) || '').slice(0, 40), pid: String((it0 && it0.pid) || '').slice(0, 40), mv: (() => { const s0 = String((it0 && it0.mv) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: String((it0 && it0.src) || '').slice(0, 40) }; })(); // ㉓乱码清洗+㉖v61b mv归一（对账包搬运方式列数据源）
@@ -1985,7 +1985,10 @@ const server = http.createServer(async (req, res) => {
           // 无新到达闸：①与本机上次视图一致（未来时钟的旧副本重放也在这挡死）②与服务器现值逐字段一致（首拉后原样重放）
           // ③命中该行服务器历史值（本机从未推过该行的旧快照回填——PDA真改动必更新t，旧( t,h )组合只可能是过期副本）
           if (_fpOld[key] === h || (old && _hash(old) === h) || (old && (old.hist || []).some((e) => e.t === (Number(it.t) || 0) && e.h === h))) { _fpNew[key] = h; kept++; continue; }
-          if (tombT && it.t > 0 && it.t < tombT) { skipped++; rejected.push(key); continue; } // 早于墓碑的真改动重登：作废（不记指纹，持续提示冲突待拉取）
+          // ㉖v82 墓碑拒绝【记录指纹】：同一过期旧行下次推送命中"无新到达"闸静默 kept，不再反复进 rejected 弹窗（实测7标签死循环弹）；
+          // 若 PDA 真的重新登记该框（t 变新晚于墓碑）→ 指纹不同且过墓碑闸 → 正常复活，不误伤真重登
+          // ㉖v82 拼接拆出行(_split)命中"已出库"墓碑是必然（这些码本就出了），直接静默——旧版进rejected致"货位登记冲突"永远循环（幽灵行留PDA缓存每推必弹），实为误报非真冲突
+          if (tombT && it.t > 0 && it.t < tombT) { skipped++; _fpNew[key] = h; if (!it._split) rejected.push(key); continue; } // 早于墓碑的真改动重登：作废（首次仍提示，二次起静默）
           if (!_fpOld[key] && !Object.keys(_fpOld).length && old && it.t > 0 && Number(old.t) > it.t) { skipped++; rejected.push(key); continue; } // 设备首推无指纹档案：保守回退旧规则（t更旧者拒），防服务重启窗口倒退
           _fpNew[key] = h; // 本轮该设备视图留档
           // ㉖ 货位互斥闸：同一货位不允许被不同框同时占用（多PDA并发登记、过期副本回填都会撞位）；同框兄弟码（同托号）豁免

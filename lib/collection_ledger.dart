@@ -1206,6 +1206,15 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
     final items = List<Map>.from(r["items"] ?? []);
     final tomb = List<Map>.from(r["tomb"] ?? []);
     final local = await _globalIsar.shelfPlacements.where().findAll();
+    // ㉖v82 清理本机遗留拼接行（"A; B"）：服务器已拆单码且不再存拼接行，这类本地行是导入时代遗留的幽灵数据——
+    // 每次推送被服务器拆行命中墓碑，旧版触发"货位登记冲突"弹窗死循环；拉取时直接删除
+    final ghosts = local.where((p) => p.goodsCode.contains(';') || p.goodsCode.contains('；')).toList();
+    if (ghosts.isNotEmpty) {
+      await _globalIsar.writeTxn(() async {
+        await _globalIsar.shelfPlacements.deleteAll(ghosts.map((e) => e.id).toList());
+      });
+      local.removeWhere(ghosts.contains);
+    }
     final localMap = {for (final p in local) p.goodsCode.toUpperCase(): p};
     final tombMap = await _loadTombs();
     var added = 0, updated = 0, deleted = 0;
