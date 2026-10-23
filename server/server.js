@@ -2090,6 +2090,12 @@ const server = http.createServer(async (req, res) => {
         }
         if (!Object.keys(snap).length) return send(res, 400, { ok: false, msg: '无有效条目（需 k 主键）' });
         db.scanlog = Object.assign(db.scanlog || {}, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
+        // ㉖v84 gl防降级：旧PDA本地缓存的粗码流水（gl=A16 只到区排）会把网页/服务器补录的完整格位覆盖回粗码
+        // （实测 N26J220037 补录 NB03-C-11-06 后被宋明明PDA推送打回 C11）——推送键里 gl 非完整格位而库里已是完整格位时，保留库内值
+        for (const [k, v] of Object.entries(snap)) {
+          const old = (db.scanlog && db.scanlog[k]);
+          if (old && /^NB03-/.test(String(old.gl || '')) && !/^NB03-/.test(String(v.gl || ''))) { v.gl = old.gl; db.scanlog[k] = v; }
+        }
         for (const s of Object.values(snap)) feedDict(s.pn, s.nm, '采集流水'); // ㉒G7 字典沉淀
         db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
         save();
