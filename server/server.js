@@ -262,9 +262,11 @@ function loadDb() {
     }
     if (_n) { d.ledger = _keep; added = true; console.log('[migrate] 拼接标签号自愈：拆 ' + _n + ' 行为单码，其中已出库直接消账 ' + _gone + ' 码'); }
     let _bf = 0;
-    // ㉖v80 历史证据回填：这4码发料时旧版PDA未带原货位、队列项又已过期清理，
+    // ㉖v80 历史证据回填：这些码发料时旧版PDA未带原货位、队列项又已过期清理，
     // 从导入后完整备份 db-20261022-2152（421行WPS导入签名）逐一取回原货位并核对零件号一致后固化
-    const _histEvi = { N26J180283: 'NB02-A-07-3F', N26J210229: 'NB02-C-09-2F', N26J180333: 'NB03-A-12-02', N26J180341: 'NB03-B-11-07' };
+    // ㉖v84 追加3码：070070/070068 出自拼接行备份(NB02-B-02-3F 一框三码)，200156 出自导入备份行(NB02-B-12-2F)；
+    // 其余6码（H030146/144直调、230379/380/461/464世代闸误拒期发料）服务器账本从未有过该行，位置证据不存在，不回填
+    const _histEvi = { N26J180283: 'NB02-A-07-3F', N26J210229: 'NB02-C-09-2F', N26J180333: 'NB03-A-12-02', N26J180341: 'NB03-B-11-07', N26J070070: 'NB02-B-02-3F', N26J070068: 'NB02-B-02-3F', N26J200156: 'NB02-B-12-2F' };
     for (const [c, l] of Object.entries(_histEvi)) if (!_locOf[c]) _locOf[c] = l;
     for (const o of Object.values(d.outbound || {})) for (const it of (o.items || [])) { const c = String(it.barcode || '').trim().toUpperCase(); if (!it.fromLoc && c && _locOf[c]) { it.fromLoc = _locOf[c]; _bf++; } }
     if (_bf) { added = true; console.log('[migrate] 出库明细原货位回填 ' + _bf + ' 行（拼接拆分/队列起点）'); }
