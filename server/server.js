@@ -234,6 +234,35 @@ function loadDb() {
     }
     d.ledgerEpoch = 'IMP-20261022b'; d.ledgerEpochAt = Date.now(); added = true;
   }
+  // ㉖v79c 拼接标签号自愈：Excel 导入把"一框多标签"整格存成 "A; B" 单行（20行），扫单码匹配不到账本行——
+  // 发料不拣下(在架虚高)、原货位查不到(出库流水空)、PDA本地无行(叫车拿错码)三症同源。
+  // 拆成每标签一行(q按标签数均分，余数给前行)，其中已出库/已发料的标签直接消账落墓碑
+  {
+    const _ship = new Set();
+    for (const o of Object.values(d.outbound || {})) for (const it of (o.items || [])) String(it.barcode || '').split(/[;；]/).forEach((b) => { const s = b.trim().toUpperCase(); if (s) _ship.add(s); });
+    for (const r of d.requisitions || []) for (const it of (r.items || [])) for (const e of (it.issued || [])) String(typeof e === 'string' ? e : (e.c || '')).split(/[;；]/).forEach((b) => { const s = b.trim().toUpperCase(); if (s) _ship.add(s); });
+    const _have = new Set((d.ledger || []).map((x) => String(x.c || '').toUpperCase()));
+    const _locOf = {}; // 码→原货位（拼接行拆分+队列在途起点），供出库明细回填
+    for (const q of d.agvQueue || []) { if (q.code && q.fromLoc && /^NB0/.test(String(q.fromLoc))) _locOf[String(q.code).toUpperCase()] = String(q.fromLoc).toUpperCase(); }
+    const _keep = []; let _n = 0, _gone = 0;
+    for (const x of d.ledger || []) {
+      const cs = String(x.c || '').split(/[;；]/).map((s) => s.trim().toUpperCase()).filter(Boolean);
+      if (cs.length < 2) { _keep.push(x); continue; }
+      _n++;
+      const tot = Number(x.q) || 0; const per = Math.floor(tot / cs.length); let rem = tot - per * cs.length;
+      for (const c of cs) {
+        if (_have.has(c)) continue; // 已有单码行不重复建
+        _have.add(c);
+        _locOf[c] = String(x.l || '').toUpperCase();
+        if (_ship.has(c)) { (d.ledgerTomb = d.ledgerTomb || []).push({ c, t: Date.now(), rec: Date.now() }); _gone++; continue; } // 已出库/已发料→消账
+        _keep.push(Object.assign({}, x, { c, q: per + (rem > 0 ? 1 : 0), hist: [] })); if (rem > 0) rem--;
+      }
+    }
+    if (_n) { d.ledger = _keep; added = true; console.log('[migrate] 拼接标签号自愈：拆 ' + _n + ' 行为单码，其中已出库直接消账 ' + _gone + ' 码'); }
+    let _bf = 0;
+    for (const o of Object.values(d.outbound || {})) for (const it of (o.items || [])) { const c = String(it.barcode || '').trim().toUpperCase(); if (!it.fromLoc && c && _locOf[c]) { it.fromLoc = _locOf[c]; _bf++; } }
+    if (_bf) { added = true; console.log('[migrate] 出库明细原货位回填 ' + _bf + ' 行（拼接拆分/队列起点）'); }
+  }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.cyclePlans !== 'object' || d.cyclePlans === null || Array.isArray(d.cyclePlans)) { d.cyclePlans = {}; added = true; } // ㉖v63 循环盘点当日计划
   if (typeof d.cycleLog !== 'object' || d.cycleLog === null || Array.isArray(d.cycleLog)) { d.cycleLog = {}; added = true; } // ㉖v63 验证留痕 {日:{格:{r,by,at,note}}}
@@ -4740,7 +4769,13 @@ function netmapRefresh() {
 setTimeout(netmapRefresh, 4000).unref(); // 启动后4秒即建网，不等10分钟首tick
 setInterval(netmapRefresh, 10 * 60 * 1000).unref();
 
+let _rcsPolling = 0; // ㉖v79c 防重入锁：定时器/接单即派/排队端点多处触发 rcsPoll，并发轮次各自持有 waiting 列表与 assigned 数组，同一队列项被下发两次（实测 N26J180285 双建任务 0019→CK-12 + 0021→CK-03，两车同框）
 async function rcsPoll() {
+  if (_rcsPolling) return; // 上一轮还没跑完（await WMAS/RCS 网络往返期间），本轮直接跳过——调度是周期性的，下轮自然覆盖
+  _rcsPolling = 1;
+  try { await _rcsPollInner(); } finally { _rcsPolling = 0; }
+}
+async function _rcsPollInner() {
   if (!db.rcsConfig || !db.rcsConfig.host) return;
   let tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
   if (!tk) { console.log('[rcs] 登录失败，下轮重试'); return; }
@@ -5111,6 +5146,8 @@ function inspQueueRollback(q, u) {
   if (u) pushOps(u, '检验队列取消', rec.code, rec.from + '→' + (rec.station || '') + '（工单回退 ' + rec.state + '）');
 }
 async function dispatchOne(q, nowMs, runT, assigned, live) {
+  // ㉖v79c 二次防重（与 rcsPoll 防重入锁互补）：已进入下发/在途/到站/完成态的项绝不重复建任务
+  if (['下发中', '已下发', '到站', '完成'].includes(q.state)) return true;
   q.trace = q.trace || [];
   if (q.trace.length > 5) q.trace = q.trace.slice(-5); // ㉖v56 预裁剪：早退路径（等待/演算）也保证 trace 不膨胀
   let stn = '';
