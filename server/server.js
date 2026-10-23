@@ -5128,6 +5128,18 @@ async function agvDispatch(nowMs, runT) {
       if (nowMs - (q.updAt || q.at) > P().sendTimeoutMin * 60 * 1000) retireQueueItem(q, '失败', '下发超时未回执，请重新叫车'); // ㉖v72b 统一回收（原仅改状态，叫车标记滞留30分钟）
     } else if (q.state === '已下发') {
       if (s && s.state === '有货' && has) { q.state = '到站'; releaseStnBook(q.code); } // ㉖v72b 货已上台：预约失去意义立即作废（按标签匹配，容器号尾6位≠RCS任务号尾6位，不能用via比对）
+      else if ((!q.type || q.type === 'outbound') && q.station && q.sentAt) {
+        // ㉖v69c 出库RCS沉淀旁证：搬运已完成但站台快照没抓到（货被快速取走/无实体标签框扫不到）→
+        // 旧版会一直卡"已下发"40分钟等超时兜底，期间容器号被占用，入库叫车全被"已有在途搬运任务"挡死（物料员"总是不成功"根因）
+        let fin = 0;
+        for (const t of Object.values(db.agvTasks || {})) {
+          if (t.ck !== 'out' || String(t.ep || '').toUpperCase() !== String(q.station).toUpperCase()) continue;
+          if (String(t.sp || '').toUpperCase() !== String(q.fromLoc || '').toUpperCase()) continue;
+          if ((t.fin || 0) < q.sentAt - 60000) continue;
+          if ((t.fin || 0) > fin) fin = t.fin;
+        }
+        if (fin) { q.state = '到站'; q.dockAt = fin; q.updAt = nowMs; (q.trace = q.trace || []).push('RCS沉淀旁证：搬运已完成，快照未抓到到站，按记录推进'); }
+      }
     } else if (q.state === '到站') {
       if (!has) { q.state = '完成'; q.dockAt = q.dockAt || nowMs; clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); } // ㉖v72b 任务闭环：货离台=发走/清台，清叫车标记允许该框未来重新入队
     }
