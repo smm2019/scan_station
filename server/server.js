@@ -1215,18 +1215,10 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
       pick[pick.length - 1] = cand; acc = needLast + cand.q;
     }
   }
-  // ㉖v82 单框最小覆盖：一框就够且超发比多框方案小时，直接只选那一框——
-  // 实测事故：需求1217，贪心按FIFO凑1182+1718两框(超发1683)，物料员扫了1718转单后第二框1182"已转MES不可补扫"卡死，只能人工直调返工
-  // 被跳过的更早批次留在架上，下次需求 FIFO 自然先叫它，不会变呆滞
-  if (needQty > 0 && pick.length > 1) {
-    const one = boxes.filter(x => x.q >= needQty).sort((a, b) => a.q - b.q)[0];
-    if (one && one.q < acc) {
-      one.agv = one.allCodes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || '';
-      pick.length = 0; pick.push(one); acc = one.q;
-    }
-  }
+  // ㉖v82b 撤销"单框最小覆盖"（用户拍板：装框不规范时600小筐+3000大筐并存，跳批次选大筐严重违背先进先出；宁可按FIFO多叫筐，不可挑框）
+  // 原逻辑：if (needQty > 0 && pick.length > 1) { const one = boxes.filter(x => x.q >= needQty).sort((a, b) => a.q - b.q)[0]; if (one && one.q < acc) {...} }
   const over = Math.max(0, Math.round((acc - needQty) * 100) / 100); // 超发件数（整框发料无法精确凑数时，供UI提示"多备N件/可返架"）
-  // ㉖v82 严重超发判定：超发 > 需求本身（如一筐2400只为补109件）——建议区红字劝退+接单即派不自动派这种框，人工拍板
+  // ㉖v82 严重超发判定：超发 > 需求本身（如一筐2400只为补109件）——建议区红字提示+接单即派不自动派这种框，人工拍板
   const severeOver = needQty > 0 && pick.length > 0 && over > needQty;
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   const noInfoKeys = new Set();
@@ -4185,6 +4177,26 @@ return send(res, 200, {
             const ff = b.fifo; if (ff && ff.ok) pushEvent('FIFO违反', String(b.partNo || ''), `标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);
             const ff2 = b.fifo; if (ff2 && ff2.ok) hpush(`🟡FIFO违反 ${b.partNo} 标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);
             // 不再自动置 ready：ready 由每行 transfer/skip 到终态后 finalize 决定
+          } else if (act === 'unscan') {
+            // ㉖v82 撤扫（转单确认窗取消勾选=不发的框）：从 issued 移除该码 + 账本复挂原位 + 清墓碑——scan 的对称逆操作
+            if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可操作' });
+            if (r.status !== 'accepted') return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可撤扫` });
+            const target = r.items.find(i => i.partNo === b.partNo);
+            if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
+            if (target.transferred) return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已转MES，不可撤扫` });
+            const code = String(b.barcode || '').trim().toUpperCase();
+            if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
+            target.issued = normIssued(target);
+            const _ix = target.issued.findIndex((e) => String(e.c).toUpperCase() === code);
+            if (_ix < 0) return send(res, 200, { ok: true, req: reqView(r) }); // 幂等：本就不在已发里
+            const _ij = target.issued[_ix];
+            target.issued.splice(_ix, 1);
+            if (!db.ledger.some((x) => String(x.c || '').toUpperCase() === code)) { // 复挂原位（撤扫≠真出库，货还在站台/架上）
+              db.ledger.push({ c: code, l: String(_ij.l || ''), f: '', t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(target.itemName || ''), q: Number(_ij.q) || 0, b: '', pid: '', mv: '登记', src: '撤扫复位', by: u.name });
+              (db.ledgerTomb = db.ledgerTomb || []).splice(0, db.ledgerTomb.length, ...db.ledgerTomb.filter((x) => String(x.c).toUpperCase() !== code));
+              db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
+            }
+            hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件退回在架，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`);
           } else if (act === 'agv') {
             // 叫AGV登记：仓管从货架叫车叉框后记账，建议区该框标"已叫AGV"防重复叫车/漏叫
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可登记' });

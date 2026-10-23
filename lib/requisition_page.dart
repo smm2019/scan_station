@@ -2117,7 +2117,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   Future<void> _transferRow(Map item) async {
     if (_busy) return;
     final partNo = item["partNo"].toString();
-    final codes = _issuedCodesOf(item);
+    var codes = _issuedCodesOf(item);
     if (codes.isEmpty) {
       widget.toast("该行还没有扫入标签");
       return;
@@ -2126,6 +2126,94 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       widget.toast("请先扫描转入货位");
       return;
     }
+    // ㉖v82b 转单确认窗（用户拍板）：逐框显示 标签/件数/原货位 可勾选——不想发的框取消勾选，
+    // 确认后自动撤扫退回在架（货没走就不该记账出库），只转勾选的框；严格FIFO下多叫的筐在这人工裁决
+    var item2 = Map.from(item);
+    final issuedRows = List.from(item2["issued"] ?? []).whereType<Map>().toList();
+    final sel = <String, bool>{for (final x in issuedRows) (x["c"]?.toString().toUpperCase() ?? ""): true};
+    sel.remove("");
+    double selQty() => issuedRows
+        .where((x) => sel[(x["c"]?.toString().toUpperCase() ?? "")] == true)
+        .fold(0.0, (s, x) => s + ((x["q"] as num?)?.toDouble() ?? 0));
+    if (!mounted) return;
+    final ok0 = await showDialog<bool>(
+        context: context,
+        builder: (dctx) => StatefulBuilder(
+            builder: (bctx, setSt) => AlertDialog(
+                  title: Text("确认发出框 · $partNo", style: const TextStyle(fontSize: 15)),
+                  content: SingleChildScrollView(
+                      child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        Text(
+                            "需求 ${_fmtInvNum((item2["qty"] as num?)?.toDouble() ?? 0)} 件 · 已扫 ${issuedRows.length} 框 ${_fmtInvNum(_issuedQtyOf(item2))} 件"),
+                        const Text("取消勾选 = 该框不发，自动退回在架（下次可再叫）",
+                            style: TextStyle(fontSize: 11, color: Colors.grey)),
+                        const SizedBox(height: 6),
+                        ...issuedRows.map((x) {
+                          final c0 = x["c"]?.toString().toUpperCase() ?? "";
+                          if (c0.isEmpty) return const SizedBox.shrink();
+                          return CheckboxListTile(
+                              dense: true,
+                              contentPadding: EdgeInsets.zero,
+                              controlAffinity: ListTileControlAffinity.leading,
+                              value: sel[c0] == true,
+                              onChanged: (v) => setSt(() => sel[c0] = v == true),
+                              title: Text(
+                                  "$c0  ${_fmtInvNum((x["q"] as num?)?.toDouble() ?? 0)} 件",
+                                  style: const TextStyle(
+                                      fontSize: 13, fontFamily: "monospace")),
+                              subtitle: Text(
+                                  "原货位 ${(x["l"]?.toString().isNotEmpty ?? false) ? x["l"] : "—"}${x["e"] == 1 ? " · 应急发料" : ""}",
+                                  style: const TextStyle(fontSize: 11)));
+                        }),
+                        const SizedBox(height: 4),
+                        Text(
+                            "将转 ${sel.values.where((v) => v).length} 框 ${_fmtInvNum(selQty())} 件 → ${_to["LOC_NAME"]}\n转单即 MES 移库，不可撤销（退回需反向再转）",
+                            style: const TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFF3949AB),
+                                fontWeight: FontWeight.w600)),
+                      ])),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(dctx, false),
+                        child: const Text("取消")),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(dctx, true),
+                        child: const Text("确认发出并转单")),
+                  ],
+                )));
+    if (ok0 != true || !mounted) return;
+    // 取消勾选的框 → 逐框撤扫退回在架（服务器 unscan：移除已发记录+账本复挂+清墓碑）
+    for (final x in issuedRows) {
+      final c0 = x["c"]?.toString().toUpperCase() ?? "";
+      if (c0.isEmpty || sel[c0] == true) continue;
+      final ur = await AuthApi.reqAction(_r["id"].toString(), "unscan",
+          {"partNo": partNo, "barcode": c0});
+      if (!mounted) return;
+      if (ur["ok"] != true) {
+        widget.toast("撤扫 $c0 失败：${ur["msg"]}");
+        return;
+      }
+      if (ur["req"] is Map) {
+        final its = List<Map>.from((ur["req"] as Map)["items"] ?? []);
+        final t2 = its.where((e) => e["partNo"]?.toString() == partNo);
+        if (t2.isNotEmpty) {
+          _r = Map.from(ur["req"]);
+          item2 = Map.from(t2.first);
+        }
+      }
+      widget.toast("↩️ $c0 已撤扫退回在架", err: false);
+    }
+    codes = _issuedCodesOf(item2);
+    if (codes.isEmpty) {
+      widget.toast("至少保留一框发出（已全部撤扫）");
+      setState(() {});
+      return;
+    }
+    item = item2;
     // ㉖v79c SYS 补录框（源表无标签号、MES 从未建过码）：转MES必"查不到在库信息"死路——
     // 货实际已发走，走本地转单：不回传 MES，只回写行 transferred + 落出库台账，仓库账闭环
     if (codes.every((c) => c.toUpperCase().startsWith('SYS'))) {
