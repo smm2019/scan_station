@@ -218,6 +218,22 @@ function loadDb() {
   if (typeof d.ledgerAt === 'number') { d.ledgerAt = new Date(d.ledgerAt).toISOString(); added = true; console.log('[migrate] ledgerAt 数字毫秒→ISO 字符串自愈（网页/看板 .slice 依赖字符串格式）'); } // ㉖v69b 补录脚本误写数字致页面加载失败
   if (typeof d.scanlogAt === 'number') { d.scanlogAt = new Date(d.scanlogAt).toISOString(); added = true; } // 同类字段一并防御
   if (typeof d.outboundAt === 'number') { d.outboundAt = new Date(d.outboundAt).toISOString(); added = true; }
+  // ㉖v69c 墓碑自愈+世代重盖：导入把行时间设为账本日期(10-21)，比测试期墓碑(10-22晨)更旧，
+  // N26J200139 等框被推送侧墓碑闸误判"删除记录复活"拒绝→PDA"货位登记冲突"弹窗循环，且PDA每次拉取重新落墓碑、本地在架行反被删。
+  // 整表替换后旧世代墓碑一律失效；与在架行冲突的墓碑无条件清除。世代换新章→各PDA下次进页强制清旧缓存（含误拿的墓碑）重新对齐。
+  if (d.ledgerEpoch === 'IMP-20261022') {
+    if (Array.isArray(d.ledgerTomb) && d.ledgerTomb.length) {
+      const _live = new Set((d.ledger || []).map((x) => String(x.c || '').toUpperCase()));
+      const _cut = Number(d.ledgerEpochAt) || 0;
+      const _b = d.ledgerTomb.length;
+      d.ledgerTomb = d.ledgerTomb.filter((x) => {
+        const t = Number(x && x.t) || 0;
+        return !(_cut && t && t < _cut) && !_live.has(String((x && x.c) || '').toUpperCase());
+      });
+      if (d.ledgerTomb.length !== _b) console.log('[migrate] 墓碑自愈清退 ' + (_b - d.ledgerTomb.length) + ' 条过期记录（迁移前测试世代或与在架行冲突）');
+    }
+    d.ledgerEpoch = 'IMP-20261022b'; d.ledgerEpochAt = Date.now(); added = true;
+  }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.cyclePlans !== 'object' || d.cyclePlans === null || Array.isArray(d.cyclePlans)) { d.cyclePlans = {}; added = true; } // ㉖v63 循环盘点当日计划
   if (typeof d.cycleLog !== 'object' || d.cycleLog === null || Array.isArray(d.cycleLog)) { d.cycleLog = {}; added = true; } // ㉖v63 验证留痕 {日:{格:{r,by,at,note}}}
