@@ -215,6 +215,9 @@ function loadDb() {
   }
   // ㉖v69 账本世代标记：数据迁移整表替换盖章一次；旧版PDA缓存凭世代对比清理旧数据，推送侧拦旧世代防污染新账本（今后任何整表重置都换一个新值）
   if (!d.ledgerEpoch) { d.ledgerEpoch = 'IMP-20261022'; d.ledgerEpochAt = Date.now(); added = true; }
+  if (typeof d.ledgerAt === 'number') { d.ledgerAt = new Date(d.ledgerAt).toISOString(); added = true; console.log('[migrate] ledgerAt 数字毫秒→ISO 字符串自愈（网页/看板 .slice 依赖字符串格式）'); } // ㉖v69b 补录脚本误写数字致页面加载失败
+  if (typeof d.scanlogAt === 'number') { d.scanlogAt = new Date(d.scanlogAt).toISOString(); added = true; } // 同类字段一并防御
+  if (typeof d.outboundAt === 'number') { d.outboundAt = new Date(d.outboundAt).toISOString(); added = true; }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.cyclePlans !== 'object' || d.cyclePlans === null || Array.isArray(d.cyclePlans)) { d.cyclePlans = {}; added = true; } // ㉖v63 循环盘点当日计划
   if (typeof d.cycleLog !== 'object' || d.cycleLog === null || Array.isArray(d.cycleLog)) { d.cycleLog = {}; added = true; } // ㉖v63 验证留痕 {日:{格:{r,by,at,note}}}
