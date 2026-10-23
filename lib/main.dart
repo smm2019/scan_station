@@ -2317,9 +2317,8 @@ class _MainPageState extends State<MainPage>
           mesCreateTime = ct.isEmpty ? null : ct;
           mesItemName = mesResult["itemName"]?.toString() ?? "";
           mesLotNo = mesResult["lotNo"]?.toString() ?? "";
-          if (mesResult["relogin"] == true && mounted) {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(const SnackBar(content: Text("MES登录已自动续期，查询正常")));
+          if (mesResult["relogin"] == true) {
+            // ㉖v80 降噪：续期成功静默（查询已正常，无需打断扫码）
           }
         } else if (mesResult["found"] == false) {
           // ㉖v69 查无此码（用户拍板）：弹窗并禁止录入，防错码/私码混入账本
@@ -2447,9 +2446,7 @@ class _MainPageState extends State<MainPage>
       await _refreshRecord();
       await _refreshBatchStat();
       await _refreshPalletSummary();
-      if (mounted)
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text("采集保存成功")));
+      // ㉖v80 扫码链路降噪：成功不弹条（震动+零件号语音即反馈），错误/漏选提醒全保留
       //【修复】保存后重挂扫码框焦点：节点可能自认为仍有焦点但原生输入连接已断，
       //PDA扫码枪按键进不来；先 unfocus 释放，再隔一帧重新申请，强制重建输入连接
       _goodsFocusNode.unfocus();
@@ -2611,10 +2608,8 @@ class _MainPageState extends State<MainPage>
       await ledgerUnmarkDeleted(codes); //重新登记→撤销本地墓碑，别台PDA拉取后复活本位
       if (!_palletMode) _ledgerLocCtrl.clear(); //登记成功后才清；整托多码保留复用同位
       _scheduleLedgerSync();
-      if (mounted)
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text("账本已登记：$loc（${codes.length} 码）"),
-            backgroundColor: const Color(0xFF2E7D32)));
+      // ㉖v80 扫码链路降噪：登记成功改内联提示条（原弹条盖住扫码视线）
+      if (mounted) setState(() => _autoCallTip = "✅ 已入账 $loc（${codes.length} 码）");
       // ⑳扫码自动入库：账本登记成功后触发；校验链与手动提交一致，失败不影响账本
       if (_workType == 0 &&
           autoCallStation.isNotEmpty &&

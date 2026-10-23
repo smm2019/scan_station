@@ -824,9 +824,14 @@ function nb02AssignFree(partNo) {
   const used = new Set();
   for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (/^NB02-/.test(l) && !/-CK-/.test(l)) used.add(l); }
   for (const l of Object.keys(R)) used.add(l);
-  const free = nb02MasterSeq().filter((l) => !used.has(l));
-  if (!free.length) return '';
-  const low3 = (arr) => { for (const l of arr) { const f = l.length >= 2 ? l[l.length - 2] : ''; if (f === '1' || f === '2' || f === '3') return l; } return arr.length ? arr[0] : ''; };
+  const free0 = nb02MasterSeq().filter((l) => !used.has(l));
+  if (!free0.length) return '';
+  // ㉖v80 常用层硬约束（网页参数lowTier，修"前三层优先"被同架集中规则击穿上到4层）：
+  // 先把候选池限死在1~N层，同架/同区/全局各档规则都在层圈内挑；层圈全空才退回全部空位上高层
+  const tierCap = Math.min(4, Math.max(1, P().lowTier));
+  const freeLow = free0.filter((l) => (Number(l[l.length - 2]) || 9) <= tierCap);
+  const free = freeLow.length ? freeLow : free0;
+  const low3 = (arr) => { for (const l of arr) { const f = l.length >= 2 ? l[l.length - 2] : ''; if ((Number(f) || 9) <= tierCap) return l; } return arr.length ? arr[0] : ''; };
   const busyRack = new Set(), busyZone = new Set();
   for (const q of db.agvQueue || []) { if (['完成', '取消', '失败'].includes(q.state)) continue; const fl = String(q.fromLoc || '').toUpperCase(); if (!/^NB02-/.test(fl) || /-CK-/.test(fl)) continue; busyRack.add(fl.slice(0, 9)); if (fl.length > 5) busyZone.add(fl[5]); }
   const cap = P().aisleCap; const ab = cap > 0 ? aisleBusy() : null; // B 巷道节流并入候选过滤
@@ -984,6 +989,7 @@ const PARAMS = {
   abcTop:         { grp: '调度策略', name: 'A类件比例', unit: '%', min: 0, max: 80, d: 20, tip: '周转分前N%判为A类：入库自动分配时优先靠近CK站台的货架列（0=关闭该策略）' },
   aisleCap:       { grp: '调度策略', name: '巷道并发上限', unit: '任务', min: 0, max: 8, d: 2, tip: '同一货架巷道(区-排)在途搬运任务数上限，达到则新出库任务本轮不放行、入库分配避开（0=关闭节流）' },
   stnWinPct:      { grp: '调度策略', name: '站台时间窗系数', unit: '%', min: 50, max: 300, d: 100, tip: '预约窗=路网行程+60秒缓冲+该台平均清台时长×系数；窗内站台不派新单，防两车前后脚撞台' },
+  lowTier:        { grp: '调度策略', name: '入库常用层上限', unit: '层', min: 1, max: 4, d: 3, tip: 'AUTO自动分配的硬性层约束：只在1~N层找空位（同架/同区集中也在层圈内生效），圈内全满才上更高层；4=不限。AGV叉高层耗时且重心高风险大，建议3' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
 

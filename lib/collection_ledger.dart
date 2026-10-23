@@ -9,6 +9,7 @@ final ValueNotifier<int> kAgvQueueTick = ValueNotifier(0); // ㉖ 叫车成功�
 extension CollectionLedgerExt on _MainPageState {
   static const List<String> _lz = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
   static Map<String, int> _gSlots = {}; // ⑮地面排格数覆盖（服务器拉取，缺省12）
+  static int _lowTier = 3; // ㉖v80 入库常用层上限（服务器"调度策略"参数，1~4；AUTO分配硬约束层圈）
   static int nb03SlotMax(String prefix) => _gSlots[prefix] ?? 12;
 
   ///NB02 全主档 512 格位（区→架→层顺序，兜底分配即按此"集满靠前排"）
@@ -34,12 +35,12 @@ extension CollectionLedgerExt on _MainPageState {
     return map;
   }
 
-  /// 前三层优先：候选列表（区→架→层顺序）里先取末位层号为1/2/3的，全部前三层占满才退到第四层
+  /// 常用层优先（层数上限=服务器参数 _lowTier）：候选里先取层号≤N的，层圈全占才退高层
   String? _preferLow3(List<String> cands) {
     for (final l in cands) {
       if (l.length >= 2) {
-        final f = l[l.length - 2]; // 编码末位是F，倒数第二位是层号
-        if (f == '1' || f == '2' || f == '3') return l;
+        final f = int.tryParse(l[l.length - 2]) ?? 9; // 编码末位是F，倒数第二位是层号
+        if (f <= _lowTier) return l;
       }
     }
     return cands.isEmpty ? null : cands.first;
@@ -73,8 +74,11 @@ extension CollectionLedgerExt on _MainPageState {
     } catch (e) {
       LocalLog.err('自动分配空位·服务器不可达降级本机', e); // ㉖ 降级留痕
     } // 服务器不可达：降级本机口径
-    final free = nb02MasterAll().where((l) => !byLoc.containsKey(l)).toList();
+    var free = nb02MasterAll().where((l) => !byLoc.containsKey(l)).toList();
     if (free.isEmpty) return null;
+    // v80 常用层硬约束（与服务器同款）：同架/同区集中也只在层圈内挑，圈满才上高层
+    final fl = free.where((l) => ((int.tryParse(l[l.length - 2]) ?? 9) <= _lowTier)).toList();
+    if (fl.isNotEmpty) free = fl;
     if (partNo.isNotEmpty) {
       final recs =
           await _isar.scanRecords.filter().mesPartNoEqualTo(partNo).findAll();
@@ -181,14 +185,14 @@ extension CollectionLedgerExt on _MainPageState {
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                 decoration: BoxDecoration(
-                    color: _autoCallTip.startsWith("🚗")
+                    color: (_autoCallTip.startsWith("🚗") || _autoCallTip.startsWith("✅"))
                         ? const Color(0xFFE8F5E9)
                         : (_autoCallTip.startsWith("⚠️")
                             ? const Color(0xFFFFF3E0)
                             : const Color(0xFFECEFF1)),
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(
-                        color: _autoCallTip.startsWith("🚗")
+                        color: (_autoCallTip.startsWith("🚗") || _autoCallTip.startsWith("✅"))
                             ? Colors.green.shade200
                             : (_autoCallTip.startsWith("⚠️")
                                 ? Colors.orange.shade200
@@ -196,7 +200,7 @@ extension CollectionLedgerExt on _MainPageState {
                 child: Text(_autoCallTip,
                     style: TextStyle(
                         fontSize: 11.5,
-                        color: _autoCallTip.startsWith("🚗")
+                        color: (_autoCallTip.startsWith("🚗") || _autoCallTip.startsWith("✅"))
                             ? Colors.green.shade800
                             : (_autoCallTip.startsWith("⚠️")
                                 ? Colors.orange.shade900
@@ -1159,9 +1163,12 @@ Future<String> ledgerLocOfCode(String code) async {
 Future<void> pullGroundSlots() async {
   try {
     final r = await AuthApi.groundSlotsGet();
-    if (r["ok"] == true)
+    if (r["ok"] == true) {
       CollectionLedgerExt._gSlots = Map<String, int>.from((r["slots"] as Map)
           .map((k, v) => MapEntry(k.toString(), (v as num).toInt())));
+      final lt = r["lowTier"]; // ㉖v80 常用层上限随配置同步
+      if (lt is num && lt >= 1 && lt <= 4) CollectionLedgerExt._lowTier = lt.toInt();
+    }
   } catch (e) {
     LocalLog.err('拉取地面排格数', e); // ㉖ 静默失败留痕
   }
