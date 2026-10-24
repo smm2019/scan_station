@@ -5357,13 +5357,17 @@ async function wmasDispatchOne(q, tk, ov) { const from = (ov && ov.from) || q.fr
   if (!cands.length && !forced) return { ok: false, msg: `容器主档无「${pallet || '未记录类型'}」类型编码（标签 ${q.code || '?'}），请到货位账本补记容器类型后重试，或人工叫车` };
   const nowMs = Date.now();
   const used = new Set();
-  for (const st of ['PUSHED', 'DISPATCHED', 'IN_TRANSIT']) {
-    const lr = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=100&status=${st}`, tk);
-    if (wmasOk(lr)) for (const x of ((lr.data && lr.data.records) || [])) {
-      if (!x.containerNo) continue;
-      const ts = Date.parse(String(x.creationDate || '').replace(' ', 'T'));
-      if (Number.isFinite(ts) && nowMs - ts > 30 * 60 * 1000) continue; // 30分钟前的PUSHED多为未关闭历史单，不算占用
-      used.add(String(x.containerNo));
+  // ㉖v94i 三状态查询并行（旧版串行：WMAS 恢复期每个查询 3~8 秒，串行累加 15~24 秒 → PDA 10 秒超时假失败，任务实际已下发）
+  {
+    const lrs = await Promise.all(['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].map((st) => wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=100&status=${st}`, tk).catch(() => null)));
+    for (const lr of lrs) {
+      if (!wmasOk(lr)) continue;
+      for (const x of ((lr.data && lr.data.records) || [])) {
+        if (!x.containerNo) continue;
+        const ts = Date.parse(String(x.creationDate || '').replace(' ', 'T'));
+        if (Number.isFinite(ts) && nowMs - ts > 30 * 60 * 1000) continue; // 30分钟前的PUSHED多为未关闭历史单，不算占用
+        used.add(String(x.containerNo));
+      }
     }
   }
   const cn = (ov && ov.container) || cands.find((c) => !used.has(c)) || cands[0]; // ㉖⑰ 调用方指定容器优先（PDA 手动提交已人选）

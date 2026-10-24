@@ -693,9 +693,15 @@ extension CollectionLedgerExt on _MainPageState {
               backgroundColor: const Color(0xFF2E7D32),
               duration: const Duration(seconds: 3)));
       } else if (mounted) {
-        setState(() => _autoCallTip = "⚠️ 自动叫车失败：${r["msg"]}｜可手动「提交任务」");
+        // ㉖v94i 超时≠失败：服务器可能已把任务下发完成（WMAS 慢导致 PDA 先掐表），此时盲目重叫会撞在途闸/造成困惑
+        final _netFail = r["net"] == true;
+        setState(() => _autoCallTip = _netFail
+            ? "⚠️ 自动叫车请求超时：任务可能已下发，请看下方队列条/AGV 任务确认，勿立即重叫"
+            : "⚠️ 自动叫车失败：${r["msg"]}｜可手动「提交任务」");
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: Text("自动叫车失败：${r["msg"]}（账本已登记，可手动「提交任务」）"),
+            content: Text(_netFail
+                ? "自动叫车超时：任务可能已下发成功，请刷新队列确认后再决定是否重叫"
+                : "自动叫车失败：${r["msg"]}（账本已登记，可手动「提交任务」）"),
             backgroundColor: Colors.orange,
             duration: const Duration(seconds: 5)));
       }

@@ -106,7 +106,7 @@ class AuthStore {
 /// 服务端 API 封装（10 秒超时）
 class AuthApi {
   static Future<Map> _req(String method, String path,
-      {Map? body, String? token, String? serverOverride}) async {
+      {Map? body, String? token, String? serverOverride, int timeoutSec = 10}) async {
     final base = (serverOverride ?? await AuthStore.serverUrl())
         .replaceFirst(RegExp(r"/+$"), "");
     if (base.isEmpty) return {"ok": false, "net": true, "msg": "未配置服务器地址"};
@@ -118,7 +118,7 @@ class AuthApi {
       final req = http.Request(method, uri)..headers.addAll(headers);
       if (body != null) req.body = jsonEncode(body);
       resp = await http.Response.fromStream(
-          await req.send().timeout(const Duration(seconds: 10)));
+          await req.send().timeout(Duration(seconds: timeoutSec)));
       Map j;
       try {
         j = jsonDecode(utf8.decode(resp.bodyBytes));
@@ -497,6 +497,7 @@ class AuthApi {
           String palletType = "",
           String container = ""}) async =>
       _req("POST", "/api/agv/carry",
+          timeoutSec: 25, // ㉖v94i 叫车走服务器全链（容器占用+主档+建任务多次 WMAS 往返），WMAS 恢复期 10 秒必超时假失败
           body: {
             "from": from,
             "to": to,
