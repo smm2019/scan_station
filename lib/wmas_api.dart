@@ -190,8 +190,14 @@ class WmasMaster {
     if (r["ok"] == true &&
         r["data"] is Map &&
         (r["data"] as Map)["records"] is List) {
-      _cont = List<Map>.from((r["data"] as Map)["records"] as List);
-      _contAt = DateTime.now().millisecondsSinceEpoch;
+      final list = List<Map>.from((r["data"] as Map)["records"] as List);
+      // ㉖v92g 空列表不缓存（与 _ensureLoc 的 isNotEmpty 守卫同款）：旧版把瞬时查空（WMAS服务抖动
+      // 如 mom-logistics 掉线）缓存整整 1 小时 → token 明明有效却持续报"主档无容器"（10/24 复盘）
+      if (list.isEmpty && _cont != null) return; // 已有旧数据时保留旧数据，下次再查
+      if (list.isNotEmpty) {
+        _cont = list;
+        _contAt = DateTime.now().millisecondsSinceEpoch;
+      }
     }
   }
 
