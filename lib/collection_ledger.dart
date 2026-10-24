@@ -619,16 +619,13 @@ extension CollectionLedgerExt on _MainPageState {
         return;
       }
       final cands = await WmasMaster.containerCodesOf(ctype);
+      // ㉖v92e 本机主档反查失败不再挡死叫车：PDA 直连 WMAS 查容器清单受网络/token/缓存影响是瞬时的，
+      // 而服务器 carry→dispatchOne 本就会自动选容器号（08:09 同款框即服务器选号成功）——
+      // 降级为不指定容器交给服务器选号，真正无此类型时服务器会回明确错误，不再误报"主档无容器"逼人工提交
       if (cands.isEmpty) {
-        if (mounted)
-          setState(() => _autoCallTip = "⚠️ 自动叫车未发：主档无「$ctype」容器｜请手动「提交任务」");
-        if (mounted)
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text("自动叫车未发：主档无「$ctype」容器编码，请手动「提交任务」"),
-              backgroundColor: Colors.orange));
-        return;
+        LocalLog.op('自动叫车·主档降级', "$st→$loc 本机查「$ctype」主档无候选，交服务器自动选号");
       }
-      String cn = cands.first;
+      String cn = cands.isEmpty ? "" : cands.first;
       if (cands.length > 1) {
         //多候选不猜：弹轻选择（取消则留手动），避免自动模式拿错容器
         if (!mounted) return;
@@ -674,12 +671,13 @@ extension CollectionLedgerExt on _MainPageState {
           palletType: ctype,
           container: cn); // ㉖⑰ 统一走服务器入队下发：队列/流水线/链路全可见
       if (r["ok"] == true) {
+        final _srvCn = ((r["container"] ?? "").toString().isNotEmpty ? r["container"].toString() : cn); // ㉖v92e 服务器实选容器优先（降级路径 cn 为空）
         _colCalled.add(loc);
         kAgvQueueTick.value++; // ㉖ 叫车成功→采集页队列统计即时刷新
-        LocalLog.op('自动入库叫车', "$st→$loc 容器$cn");
+        LocalLog.op('自动入库叫车', "$st→$loc 容器${_srvCn}");
         if (mounted) {
           _autoCallCode = (codes0.isNotEmpty ? codes0.first : "").toUpperCase(); // ㉖v69 记录货物码：任务被删/完成时提示条自动撤销
-          setState(() => _autoCallTip = "🚗 自动叫车成功：$st → $loc（容器 $cn）");
+          setState(() => _autoCallTip = "🚗 自动叫车成功：$st → $loc（容器 $_srvCn）"); // ㉖v92e 显示服务器实选容器号
         }
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -799,7 +797,7 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
         _cands = list;
         _picked = list.length == 1 ? list.first : null;
         if (list.isEmpty)
-          _err = "容器主档里没有「${widget.containerType}」对应的容器编码，请核对容器类型或手动在WMAS建任务";
+          _err = "本机查容器主档无「${widget.containerType}」编码（网络/主档延迟所致）——可直接提交，服务器会自动选容器号";
       });
     } catch (e) {
       if (mounted)
@@ -812,7 +810,7 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
 
   Future<void> _submit() async {
     final cn = _picked ?? "";
-    if (cn.isEmpty || _busy) return;
+    if (_busy) return; // ㉖v92e cn 空=不指定容器，服务器 dispatchOne 自动选号（旧版空即拒→主档抖动挡死叫车）
     setState(() => _busy = true);
     final r = await AuthApi.agvCarry(
         from: widget.startPoint,
@@ -929,7 +927,7 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
               foregroundColor: Colors.white,
               disabledBackgroundColor: Colors.grey.shade300),
           onPressed:
-              (ready && cn.isNotEmpty && !_busy && !_loading) ? _submit : null,
+              (ready && !_busy && !_loading) ? _submit : null, // ㉖v92e 不再要求本机已选容器：空=服务器自动选号
           icon: _busy
               ? const SizedBox(
                   width: 14,
