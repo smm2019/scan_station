@@ -2677,13 +2677,24 @@ return send(res, 200, {
           if (spKey && !wantCk) wantCk = /-CK-/.test(spKey) ? 'in' : 'out'; // 起点是站台→入库回架任务；起点是货架→出库任务
         }
         let task = null;
-        if (q && q.wmsTask && db.agvTasks && db.agvTasks[q.wmsTask]) task = { ...db.agvTasks[q.wmsTask], no: q.wmsTask };
-        if (!task) { // 时间窗+起点匹配最近一条出库任务
-          const lo = q ? (q.at || 0) - 3600000 : Date.now() - 2 * 86400000;
-          for (const [no, t] of Object.entries(db.agvTasks || {})) { if ((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey && t.fin >= lo && (!task || t.fin > task.fin)) task = { ...t, no }; }
+        // ㉖v94k 双坐标纠偏（10/24 17:52 N26J240104 现场：链路显示"叉出17:46"早于"采集17:52"，实为同站台上一框 AGV-0039 被错配）：
+        // 队列项已出队时只按"起点+最近完成"匹配，同站台连续多框必然张冠李戴。入库方向（起点=站台）改按
+        // 起点+终点=账本当前货位 双坐标匹配（仅 mv=AGV 的账本可信）；匹配不到就置空——宁缺毋滥，错配比缺节点更伤信任。
+        let epWant = '';
+        if (wantCk === 'in') { const led1 = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code); if (led1 && String(led1.mv || '') === 'AGV') epWant = String(led1.l || '').toUpperCase(); }
+        if (q && q.wmsTask && db.agvTasks && db.agvTasks[q.wmsTask]) { const _t0 = db.agvTasks[q.wmsTask]; if (!epWant || String(_t0.ep || '').toUpperCase() === epWant) task = { ..._t0, no: q.wmsTask }; else task = null; } // ㉖v94k 旧数据wmsTask本身可能串单记错(104记成0039,真单0047)：入库带终点校验，不符弃之走回退匹配
+        if (!task) { // 时间窗+起点匹配最近一条任务
+          const lo0 = q ? (q.at || 0) - 3600000 : Date.now() - 2 * 86400000;
+          const ledR = !q && epWant ? (((db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code) || {}).rec || 0) : 0;
+          const lo = ledR ? Math.max(lo0, ledR - 600000) : lo0; // 入库回退：窗口收到采集时刻前10分钟，防抓更早的同站台他框任务
+          for (const [no, t] of Object.entries(db.agvTasks || {})) {
+            if (!((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey && t.fin >= lo && (!task || t.fin > task.fin))) continue;
+            if (!q && epWant && String(t.ep || '').toUpperCase() !== epWant) continue; // 已出队+入库：终点必须=账本货位
+            task = { ...t, no };
+          }
         }
-        if (!task && spKey) { // 在途任务（未沉淀）
-          for (const t of db.rcsRun || []) { if (t.sp === spKey) { task = { no: t.no, sp: t.sp, ep: t.ep, ex: t.startAt || 0, pick: t.pickAt || 0, fin: 0 }; break; } }
+        if (!task && spKey) { // 在途任务（未沉淀）；㉖v94k 入库带终点过滤
+          for (const t of db.rcsRun || []) { if (t.sp === spKey && (!epWant || String(t.ep || '').toUpperCase() === epWant)) { task = { no: t.no, sp: t.sp, ep: t.ep, ex: t.startAt || 0, pick: t.pickAt || 0, fin: 0 }; break; } }
         }
         const fmt2 = (ms) => ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
         const stText = task ? (task.fin ? '已完成' : (task.pick ? '已叉出送货中' : (task.ex ? '取货中' : '排队中'))) : '';
@@ -3007,7 +3018,7 @@ return send(res, 200, {
         for (const q of db.agvQueue || []) {
           if (['完成', '取消', '失败'].includes(q.state)) continue;
           const code = String(q.code || '').toUpperCase();
-          const rr = runBy[String(q.taskNo || '')] || null;
+          const rr = runBy[String(q.wmsTask || q.taskNo || '')] || null; // ㉖v94k 与 agvStage 同修：旧版拿容器号比RCS调度号永不命中→流水线全卡"AGV已接单"
           let stage;
           if (q.state === '排队') stage = 1;
           else if (stageOfCode[code]) stage = stageOfCode[code];
@@ -5253,7 +5264,10 @@ function agvStage(q) {
   if (st === '到站') return stc === 4 ? 4 : 5;
   if (st === '排队') return stc || 1;
   if (stc) return stc;
-  const rr = (db.rcsRun || []).find((r) => String(r.no) === String(q.taskNo || ''));
+  // ㉖v94k 修匹配键：旧版拿 q.taskNo(容器号 NB-B1800*1200_2-00001) 去比 RCS调度号(AGV-20261024-XXXX)，
+  // 永不相等 → 车都叉完到货了状态还卡"AGV已接单"（10/24 15:40 现场）。改按 WMAS任务号 双键匹配（调度号+透传号）。
+  const _tn = String(q.wmsTask || q.taskNo || '');
+  const rr = _tn ? (db.rcsRun || []).find((r) => String(r.no) === _tn || String(r.wms || '') === _tn) : null;
   if (rr && (rr.pickAt || 0) > 0) return 4;
   if (st === '下发中' || st === '已下发') return rr ? 3 : 2;
   return 2;
@@ -5594,7 +5608,7 @@ async function agvDispatch(nowMs, runT) {
       // 下发中超过5分钟无回执（进程中断/异常残留）→ 判失败可重试，防止永久封死该站台
       if (nowMs - (q.updAt || q.at) > P().sendTimeoutMin * 60 * 1000) retireQueueItem(q, '失败', '下发超时未回执，请重新叫车'); // ㉖v72b 统一回收（原仅改状态，叫车标记滞留30分钟）
     } else if (q.state === '已下发') {
-      if (s && s.state === '有货' && has) { q.state = '到站'; releaseStnBook(q.code); } // ㉖v72b 货已上台：预约失去意义立即作废（按标签匹配，容器号尾6位≠RCS任务号尾6位，不能用via比对）
+      if (s && s.state === '有货' && has) { q.state = '到站'; q.dockAt = s.ts || nowMs; q.updAt = nowMs; releaseStnBook(q.code); } // ㉖v94k 到站刷新时间戳（旧版不刷→完成表"结束时间/全程耗时"显示成下发时刻，1秒假耗时）；㉖v72b 货已上台：预约失去意义立即作废
       else if ((!q.type || q.type === 'outbound') && q.station && q.sentAt) {
         // ㉖v69c 出库RCS沉淀旁证：搬运已完成但站台快照没抓到（货被快速取走/无实体标签框扫不到）→
         // 旧版会一直卡"已下发"40分钟等超时兜底，期间容器号被占用，入库叫车全被"已有在途搬运任务"挡死（物料员"总是不成功"根因）
@@ -5608,7 +5622,7 @@ async function agvDispatch(nowMs, runT) {
         if (fin) { q.state = '到站'; q.dockAt = fin; q.updAt = nowMs; (q.trace = q.trace || []).push('RCS沉淀旁证：搬运已完成，快照未抓到到站，按记录推进'); }
       }
     } else if (q.state === '到站') {
-      if (!has) { q.state = '完成'; q.dockAt = q.dockAt || nowMs; clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); } // ㉖v72b 任务闭环：货离台=发走/清台，清叫车标记允许该框未来重新入队
+      if (!has) { q.state = '完成'; q.dockAt = q.dockAt || nowMs; q.updAt = nowMs; clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); } // ㉖v94k 完成刷新updAt（完成表"结束时间/全程耗时"取updAt，旧版不刷→显示成下发时刻的1秒假耗时）；㉖v72b 任务闭环：货离台=发走/清台，清叫车标记允许该框未来重新入队
     }
   }
   // 失败项保留30分钟供查看原因后自动出队（重新一键叫车即可再入队）；完成/取消保留2小时

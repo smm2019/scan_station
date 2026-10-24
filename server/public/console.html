@@ -539,7 +539,7 @@ async function traceBox(codeRaw){const code=String(codeRaw||'').trim().toUpperCa
  pushN(chain.enqueue,'⏳ 加入队列',(() => { if(!tb.queueState) return ''; const _ok = !!(chain.pick || chain.arrive); return '队列态 ' + tb.queueState + (tb.queueErr ? '（' + tb.queueErr + '）' : '') + (_ok && ['失败','取消'].includes(tb.queueState) ? ' · 实际已执行，属历史误判，以到站为准' : ''); })());
  pushN(chain.dispatch,'📮 任务下发',(tb.task&&tb.task.no)?'任务号 '+tb.task.no:'');
  pushN(chain.pick,'🤖 AGV 叉出',(tb.task?(tb.task.car?'车 AGV'+String(tb.task.car).padStart(2,'0'):'车号缺失')+' '+(tb.task.sp||'?')+'→'+(tb.task.ep||'?'):''));
- pushN(chain.arrive,'🏁 '+(_dirTx==='入库'?'上架到货位':'到站'),'');
+ pushN(chain.arrive,'🏁 '+(_dirTx==='入库'?'AGV 上架到位':'AGV 到站台'),(tb.task&&tb.task.ep?('落位 '+(tb.task.ep||'')):'')); // ㉖v94k 文案自解释+带落位点（旧"上架到货位"现场看不懂）
  pushN(chain.issue,'📤 扫码发料','');
  pushN(chain.transfer,'🔄 转 MES','');
  pushN(chain.confirm,'✅ 签收','');
