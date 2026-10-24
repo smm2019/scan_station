@@ -3972,7 +3972,8 @@ return send(res, 200, {
         try {
           if (!fs.existsSync(APP_VER)) return send(res, 200, { ok: true, has: false });
           const v = JSON.parse(fs.readFileSync(APP_VER, 'utf8'));
-          return send(res, 200, { ok: true, has: fs.existsSync(APP_APK), ...v, size: fs.existsSync(APP_APK) ? fs.statSync(APP_APK).size : 0 });
+          const apk = path.join(APP_DIR, v.file || 'app-release.apk'); // ㉖v94g 版本化文件名，兼容历史 app-release.apk
+          return send(res, 200, { ok: true, has: fs.existsSync(apk), ...v, size: fs.existsSync(apk) ? fs.statSync(apk).size : 0 });
         } catch (e) { return send(res, 200, { ok: false, msg: e.message }); }
       }
       // ⑯离线语音包分发（登录即可拉；zip内含 model.onnx/tokens.txt/espeak-ng-data）
@@ -3990,10 +3991,11 @@ return send(res, 200, {
         return;
       }
       if (req.method === 'GET' && p === '/api/app/download') {
-        if (!fs.existsSync(APP_APK)) return send(res, 404, { ok: false, msg: '尚无上传APK' });
-        const st = fs.statSync(APP_APK);
+        let apk = APP_APK; try { const v = JSON.parse(fs.readFileSync(APP_VER, 'utf8')); if (v.file) apk = path.join(APP_DIR, v.file); } catch (_) {} // ㉖v94g
+        if (!fs.existsSync(apk)) return send(res, 404, { ok: false, msg: '尚无上传APK' });
+        const st = fs.statSync(apk);
         res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': st.size, 'Content-Disposition': 'attachment; filename="app-release.apk"' });
-        fs.createReadStream(APP_APK).pipe(res);
+        fs.createReadStream(apk).pipe(res);
         return;
       }
       if (req.method === 'POST' && p === '/api/rcs/clear') { // 人工干预站台：state=有货(占用)/空闲(清台)
@@ -4799,14 +4801,20 @@ return send(res, 200, {
         const build = parseInt(url.searchParams.get('build') || '0', 10);
         if (!/^\d+\.\d+\.\d+$/.test(version) || !(build >= 1)) { req.resume(); return send(res, 400, { ok: false, msg: 'version需x.y.z且build≥1' }); }
         const dir = path.join(DATA_DIR, 'app'); fs.mkdirSync(dir, { recursive: true });
-        const tmp = path.join(dir, 'upload.tmp'), fin = path.join(dir, 'app-release.apk');
+        const tmp = path.join(dir, 'upload.tmp');
         const ws = fs.createWriteStream(tmp); let size = 0, aborted = false;
         req.on('data', (c) => { size += c.length; if (size > 200 * 1048576) { aborted = true; ws.close(); try { fs.unlinkSync(tmp); } catch (_) {} req.destroy(); } });
         req.pipe(ws);
         ws.on('finish', () => {
           if (aborted || size < 1000) { try { fs.unlinkSync(tmp); } catch (_) {} return send(res, 400, { ok: false, msg: aborted ? '超过200MB上限' : '空文件' }); }
-          try { fs.renameSync(tmp, fin); fs.writeFileSync(path.join(dir, 'version.json'), JSON.stringify({ version, build, size, at: new Date().toISOString() }, null, 2)); }
-          catch (e) { return send(res, 500, { ok: false, msg: '落盘失败:' + e.message }); }
+          // ㉖v94g 版本化文件名落盘：Windows 下若正有 PDA 下载 app-release.apk（读句柄占用），rename 覆盖同名必 EPERM（10/24 发布台"落盘失败"根因）
+          let prevFile = ''; try { prevFile = JSON.parse(fs.readFileSync(path.join(dir, 'version.json'), 'utf8')).file || ''; } catch (_) {}
+          const fin = path.join(dir, 'app-release-' + version + '-' + build + '.apk');
+          try {
+            fs.renameSync(tmp, fin);
+            fs.writeFileSync(path.join(dir, 'version.json'), JSON.stringify({ version, build, size, file: path.basename(fin), at: new Date().toISOString() }, null, 2));
+          } catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} return send(res, 500, { ok: false, msg: '落盘失败:' + e.message }); }
+          if (prevFile && prevFile !== path.basename(fin)) { try { fs.unlinkSync(path.join(dir, prevFile)); } catch (_) {} } // 尽力删上一版，正被下载则静默跳过不影响发布
           pushOps(u, '发布APK', 'v' + version + '+' + build, (size / 1048576).toFixed(1) + 'MB');
           console.log(`[publish] ${u.name} 发布 v${version}+${build} ${(size / 1048576).toFixed(1)}MB`);
           return send(res, 200, { ok: true, msg: `已发布 v${version}+${build}（${(size / 1048576).toFixed(1)}MB）`, version, build, size });
