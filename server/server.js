@@ -5562,6 +5562,30 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
   }
   if (!stn) return false;
   assigned.push(stn); q.station = stn; q.updAt = nowMs;
+  // ㉖v94l 位货绑定硬闸（用户要求：入库必须把该站台的货放到指定货架位，出库必须把指定货架位的货放到指定站台）：
+  // 建 WMAS 任务前用服务器账本核"框↔起终点"绑定，杜绝叉错框/叉空位/放错位——
+  //  出库（起点=货架）：账本必须有此框且框就在起点货位（不在=拿错框或已挪未登记，AGV 去就是叉空）；
+  //  入库（起点=站台、终点=货架）：账本框位置只允许 =起点站台（搬运前登记）或 =终点货位（先登后搬），第三位置=矛盾拒绝；
+  //  无框码的纯容器搬运、检验 legs、移库、退货框已在站台的"出库"（起点含CK）不走本闸。
+  // 实测账本时序：出库叫车时 l=原货位（1894/1894 同位）；入库叫车时 l=目标位或=站台，两态均放行。
+  if (q.code && (!q.type || q.type === 'outbound' || q.type === 'inbound')) {
+    const _from = String(q.fromLoc || '').toUpperCase(), _to = String(stn).toUpperCase();
+    const _led = (db.ledger || []).filter((x) => String(x.c || '').toUpperCase() === String(q.code).toUpperCase()).sort((a, b) => (b.rec || b.t || 0) - (a.rec || a.t || 0))[0]; // 同框多行取最新登记
+    const _l = _led ? String(_led.l || '').toUpperCase() : '';
+    let _bad = '';
+    if (!/-CK-/.test(_from)) { // 出库：货架→站台
+      if (!_led) _bad = '框 ' + q.code + ' 货位账本查无此框（位置不详，AGV 到 ' + _from + ' 会叉空）——请先在位置登记补账再叫车';
+      else if (_l !== _from) _bad = '账本显示框 ' + q.code + ' 在 ' + (_l || '未知') + '，与叫车起点 ' + _from + ' 不符（可能拿错框或货已挪动未登记），拒绝下发';
+    } else if (q.type === 'inbound' && _l && _l !== _from && _l !== _to) { // 入库：账本位置与任务两端都对不上
+      _bad = '账本显示框 ' + q.code + ' 已在 ' + _l + '，与本入库任务（' + _from + '→' + _to + '）矛盾，拒绝下发——请核对框是否在别处/账本是否需要更正';
+    }
+    if (_bad) {
+      q.state = '失败'; q.err = _bad; q.updAt = nowMs;
+      q.trace.push('位货绑定闸拦截：' + _bad.slice(0, 70));
+      console.log('[agv-bind] 拦截 框 ' + q.code + ' ' + _from + '→' + _to + '：' + _bad);
+      return true;
+    }
+  }
   // ㉖v79c 入库重复货位终极防线（所有叫车入口统一过闸）：目的地货架位账本已有别的框→拒绝下发判失败
   // （carry 端点同款检查只护手动提交；AUTO分配/排队端点/旧版PDA 路径全靠这里兜底，杜绝两框同位撞车）
   if (q.type === 'inbound' && /^NB02-/.test(stn) && !/-CK-/.test(stn) && q.code) {
