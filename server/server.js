@@ -2715,7 +2715,11 @@ return send(res, 200, {
         const q = String(url.searchParams.get('q') || '').trim().toUpperCase();
         const m = {};
         const touch = (pn, nm) => { if (!pn) return; const e = (m[pn] = m[pn] || { nm: '', n: 0 }); if (nm && !e.nm) e.nm = String(nm).slice(0, 80); };
-        for (const x of db.ledger || []) { touch(String(x.p || '').toUpperCase(), x.n); if (x.p) m[String(x.p).toUpperCase()].n++; }
+        // ㉖v91 修「账本N框」口径：旧版逐账本行+1=标签数（一托5码显示5框，与档案"在架框"按框聚合打架）；
+        // 改按 boxKeyOf 聚合（与发料建议/档案明细逐字同源：托号优先/同位同件并框）
+        const _bx = {};
+        for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); touch(pn, x.n); if (!pn) continue; (_bx[pn] = _bx[pn] || new Set()).add(boxKeyOf(x)); }
+        for (const pn of Object.keys(_bx)) if (m[pn]) m[pn].n = _bx[pn].size;
         for (const st of Object.values(db.scanlog || {})) touch(String(st.pn || '').toUpperCase(), st.nm);
         for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) touch(String(i.code || '').toUpperCase(), i.name);
         if (db.itemDict) for (const [pn, dd] of Object.entries(db.itemDict)) touch(String(pn).toUpperCase(), dd && dd.nm);
