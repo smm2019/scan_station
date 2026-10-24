@@ -2483,12 +2483,22 @@ const server = http.createServer(async (req, res) => {
         const tl = (() => { try { return typeof db.rcsTraffic === 'string' ? JSON.parse(db.rcsTraffic) : (db.rcsTraffic || {}); } catch (_) { return {}; } })();
         const owners = (tl.landmarkLocks && tl.landmarkLocks.landmarkOwners) || {};
                 const _runByCar = {}; for (const t of db.rcsRun || []) if (t.wms) _runByCar[Number(t.car)] = t.wms; // ㉖v56 车→WMAS任务号
+        // ㉖v92 车→RCS在途任务对象（sp/ep兜底：WMAS直建/队列已回收时路径仍可显示）+ 车→活动告警指纹（rcsCarAlarm 恢复即删，表里有=现役告警）
+        const _runObjByCar = {}; for (const t of db.rcsRun || []) { const _cd = Number(t.car); if (_cd && !_runObjByCar[_cd]) _runObjByCar[_cd] = t; }
+        const _alarmOf = (id) => { const r = (db.rcsCarAlarm || {})[id]; return r ? String(r.fp || '').slice(0, 46) : ''; };
         const _qByWms = {}; for (const q of db.agvQueue || []) if (q.wmsTask && !['完成', '取消', '失败'].includes(q.state)) _qByWms[String(q.wmsTask).toUpperCase()] = q;
         const _partOf = (code) => { const cu = String(code || '').toUpperCase(); const led = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === cu); if (led) return { p: String(led.p || ''), q: Number(led.q) || 0 }; const sl = Object.values(db.scanlog || {}).find((x) => String(x.code || '').toUpperCase() === cu && !x.cx); return sl ? { p: String(sl.pn || ''), q: Number(sl.q) || 0 } : { p: '', q: 0 }; };
         const _dirTx = { outbound: '出库', inbound: '入库', insp: '检验下架', inspback: '检验归位', transfer: '移库' };
 return send(res, 200, {
           ok: true, at: new Date().toISOString(), netReady: NetMap.ready(),
-          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0, cargo: (() => { const w = _runByCar[Number(c.agvId)]; if (!w) return null; const q = _qByWms[String(w).toUpperCase()]; if (!q) return null; const pt = _partOf(q.code); return { dir: _dirTx[q.type] || '搬运', p: pt.p, q: pt.q, stn: q.station || q.stationManual || '' }; })() })), // ㉖v56 状态字段随地图下发（前端标签与车辆页同口径）
+          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0, alarm: _alarmOf(c.agvId), cargo: (() => { // ㉖v92b 线上实测 rcsRun.wms 恒空（v56 关联从未命中）；RCS调度号 no 即 WMAS 任务号（AGV-/LL 单号），按 no 反查队列项
+        const _cid = Number(c.agvId); const _rt = _runObjByCar[_cid]; if (!_rt) return null;
+        const q = _qByWms[String(_rt.no || '').toUpperCase()] || (_rt.wms ? _qByWms[String(_rt.wms).toUpperCase()] : null);
+        const _isCk = (x) => /-CK-/.test(String(x || ''));
+        const pt = q ? _partOf(q.code) : { p: '', q: 0 };
+        const from = (q && (q.fromLoc || q.from)) || _rt.sp || '', to = (q && (q.station || q.stationManual)) || _rt.ep || '';
+        const dir = _dirTx[q && q.type] || (_isCk(from) ? '入库' : (_isCk(to) ? '出库' : '搬运'));
+        return { dir, p: pt.p, q: pt.q, from, to }; })() })), // ㉖v56 状态字段随地图下发；㉖v92 cargo 带完整 from→to 路径+RCS任务兜底+活动告警
           shelf, shelfCols, ground, stations: stn,
           jam: Object.entries(owners).map(([land, car]) => ({ land, car })).filter((j) => NetMap.lands[j.land]),
         });
@@ -2512,7 +2522,7 @@ return send(res, 200, {
         const site = {}; if (b.ok) for (const e of parse(b)) site[e.agvId] = e;
         const blocked = new Set();
         if (tr.ok) { try { const t = typeof tr.data === 'string' ? JSON.parse(tr.data) : (tr.data || {}); for (const z of (((t.zoneLocks || {}).zoneList) || [])) for (const x of (z.blockedCars || [])) blocked.add(Number(x)); } catch (_) {} }
-        const cars = a.ok ? parse(a).map((c) => { const s = site[c.agvId] || {}; return { id: c.agvId, name: c.carName || ('AGV' + c.agvId), ip: String(c.carIp || ''), online: c.communicationBreak !== true && c.enable === 1, state: c.carState, auto: c.autoMode === true, model: c.carModel || '-', fork: Number(c.forkHeight) || 0, power: Number(c.power) || 0, speed: Number(c.speed) || 0, x: c.x, y: c.y, site: s.currentSite != null ? String(s.currentSite) : (c.currentSite != null ? String(c.currentSite) : ''), task: String(s.executeTaskNo || c.executeTaskNo || ''), locks: (c.routeLockLands || []).slice(0, 16), emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, lock: c.lock === true, err: String(c.errorMessage || ''), blocked: blocked.has(Number(c.agvId)) }; }) : [];
+        const cars = a.ok ? parse(a).map((c) => { const s = site[c.agvId] || {}; return { id: c.agvId, name: c.carName || ('AGV' + c.agvId), ip: String(c.carIp || ''), online: c.communicationBreak !== true && c.enable === 1, state: c.carState, auto: c.autoMode === true, model: c.carModel || '-', fork: Number(c.forkHeight) || 0, power: Number(c.power) || 0, speed: Number(c.speed) || 0, x: c.x, y: c.y, site: s.currentSite != null ? String(s.currentSite) : (c.currentSite != null ? String(c.currentSite) : ''), task: String(s.executeTaskNo || c.executeTaskNo || ''), locks: (c.routeLockLands || []).slice(0, 16), emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, lock: c.lock === true, err: String(c.errorMessage || ''), blocked: blocked.has(Number(c.agvId)), alarm: (() => { const r = (db.rcsCarAlarm || {})[c.agvId]; return r ? String(r.fp || '').slice(0, 46) : ''; })() }; }) : []; // ㉖v92 活动告警随车辆下发（与地图/车辆页统一口径）
         return send(res, 200, { ok: a.ok, err: a.ok ? '' : a.msg, cars, at: new Date().toISOString() });
       }
       if (req.method === 'GET' && p === '/api/rcs/traffic') { // 交管：拦停车辆+点位占用+交管区配置
@@ -5554,6 +5564,10 @@ async function carAlarmWatch(tk, nowMs) {
   if (!tk) return;
   let cars = []; try { const cr = await rcsReq('/uds/car/getCarInfoList', 'GET', tk); cars = typeof cr.data === 'string' ? JSON.parse(cr.data) : (cr.data || []); } catch (_) { return; }
   db.rcsCarAlarm = db.rcsCarAlarm || {};
+  // ㉖v92b 幽灵告警清理：告警表按车id挂记录，若该车已不在 RCS 车辆清单（改名/退役），旧记录永远等不到"恢复"分支
+  //（实测 10/20 的 4 条"通讯断开"挂到今），车辆页认领按钮数据源被污染——清单外的 id 直接删
+  { const _ids = new Set(cars.map((x) => x.agvId).filter((v) => v !== undefined && v !== null).map(Number));
+    for (const id of Object.keys(db.rcsCarAlarm)) if (!_ids.has(Number(id))) delete db.rcsCarAlarm[id]; }
   db.carAlarms = db.carAlarms || []; // 告警历史落库（供追溯）
   const logAlarm = (id, name, kind, msg) => { db.carAlarms.push({ at: nowMs, id, name, kind, msg }); if (db.carAlarms.length > 500) db.carAlarms = db.carAlarms.slice(-500); pushEvent(kind === 'recover' ? '恢复' : kind === 'ack' ? '已认领' : kind === 'escalate' ? '升级' : kind === 'redflag' ? '红牌' : '告警', name, msg, nowMs); };
   for (const c of cars) {
