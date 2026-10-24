@@ -5373,13 +5373,72 @@ async function wmasDispatchOne(q, tk, ov) { const from = (ov && ov.from) || q.fr
   const cn = (ov && ov.container) || cands.find((c) => !used.has(c)) || cands[0]; // ㉖⑰ 调用方指定容器优先（PDA 手动提交已人选）
   const s = await wmasLocOf(from), e = await wmasLocOf(to);
   if (!s || !e) return { ok: false, msg: '库位不在WMAS主档：' + from + '/' + to };
-  const mk = await wmasHttp('POST', '/api/logistics/agv-task', tk, { taskType: 'CARRY', warehouse: s.wh, startArea: s.zone, startPoint: from, endArea: e.zone, endPoint: to, containerNo: cn, refNo: ref });
-  if (!wmasOk(mk)) return { ok: false, msg: '建任务失败：' + ((mk && (mk.message || mk.msg)) || '无响应') };
-  let id = mk.data && mk.data.id;
-  let wmsTask = (mk.data && mk.data.taskNo) || '';
-  if (!id || !wmsTask) { const q2 = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=3&containerNo=${encodeURIComponent(cn)}`, tk); const recs = (q2 && q2.data && q2.data.records) || []; if (recs.length) { id = id || recs[0].id; wmsTask = wmsTask || String(recs[0].taskNo || ''); } }
-  if (id) await wmasHttp('POST', '/api/logistics/agv-task/dispatch', tk, { ids: [id] });
+  let wmsTask = '';
+  // ㉖v94j 建单后必须"认单 + 验推送"（10/24 19:12 AGV-0066、19:49 AGV-0069 永久停在"创建"根因）：
+  // WMAS 主档同类型容器号唯一（1800*1200_2 全厂仅 NB-B1800*1200_2-00001 一个号），一键叫车同秒连建多单时
+  // 建单响应回传的 id/任务号会串到别的单 → 旧版拿错 id 推送、且不校验推送结果，照样报"下发成功"，车永远不来。
+  // 现在：①先认领同坐标+同单号遗留的"创建"任务（重叫不重复建单）②没有才新建，建完按坐标反查真实任务（不信建单响应）
+  // ③推送后回查状态确认真的离开"创建"④仍失败→撤回本单（已验证归属，不会误撤他单）并如实报失败。
+  let own = await wmasOwnTask(tk, cn, from, to, ref);
+  if (!own) {
+    const mk = await wmasHttp('POST', '/api/logistics/agv-task', tk, { taskType: 'CARRY', warehouse: s.wh, startArea: s.zone, startPoint: from, endArea: e.zone, endPoint: to, containerNo: cn, refNo: ref });
+    if (!wmasOk(mk)) return { ok: false, msg: '建任务失败：' + ((mk && (mk.message || mk.msg)) || '无响应') };
+    wmsTask = (mk.data && mk.data.taskNo) || '';
+    own = await wmasOwnTask(tk, cn, from, to, ref);
+  }
+  if (!own) return { ok: false, msg: 'WMAS建任务后反查不到本单记录（接口抖动/串单），请重新叫车' }; // 不盲撤：反查失败时建单响应号可能是串到的他单，误撤代价更大；遗留"创建"单由重叫认领/卡单自愈兜底
+  wmsTask = String(own.taskNo || wmsTask || '');
+  let pushed = String(own.status || '').toUpperCase() !== 'CREATED';
+  for (let i = 0; i < 3 && !pushed; i++) {
+    if (i) await new Promise((rr) => setTimeout(rr, 900));
+    await wmasHttp('POST', '/api/logistics/agv-task/dispatch', tk, { ids: [own.id] });
+    const chk = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=${encodeURIComponent(wmsTask)}`, tk);
+    const rec = ((chk && chk.data && chk.data.records) || []).find((z) => String(z.taskNo) === String(wmsTask));
+    pushed = !!rec && String(rec.status || '').toUpperCase() !== 'CREATED';
+  }
+  if (!pushed) { await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [wmsTask]); return { ok: false, msg: 'WMAS建任务成功但推送失败（已自动撤回，多为WMAS瞬时抖动），请重新叫车' }; }
   return { ok: true, container: cn, taskNo: wmsTask, msg: '已建任务并下发' };
+}
+// ㉖v94j 按坐标+单号反查"本单"任务（同批多单共用唯一容器号时，只有坐标能区分归属）
+async function wmasOwnTask(tk, cn, from, to, ref) {
+  const lr = await wmasHttp('GET', `/api/logistics/agv-task/list?pageNum=1&pageSize=20&containerNo=${encodeURIComponent(cn)}`, tk);
+  const recs = ((lr && lr.data && lr.data.records) || []).filter((z) => {
+    if (String(z.startPoint || '').toUpperCase() !== String(from || '').toUpperCase()) return false;
+    if (String(z.endPoint || '').toUpperCase() !== String(to || '').toUpperCase()) return false;
+    if (ref && String(z.refNo || '') !== String(ref)) return false;
+    const ts = Date.parse(String(z.creationDate || '').replace(' ', 'T'));
+    if (Number.isFinite(ts) && Date.now() - ts > 5 * 60 * 1000) return false; // 只认5分钟内新建的，历史同坐标单不算
+    return !/CANCEL|REJECT|FINISH|COMPLET|DONE/i.test(String(z.status || ''));
+  });
+  return recs.length ? recs[0] : null;
+}
+// ㉖v94j 卡单自愈：WMAS 里停"创建"超60秒、且能对上我方在途队列项的任务 → 自动补推（覆盖历史遗留与推送竞态）
+let _stuckPushAt = 0;
+async function wmasStuckPush(nowMs) {
+  if (nowMs - _stuckPushAt < 60000) return; _stuckPushAt = nowMs;
+  const tk = await wmasToken(); if (!tk) return;
+  const lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=50&status=CREATED', tk);
+  if (!wmasOk(lr)) return;
+  for (const z of ((lr.data && lr.data.records) || [])) {
+    const ts = Date.parse(String(z.creationDate || '').replace(' ', 'T'));
+    if (Number.isFinite(ts) && nowMs - ts < 60000) continue; // 刚建的等它自己走完推送链
+    const q = (db.agvQueue || []).find((x) => ['下发中', '已下发'].includes(x.state) && String(x.fromLoc || '').toUpperCase() === String(z.startPoint || '').toUpperCase() && String(x.station || x.stationManual || '').toUpperCase() === String(z.endPoint || '').toUpperCase() && (String(x.reqNo || '') === String(z.refNo || '') || String(x.ref || '') === String(z.refNo || '')));
+    if (!q) continue; // 不是我方发起的任务：绝不代推（WMAS 侧人工建的单不干涉）
+    // ㉖v94j 僵尸单防线：队列项若已有自己的活跃任务（重叫后遗留的旧"创建"单），绝不双推——两车同坐标必撞
+    if (q.wmsTask && q.wmsTask !== z.taskNo) {
+      const qr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=3&taskNo=' + encodeURIComponent(q.wmsTask), tk);
+      const cur = ((qr && qr.data && qr.data.records) || []).find((y) => String(y.taskNo) === String(q.wmsTask));
+      const alive = !!cur && !/CANCEL|REJECT|FINISH|COMPLET|DONE/i.test(String(cur.status || ''));
+      const same = alive && String(cur.startPoint || '').toUpperCase() === String(q.fromLoc || '').toUpperCase() && String(cur.endPoint || '').toUpperCase() === String(q.station || q.stationManual || '').toUpperCase();
+      if (same) continue; // 该 CREATED 是重叫遗留僵尸：不推，等人工在WMAS取消
+    }
+    if (await wmasHttp('POST', '/api/logistics/agv-task/dispatch', tk, { ids: [z.id] }).then((r) => wmasOk(r))) {
+      q.wmsTask = String(z.taskNo || q.wmsTask || ''); // ㉖v94j 串单遗留：队列里记的可能是别的单的任务号，坐标+单号双验证过归属，一并纠正
+      q.updAt = nowMs; (q.trace = q.trace || []).push('补推：任务停在"创建"超1分钟，系统已自动推送 ' + (z.taskNo || ''));
+      pushEvent('AGV卡单补推', q.code || '', (q.fromLoc || '') + '→' + (q.station || '') + ' ' + (z.taskNo || ''), nowMs);
+      console.log('[stuck-push] ' + q.code + ' ' + z.taskNo + ' 停在创建，已补推');
+    }
+  }
 }
 function clearQueueCall(reqId, code) { // 队列项取消/失败出队 → 解除该框排队叫车标记，允许重新叫车
   const rq = db.requisitions.find((x) => x.id === reqId); if (!rq) return;
@@ -5509,7 +5568,7 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
   try { r = await wmasDispatchOne(q, tk, Object.keys(_ov).length ? _ov : undefined); } catch (e) { r = { ok: false, msg: '下发异常：' + e.message }; }
   if (r && r.ok) { stnBook[stn] = { until: nowMs + stnEtaMs(q.fromLoc, stn), by: q.code }; q.trace.push('预约站台窗至 ' + new Date(stnBook[stn].until).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5) + '（行程+缓冲+平均清台×' + P().stnWinPct + '%）'); } // ㉖v56 C 时间窗预约（含指定台：检验归位同腿撞台是实测痛点，一并预约）
   q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.wmsTask = r.taskNo || ''; q.err = r.ok ? '' : r.msg;
-  q.trace.push(r.ok ? 'WMAS建任务' + (r.wmsTask || '') + '下发成功' : 'WMAS下发失败：' + String(r.msg || '').slice(0, 60));
+  q.trace.push(r.ok ? 'WMAS建任务' + (r.taskNo || '') + '下发成功' : 'WMAS下发失败：' + String(r.msg || '').slice(0, 60)); // ㉖v94j 修字段名笔误：旧版 r.wmsTask 恒 undefined，trace 里任务号丢失
   if (q.trace.length > 8) q.trace = q.trace.slice(-8);
   console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);
   return true;
@@ -5574,6 +5633,8 @@ async function agvDispatch(nowMs, runT) {
     const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_q.wmsTask), _itk); const _rec = ((_lr && _lr.data && _lr.data.records) || []).find((z) => String(z.taskNo) === String(_q.wmsTask)); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { retireQueueItem(_q, '失败', (_q.type === 'inspback' ? '检验归位超' : '入库搬运超') + P().staleMin + '分钟未完成，请核查'); } } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { retireQueueItem(_q, '取消', 'AGV任务已在下游取消（RCS/WMAS侧操作），资源已释放'); inspQueueRollback(_q, null); } else { _q.state = '完成'; _q.dockAt = nowMs; _q.updAt = nowMs; clearQueueCall(_q.reqId, _q.code); releaseStnBook(_q.code); } } else if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { retireQueueItem(_q, '失败', 'WMAS任务记录不可查，请核对货位'); inspQueueRollback(_q, null); } } catch (_) {} } } }
   // ㉖v72 出库负向对账（WMAS取消/驳回/查无→队列同步+资源回收），必须赶在超时兜底前跑；30秒节流防 WMAS 接口高频
   if (nowMs - _outRecAt > 30000) { _outRecAt = nowMs; try { await outboundReconcile(nowMs); } catch (_) {} }
+  // ㉖v94j 卡单自愈：WMAS 停在"创建"未推送的任务自动补推（60秒节流）
+  try { await wmasStuckPush(nowMs); } catch (_) {}
   // ㉖ 超时兜底必须在上面出库(3663)/入库对账【之后】执行，且要 await：
   // 旧实现由 rcsPoll 同步段先跑，对账还没推进状态就把"已下发"判超时（实测成功入库被误报）。
   try { await dispatchWatchdog(nowMs); } catch (_) {}
