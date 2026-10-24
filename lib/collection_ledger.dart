@@ -604,11 +604,19 @@ extension CollectionLedgerExt on _MainPageState {
   }
 
   /// 最近一次入账的货位（扫码保存后输入框会清空，叫车时回退取它）
+  /// ㉖v92f 按当前工作模式过滤：AGV站台模式只回退 NB02 高位、地面模式只回退 NB03——
+  /// 旧版不分模式取全局最新入账，地面模式残留的 NB03 记录会让 AGV 模式「提交任务」回退到地面位，
+  /// 触发 v69c 防呆误报"地面货位不在AGV作业区"（10/24 12:56 复盘：选 6 号台却提示 NB03-B-11-07）
   Future<String> _latestRegLoc() async {
     final rows = await _isar.shelfPlacements.where().findAll();
-    if (rows.isEmpty) return "";
-    rows.sort((a, b) => b.assignedAt.compareTo(a.assignedAt));
-    return rows.first.loc.toUpperCase();
+    final agv = _workType == 0;
+    final fit = rows.where((r) {
+      final l = r.loc.toUpperCase();
+      return agv ? (l.startsWith('NB02-') && !l.contains('-CK-')) : l.startsWith('NB03-');
+    }).toList();
+    if (fit.isEmpty) return "";
+    fit.sort((a, b) => b.assignedAt.compareTo(a.assignedAt));
+    return fit.first.loc.toUpperCase();
   }
 
   /// ⑳扫码自动入库叫车：与手动「提交任务」同校验链（会话防重/容器主档反查）；失败只提示不动账本
