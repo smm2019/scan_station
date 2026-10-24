@@ -1278,9 +1278,6 @@ function agvMapOf(i) { const m = {}; for (const e of ((i && i.agvCalled) || []))
 function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   const agv = agvMap || {};
   const ex = excludeCodes || new Set();
-  // ㉖v79c 剩余需求≤0=该行已发齐/跳过：不再给任何建议框。
-  // 旧版按【原始需求】算——已发600/600仍显示"建议2框≈600件"，物料员照着再叫2框车直接超发（重大bug）
-  if (!(needQty > 0)) return { boxes: [], flatBoxes: [], total: 0, over: 0, inStock: 0, noInfoQty: 0, need: 0, done: true };
   const match = ledgerView().filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase()); // ㉖ 用派生批次视图：FIFO 按 MES 打印日期先后（YYYY-MM-DD 字典序=时间序）
   const boxes = [];
   for (const bx of groupLedgerBoxes(match)) { // ㉖v59 方案B：框内已发码剔除、剩余码保留（逐码发料，半发框继续出现在建议里）；全发完才整框消失
@@ -1290,15 +1287,24 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
     bx.codes = left;
     bx.items = bx.items.filter(it => left.includes(it.c));
     bx.q = bx.items.reduce((a, it) => a + (Number(it.q) || 0), 0);
+    bx.agv = bx.allCodes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || ''; // 框内任一标签叫过AGV → 整框标记（一框一车，同托标签一起走）
     boxes.push(bx);
+  }
+  const noInfoKeys = new Set();
+  for (const x of match) if (!x.q) noInfoKeys.add(boxKeyOf(x));
+  // ㉖v79c 剩余需求≤0=该行已发齐/跳过：不再给任何【新】建议框。
+  // 旧版按【原始需求】算——已发600/600仍显示"建议2框≈600件"，物料员照着再叫2框车直接超发（重大bug）
+  // ㉖v92b 但"已叫车未扫码"的框必须返回显示：框是应本单叫车、已在途/已到站的——藏码=仓管扫不了记不上，
+  // 只能把到站框走直调拆单出库（10/24 LL…4913 复盘：390框到CK-11因发齐被藏码，被迫走DT单）。超发可在转单窗撤扫返架，两害相权可记录优先
+  if (!(needQty > 0)) {
+    const calledPending = boxes.filter(bx => bx.agv).flatMap(bx => bx.items.map(it => ({ c: it.c, q: it.q, l: bx.l, b: bx.b, f: bx.f, agv: bx.agv })));
+    return { boxes: [], flatBoxes: [], total: 0, over: 0, inStock: 0, noInfoQty: noInfoKeys.size, need: 0, done: true, calledPending };
   }
   let acc = 0; const pick = [];
   for (const x of boxes) {
-    const called = x.allCodes.map(c => agv[String(c).toUpperCase()]).find(Boolean) || '';
-    x.agv = called; // 框内任一标签叫过AGV → 整框标记（一框一车，同托标签一起走）
     pick.push(x);
     acc += x.q;
-    if (needQty > 0 && acc >= needQty) break;
+    if (acc >= needQty) break;
     if (pick.length >= 24) break; // 最多建议 24 框（大单一筐20件×25框也能覆盖大半）
   }
   // ㉖v69 末框最小化超发：贪心够数后，若最后一框明显过大，用未选框中"能补足剩余需求且件数最小"的框替换（批次不晚于它，守 FIFO 大序）
@@ -1320,8 +1326,6 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   // ㉖v82 严重超发判定：超发 > 需求本身（如一筐2400只为补109件）——建议区红字提示+接单即派不自动派这种框，人工拍板
   const severeOver = needQty > 0 && pick.length > 0 && over > needQty;
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
-  const noInfoKeys = new Set();
-  for (const x of match) if (!x.q) noInfoKeys.add(boxKeyOf(x));
   return { boxes: pick, flatBoxes, total: acc, over, severeOver, left: Math.max(0, Math.round(needQty * 100) / 100), need: Math.max(0, Math.round((needQty - acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size }; // ㉖v82 left=本轮建议前还差多少（旧"还差"取need=建议后缺口，够数时显示0件易误导）
 }
 function reqView(r) {

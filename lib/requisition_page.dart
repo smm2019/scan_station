@@ -1737,15 +1737,63 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final noInfo = (sg["noInfoQty"] as num?)?.toInt() ?? 0;
     // ㉖v79c 发齐（剩余需求≤0）：服务器返回done标记，显示完成态不再列框（旧版发满还挂着建议框，照着叫就超发）
     if (sg["done"] == true) {
+      // ㉖v92b 已发齐但"已叫车未扫码"的框继续显示可扫：框已应本单叫车在途/到站，藏码会逼仓管走直调拆单（10/24复盘）
+      final pend = List<Map>.from(sg["calledPending"] ?? []);
       return Padding(
         padding: const EdgeInsets.only(top: 6),
-        child: Text(
-            // ㉖v82 修显示bug：done时total/need均=0，原样打出"已发齐 0 件"——应显示真实已发件数
-            "✅ 该行已发齐 ${_fmtInvNum(_issuedQtyOf(item))} 件——无需再叫车，点「转MES出库」收尾",
-            style: const TextStyle(
-                fontSize: 11,
-                color: Color(0xFF2E7D32),
-                fontWeight: FontWeight.w600)),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                  // ㉖v82 修显示bug：done时total/need均=0，原样打出"已发齐 0 件"——应显示真实已发件数
+                  pend.isEmpty
+                      ? "✅ 该行已发齐 ${_fmtInvNum(_issuedQtyOf(item))} 件——无需再叫车，点「转MES出库」收尾"
+                      : "✅ 该行已发齐 ${_fmtInvNum(_issuedQtyOf(item))} 件，但还有 ${pend.length} 个已叫车标签未扫码",
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: pend.isEmpty
+                          ? const Color(0xFF2E7D32)
+                          : const Color(0xFFE65100),
+                      fontWeight: FontWeight.w600)),
+              if (pend.isNotEmpty) ...[
+                const Padding(
+                    padding: EdgeInsets.only(top: 2, bottom: 3),
+                    child: Text(
+                        "🚗 框已在途/到站：点标签选中本行并复制去扫码（计入本单，多发部分转单确认窗可取消勾选→自动撤扫返架）",
+                        style: TextStyle(
+                            fontSize: 10.5, color: Color(0xFFE65100)))),
+                Wrap(
+                    spacing: 6,
+                    runSpacing: 4,
+                    children: pend.map<Widget>((b) {
+                      final c0 = b["c"]?.toString().toUpperCase() ?? "";
+                      if (c0.isEmpty) return const SizedBox.shrink();
+                      return InkWell(
+                          onTap: () {
+                            setState(() => _issuePart =
+                                item["partNo"].toString());
+                            Clipboard.setData(ClipboardData(text: c0));
+                            widget.toast("已选中本行并复制 ${c0}，扫码枪直接扫标签也行",
+                                err: false);
+                          },
+                          child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 7, vertical: 3),
+                              decoration: BoxDecoration(
+                                  color: const Color(0xFFFFF3E0),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                      color: const Color(0xFFFFB74D))),
+                              child: Text(
+                                  "${c0}×${_fmtInvNum((b["q"] as num?)?.toDouble() ?? 0)} ${(b["l"] ?? "").toString().replaceAll('NB02-', '')}",
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      fontFamily: "monospace",
+                                      color: Color(0xFFE65100),
+                                      fontWeight: FontWeight.w700))));
+                    }).toList()),
+              ],
+            ]),
       );
     }
     if (flat.isEmpty) {
@@ -2144,6 +2192,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     // 确认后自动撤扫退回在架（货没走就不该记账出库），只转勾选的框；严格FIFO下多叫的筐在这人工裁决
     var item2 = Map.from(item);
     final issuedRows = List.from(item2["issued"] ?? []).whereType<Map>().toList();
+    // ㉖v92b 转单前最后一道提醒：行转单后锁定，已叫未扫的框就再也记不进本单（只能直调/返架）——先扫再转
+    final cpPend = (((item2["suggest"] as Map?)?["calledPending"]) as List?) ?? const [];
     final sel = <String, bool>{for (final x in issuedRows) (x["c"]?.toString().toUpperCase() ?? ""): true};
     sel.remove("");
     double selQty() => issuedRows
@@ -2162,6 +2212,15 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                           children: [
                         Text(
                             "需求 ${_fmtInvNum((item2["qty"] as num?)?.toDouble() ?? 0)} 件 · 已扫 ${issuedRows.length} 框 ${_fmtInvNum(_issuedQtyOf(item2))} 件"),
+                        if (cpPend.isNotEmpty)
+                          Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                  "⛔ 还有已叫车未扫标签：${cpPend.map((e) => e["c"]).join(' / ')}——转单后本行锁定，这些框只能走直调或返架！建议先扫码再转",
+                                  style: const TextStyle(
+                                      fontSize: 11,
+                                      color: Color(0xFFC62828),
+                                      fontWeight: FontWeight.w700))),
                         const Text("取消勾选 = 该框不发，自动退回在架（下次可再叫）",
                             style: TextStyle(fontSize: 11, color: Colors.grey)),
                         const SizedBox(height: 6),
