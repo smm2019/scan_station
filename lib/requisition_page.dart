@@ -2089,9 +2089,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             builder: (ctx) => AlertDialog(
                   icon: const Icon(Icons.block, color: Colors.red, size: 36),
                   title: const Text("该标签不能发料"),
-                  content: Text("$_msg
-
-请核对实物标签与本单零件行，确认后关闭。"),
+                  content: Text("$_msg\n\n请核对实物标签与本单零件行，确认后关闭。"),
                   actions: [
                     FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text("知道了"))
                   ],
