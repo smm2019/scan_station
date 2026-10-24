@@ -2551,10 +2551,10 @@ class _MainPageState extends State<MainPage>
         // ㉖v80 降噪：分配信息不弹条（后续"✅已入账"内联条已含货位）
       }
       if (loc.isEmpty) {
-        // ㉖⑰ 修自动叫车被"必须填货位"绑架：AGV模式留空+自动叫车开 → 自动分配货位继续登记（否则下方叫车永远走不到）
-        if (_workType == 0 &&
-            autoCallStation.isNotEmpty &&
-            await WmasConfig.autoCallEnabled()) {
+        // ㉖v94h AGV模式货位留空=等同 AUTO 自动分配：旧版把自动分配绑架在"自动叫车开关"上——
+        // 开关关着（现场常态：手动提交模式）时留空保存→不分配不写账本→"待入位"→提交任务被拦
+        //（10/24 17:20 复盘：用户以为默认自动分配，实际只有自动叫车开着才分配；输 AUTO 或选位则正常）
+        if (_workType == 0) {
           final recA = await _isar.scanRecords
               .filter()
               .goodsCodeEqualTo(code.toUpperCase())
