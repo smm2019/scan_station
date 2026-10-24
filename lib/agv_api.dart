@@ -600,6 +600,33 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         }
       }
       if (locs.isEmpty) return;
+      // ㉖v93f 服务器权威账本优先：本机 shelfPlacements 只在采集页保存/拉取时同步，AGV 页 15 秒刷新从不拉取——
+      // 作废重扫/他机出库消账后本机缓存与实账脱节，任务卡反查显示旧框（10/24 15:28 复盘：A-02-3F 装 230121 却显示上午已出库的 200244）
+      Map<String, List<Map>> srvLoc = {};
+      try {
+        final lr = await AuthApi.ledgerGet();
+        if (lr["ok"] == true && lr["items"] is List) {
+          for (final x in (lr["items"] as List).whereType<Map>()) {
+            final l0 = (x["l"] ?? "").toString().toUpperCase();
+            if (l0.isNotEmpty && locs.contains(l0)) (srvLoc[l0] = srvLoc[l0] ?? <Map>[]).add(x);
+          }
+        }
+      } catch (_) {}
+      if (srvLoc.isNotEmpty) {
+        final out = <String, String>{};
+        srvLoc.forEach((l, rows) {
+          out[l] = rows.map((x) {
+            final p = (x["p"] ?? "").toString();
+            final q = ((x["q"] as num?) ?? 0).toDouble();
+            return (p.isNotEmpty ? p + "·" + _fmtInvNum(q) + "件" : "未补齐物料") +
+                "（标签 " + (x["c"] ?? "").toString() + "）";
+          }).join(" ");
+        });
+        if (!mounted) return;
+        setState(() => _cargo = out);
+        return;
+      }
+      // 服务器不可达：回退本机缓存旧口径（可能滞后，但聊胜于无）
       final placements = await _globalIsar.shelfPlacements.where().findAll();
       final infos = {
         for (final e in await _globalIsar.labelInfos.where().findAll())
