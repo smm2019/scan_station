@@ -5410,7 +5410,7 @@ async function wmasDispatchOne(q, tk, ov) { const from = (ov && ov.from) || q.fr
     const rec = ((chk && chk.data && chk.data.records) || []).find((z) => String(z.taskNo) === String(wmsTask));
     pushed = !!rec && String(rec.status || '').toUpperCase() !== 'CREATED';
   }
-  if (!pushed) { await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [wmsTask]); return { ok: false, msg: 'WMAS建任务成功但推送失败（已自动撤回，多为WMAS瞬时抖动），请重新叫车' }; }
+  if (!pushed) { const _cx = await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [wmsTask]); return { ok: false, msg: wmasOk(_cx) ? 'WMAS建任务成功但推送失败（已自动撤回，多为WMAS瞬时抖动），请重新叫车' : 'WMAS建任务成功但推送失败，且撤回也失败——请先在WMAS取消任务' + wmsTask + '再重新叫车（防双车撞）' }; }
   return { ok: true, container: cn, taskNo: wmsTask, msg: '已建任务并下发' };
 }
 // ㉖v94j 按坐标+单号反查"本单"任务（同批多单共用唯一容器号时，只有坐标能区分归属）
