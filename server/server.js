@@ -4276,8 +4276,8 @@ return send(res, 200, {
           return send(res, 200, { ok: true, marked: n });
         }
 
-        // 状态动作：/:id/accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush
-        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|transfer|skip|loc|confirm|cancel|reassign|agv|rush|urge|delitem|ready|back)$/);
+        // 状态动作：/:id/accept|reject|scan|unscan|transfer|skip|loc|confirm|cancel|reassign|agv|rush
+        const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|unscan|transfer|skip|loc|confirm|cancel|reassign|agv|rush|urge|delitem|ready|back)$/); // ㉖v94m 断链修复：v82加unscan分支时漏改本白名单→PDA转单窗取消勾选的"撤扫"请求从未进过处理代码
         if (req.method === 'POST' && mAct) {
           const r = findReq(mAct[1]);
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
@@ -4409,11 +4409,17 @@ return send(res, 200, {
             target.issued.splice(_ix, 1);
             let _ul = String(_ij.l || '').trim().toUpperCase();
             if (!_ul) { const _meta = (db.seenIn || {})[code]; _ul = String((_meta && _meta.l) || '').trim().toUpperCase(); } // 兜底：首次入账登记位（旧版PDA发料不带l时也能复挂）
-            if (_ul && !db.ledger.some((x) => String(x.c || '').toUpperCase() === code)) { // 复挂原位（撤扫≠真出库，货还在站台/架上）
+            // ㉖v94m 撤扫复挂占用闸（仓管视角审计发现）：发料销行后原货位在账本"显空"，若期间已有另一框合法登记进去，
+            // 撤扫强行复挂=双框同位脏行（误导建议区/v94l叫车闸/两框同位互撞）。同托号或同位同件按 boxKeyOf 并框语义=同框放行
+            // （半发框多码逐码扫/撤是方案B正常作业）；不同零件占位=必为别框，与网页恢复同策略：只退记账不上账，提示按实物位置补登记。
+            const _fk = _ul ? (db.ledger || []).filter((x) => String(x.l || '').toUpperCase() === _ul && String(x.c || '').toUpperCase() !== code && String(x.p || '').toUpperCase() !== String(target.partNo || '').toUpperCase()) : [];
+            if (_ul && _fk.length) {
+              hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件，原货位 ${_ul} 现已被 ${_fk.map((x) => x.c).join("/")} 登记占用，未复挂——该框请按实物位置用「位置登记」补账，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`);
+            } else if (_ul && !db.ledger.some((x) => String(x.c || '').toUpperCase() === code)) { // 复挂原位（撤扫≠真出库，货还在站台/架上）
               db.ledger.push({ c: code, l: _ul, f: '', t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(target.itemName || ''), q: Number(_ij.q) || 0, b: '', pid: '', mv: '登记', src: '撤扫复位', by: u.name });
               (db.ledgerTomb = db.ledgerTomb || []).splice(0, db.ledgerTomb.length, ...db.ledgerTomb.filter((x) => String(x.c).toUpperCase() !== code));
               db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
-              hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件退回在架 $_ul，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`);
+              hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件退回在架 ${_ul}，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`); // ㉖v94m 修笔误：旧版写 $_ul 花括号缺失→历史显示字面量"$_ul"
             } else if (!_ul) {
               hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件，原货位未知未复挂——请在PDA「位置登记」补登记该框实际货位，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`); // 无位置不复挂，防账本脏行
             } else {
