@@ -2081,7 +2081,22 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     if (!mounted) return;
     setState(() => _busy = false);
     if (res["ok"] != true) {
-      widget.toast((res["msg"] ?? "发料失败").toString());
+      final _msg = (res["msg"] ?? "发料失败").toString();
+      // ㉖v92c 扫重/扫错/行锁定这类冲突必须弹窗确认——toast 会被连续扫码节奏淹没（10/24 复盘：扫错码无感知）
+      if (mounted) {
+        await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+                  icon: const Icon(Icons.block, color: Colors.red, size: 36),
+                  title: const Text("该标签不能发料"),
+                  content: Text("$_msg
+
+请核对实物标签与本单零件行，确认后关闭。"),
+                  actions: [
+                    FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text("知道了"))
+                  ],
+                ));
+      }
       _refocusScan();
       return;
     }
@@ -2563,7 +2578,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final steps = <List<Object>>[
       ["接单", true],
       ["转入货位", _to.isNotEmpty],
-      ["叫AGV", !hasShelf || called > 0],
+      ["叫AGV", !hasShelf || called > 0 || scanned > 0], // ㉖v92c 有扫码发料=框已到位(叫车或人工)，转单清agvCalled后不误挡
       ["扫码发料", scanned > 0],
       ["转MES", trans >= n && n > 0],
     ];

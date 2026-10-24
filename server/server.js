@@ -352,6 +352,26 @@ function loadDb() {
       }
       if (_rg) { added = true; console.log('[migrate] 地面入库账本自愈：补登 ' + _rg + ' 框（粗码流水升完整格位）'); }
     }
+    // ㉖v92c issued 原货位回填：normIssued 旧版丢 l 字段（10/24 复盘：DT 出库流水 7 条 NB03 地面框原货位空白）
+    // 从最新每日快照按标签号找回货位；seenIn 次之。一次性、幂等（有 l 不动）
+    {
+      let _snap = null;
+      try {
+        const dir0 = path.join(DATA_DIR, 'snapshots');
+        const fl = fs.readdirSync(dir0).filter((x) => /^ledger-\d{8}\.json$/.test(x)).sort();
+        if (fl.length) _snap = JSON.parse(fs.readFileSync(path.join(dir0, fl[fl.length - 1]), 'utf8'));
+      } catch (_) {}
+      const _locSnap = {};
+      if (_snap) for (const x of _snap.items || []) _locSnap[String(x.c || '').toUpperCase()] = String(x.l || '').toUpperCase();
+      let _lf = 0;
+      for (const r of d.requisitions || []) for (const it of r.items || []) for (const e of (it.issued || [])) {
+        if (typeof e !== 'object' || !e || e.l || !e.c) continue;
+        const C = String(e.c).toUpperCase();
+        const L0 = _locSnap[C] || String(((d.seenIn || {})[C] || {}).l || '').toUpperCase();
+        if (L0) { e.l = L0; _lf++; }
+      }
+      if (_lf) { added = true; console.log('[migrate] issued 原货位回填 ' + _lf + ' 条（快照/seenIn 溯源）'); }
+    }
   }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
   if (typeof d.cyclePlans !== 'object' || d.cyclePlans === null || Array.isArray(d.cyclePlans)) { d.cyclePlans = {}; added = true; } // ㉖v63 循环盘点当日计划
@@ -2496,7 +2516,7 @@ const server = http.createServer(async (req, res) => {
 return send(res, 200, {
           ok: true, at: new Date().toISOString(), netReady: NetMap.ready(),
           cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0, alarm: _alarmOf(c.agvId), cargo: (() => { // ㉖v92b 线上实测 rcsRun.wms 恒空（v56 关联从未命中）；RCS调度号 no 即 WMAS 任务号（AGV-/LL 单号），按 no 反查队列项
-        const _cid = Number(c.agvId); const _rt = _runObjByCar[_cid]; if (!_rt) return null;
+        const _cid = Number(c.agvId); const _rt = _runObjByCar[_cid]; if (!_rt) return null; if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-/.test(String(_rt.no || ''))) return null; // ㉖v92c UUID调度号=自主导航(充电/回待命)非业务搬运
         const q = _qByWms[String(_rt.no || '').toUpperCase()] || (_rt.wms ? _qByWms[String(_rt.wms).toUpperCase()] : null);
         const _isCk = (x) => /-CK-/.test(String(x || ''));
         const pt = q ? _partOf(q.code) : { p: '', q: 0 };
@@ -4234,7 +4254,7 @@ return send(res, 200, {
           const b = await readBody(req);
           const hpush = (text) => { r.history.push({ time: new Date().toISOString(), by: u.name, text }); };
           // issued 统一为 [{c:标签, q:件数}]，兼容旧数据纯字符串（按0件计）
-          const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : Object.assign({ c: String(x.c || ''), q: Number(x.q) || 0 }, x.e ? { e: 1, by: x.by || '', why: x.why || '' } : {}));
+          const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : Object.assign({ c: String(x.c || ''), q: Number(x.q) || 0 }, x.l ? { l: String(x.l) } : {}, x.e ? { e: 1, by: x.by || '', why: x.why || '' } : {})); // ㉖v92c 保留 l：旧版丢字段致出库流水原货位空白
           const issuedQty = (i) => normIssued(i).reduce((s, e) => s + e.q, 0);
           // 全部行到达终态（已转/已跳过）→ 已备齐，通知含短装明细
           const finalize = () => {
