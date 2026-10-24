@@ -713,23 +713,47 @@ extension CollectionLedgerExt on _MainPageState {
       String locPre = "",
       String ctypePre = "",
       void Function()? onDone}) async {
-    var st = stPre.isNotEmpty
-        ? stPre
-        : (_selectedStation ?? _lastScanStation ?? ""); // ㉖⑬ 扫码后站台选中态已清，回退本框扫码时的站台
-    var loc = locPre.isNotEmpty
-        ? locPre
-        : _ledgerLocCtrl.text.trim().toUpperCase();
-    if (loc.isEmpty || loc == 'AUTO')
-      loc = await _latestRegLoc(); // 扫码后输入框清空→回退最近入账货位
-    var ctype = ctypePre.isNotEmpty
-        ? ctypePre
-        : (_containerType ?? _lastScanContainer ?? ""); // ㉖⑬ 容器同左回退
     void warn(String m) {
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(m), backgroundColor: Colors.orange));
     }
 
+    var st = stPre.isNotEmpty
+        ? stPre
+        : (_selectedStation ?? _lastScanStation ?? ""); // ㉖⑬ 扫码后站台选中态已清，回退本框扫码时的站台
+    var loc = locPre.isNotEmpty
+        ? locPre
+        : _ledgerLocCtrl.text.trim().toUpperCase();
+    // ㉖v93e 先取"本框"（最近一次生效扫码）：叫车是为本框叫的，货位回退必须跟着本框走
+    final allRecs = await _isar.scanRecords.where().findAll();
+    allRecs.sort((a, b) => b.scanTime.compareTo(a.scanTime));
+    String expect = "";
+    for (final r in allRecs) {
+      if (!r.isCancel) {
+        expect = r.goodsCode.toUpperCase();
+        break;
+      }
+    }
+    if (loc.isEmpty || loc == 'AUTO') {
+      // 旧版直接回退"全局最新入账位"——本框入账失败/已作废时会拿到上一单别框的位，
+      // 再被 v79c 对象校验拒绝→用户只能作废重扫，死循环（10/24 15:14 N26J230460 五次入账五次作废复盘）
+      if (expect.isNotEmpty) {
+        final bl = await _ledgerByLoc();
+        String _hit = "";
+        for (final e in bl.entries) {
+          if (e.value.any((c) => c.toUpperCase() == expect)) { _hit = e.key; break; }
+        }
+        if (_hit.isEmpty)
+          return warn("框 $expect 还没入账成功——请先扫标签保存入账（选好货位），再点「提交任务」");
+        loc = _hit;
+      } else {
+        loc = await _latestRegLoc(); // 本机无任何生效扫码：保持旧回退
+      }
+    }
+    var ctype = ctypePre.isNotEmpty
+        ? ctypePre
+        : (_containerType ?? _lastScanContainer ?? ""); // ㉖⑬ 容器同左回退
     if (st.isEmpty) return warn("请先选择起始站台");
     if (loc.isEmpty) return warn("还没有扫码入账的货位——请先扫描货物标签，再叫车");
     // ㉖v69c 地面货位防呆：AGV 只跑 站台↔NB02高架，NB03地面区不在AGV作业区（WMAS主档无此库位，发了必被弹回）
@@ -741,18 +765,8 @@ extension CollectionLedgerExt on _MainPageState {
       return warn("货位 $loc 本会话已叫过车，请勿重复；如需重叫请先到AGV系统核对该托盘任务");
     final codes = (await _ledgerByLoc())[loc] ?? const <String>[];
     if (codes.isEmpty) return warn("货位 $loc 还没有扫码入账——请先扫描货物标签，再叫车（防止叫车忘扫码）");
-    // ㉖v79c 叫车对象校验：旧版直接取"该货位账本首码"，输入框残留上一单货位时会把别框当本框叫车
-    // （事故还原：扫N26J220220入账被占失败→点提交→拿残留位D-16-1F的首码SYS000254建任务→AGV按错框名义搬运）
-    // 现以最近一次生效扫码为准：该码必须在目标货位账本里，否则拒绝并提示重选
-    final allRecs = await _isar.scanRecords.where().findAll();
-    allRecs.sort((a, b) => b.scanTime.compareTo(a.scanTime));
-    String expect = "";
-    for (final r in allRecs) {
-      if (!r.isCancel) {
-        expect = r.goodsCode.toUpperCase();
-        break;
-      }
-    }
+    // ㉖v79c 叫车对象校验（expect 已在上方前置计算）：该码必须在目标货位账本里，否则拒绝并提示重选
+    // （事故还原：扫N26J220220入账被占失败→点提交→拿残留位D-16-1F首码SYS000254建任务→AGV按错框名义搬运）
     if (expect.isNotEmpty && !codes.map((c) => c.toUpperCase()).contains(expect)) {
       return warn("刚扫的框 $expect 并不在货位 $loc（该位是 ${codes.join('/')}）\n货位框可能残留上一单——请点「选位」重选本次货位，或先扫标签入账再提交");
     }
