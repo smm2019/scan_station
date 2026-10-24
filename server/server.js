@@ -2529,7 +2529,7 @@ const server = http.createServer(async (req, res) => {
         const _partOf = (code) => { const cu = String(code || '').toUpperCase(); const led = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === cu); if (led) return { p: String(led.p || ''), q: Number(led.q) || 0 }; const sl = Object.values(db.scanlog || {}).find((x) => String(x.code || '').toUpperCase() === cu && !x.cx); return sl ? { p: String(sl.pn || ''), q: Number(sl.q) || 0 } : { p: '', q: 0 }; };
         const _dirTx = { outbound: '出库', inbound: '入库', insp: '检验下架', inspback: '检验归位', transfer: '移库' };
 return send(res, 200, {
-          ok: true, at: new Date().toISOString(), netReady: NetMap.ready(),
+          ok: true, at: new Date().toISOString(), netReady: NetMap.ready(), msg: !tk ? 'RCS 连接失败（登录无响应）' : (!NetMap.ready() ? '路网构建中（RCS 接口抖动，约1分钟内自愈）' : ''), // ㉖v92i 失败原因回传前端展示
           cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0, alarm: _alarmOf(c.agvId), cargo: (() => { // ㉖v92b 线上实测 rcsRun.wms 恒空（v56 关联从未命中）；RCS调度号 no 即 WMAS 任务号（AGV-/LL 单号），按 no 反查队列项
         const _cid = Number(c.agvId); const _rt = _runObjByCar[_cid]; if (!_rt) return null; if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-/.test(String(_rt.no || ''))) return null; // ㉖v92c UUID调度号=自主导航(充电/回待命)非业务搬运
         const q = _qByWms[String(_rt.no || '').toUpperCase()] || (_rt.wms ? _qByWms[String(_rt.wms).toUpperCase()] : null);
@@ -5028,6 +5028,32 @@ function netmapRefresh() {
 }
 setTimeout(netmapRefresh, 4000).unref(); // 启动后4秒即建网，不等10分钟首tick
 setInterval(netmapRefresh, 60 * 1000).unref(); // ㉖v80 10分钟→60秒：函数自带"已新鲜即返回"，建网失败(启动时RCS接口抖动)后最迟1分钟自愈，实时地图不再白屏干等
+// ㉖v92i WMAS 健康看门狗：mom-logistics 等微服务掉线时叫车/容器主档全线失败却无人知晓（10/24 事故复盘：靠用户截图才发现）。
+// 每2分钟轻量探活（登录+容器列表1条）；连败2次→通知全体仓管/管理员+进事件中心；恢复→通报掉线时长
+let _wmFail = 0;
+async function wmasHealthWatch() {
+  try {
+    if (!db.wmasConfig || !db.wmasConfig.host) return;
+    let ok = false;
+    const tk = await wmasToken();
+    if (tk) { const r = await wmasHttp('GET', '/api/logistics/container/list?pageNum=1&pageSize=1', tk); ok = wmasOk(r); }
+    if (ok) {
+      _wmFail = 0;
+      if (db.wmasDownAt) { const mins = Math.max(1, Math.round((Date.now() - db.wmasDownAt) / 60000)); db.wmasDownAt = 0; save();
+        db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', '✅ WMAS 调度服务已恢复（掉线约 ' + mins + ' 分钟）', ''));
+        pushEvent('恢复', 'WMAS', '调度服务恢复，掉线约 ' + mins + ' 分钟', Date.now()); console.log('[wmas-health] 恢复，掉线 ' + mins + ' 分钟'); }
+      return;
+    }
+    _wmFail++;
+    if (_wmFail >= 2 && !db.wmasDownAt) {
+      db.wmasDownAt = Date.now(); save();
+      const msg = '⚠️ WMAS 调度服务探活失败（mom-logistics 可能掉线）：叫车/容器主档将不可用，AGV 任务无法下发——请联系平台运维检查 WMAS 服务';
+      db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, ''));
+      pushEvent('告警', 'WMAS', msg, Date.now()); console.log('[wmas-health] ' + msg);
+    }
+  } catch (_) {}
+}
+setInterval(wmasHealthWatch, 2 * 60 * 1000).unref();
 
 let _rcsPolling = 0; // ㉖v79c 防重入锁：定时器/接单即派/排队端点多处触发 rcsPoll，并发轮次各自持有 waiting 列表与 assigned 数组，同一队列项被下发两次（实测 N26J180285 双建任务 0019→CK-12 + 0021→CK-03，两车同框）
 async function rcsPoll() {
