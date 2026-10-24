@@ -587,14 +587,18 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
     }
   }
 
-  /// 反查货物：AGV 只知"搬托盘"，货由任务起点货位回查本机货位账本得到（零件号/数量/标签）
+  /// 反查货物：AGV 只知"搬托盘"，货由任务货位回查本机货位账本得到（零件号/数量/标签）
+  /// ㉖v91 起点+终点都收（入库任务起点=站台，账本永不登记站台位，旧版只查起点必报"无此位货物"误导）；站台位(-CK-)剔除
   Future<void> _buildCargo() async {
     try {
-      final locs = <String>{
-        for (final t in [..._tasks, ..._done.take(10)])
-          if ((AgvApi.taskRoute(t)["startPoint"] ?? "").toString().isNotEmpty)
-            AgvApi.taskRoute(t)["startPoint"].toString().toUpperCase()
-      };
+      final locs = <String>{};
+      for (final t in [..._tasks, ..._done.take(10)]) {
+        final rt = AgvApi.taskRoute(t);
+        for (final k in ["startPoint", "endPoint"]) {
+          final v = (rt[k] ?? "").toString().toUpperCase();
+          if (v.isNotEmpty && !v.contains('-CK-')) locs.add(v); // 站台非存储位，反查只会假报无货
+        }
+      }
       if (locs.isEmpty) return;
       final placements = await _globalIsar.shelfPlacements.where().findAll();
       final infos = {
@@ -610,10 +614,9 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
       final out = <String, String>{};
       for (final l in locs) {
         final codes = byLoc[l];
-        if (codes == null || codes.isEmpty) {
-          out[l] = "账本无此位货物";
-          continue;
-        }
+        // ㉖v91 不再塞"账本无此位货物"占位串：出库完成框已离架、账本无货是正常态，
+        // 旧版把它当货物信息青色显示易误导；无货由渲染层按 done/未同步 分场景措辞
+        if (codes == null || codes.isEmpty) continue;
         final parts = <String>[];
         double sum = 0;
         String partTxt = "";
@@ -940,7 +943,12 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
       final st = t["taskState"];
       final no = "${t["dispatchNo"] ?? ""}";
       final sp = (rt["startPoint"] ?? "").toString().toUpperCase();
-      final cargo = _cargo[sp];
+      final ep = (rt["endPoint"] ?? "").toString().toUpperCase();
+      // ㉖v91 存储位=起终点中非站台(-CK-)的那个：入库起点是站台→取终点货架位；出库终点是站台→取起点货架位。
+      // 旧版只查起点，入库任务起点=站台（账本永不登记站台）必误报"无此位货物"
+      final _stn = (String s) => s.contains('-CK-');
+      final stLoc = (!_stn(sp) && sp.isNotEmpty) ? sp : ((!_stn(ep) && ep.isNotEmpty) ? ep : "");
+      final cargo = _cargo[stLoc];
       final isCharge = rt["taskType"]?.toString() == "CHARGE" ||
           "${t["taskType"] ?? ""}" == "CHARGE";
       // 调度号为UUID = 车辆自主导航任务（回待命点/去充电），非业务搬运；业务任务调度号是LL单号
@@ -1007,11 +1015,15 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                       fontSize: 11,
                       color: Color(0xFF26A69A),
                       fontWeight: FontWeight.w600))
-            else if (sp.isEmpty)
+            else if (stLoc.isEmpty)
               const Text("货物：—",
                   style: TextStyle(fontSize: 11, color: Color(0xFF90A4AE)))
+            else if (done)
+              Text("货物：搬运已完成，框已离位（$stLoc 现无货）",
+                  style:
+                      const TextStyle(fontSize: 11, color: Color(0xFF90A4AE)))
             else
-              Text("货物：起点 $sp 未入账本/账本未同步，无法反查",
+              Text("货物：$stLoc 暂无账本记录（未入账/账本未同步）",
                   style:
                       const TextStyle(fontSize: 11, color: Color(0xFF90A4AE))),
             Text(
