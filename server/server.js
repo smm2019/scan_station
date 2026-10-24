@@ -371,6 +371,21 @@ function loadDb() {
         if (L0) { e.l = L0; _lf++; }
       }
       if (_lf) { added = true; console.log('[migrate] issued 原货位回填 ' + _lf + ' 条（快照/seenIn 溯源）'); }
+      // ㉖v92h 出库单层同步回填：outbound 是转单瞬间组装的快照——v92c 修复前 issued[].l 已被抹，快照里 fromLoc 就是空
+      // （10/24 复盘：领料单层 14/14 有值但网页出库流水仍空白，读的是这层）。按框码反查领料单 issued[].l，seenIn 兜底
+      const _issL = {};
+      for (const r0 of d.requisitions || []) for (const it0 of r0.items || []) for (const e0 of it0.issued || []) {
+        if (e0 && typeof e0 === 'object' && e0.c && e0.l) _issL[String(e0.c).toUpperCase()] = String(e0.l).toUpperCase();
+      }
+      let _of = 0;
+      for (const o0 of Object.values(d.outbound || {})) for (const it0 of o0.items || []) {
+        if (it0.fromLoc) continue;
+        const bc = String(it0.barcode || '').toUpperCase();
+        if (!bc) continue;
+        const L1 = _issL[bc] || String(((d.seenIn || {})[bc] || {}).l || '').toUpperCase();
+        if (L1) { it0.fromLoc = L1; _of++; }
+      }
+      if (_of) { added = true; console.log('[migrate] 出库单原货位回填 ' + _of + ' 行（领料单issued/seenIn 溯源）'); }
     }
   }
   if (typeof d.stockAlert !== 'object' || d.stockAlert === null || Array.isArray(d.stockAlert)) { d.stockAlert = {}; added = true; }
