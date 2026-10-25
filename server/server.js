@@ -7,6 +7,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks'); // ㉖v97d 请求级上下文：把登录设备号+来源IP绑定到当前异步链，pushOps零改调用点自动带上
+const opsCtx = new AsyncLocalStorage();
 
 const PORT = parseInt(process.env.PORT || '8099', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -687,7 +689,7 @@ function buildExport(ds, fRaw) {
     return { label: '工作量报表', parts, rows: parts[0].rows, total: parts[0].rows.length + parts[1].rows.length + parts[2].rows.length, f: { from: wdstr(F), to: wdstr(T) } };
   }
   if (ds === 'D8') { const ST = { pending: '待接单', accepted: '备料中', ready: '待签收', done: '已签收', rejected: '已拒单', cancelled: '已取消' }; const _rq = _arch ? db.requisitions.concat((() => { const out = []; try { for (const fd of fs.readdirSync(path.join(DATA_DIR, 'archive'))) { if (fd.indexOf('-requisitions.json') < 0) continue; try { out.push.apply(out, JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', fd), 'utf8'))); } catch (_) {} } } catch (_) {} return out; })()) : (db.requisitions || []); const rows = _rq.filter((r) => { const t = Date.parse(r.createdAt) || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map((r) => { const acc = (r.history || []).find((h) => /接单/.test(h.text || '')); const fin = (r.history || []).filter((h) => /签收|拒单|取消/.test(h.text || '')).pop(); const mins = acc && fin ? Math.round((Date.parse(fin.time) - Date.parse(acc.time)) / 60000) : ''; return [r.no, expTs(Date.parse(r.createdAt) || 0), r.byName || r.by || '', (r.items || []).length, (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), ST[r.status] || r.status, r.acceptedBy || '', r.confirmedBy || '', expTs(Date.parse(r.confirmedAt) || 0), acc ? expTs(Date.parse(acc.time) || 0) : '', mins === '' ? '' : mins, (r.remark || '').slice(0, 60)]; }); return mk('领料台账', ['单号', '下单时间', '下单人', '行数', '件数合计', '状态', '接单人', '签收人', '签收时间', '接单时间', '处理分钟', '备注'], ['S', 'S', 'S', 'N', 'N', 'S', 'S', 'S', 'S', 'S', 'N', 'S'], rows, '领料单（含节点时刻，处理分钟=接单到终结）' + (_arch ? '；含归档=主库∪archive已终结超期归档单' : '；主库窗口，超期已终结单勾「含归档」回查')); }
-  if (ds === 'D9') { const _dv = (s0) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); const rows = opsLoadDays(OPS_KEEP_DAYS).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', o.role || '', o.act || '', _dv(o.obj), _dv(o.det)]); return mk('活动流审计', ['时间', '操作人', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流）'); }
+  if (ds === 'D9') { const _dv = (s0) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); const rows = opsLoadDays(OPS_KEEP_DAYS).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', _dv(o.dev), _dv(o.ip), o.role || '', o.act || '', _dv(o.obj), _dv(o.det)]); return mk('活动流审计', ['时间', '操作人', '设备', 'IP', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流；设备/IP为登录会话绑定的来源标识）'); } // ㉖v97d +设备/IP列
   if (ds === 'D10') { const inv = Object.values(db.inventories || {}).filter((r) => { const t = r.at || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => b.at - a.at); const bid = String((fRaw && fRaw.batchId) || '').trim(); const sel = bid ? inv.filter((r) => r.batchId === bid) : inv; const one = sel[0] || {};
     const parts = [
       { label: '盘点总览', headers: ['批次', '备注', '模式', '盘点人', '结束时间', '总扫次', '有效扫次', 'MES失败', '重复', '账外', '已应用改账', '零件行数', '零件差异行'], types: ['S', 'S', 'S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S', 'N', 'N'], rows: sel.map((r) => [r.batchId, r.remark || '', r.blind ? '盲盘' : '监督', r.by || '', expTs(r.at), r.totalScans || 0, r.validScans || 0, r.mesFail || 0, r.dup || 0, r.outside || 0, r.applied ? ('是·' + expTs(r.applyTime)) : '否', (r.parts || []).length, (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length]), src: 'PDA盘点上收汇总', caliber: EXP_CAL['盘点结果'] },
@@ -1932,6 +1934,7 @@ function auth(req) {
   const u = db.users.find(x => x.id === s.userId);
   if (!u) return { err: 401, msg: '账号不存在' };
   if (!u.enabled) { delete db.sessions[token]; save(); return { err: 403, code: 'disabled', msg: '账号已被管理员停用，请联系管理员' }; }
+  try { const _cx = opsCtx.getStore(); if (_cx) _cx.dev = String(s.dev || ''); } catch (_) {} // ㉖v97d 设备号入上下文：本次请求内所有留痕自动带上"谁·在哪台设备"
   return { token, user: u };
 }
 function requireAdmin(authed) { return authed.user.role === 'admin' ? null : { err: 403, msg: '需要管理员权限' }; }
@@ -1962,7 +1965,7 @@ function palletTypeOf(code) {
 // ---- ㉕A1 导出角色门禁（方案6.6）：D9活动流=仅管理员；D8领料台账/D10盘点=仓管+管理员；其余登录即可 ----
 function expRoleOk(u, label) { label = String(label || ''); if (label === '活动流审计') return u.role === 'admin'; if (label === '领料台账' || label.indexOf('盘点结果') === 0) return u.role === 'warehouse' || u.role === 'admin'; return true; }
 // ---- ㉕B1 ops活动流：关键操作全景留痕（谁/何时/动作/对象/详情），滚动5000条，供控制后台与D9审计导出 ----
-function pushOps(u, act, obj, det) { try { db.ops = db.ops || []; const o = { t: Date.now(), by: u ? String(u.name || '-') : '-', role: u ? (u.role || '') : '', act, obj: String(obj || '').slice(0, 80), det: String(det || '').slice(0, 600) }; db.ops.push(o); if (db.ops.length > 5000) db.ops = db.ops.slice(-5000); opsAppendFile(o); } catch (_) {} }
+function pushOps(u, act, obj, det) { try { db.ops = db.ops || []; const _cx = opsCtx.getStore() || {}; const o = { t: Date.now(), by: u ? String(u.name || '-') : '-', role: u ? (u.role || '') : '', act, obj: String(obj || '').slice(0, 80), det: String(det || '').slice(0, 600), dev: String(_cx.dev || '').slice(0, 60), ip: String(_cx.ip || '').slice(0, 45) }; db.ops.push(o); if (db.ops.length > 5000) db.ops = db.ops.slice(-5000); opsAppendFile(o); } catch (_) {} } // ㉖v97d +dev/ip：谁在哪台设备干的（登录会话绑定，定时任务/系统留痕无上下文则为空）
 // ---- ㉖活动流按天 JSONL（data/ops/ops-YYYY-MM-DD.jsonl，权威持久层；db.ops 仅内存滚窗加速）+ 每日摘要哈希断链防篡改 ----
 const OPS_KEEP_DAYS = 180;
 function opsDay(t) { const d = new Date(t == null ? Date.now() : t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
@@ -2042,7 +2045,11 @@ function readBody(req) {
   });
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => { // ㉖v97d 请求级上下文：留痕自动带"设备号+来源IP"，60个pushOps调用点零改动（异步链天然隔离，并发不串号）
+  try { return opsCtx.run({ ip: clientIp(req), dev: '' }, () => handleReq(req, res)); }
+  catch (e) { try { logErr('CTX ' + (req.method || '') + ' ' + (req.url || '?'), e); } catch (_) {} try { return send(res, 500, { ok: false, msg: '服务器错误：' + e.message }); } catch (_) {} }
+});
+async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入（内部try/catch兜底不变）
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
   if (req.method === 'OPTIONS') return send(res, 204, {});
@@ -2140,6 +2147,7 @@ const server = http.createServer(async (req, res) => {
       { const _dv = String(b.dev || '').trim().slice(0, 60); const _drec = _dv && (db.devices || {})[_dv]; if (_drec && _drec.blocked) { devAuditPush('拒绝(拉黑设备)', _dv, clientIp(req), u, ''); return send(res, 403, { ok: false, code: 'devBlocked', msg: '该设备已被管理员拉黑，禁止登录' }); } }
       const token = newToken();
       const _devRec = devReg(req, b, u); db.sessions[token] = { userId: u.id, createdAt: Date.now(), lastSeen: Date.now(), fp: clientFp(req), dev: _devRec.id }; // ㉕F6 token绑设备指纹(IP前两段+UA) ㉖v56 +设备id
+      try { const _cx = opsCtx.getStore(); if (_cx) _cx.dev = String(_devRec.id || ''); } catch (_) {} // ㉖v97d 登录留痕也带设备（登录不经auth回填）
       save();
       console.log(`[login] ${u.username}(${ROLE_NAMES[u.role]}) 登录成功`);
       pushOps(u,'登录','',u.username);
@@ -5158,7 +5166,7 @@ return send(res, 200, {
     try { logErr('REQ ' + (req.method || '') + ' ' + (p || url && url.pathname || '?'), e); } catch (_) {}
     return send(res, 500, { ok: false, msg: '服务器错误：' + e.message });
   }
-});
+} // ㉖v97d handleReq 收尾（原 createServer 箭头函数体，现由外层 opsCtx.run 包裹调用）
 
 // 定期清过期会话
 setInterval(() => {
