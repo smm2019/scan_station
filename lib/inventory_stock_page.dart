@@ -1602,6 +1602,8 @@ class _PartProfilePageState extends State<PartProfilePage> {
   late Future<_PPData> _f;
   String _filter = "全部";
   bool _watched = false;
+  Map? _watchRow; // ㉖v96 本零件预约记录（target/arrived/due/done/reqNo），按钮进度显示与改约用
+  String _itemNameCache = ""; // 档案数据到位后回填，供预约弹窗显示物料名
 
   @override
   void initState() {
@@ -1615,24 +1617,101 @@ class _PartProfilePageState extends State<PartProfilePage> {
       final r = await AuthApi.watchlistGet();
       if (!mounted) return;
       final list = List<Map>.from(r["list"] ?? []);
-      setState(() => _watched = list.any((w) =>
+      final mine = list.where((w) =>
           (w["partNo"]?.toString() ?? "").toUpperCase() ==
-          widget.partNo.toUpperCase()));
+          widget.partNo.toUpperCase()).toList();
+      setState(() {
+        _watched = mine.isNotEmpty;
+        _watchRow = mine.isEmpty ? null : mine.first;
+      });
     } catch (_) {}
   }
 
+  // ㉖v96 预约来料：与「我的预约·添加预约」同一弹窗同一功能（预订筐数/期望到货/够数自动开单）；已预约再点=看进度/改约/取消
   Future<void> _toggleWatch() async {
-    final r = await AuthApi.watchlistSet(widget.partNo, !_watched);
+    if (!_watched) {
+      final cfg = await bookingDlgOf(context, widget.partNo, _itemNameCache);
+      if (cfg == null || !mounted) return;
+      final r = await AuthApi.watchlistSet(widget.partNo, true,
+          qty: cfg["qty"] as int,
+          itemName: _itemNameCache,
+          due: cfg["due"] as String,
+          auto: cfg["auto"] as bool);
+      if (!mounted) return;
+      if (r["ok"] != true) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text("预约失败：${r["msg"]}")));
+        return;
+      }
+      final qq = (cfg["qty"] as int) > 0;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(qq
+              ? "已预约：${widget.partNo} 预订 ${cfg["qty"]} 筐，够数自动开领料单"
+              : "已预约：${widget.partNo} 入库时会通知你"),
+          backgroundColor: Colors.green));
+      await _loadWatch();
+      return;
+    }
+    final w = _watchRow ?? {};
+    final tgt = (w["target"] as num?)?.toInt() ?? 0;
+    final act = await showDialog<String>(
+        context: context,
+        builder: (c2) => AlertDialog(
+              title: Text("已预约 ${widget.partNo}",
+                  style: const TextStyle(fontSize: 15)),
+              content: Text(
+                  tgt > 0
+                      ? "预订 $tgt 筐 · 已到 ${(w["arrived"] as num?)?.toInt() ?? 0} 筐${(w["due"]?.toString() ?? "").isNotEmpty ? " · 期望 ${w["due"]}" : ""}\n${w["done"] == true ? "已自动开单：${w["reqNo"] ?? ""}" : "够数后自动开领料单并通知仓管"}"
+                      : "到料时站内通知你（纯提醒模式）${w["done"] == true ? " · 已到料" : ""}",
+                  style: const TextStyle(fontSize: 13, height: 1.5)),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(c2),
+                    child: const Text("关闭")),
+                TextButton(
+                    onPressed: () => Navigator.pop(c2, "off"),
+                    child: const Text("取消预约",
+                        style: TextStyle(color: Colors.orange))),
+                FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF00897B)),
+                    onPressed: () => Navigator.pop(c2, "edit"),
+                    child: const Text("修改预约")),
+              ],
+            ));
+    if (!mounted || act == null) return;
+    if (act == "off") {
+      final r = await AuthApi.watchlistSet(widget.partNo, false);
+      if (!mounted) return;
+      if (r["ok"] != true) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text("取消失败：${r["msg"]}")));
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("已取消预约"), backgroundColor: Colors.orange));
+      await _loadWatch();
+      return;
+    }
+    final cfg = await bookingDlgOf(context, widget.partNo, _itemNameCache,
+        initQty: tgt,
+        initDue: w["due"]?.toString() ?? "",
+        initAuto: w["auto"] != false);
+    if (cfg == null || !mounted) return;
+    final r = await AuthApi.watchlistSet(widget.partNo, true,
+        qty: cfg["qty"] as int,
+        itemName: _itemNameCache,
+        due: cfg["due"] as String,
+        auto: cfg["auto"] as bool);
     if (!mounted) return;
     if (r["ok"] != true) {
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text("操作失败：${r["msg"]}")));
+          .showSnackBar(SnackBar(content: Text("修改失败：${r["msg"]}")));
       return;
     }
-    setState(() => _watched = !_watched);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(_watched ? "已预约：${widget.partNo} 入库时会通知你" : "已取消预约"),
-        backgroundColor: _watched ? Colors.green : Colors.orange));
+    ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("预约已更新"), backgroundColor: Colors.green));
+    await _loadWatch();
   }
 
   String _t(DateTime? t) => t == null ? "" : t.toString().substring(5, 16);
@@ -2006,7 +2085,11 @@ class _PartProfilePageState extends State<PartProfilePage> {
                         : Icons.shopping_cart_outlined,
                     size: 18,
                     color: _watched ? Colors.amber : Colors.white),
-                label: Text(_watched ? "已预约" : "预约来料",
+                label: Text(_watched
+                    ? (((_watchRow?["target"] as num?)?.toInt() ?? 0) > 0
+                        ? "已预约 ${(_watchRow?["arrived"] as num?)?.toInt() ?? 0}/${(_watchRow?["target"] as num?)?.toInt() ?? 0}筐"
+                        : "已预约")
+                    : "预约来料",
                     style: const TextStyle(fontSize: 12)))
           ]),
       body: FutureBuilder<_PPData>(
@@ -2015,6 +2098,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
             if (!sn.hasData)
               return const Center(child: CircularProgressIndicator());
             final d = sn.data!;
+            _itemNameCache = d.itemName; // ㉖v96 回填物料名（非渲染字段，赋值不触发重建）供预约弹窗显示
             final shown = d.boxes
                 .where((b) => _filter == "全部"
                     ? true
@@ -2234,20 +2318,30 @@ class _WatchTabState extends State<_WatchTab> {
   Future<void> _add() async {
     final known = await _knownParts();
     if (!mounted) return;
+    // ㉖v96 人性化：候选行附当前在库筐数/件数（库存页同口径），在库>0 排前——已到料的先看，避免重复预约
+    final hits0 = known.map((h) {
+      final pr = widget.agg.parts[h.partNo];
+      return _PnHit2(h.partNo, h.itemName, pr?.inBoxes ?? 0, (pr?.inStockQty ?? 0).toInt());
+    }).toList()
+      ..sort((a, b) => a.boxes != b.boxes
+          ? b.boxes.compareTo(a.boxes)
+          : a.partNo.compareTo(b.partNo));
     final ctrl = TextEditingController();
     String q = "";
-    final picked = await showDialog<_PnHit>(
+    _PnHit2? picked;
+    await showDialog(
         context: context,
         builder: (dctx) => StatefulBuilder(builder: (bctx, setSt) {
               final lower = q.trim().toLowerCase();
               final hits = lower.isEmpty
-                  ? known.take(60).toList()
-                  : known
+                  ? hits0.take(80).toList()
+                  : hits0
                       .where((h) =>
                           h.partNo.toLowerCase().contains(lower) ||
                           h.itemName.toLowerCase().contains(lower))
-                      .take(60)
+                      .take(80)
                       .toList();
+              final typed = q.trim().toUpperCase();
               return AlertDialog(
                 title: const Text("预约来料提醒"),
                 content: SizedBox(
@@ -2275,20 +2369,28 @@ class _WatchTabState extends State<_WatchTab> {
                                       fontSize: 12, color: Colors.grey))),
                         ...hits.map((h) => ListTile(
                             dense: true,
-                            leading: const Icon(Icons.history,
-                                size: 18, color: Color(0xFF00897B)),
+                            leading: Icon(
+                                h.boxes > 0
+                                    ? Icons.inventory_2_outlined
+                                    : Icons.history,
+                                size: 18,
+                                color: h.boxes > 0
+                                    ? const Color(0xFF2E7D32)
+                                    : const Color(0xFF00897B)),
                             title: Text(h.partNo,
                                 style: const TextStyle(
                                     fontSize: 13,
                                     fontFamily: "monospace",
                                     fontWeight: FontWeight.w600)),
-                            subtitle: h.itemName.isEmpty
-                                ? null
-                                : Text(h.itemName,
-                                    style: const TextStyle(fontSize: 11),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis),
-                            onTap: () => Navigator.pop(bctx, h))),
+                            subtitle: Text(
+                                "${h.itemName.isEmpty ? "（无物料名）" : h.itemName} · ${h.boxes > 0 ? "在库${h.boxes}筐/${h.qty}件" : "当前在库0"}",
+                                style: const TextStyle(fontSize: 11),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis),
+                            onTap: () {
+                              picked = h;
+                              Navigator.pop(bctx);
+                            })),
                       ])),
                     ])),
                 actions: [
@@ -2296,17 +2398,22 @@ class _WatchTabState extends State<_WatchTab> {
                       onPressed: () => Navigator.pop(dctx),
                       child: const Text("取消")),
                   OutlinedButton(
-                      onPressed: () {
-                        final t = ctrl.text.trim().toUpperCase();
-                        if (t.isNotEmpty) Navigator.pop(dctx, _PnHit(t, ""));
-                      },
-                      child: const Text("手动预约该零件号")),
+                      // ㉖v96 所见即所得：输入了零件号→按钮直接预约输入值；没输入→按钮禁用提示先选/先输
+                      onPressed: typed.isEmpty
+                          ? null
+                          : () {
+                              picked = _PnHit2(typed, "", 0, 0);
+                              Navigator.pop(dctx);
+                            },
+                      child: Text(typed.isEmpty
+                          ? "手动预约该零件号"
+                          : "预约「$typed」")),
                 ],
               );
             }));
     ctrl.dispose();
-    if (picked == null || picked.partNo.isEmpty || !mounted) return;
-    final isKnown = known.any((h) => h.partNo == picked.partNo);
+    if (picked == null || picked!.partNo.isEmpty || !mounted) return;
+    final isKnown = known.any((h) => h.partNo == picked!.partNo);
     if (!isKnown) {
       final yes = await showDialog<bool>(
           context: context,
@@ -2314,7 +2421,7 @@ class _WatchTabState extends State<_WatchTab> {
                 title: const Text("确认陌生零件号",
                     style: TextStyle(color: Colors.orange)),
                 content: Text(
-                    "「${picked.partNo}」在系统中从未出现过（无采集/出库/期初记录）。\n\n新零件首次来料属正常情况；若是老零件，请核对 MES 零件号是否一字不差——输错一位预约将永远不触发。"),
+                    "「${picked!.partNo}」在系统中从未出现过（无采集/出库/期初记录）。\n\n新零件首次来料属正常情况；若是老零件，请核对 MES 零件号是否一字不差——输错一位预约将永远不触发。"),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(c2, false),
@@ -2328,12 +2435,12 @@ class _WatchTabState extends State<_WatchTab> {
               ));
       if (yes != true || !mounted) return;
     }
-    final cfg = await _bookingDlg(picked.partNo, picked.itemName);
+    final cfg = await _bookingDlg(picked!.partNo, picked!.itemName);
     if (cfg == null || !mounted) return;
     final qq = (cfg["qty"] as int) > 0;
-    final r = await AuthApi.watchlistSet(picked.partNo, true,
+    final r = await AuthApi.watchlistSet(picked!.partNo, true,
         qty: cfg["qty"] as int,
-        itemName: picked.itemName,
+        itemName: picked!.itemName,
         due: cfg["due"] as String,
         auto: cfg["auto"] as bool);
     if (!mounted) return;
@@ -2344,98 +2451,18 @@ class _WatchTabState extends State<_WatchTab> {
     }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(qq
-            ? "已预约：${picked.partNo} 预订 ${cfg["qty"]} 框，够数自动开领料单"
-            : "已预约：${picked.partNo} 入库时会通知你"),
+            ? "已预约：${picked!.partNo} 预订 ${cfg["qty"]} 筐，够数自动开领料单"
+            : "已预约：${picked!.partNo} 入库时会通知你"),
         backgroundColor: Colors.green));
     await _load();
   }
 
   // ㉖v94n 预约设置弹层：预订框数(0=仅提醒旧模式) + 期望到货 + 够数自动开领料单
+  // ㉖v96 弹窗体提为顶层 bookingDlgOf 共享——零件档案页「预约来料」按钮同弹窗同功能
   Future<Map?> _bookingDlg(String pn, String itemName,
-      {int initQty = 0, String initDue = "", bool initAuto = true}) async {
-    int qty = initQty;
-    String due = initDue;
-    bool auto = initAuto;
-    String fmtOff(int days) {
-      final d = DateTime.now().add(Duration(days: days));
-      return "${d.year.toString().padLeft(4, "0")}-${d.month.toString().padLeft(2, "0")}-${d.day.toString().padLeft(2, "0")}";
-    }
-    return showDialog<Map>(
-        context: context,
-        builder: (c2) => StatefulBuilder(builder: (bctx2, setSt2) {
-              final dueOpts = <List<String>>[
-                ["", "不限"],
-                [fmtOff(1), "明天"],
-                [fmtOff(3), "3天后"],
-                [fmtOff(7), "一周"],
-              ];
-              return AlertDialog(
-                title: Text("预约来料 $pn",
-                    style: const TextStyle(fontSize: 15)),
-                content: SizedBox(
-                    width: 340,
-                    child: SingleChildScrollView(
-                        child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                      if (itemName.isNotEmpty)
-                        Text(itemName,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.blueGrey)),
-                      const SizedBox(height: 6),
-                      const Text("预订框数（0=只提醒不开单）",
-                          style: TextStyle(fontSize: 12)),
-                      Wrap(spacing: 6, children: [0, 1, 2, 3, 5, 10].map((v) {
-                        return ChoiceChip(
-                            label: Text(v == 0 ? "仅提醒" : "$v 框"),
-                            selected: qty == v,
-                            selectedColor: const Color(0xFFB2DFDB),
-                            onSelected: (_) => setSt2(() => qty = v));
-                      }).toList()),
-                      if (qty > 0) ...[
-                        const SizedBox(height: 6),
-                        const Text("期望到货", style: TextStyle(fontSize: 12)),
-                        Wrap(
-                            spacing: 6,
-                            children: dueOpts.map((d) {
-                              return ChoiceChip(
-                                  label: Text(d[1]),
-                                  selected: due == d[0],
-                                  selectedColor: const Color(0xFFB2DFDB),
-                                  onSelected: (_) => setSt2(() => due = d[0]));
-                            }).toList()),
-                        SwitchListTile(
-                            contentPadding: EdgeInsets.zero,
-                            title: const Text("够数自动开领料单",
-                                style: TextStyle(fontSize: 12)),
-                            value: auto,
-                            onChanged: (v) => setSt2(() => auto = v)),
-                      ],
-                      const SizedBox(height: 2),
-                      Text(
-                          qty > 0
-                              ? "来料入库累计到 $qty 框后，按实际到料数自动开领料单并通知仓管"
-                              : "到料时站内通知你（纯提醒模式）",
-                          style: const TextStyle(
-                              fontSize: 11, color: Colors.grey)),
-                    ]))),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(c2),
-                      child: const Text("取消")),
-                  FilledButton(
-                      style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF00897B)),
-                      onPressed: () => Navigator.pop(
-                          c2, {"qty": qty, "due": due, "auto": auto}),
-                      child: const Text("确认预约")),
-                ],
-              );
-            }));
-  }
+          {int initQty = 0, String initDue = "", bool initAuto = true}) =>
+      bookingDlgOf(context, pn, itemName,
+          initQty: initQty, initDue: initDue, initAuto: initAuto);
 
   // ㉖v94n 修改已有预约（卡片铅笔按钮）
   Future<void> _edit(Map w) async {
@@ -2621,6 +2648,101 @@ class _WatchTabState extends State<_WatchTab> {
 class _PnHit {
   final String partNo, itemName;
   const _PnHit(this.partNo, this.itemName);
+}
+
+/// ㉖v96 预约候选行（带当前在库筐数/件数，库存页同口径）
+class _PnHit2 extends _PnHit {
+  final int boxes;
+  final int qty;
+  const _PnHit2(String partNo, String itemName, this.boxes, this.qty)
+      : super(partNo, itemName);
+}
+
+/// ㉖v96 预约设置弹层（顶层共享）：预订筐数(0=仅提醒) + 期望到货 + 够数自动开领料单。
+/// 「我的预约·添加」与「零件档案·预约来料」两处入口共用，功能完全一致。
+Future<Map?> bookingDlgOf(BuildContext ctx, String pn, String itemName,
+    {int initQty = 0, String initDue = "", bool initAuto = true}) async {
+  int qty = initQty;
+  String due = initDue;
+  bool auto = initAuto;
+  String fmtOff(int days) {
+    final d = DateTime.now().add(Duration(days: days));
+    return "${d.year.toString().padLeft(4, "0")}-${d.month.toString().padLeft(2, "0")}-${d.day.toString().padLeft(2, "0")}";
+  }
+  return showDialog<Map>(
+      context: ctx,
+      builder: (c2) => StatefulBuilder(builder: (bctx2, setSt2) {
+            final dueOpts = <List<String>>[
+              ["", "不限"],
+              [fmtOff(1), "明天"],
+              [fmtOff(3), "3天后"],
+              [fmtOff(7), "一周"],
+            ];
+            return AlertDialog(
+              title: Text("预约来料 $pn", style: const TextStyle(fontSize: 15)),
+              content: SizedBox(
+                  width: 340,
+                  child: SingleChildScrollView(
+                      child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        if (itemName.isNotEmpty)
+                          Text(itemName,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 12, color: Colors.blueGrey)),
+                        const SizedBox(height: 6),
+                        const Text("预订筐数（0=只提醒不开单）",
+                            style: TextStyle(fontSize: 12)),
+                        Wrap(spacing: 6, children: [0, 1, 2, 3, 5, 10].map((v) {
+                          return ChoiceChip(
+                              label: Text(v == 0 ? "仅提醒" : "$v 筐"),
+                              selected: qty == v,
+                              selectedColor: const Color(0xFFB2DFDB),
+                              onSelected: (_) => setSt2(() => qty = v));
+                        }).toList()),
+                        if (qty > 0) ...[
+                          const SizedBox(height: 6),
+                          const Text("期望到货", style: TextStyle(fontSize: 12)),
+                          Wrap(
+                              spacing: 6,
+                              children: dueOpts.map((d) {
+                                return ChoiceChip(
+                                    label: Text(d[1]),
+                                    selected: due == d[0],
+                                    selectedColor: const Color(0xFFB2DFDB),
+                                    onSelected: (_) => setSt2(() => due = d[0]));
+                              }).toList()),
+                          SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text("够数自动开领料单",
+                                  style: TextStyle(fontSize: 12)),
+                              value: auto,
+                              onChanged: (v) => setSt2(() => auto = v)),
+                        ],
+                        const SizedBox(height: 2),
+                        Text(
+                            qty > 0
+                                ? "来料入库累计到 $qty 筐后，按实际到料数自动开领料单并通知仓管"
+                                : "到料时站内通知你（纯提醒模式）",
+                            style: const TextStyle(
+                                fontSize: 11, color: Colors.grey)),
+                      ]))),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(c2),
+                    child: const Text("取消")),
+                FilledButton(
+                    style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF00897B)),
+                    onPressed: () =>
+                        Navigator.pop(c2, {"qty": qty, "due": due, "auto": auto}),
+                    child: const Text("确认预约")),
+              ],
+            );
+          }));
 }
 
 // ===================== 全链路追踪页（对齐网页版 /api/trace 事件流） =====================
