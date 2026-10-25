@@ -4382,7 +4382,7 @@ return send(res, 200, {
           const b = await readBody(req);
           const hpush = (text) => { r.history.push({ time: new Date().toISOString(), by: u.name, text }); };
           // issued 统一为 [{c:标签, q:件数}]，兼容旧数据纯字符串（按0件计）
-          const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : Object.assign({ c: String(x.c || ''), q: Number(x.q) || 0 }, x.l ? { l: String(x.l) } : {}, x.e ? { e: 1, by: x.by || '', why: x.why || '' } : {})); // ㉖v92c 保留 l：旧版丢字段致出库流水原货位空白
+          const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : Object.assign({ c: String(x.c || ''), q: Number(x.q) || 0 }, x.l ? { l: String(x.l) } : {}, x.b ? { b: String(x.b) } : {}, x.f ? { f: String(x.f) } : {}, x.pid ? { pid: String(x.pid) } : {}, x.n ? { n: String(x.n) } : {}, x.e ? { e: 1, by: x.by || '', why: x.why || '' } : {})); // ㉖v92c 保留 l：旧版丢字段致出库流水原货位空白；㉖v94q 保留 b/f/pid/n：撤扫复挂要还原批次与托号，否则账本批次被清空→FIFO排序退化成按货位、同托归并失效
           const issuedQty = (i) => normIssued(i).reduce((s, e) => s + e.q, 0);
           // 全部行到达终态（已转/已跳过）→ 已备齐，通知含短装明细
           const finalize = () => {
@@ -4488,8 +4488,12 @@ return send(res, 200, {
               _allow.delete('');
               if (_allow.size && !_allow.has(code.toUpperCase())) {
                 const _oldestLot = (_sg.boxes || []).map((x) => String(x.b || '').trim()).find(Boolean) || '';
-                hpush(`⛔ 严格FIFO拦截：扫入 ${code} 不在建议清单（建议 ${_allow.size} 码）`);
-                return send(res, 400, { ok: false, msg: `标签 ${code} 不在本行取货建议清单内（严格FIFO：只能扫建议的框）${_oldestLot ? `——请先拣最早批次 ${_oldestLot}` : ''}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
+                const _scanLot = String((((db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code.toUpperCase())) || {}).b || '').trim();
+                // 同批次却不在清单（如建议"够数即停"没列到的框）→ 不能误导性地说"请先拣最早批次"，改为直接给可扫清单
+                const _hint = (_oldestLot && (!_scanLot || _scanLot > _oldestLot)) ? `——请先拣最早批次 ${_oldestLot}` : `——本行可扫：${[..._allow].slice(0, 6).join('/')}${_allow.size > 6 ? ' 等' + _allow.size + '码' : ''}`;
+                hpush(`⛔ 严格FIFO拦截：扫入 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 不在建议清单（建议 ${_allow.size} 码：${[..._allow].slice(0, 6).join('/')}）`);
+                save(); // 留痕立即落盘：旧写法只改内存，靠无关周期存盘才落库，重启即丢审计痕迹
+                return send(res, 400, { ok: false, msg: `标签 ${code} 不在本行取货建议清单内（严格FIFO：只能扫建议的框）${_hint}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
               }
               if (!_allow.size) { // 建议为空（该行已发齐或账本无在架框）：不做拦截，交给既有"已发齐/转单锁定"等闸处理
                 const _cp = _sg.calledPending || [];
@@ -4507,7 +4511,7 @@ return send(res, 200, {
             let _fl = String(b.fromLoc || '').trim().toUpperCase();
             const _ledRow = (db.ledger || []).find(x => String(x.c || '').toUpperCase() === code.toUpperCase());
             if (!_fl && _ledRow) _fl = String(_ledRow.l || '').toUpperCase();
-            target.issued.push(Object.assign({ c: code, q, l: _fl }, em ? { e: 1, by: u.name, why: String(b.why || '').trim() } : {}));
+            target.issued.push(Object.assign({ c: code, q, l: _fl }, _ledRow ? { b: String(_ledRow.b || ''), f: String(_ledRow.f || ''), pid: String(_ledRow.pid || ''), n: String(_ledRow.n || '') } : {}, em ? { e: 1, by: u.name, why: String(b.why || '').trim() } : {})); // ㉖v94q 存批次/容器/托号：撤扫复挂据此还原，否则账本批次被清空削弱FIFO
             if (_ledRow) { // 服务器直接拣下（单码，方案B口径）+ 墓碑 + 释放预占，不依赖PDA本地状态
               const _ix = db.ledger.indexOf(_ledRow);
               if (_ix >= 0) db.ledger.splice(_ix, 1);
@@ -4543,7 +4547,8 @@ return send(res, 200, {
             if (_ul && _fk.length) {
               hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件，原货位 ${_ul} 现已被 ${_fk.map((x) => x.c).join("/")} 登记占用，未复挂——该框请按实物位置用「位置登记」补账，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`);
             } else if (_ul && !db.ledger.some((x) => String(x.c || '').toUpperCase() === code)) { // 复挂原位（撤扫≠真出库，货还在站台/架上）
-              db.ledger.push({ c: code, l: _ul, f: '', t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(target.itemName || ''), q: Number(_ij.q) || 0, b: '', pid: '', mv: '登记', src: '撤扫复位', by: u.name });
+              // ㉖v94q 还原批次/容器/托号：旧版硬写 b:'' f:'' pid:'' → 撤扫一次批次就丢，FIFO 排序退化成按货位、同托归并失效
+              db.ledger.push({ c: code, l: _ul, f: String(_ij.f || ''), t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(_ij.n || target.itemName || ''), q: Number(_ij.q) || 0, b: String(_ij.b || ''), pid: String(_ij.pid || ''), mv: '登记', src: '撤扫复位', by: u.name });
               (db.ledgerTomb = db.ledgerTomb || []).splice(0, db.ledgerTomb.length, ...db.ledgerTomb.filter((x) => String(x.c).toUpperCase() !== code));
               db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
               hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件退回在架 ${_ul}，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`); // ㉖v94m 修笔误：旧版写 $_ul 花括号缺失→历史显示字面量"$_ul"
