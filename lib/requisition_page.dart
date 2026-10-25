@@ -1915,7 +1915,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                      "${agv.isEmpty ? "" : "🚗$agv${stat.isEmpty ? "" : "·$stat"} · "}$code @ $loc${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}${multi ? " ·同托多码" : ""}",
+                      "${agv.isEmpty ? "" : "🚗${stat.isEmpty ? "已叫" : stat} · "}$code @ $loc${agv.isEmpty ? "" : "→$agv"}${qv > 0 ? " ${_fmtInvNum(qv)}件" : ""}${lot.isNotEmpty ? " 批$lot" : ""}${multi ? " ·同托多码" : ""}", // ㉖v94p 货位后追加站台号（旧版台号缺失只显示"已叫"，仓管不知道去哪个台取）
                       style: TextStyle(
                           fontSize: 11,
                           fontFamily: "monospace",

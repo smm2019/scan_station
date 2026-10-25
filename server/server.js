@@ -1133,6 +1133,7 @@ const PARAMS = {
   aisleCap:       { grp: '调度策略', name: '巷道并发上限', unit: '任务', min: 0, max: 8, d: 2, tip: '同一货架巷道(区-排)在途搬运任务数上限，达到则新出库任务本轮不放行、入库分配避开（0=关闭节流）' },
   stnWinPct:      { grp: '调度策略', name: '站台时间窗系数', unit: '%', min: 50, max: 300, d: 100, tip: '预约窗=路网行程+60秒缓冲+该台平均清台时长×系数；窗内站台不派新单，防两车前后脚撞台' },
   lowTier:        { grp: '调度策略', name: '入库常用层上限', unit: '层', min: 1, max: 4, d: 3, tip: 'AUTO自动分配的硬性层约束：只在1~N层找空位（同架/同区集中也在层圈内生效），圈内全满才上更高层；4=不限。AGV叉高层耗时且重心高风险大，建议3' },
+  strictFifo:     { grp: '调度策略', name: '严格FIFO发料', unit: '开关', min: 0, max: 1, d: 1, tip: '1=扫码发料只允许「取货建议」清单里的标签（含同托兄弟码与已叫车未扫的框），扫其他码直接拒绝，从源头堵住跳批发料；0=退回旧行为（批次不符仅黄色提醒、确认后放行）。现场若遇账本滞后导致建议为空发不了料，可临时置0应急' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
 // ㉖v90 排号清单解析："11-18,20" / [11,12,...] / 数组字符串 → 去重排序的 1~40 数字数组；空/非法 → null（=未配置，沿用排数逻辑）
@@ -1374,7 +1375,22 @@ function groupLedgerBoxes(list) {
   }
   return [...g.values()].sort((a, b) => (a.b || '9999').localeCompare(b.b || '9999') || String(a.l).localeCompare(String(b.l))); // 批次早优先
 }
-function agvMapOf(i) { const m = {}; for (const e of ((i && i.agvCalled) || [])) m[String(e.c).toUpperCase()] = String(e.s || '') || '已叫'; return m; }
+// ㉖v94p 台号实时回填：叫车登记时 agvCalled.s 写的是空串（那刻还没分配站台），下发分配后也从未回填
+// → PDA 取货建议里已叫车的框只显示占位词"已叫"、看不到送往哪个台（10/25 现场反馈）。
+// 现在：s 为空时从活跃队列项取真实台号（兼容历史行，无需数据迁移）；确实查不到才兜底"已叫"。
+function agvMapOf(i) {
+  const m = {};
+  for (const e of ((i && i.agvCalled) || [])) {
+    const c = String(e.c).toUpperCase();
+    let stn = String(e.s || '');
+    if (!stn) {
+      const q = (db.agvQueue || []).find((x) => String(x.code || '').toUpperCase() === c && ['排队', '下发中', '已下发', '到站', '完成'].includes(x.state));
+      if (q) stn = String(q.station || q.stationManual || '');
+    }
+    m[c] = stn || '已叫';
+  }
+  return m;
+}
 // 取货建议：PDA 同步的货位账本（含托号 pid）→ 按框（同托多码=1框）FIFO 选框；agvMap 标记已叫AGV的框
 function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   const agv = agvMap || {};
@@ -4452,6 +4468,36 @@ return send(res, 200, {
             const target = r.items.find(i => i.partNo === b.partNo);
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
             if (target.transferred) return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已转MES出库（实发${issuedQty(target)}件），不可再补扫；多叫下来的框请人工返架回库，或走「直调」页出库，或留待下次开单领用` });
+            // ㉖v94p 严格FIFO发料闸（用户要求"设置fifo建议只能扫建议中的码"）：
+            // 白名单=该行取货建议的标签级清单（flatBoxes）+ 同托兄弟码（boxes[].allCodes，一车整托同到）
+            //        + 已叫车未扫框（calledPending）+ **本单已叫车的全部码（agvCalled）**。
+            // 最后一项是必需的：pickSuggest 只在"该行已发齐"时才返回 calledPending，未发齐时已叫车到站的框不在建议清单里
+            // → 若只认建议清单，现场"叫6框车、建议只列2框"时另外4框到台会扫不了（闸把自己的货挡在门外）。
+            // 本单叫过车的框是仓管自己点的，货必然送到台，必须放行；跳批拦截只针对"没叫过车、不在建议里"的码。
+            // 不在名单内=跳批拣货或扫错框，直接拒绝并告知该拣哪个批次；旧版只有黄色提醒、确认即放行，等于没有强制力。
+            // 应急登记(emergency)可旁路但写工单历史留痕——账本滞后致建议为空时的唯一逃生口，防彻底卡死发料。
+            if (P().strictFifo === 1 && b.emergency !== true) {
+              const _excl = new Set(normIssued(target).map((e) => String(e.c).toUpperCase()));
+              const _need = Math.max(0, (Number(target.qty) || 0) - issuedQty(target));
+              const _sg = pickSuggest(target.partNo, _need, _excl, agvMapOf(target));
+              const _allow = new Set();
+              for (const bx of (_sg.boxes || [])) { for (const c of (bx.allCodes || bx.codes || [])) _allow.add(String(c).toUpperCase()); for (const it of (bx.items || [])) _allow.add(String(it.c).toUpperCase()); }
+              for (const f of (_sg.flatBoxes || [])) _allow.add(String(f.c || '').toUpperCase());
+              for (const f of (_sg.calledPending || [])) _allow.add(String(f.c || '').toUpperCase());
+              for (const e of (target.agvCalled || [])) _allow.add(String(e.c || '').toUpperCase()); // 本单已叫车的框：到站必须能扫
+              _allow.delete('');
+              if (_allow.size && !_allow.has(code.toUpperCase())) {
+                const _oldestLot = (_sg.boxes || []).map((x) => String(x.b || '').trim()).find(Boolean) || '';
+                hpush(`⛔ 严格FIFO拦截：扫入 ${code} 不在建议清单（建议 ${_allow.size} 码）`);
+                return send(res, 400, { ok: false, msg: `标签 ${code} 不在本行取货建议清单内（严格FIFO：只能扫建议的框）${_oldestLot ? `——请先拣最早批次 ${_oldestLot}` : ''}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
+              }
+              if (!_allow.size) { // 建议为空（该行已发齐或账本无在架框）：不做拦截，交给既有"已发齐/转单锁定"等闸处理
+                const _cp = _sg.calledPending || [];
+                if (!_cp.length && _need > 0) return send(res, 400, { ok: false, msg: `零件 ${target.partNo} 账本无在架可拣框，取货建议为空——请先核对货位账本（该框可能未登记或已出库），或用「应急登记」` });
+              }
+            } else if (P().strictFifo === 1 && b.emergency === true) {
+              hpush(`⚠️ 严格FIFO应急旁路：框 ${code}（${u.name}${String(b.why || '').trim() ? '：' + String(b.why || '').trim() : ''}）`);
+            }
             const q = Number(b.qty) || 0;
             if (q <= 0) return send(res, 400, { ok: false, msg: '缺少该标签的件数(qty)' });
             target.issued = normIssued(target);
