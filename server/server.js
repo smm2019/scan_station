@@ -1133,7 +1133,7 @@ const PARAMS = {
   aisleCap:       { grp: '调度策略', name: '巷道并发上限', unit: '任务', min: 0, max: 8, d: 2, tip: '同一货架巷道(区-排)在途搬运任务数上限，达到则新出库任务本轮不放行、入库分配避开（0=关闭节流）' },
   stnWinPct:      { grp: '调度策略', name: '站台时间窗系数', unit: '%', min: 50, max: 300, d: 100, tip: '预约窗=路网行程+60秒缓冲+该台平均清台时长×系数；窗内站台不派新单，防两车前后脚撞台' },
   lowTier:        { grp: '调度策略', name: '入库常用层上限', unit: '层', min: 1, max: 4, d: 3, tip: 'AUTO自动分配的硬性层约束：只在1~N层找空位（同架/同区集中也在层圈内生效），圈内全满才上更高层；4=不限。AGV叉高层耗时且重心高风险大，建议3' },
-  strictFifo:     { grp: '调度策略', name: '严格FIFO发料', unit: '开关', min: 0, max: 1, d: 1, tip: '1=扫码发料只允许「取货建议」清单里的标签（含同托兄弟码与已叫车未扫的框），扫其他码直接拒绝，从源头堵住跳批发料；0=退回旧行为（批次不符仅黄色提醒、确认后放行）。现场若遇账本滞后导致建议为空发不了料，可临时置0应急' },
+  strictFifo:     { grp: '调度策略', name: '严格FIFO发料', unit: '开关', min: 0, max: 1, d: 1, tip: '1=扫码发料只允许「取货建议」清单里的标签（含同托兄弟码与已叫车框）。晚批次码：PDA弹黄色FIFO提醒，仓管点「确认继续」→服务端复核批次确实更晚后放行（工单+事件双留痕），不再二次拦窗；同批次却不在清单的码（扫错/幽灵码）即使带确认也拒绝。0=回退旧行为（服务端不拦，仅PDA黄提醒）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
 // ㉖v90 排号清单解析："11-18,20" / [11,12,...] / 数组字符串 → 去重排序的 1~40 数字数组；空/非法 → null（=未配置，沿用排数逻辑）
@@ -4521,6 +4521,9 @@ return send(res, 200, {
             // 本单叫过车的框是仓管自己点的，货必然送到台，必须放行；跳批拦截只针对"没叫过车、不在建议里"的码。
             // 不在名单内=跳批拣货或扫错框，直接拒绝并告知该拣哪个批次；旧版只有黄色提醒、确认即放行，等于没有强制力。
             // 应急登记(emergency)可旁路但写工单历史留痕——账本滞后致建议为空时的唯一逃生口，防彻底卡死发料。
+            // ㉖v94s 晚批次确认旁路（用户拍板）：旧体验是"弹黄提醒→点确认继续→服务端又拦→再弹红窗"两道窗绕。
+            // 现在：客户端FIFO黄窗的确认标记(b.fifo.ok)随scan上报，服务端复核"扫入批次确实晚于建议最早批次"才放行（晚批次属人工可裁决的
+            // 正常业务），并写"🟡FIFO违反"审计留痕；而"同批次却不在清单"（扫错单/账本外幽灵码）不给旁路，照拦——不信任未经验证的确认标记。
             if (P().strictFifo === 1 && b.emergency !== true) {
               const _excl = new Set(normIssued(target).map((e) => String(e.c).toUpperCase()));
               const _need = Math.max(0, (Number(target.qty) || 0) - issuedQty(target));
@@ -4534,11 +4537,17 @@ return send(res, 200, {
               if (_allow.size && !_allow.has(code.toUpperCase())) {
                 const _oldestLot = (_sg.boxes || []).map((x) => String(x.b || '').trim()).find(Boolean) || '';
                 const _scanLot = String((((db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code.toUpperCase())) || {}).b || '').trim();
-                // 同批次却不在清单（如建议"够数即停"没列到的框）→ 不能误导性地说"请先拣最早批次"，改为直接给可扫清单
-                const _hint = (_oldestLot && (!_scanLot || _scanLot > _oldestLot)) ? `——请先拣最早批次 ${_oldestLot}` : `——本行可扫：${[..._allow].slice(0, 6).join('/')}${_allow.size > 6 ? ' 等' + _allow.size + '码' : ''}`;
-                hpush(`⛔ 严格FIFO拦截：扫入 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 不在建议清单（建议 ${_allow.size} 码：${[..._allow].slice(0, 6).join('/')}）`);
-                save(); // 留痕立即落盘：旧写法只改内存，靠无关周期存盘才落库，重启即丢审计痕迹
-                return send(res, 400, { ok: false, msg: `标签 ${code} 不在本行取货建议清单内（严格FIFO：只能扫建议的框）${_hint}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
+                const _isLater = !!(_oldestLot && _scanLot && _scanLot > _oldestLot); // 晚批次=黄窗场景；同批/未知批=幽灵码场景
+                if (_isLater && b.fifo && b.fifo.ok === 1) { // 客户端已人工确认+服务端复核批次成立 → 放行
+                  hpush(`🟡FIFO违反放行 ${target.partNo} 标签 ${code}（批${_scanLot}，最早${_oldestLot}，不在建议清单，人工确认继续）（${u.name}）`);
+                  pushEvent('FIFO违反', String(target.partNo || ''), `标签 ${code} 扫入批次${_scanLot}（最早${_oldestLot}）人工确认继续（${u.name}）`);
+                } else {
+                  // 同批次却不在清单（如建议"够数即停"没列到的框）→ 不能误导性地说"请先拣最早批次"，改为直接给可扫清单
+                  const _hint = _isLater ? `——请先拣最早批次 ${_oldestLot}${b.fifo && b.fifo.ok === 1 ? '' : '（确认继续可放行）'}` : `——本行可扫：${[..._allow].slice(0, 6).join('/')}${_allow.size > 6 ? ' 等' + _allow.size + '码' : ''}`;
+                  hpush(`⛔ 严格FIFO拦截：扫入 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 不在建议清单（建议 ${_allow.size} 码：${[..._allow].slice(0, 6).join('/')}）`);
+                  save(); // 留痕立即落盘：旧写法只改内存，靠无关周期存盘才落库，重启即丢审计痕迹
+                  return send(res, 400, { ok: false, msg: `标签 ${code} 不在本行取货建议清单内（严格FIFO：只能扫建议的框）${_hint}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
+                }
               }
               if (!_allow.size) { // 建议为空（该行已发齐或账本无在架框）：不做拦截，交给既有"已发齐/转单锁定"等闸处理
                 const _cp = _sg.calledPending || [];
