@@ -2046,8 +2046,9 @@ function readBody(req) {
 }
 
 const server = http.createServer((req, res) => { // ㉖v97d 请求级上下文：留痕自动带"设备号+来源IP"，60个pushOps调用点零改动（异步链天然隔离，并发不串号）
-  try { return opsCtx.run({ ip: clientIp(req), dev: '' }, () => handleReq(req, res)); }
-  catch (e) { try { logErr('CTX ' + (req.method || '') + ' ' + (req.url || '?'), e); } catch (_) {} try { return send(res, 500, { ok: false, msg: '服务器错误：' + e.message }); } catch (_) {} }
+  // ㉖v97f 复核修正：handleReq 是 async——内部抛错变 rejected Promise，外层同步 try/catch 接不住（死代码）；
+  // try 块之前的裸语句（new URL 等）一旦出错连接会悬挂不回包。兜底挂到 Promise 上才真正生效
+  opsCtx.run({ ip: clientIp(req), dev: '' }, () => handleReq(req, res)).catch((e) => { try { logErr('CTX ' + (req.method || '') + ' ' + (req.url || '?'), e); } catch (_) {} try { if (!res.headersSent) send(res, 500, { ok: false, msg: '服务器错误：' + e.message }); } catch (_) {} });
 });
 async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入（内部try/catch兜底不变）
   const url = new URL(req.url, 'http://x');
