@@ -211,9 +211,9 @@ function loadDb() {
     for (const x0 of (d.ledger || [])) { const c0 = String(x0.c || '').toUpperCase(); if (c0 && x0.n && !_has(String(x0.n)) && !_nmByCode[c0]) _nmByCode[c0] = String(x0.n); }
     for (const [k0, v0] of Object.entries(d.itemDict || {})) { if (v0 && v0.nm && !_has(String(v0.nm)) && !_nmByCode[String(k0).toUpperCase()]) _nmByCode[String(k0).toUpperCase()] = String(v0.nm); }
     let _fx = 0;
-    // ㉖v61b 账本搬运方式自愈：mv 归一枚举（登记/人工/AGV），替换符剥离后按残字判定
-    const _mvNorm = (v0) => { const s0 = String(v0 || '').replace(_bad, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记') || s0.includes('登記')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; };
-    for (const x0 of (d.ledger || [])) { const mv0 = String(x0.mv || ''); if (mv0 && _has(mv0)) { x0.mv = _mvNorm(mv0); _fx++; } }
+    // ㉖v61b 账本搬运方式自愈：mv 归一枚举（登记/人工/AGV），替换符剥离后按残字判定；㉖v95b 补"人"→"人工"（旧规则短值放行漏进枚举）
+    const _mvNorm = (v0) => { const s0 = String(v0 || '').replace(_bad, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记') || s0.includes('登記')) return '登记'; if (s0.includes('人工') || s0 === '人') return '人工'; return s0.length <= 4 ? s0 : '人工'; };
+    for (const x0 of (d.ledger || [])) { const mv0 = String(x0.mv || ''); if (mv0 && (_has(mv0) || mv0 === '人')) { x0.mv = _mvNorm(mv0); _fx++; } }
     // ㉖v95b 账本容器类型 f 乱码自愈：剥离后与容器类型字典四级匹配归一（共享函数 ctNorm，loadDb 期 db 未就绪显式传字典）
     {
       for (const x0 of (d.ledger || [])) { const f0 = String(x0.f || ''); if (f0 && _has(f0)) { x0.f = ctNorm(f0, d.containerTypes); _fx++; } }
@@ -2250,7 +2250,7 @@ const server = http.createServer(async (req, res) => {
         for (const it0 of raw) {
           // ㉖v95b 乱码清洗补齐 f/p/b/src（旧版只洗 n/mv，容器类型"托<乱码>"混进账本与合并diff留痕）
           const _cw = (s0, cap) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, cap);
-          const it = (() => { const c = String((it0 && it0.c) || '').trim().toUpperCase(); const l = String((it0 && it0.l) || '').trim().toUpperCase(); if (!c || !l) return null; if (seen.has(c)) return null; seen.add(c); return { c, l, f: ctNorm(it0 && it0.f, db.containerTypes), t: Number(it0 && it0.t) || 0, p: _cw(it0 && it0.p, 40).toUpperCase(), n: _cw(it0 && it0.n, 80), q: Number(it0 && it0.q) || 0, b: _cw(it0 && it0.b, 40), pid: _cw(it0 && it0.pid, 40), mv: (() => { const s0 = _cw(it0 && it0.mv, 20); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: _cw(it0 && it0.src, 40) }; })(); // ㉓乱码清洗+㉖v61b mv归一+㉖v95b f归一（对账包搬运方式列数据源）
+          const it = (() => { const c = String((it0 && it0.c) || '').trim().toUpperCase(); const l = String((it0 && it0.l) || '').trim().toUpperCase(); if (!c || !l) return null; if (seen.has(c)) return null; seen.add(c); return { c, l, f: ctNorm(it0 && it0.f, db.containerTypes), t: Number(it0 && it0.t) || 0, p: _cw(it0 && it0.p, 40).toUpperCase(), n: _cw(it0 && it0.n, 80), q: Number(it0 && it0.q) || 0, b: _cw(it0 && it0.b, 40), pid: _cw(it0 && it0.pid, 40), mv: (() => { const s0 = _cw(it0 && it0.mv, 20); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工') || s0 === '人') return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: _cw(it0 && it0.src, 40) }; })(); // ㉓乱码清洗+㉖v61b mv归一+㉖v95b f归一（对账包搬运方式列数据源）
           if (it) _pushClean(it);
         }
         // 增量合并：按标签号 upsert + 墓碑删除，多PDA互不覆盖
