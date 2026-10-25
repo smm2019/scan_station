@@ -205,28 +205,34 @@ function loadDb() {
   // ㉖v61 出库流水乱码自愈：PDA/WMAS 推送编码丢失产生的 U+FFFD 与控制字符——name 按标签反查流水/账本/字典回填干净名，查不到则剥替换符；move 归一 AGV/人工
   {
     const _bad = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
+    const _has = (s0) => { _bad.lastIndex = 0; return _bad.test(s0); }; // 复检修复：/g 正则 test 有 lastIndex 状态，连续调用会漏检
     const _nmByCode = {};
-    for (const s0 of Object.values(d.scanlog || {})) { const c0 = String(s0.code || '').toUpperCase(); if (c0 && s0.nm && !_bad.test(String(s0.nm)) && !_nmByCode[c0]) _nmByCode[c0] = String(s0.nm); }
-    for (const x0 of (d.ledger || [])) { const c0 = String(x0.c || '').toUpperCase(); if (c0 && x0.n && !_bad.test(String(x0.n)) && !_nmByCode[c0]) _nmByCode[c0] = String(x0.n); }
-    for (const [k0, v0] of Object.entries(d.itemDict || {})) { if (v0 && v0.nm && !_bad.test(String(v0.nm)) && !_nmByCode[String(k0).toUpperCase()]) _nmByCode[String(k0).toUpperCase()] = String(v0.nm); }
+    for (const s0 of Object.values(d.scanlog || {})) { const c0 = String(s0.code || '').toUpperCase(); if (c0 && s0.nm && !_has(String(s0.nm)) && !_nmByCode[c0]) _nmByCode[c0] = String(s0.nm); }
+    for (const x0 of (d.ledger || [])) { const c0 = String(x0.c || '').toUpperCase(); if (c0 && x0.n && !_has(String(x0.n)) && !_nmByCode[c0]) _nmByCode[c0] = String(x0.n); }
+    for (const [k0, v0] of Object.entries(d.itemDict || {})) { if (v0 && v0.nm && !_has(String(v0.nm)) && !_nmByCode[String(k0).toUpperCase()]) _nmByCode[String(k0).toUpperCase()] = String(v0.nm); }
     let _fx = 0;
     // ㉖v61b 账本搬运方式自愈：mv 归一枚举（登记/人工/AGV），替换符剥离后按残字判定
     const _mvNorm = (v0) => { const s0 = String(v0 || '').replace(_bad, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记') || s0.includes('登記')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; };
-    for (const x0 of (d.ledger || [])) { const mv0 = String(x0.mv || ''); if (mv0 && _bad.test(mv0)) { x0.mv = _mvNorm(mv0); _fx++; } }
+    for (const x0 of (d.ledger || [])) { const mv0 = String(x0.mv || ''); if (mv0 && _has(mv0)) { x0.mv = _mvNorm(mv0); _fx++; } }
+    // ㉖v95b 账本容器类型 f 乱码自愈：剥离后与容器类型字典四级匹配归一（共享函数 ctNorm，loadDb 期 db 未就绪显式传字典）
+    {
+      for (const x0 of (d.ledger || [])) { const f0 = String(x0.f || ''); if (f0 && _has(f0)) { x0.f = ctNorm(f0, d.containerTypes); _fx++; } }
+      for (const st0 of Object.values(d.scanlog || {})) { const c0 = String(st0.ct || ''); if (c0 && _has(c0)) { st0.ct = ctNorm(c0, d.containerTypes); _fx++; } }
+    }
     // ㉖v61b 字典脏名清理：零件号反查流水/账本干净名覆盖，查不到剥替换符
     for (const [k0, v0] of Object.entries(d.itemDict || {})) {
-      if (v0 && _bad.test(String(v0.nm || ''))) {
+      if (v0 && _has(String(v0.nm || ''))) {
         const good = _nmByCode[String(k0).toUpperCase()];
         v0.nm = good ? good : String(v0.nm).replace(_bad, '').replace(/\s+/g, ' ').trim();
         _fx++;
       }
     }
-    // ㉖v61b 审计文本替换符剥离（不重造内容，只去坏字符）
-    for (const o0 of (d.ops || [])) { if (_bad.test(String(o0.det || ''))) { o0.det = String(o0.det).replace(_bad, '').replace(/\s+/g, ' ').trim(); _fx++; } }
+    // ㉖v61b 审计文本【不在此清洗】：ops 权威层是按天 JSONL（断链摘要按文件行计算），只清内存 d.ops 会造成双源不一致；
+    // 历史乱码留痕在 /api/admin/ops 与 D9 导出的【显示层】剥离（存档与摘要不动），新留痕由推送侧 ctNorm/_cw 源头防污
     for (const o of Object.values(d.outbound || {})) {
       for (const it of (o.items || [])) {
         const nm0 = String(it.name || '');
-        if (_bad.test(nm0)) {
+        if (_has(nm0)) {
           const bc = String(it.barcode || it.code || '').toUpperCase();
           const pc = String(it.code || '').toUpperCase();
           const good = _nmByCode[bc] || _nmByCode[pc];
@@ -234,10 +240,10 @@ function loadDb() {
           _fx++;
         }
         const mv0 = String(it.move || '');
-        if (mv0 && _bad.test(mv0)) { it.move = /AGV/i.test(mv0.replace(_bad, '')) ? 'AGV' : mv0.replace(_bad, '').includes('人工') || mv0.length <= 6 ? '人工' : mv0.replace(_bad, '').trim() || '人工'; _fx++; }
+        if (mv0 && _has(mv0)) { it.move = /AGV/i.test(mv0.replace(_bad, '')) ? 'AGV' : mv0.replace(_bad, '').includes('人工') || mv0.length <= 6 ? '人工' : mv0.replace(_bad, '').trim() || '人工'; _fx++; }
       }
-      if (_bad.test(String(o.operator || ''))) { o.operator = String(o.operator).replace(_bad, '').trim(); _fx++; }
-      if (_bad.test(String(o.toLoc || ''))) { o.toLoc = String(o.toLoc).replace(_bad, '').trim(); _fx++; }
+      if (_has(String(o.operator || ''))) { o.operator = String(o.operator).replace(_bad, '').trim(); _fx++; }
+      if (_has(String(o.toLoc || ''))) { o.toLoc = String(o.toLoc).replace(_bad, '').trim(); _fx++; }
     }
     if (_fx) { added = true; console.log('[migrate] 出库流水乱码自愈 ' + _fx + ' 处（name 反查回填/替换符剥离，move 归一）'); }
   }
@@ -681,7 +687,7 @@ function buildExport(ds, fRaw) {
     return { label: '工作量报表', parts, rows: parts[0].rows, total: parts[0].rows.length + parts[1].rows.length + parts[2].rows.length, f: { from: wdstr(F), to: wdstr(T) } };
   }
   if (ds === 'D8') { const ST = { pending: '待接单', accepted: '备料中', ready: '待签收', done: '已签收', rejected: '已拒单', cancelled: '已取消' }; const _rq = _arch ? db.requisitions.concat((() => { const out = []; try { for (const fd of fs.readdirSync(path.join(DATA_DIR, 'archive'))) { if (fd.indexOf('-requisitions.json') < 0) continue; try { out.push.apply(out, JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', fd), 'utf8'))); } catch (_) {} } } catch (_) {} return out; })()) : (db.requisitions || []); const rows = _rq.filter((r) => { const t = Date.parse(r.createdAt) || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))).map((r) => { const acc = (r.history || []).find((h) => /接单/.test(h.text || '')); const fin = (r.history || []).filter((h) => /签收|拒单|取消/.test(h.text || '')).pop(); const mins = acc && fin ? Math.round((Date.parse(fin.time) - Date.parse(acc.time)) / 60000) : ''; return [r.no, expTs(Date.parse(r.createdAt) || 0), r.byName || r.by || '', (r.items || []).length, (r.items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0), ST[r.status] || r.status, r.acceptedBy || '', r.confirmedBy || '', expTs(Date.parse(r.confirmedAt) || 0), acc ? expTs(Date.parse(acc.time) || 0) : '', mins === '' ? '' : mins, (r.remark || '').slice(0, 60)]; }); return mk('领料台账', ['单号', '下单时间', '下单人', '行数', '件数合计', '状态', '接单人', '签收人', '签收时间', '接单时间', '处理分钟', '备注'], ['S', 'S', 'S', 'N', 'N', 'S', 'S', 'S', 'S', 'S', 'N', 'S'], rows, '领料单（含节点时刻，处理分钟=接单到终结）' + (_arch ? '；含归档=主库∪archive已终结超期归档单' : '；主库窗口，超期已终结单勾「含归档」回查')); }
-  if (ds === 'D9') { const rows = opsLoadDays(OPS_KEEP_DAYS).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', o.role || '', o.act || '', o.obj || '', o.det || '']); return mk('活动流审计', ['时间', '操作人', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流）'); }
+  if (ds === 'D9') { const _dv = (s0) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); const rows = opsLoadDays(OPS_KEEP_DAYS).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', o.role || '', o.act || '', _dv(o.obj), _dv(o.det)]); return mk('活动流审计', ['时间', '操作人', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流）'); }
   if (ds === 'D10') { const inv = Object.values(db.inventories || {}).filter((r) => { const t = r.at || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => b.at - a.at); const bid = String((fRaw && fRaw.batchId) || '').trim(); const sel = bid ? inv.filter((r) => r.batchId === bid) : inv; const one = sel[0] || {};
     const parts = [
       { label: '盘点总览', headers: ['批次', '备注', '模式', '盘点人', '结束时间', '总扫次', '有效扫次', 'MES失败', '重复', '账外', '已应用改账', '零件行数', '零件差异行'], types: ['S', 'S', 'S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S', 'N', 'N'], rows: sel.map((r) => [r.batchId, r.remark || '', r.blind ? '盲盘' : '监督', r.by || '', expTs(r.at), r.totalScans || 0, r.validScans || 0, r.mesFail || 0, r.dup || 0, r.outside || 0, r.applied ? ('是·' + expTs(r.applyTime)) : '否', (r.parts || []).length, (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length]), src: 'PDA盘点上收汇总', caliber: EXP_CAL['盘点结果'] },
@@ -1351,6 +1357,21 @@ function boxKeyOf(x) {
   if (pid) return 'P|' + pid;
   const l = String(x.l || '').toUpperCase(), p = String(x.p || '').toUpperCase();
   return (l && p) ? 'L|' + l + '|' + p : 'C|' + String(x.c).toUpperCase();
+}
+// ㉖v95b 容器类型乱码归一（模块级共享：启动迁移自愈 + 推送清洗兜底）：剥离坏字符后与容器类型字典（db值+show值）
+// 四级匹配——精确→唯一前缀→唯一包含→唯一子序列（"2.4铁框"中段字符整个丢失仍救回"2.4米铁框"）；多义/无解返回剥离值不臆造
+const _ctBad = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
+function ctNorm(v0, types) {
+  const raw = String(v0 == null ? '' : v0);
+  const s0 = raw.replace(_ctBad, '').trim();
+  if (!s0 || s0 === raw.trim()) return s0.slice(0, 40); // 无坏字符=原样（trim截断）；全坏=空
+  const cts = [];
+  for (const ct of (types || db.containerTypes || [])) { if (ct && ct.db) cts.push(ct.db); if (ct && ct.show && ct.show !== ct.db) cts.push(ct.show); }
+  if (cts.includes(s0)) return s0;
+  const pre = cts.filter((t) => t.startsWith(s0) || s0.startsWith(t)); if (pre.length === 1) return pre[0];
+  const inc = cts.filter((t) => t.includes(s0) || s0.includes(t)); if (inc.length === 1) return inc[0];
+  const _sub = (a, b) => { let i = 0; for (const ch of b) { const k = a.indexOf(ch, i); if (k < 0) return false; i = k + 1; } return true; };
+  const sub = cts.filter((t) => _sub(t, s0)); return sub.length === 1 ? sub[0] : s0.slice(0, 40);
 }
 // 移库完成：把被搬货架(同框组)在货位账本改到新位，登记时间刷新→增量同步广播各PDA；仅在确认到达后调用
 function applyTransferLedger(t) {
@@ -2227,7 +2248,9 @@ const server = http.createServer(async (req, res) => {
           for (const cc of cs) { const one = Object.assign({}, it, { c: cc, q: per + (rem > 0 ? 1 : 0), _split: 1 }); if (rem > 0) rem--; clean.push(one); }
         };
         for (const it0 of raw) {
-          const it = (() => { const c = String((it0 && it0.c) || '').trim().toUpperCase(); const l = String((it0 && it0.l) || '').trim().toUpperCase(); if (!c || !l) return null; if (seen.has(c)) return null; seen.add(c); return { c, l, f: String((it0 && it0.f) || '').slice(0, 40), t: Number(it0 && it0.t) || 0, p: String((it0 && it0.p) || '').slice(0, 40), n: String((it0 && it0.n) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 80), q: Number(it0 && it0.q) || 0, b: String((it0 && it0.b) || '').slice(0, 40), pid: String((it0 && it0.pid) || '').slice(0, 40), mv: (() => { const s0 = String((it0 && it0.mv) || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim(); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: String((it0 && it0.src) || '').slice(0, 40) }; })(); // ㉓乱码清洗+㉖v61b mv归一（对账包搬运方式列数据源）
+          // ㉖v95b 乱码清洗补齐 f/p/b/src（旧版只洗 n/mv，容器类型"托<乱码>"混进账本与合并diff留痕）
+          const _cw = (s0, cap) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, cap);
+          const it = (() => { const c = String((it0 && it0.c) || '').trim().toUpperCase(); const l = String((it0 && it0.l) || '').trim().toUpperCase(); if (!c || !l) return null; if (seen.has(c)) return null; seen.add(c); return { c, l, f: ctNorm(it0 && it0.f, db.containerTypes), t: Number(it0 && it0.t) || 0, p: _cw(it0 && it0.p, 40).toUpperCase(), n: _cw(it0 && it0.n, 80), q: Number(it0 && it0.q) || 0, b: _cw(it0 && it0.b, 40), pid: _cw(it0 && it0.pid, 40), mv: (() => { const s0 = _cw(it0 && it0.mv, 20); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工')) return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: _cw(it0 && it0.src, 40) }; })(); // ㉓乱码清洗+㉖v61b mv归一+㉖v95b f归一（对账包搬运方式列数据源）
           if (it) _pushClean(it);
         }
         // 增量合并：按标签号 upsert + 墓碑删除，多PDA互不覆盖
@@ -3374,6 +3397,9 @@ return send(res, 200, {
       if (req.method === 'GET' && p === '/api/dict') {
         const q = (url.searchParams.get('q') || '').trim().toUpperCase();
         let list = Object.entries(db.itemDict || {}).map(([pn, v]) => ({ pn, nm: v.nm, src: v.src }));
+        // ㉖v95b 联想数据源合并账本在架零件（字典可能滞后于账本，领料新建弹层按此自动带名）
+        { const _have = new Set(list.map((x) => x.pn));
+          for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); if (!pn || _have.has(pn)) continue; _have.add(pn); list.push({ pn, nm: String(x.n || '').replace(/[\uFFFD]/g, ''), src: '账本' }); } }
         if (q) list = list.filter((x) => x.pn.includes(q) || x.nm.toUpperCase().includes(q));
         list.sort((a, b) => a.pn.localeCompare(b.pn));
         if ((url.searchParams.get('miss') || '') === '1') { // ㉖G8 缺口扫描：出现在账本/流水/出库/领料但字典无名的零件号
@@ -3387,7 +3413,7 @@ return send(res, 200, {
           const miss = Object.values(seen).sort((a, b) => b.n - a.n || a.pn.localeCompare(b.pn));
           return send(res, 200, { ok: true, miss: true, total: miss.length, list: miss.slice(0, 500) });
         }
-        return send(res, 200, { ok: true, total: list.length, list: list.slice(0, 300) });
+        return send(res, 200, { ok: true, total: list.length, list: list.slice(0, q ? 300 : 6000) }); // ㉖v95b 无q=领料联想全量缓存（局域网一次性拉取）
       }
       // ---- ㉖G8 批量补录：items=[{pn,nm}] 或 text="零件号,名称"逐行；仅仓管/管理员；进字典+活动流 ----
       if (req.method === 'POST' && p === '/api/dict') {
@@ -4309,7 +4335,12 @@ return send(res, 200, {
             const partNo = String(it.partNo || '').trim();
             const qty = Number(it.qty);
             if (!partNo || !(qty > 0)) continue;
-            clean.push({ partNo, itemName: String(it.itemName || ''), qty, issued: [], rush: it.rush === true }); // v55 行级急料（列表靠前=加急）
+            let itemName = String(it.itemName || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, 80);
+            if (!itemName) { // ㉖v95b 人性化：名称留空按物料字典兜底（网页联想未命中/旧版PDA不传名时，单据不再空着名称）
+              const dd = db.itemDict && (db.itemDict[partNo.toUpperCase()] || db.itemDict[partNo]);
+              if (dd && dd.nm) itemName = String(dd.nm).replace(/[\uFFFD]/g, '').slice(0, 80);
+            }
+            clean.push({ partNo, itemName, qty, issued: [], rush: it.rush === true }); // v55 行级急料（列表靠前=加急）
           }
           if (!clean.length) return send(res, 400, { ok: false, msg: '至少一行有效的零件号+数量' });
           if (clean.length > 20) return send(res, 400, { ok: false, msg: '一张单最多20行' });
@@ -4969,7 +5000,9 @@ return send(res, 200, {
         let list = opsLoadDays(OPS_KEEP_DAYS).sort((a, b) => (b.t || 0) - (a.t || 0)); // ㉖近180天全量（文件为主，内存兜底去重）
         if (by) list = list.filter((x) => String(x.by) === by);
         const persons = [...new Set(list.map((x) => x.by))];
-        return send(res, 200, { ok: true, total: list.length, persons, list: list.slice(0, lim) });
+        // ㉖v95b 显示层乱码剥离：历史推送把"托<乱码>"等脏值写进过留痕详情；JSONL 存档与断链摘要不动，仅输出时清洗
+        const _dv = (s0) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+        return send(res, 200, { ok: true, total: list.length, persons, list: list.slice(0, lim).map((x) => Object.assign({}, x, { obj: _dv(x.obj), det: _dv(x.det) })) });
       }
       // ---- ㉖断链自校验：重算指定日 ops 文件摘要与 digest 存档比对（手改/删行即不符）----
       if (req.method === 'GET' && p === '/api/admin/ops/integrity') {
