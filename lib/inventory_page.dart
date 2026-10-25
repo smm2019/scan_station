@@ -133,19 +133,20 @@ Future<InvDiffResult> computeInvDiff(BatchInfo task) async {
       d.bookLoc[lc] = (d.bookLoc[lc] ?? 0) + l.qty;
     }
   }
-  // ㉖v94t 与本机最新货位账本交叉核对：现场"明明有两框仍报差异"多为基准版本滞后（账面基准是导入时刻的快照）
+  // ㉖v94t 与本机最新货位账本交叉核对：基准是建单时刻点拍的快照（实时账本模式）或CSV导入，盘点期间账本继续周转即与基准脱节
   final sps = await _globalIsar.shelfPlacements.where().findAll();
   final byCodeLabels = <String, double>{}; //标签→件数（MES缓存）
-  final byCodePart = <String, String>{}; //标签→零件号
+  final byCodePart = <String, String>{}; //标签→零件号（大写，与pMap键归一口径一致）
   if (sps.isNotEmpty) {
     final lis = await _globalIsar.labelInfos.where().findAll();
     for (final li in lis) {
       final cd = li.goodsCode.trim().toUpperCase();
       byCodeLabels[cd] = li.qty;
-      byCodePart[cd] = li.partNo;
+      byCodePart[cd] = li.partNo.trim().toUpperCase();
     }
   }
   final locBoxCount = <String, int>{}; //最新账本：货位→在架框数
+  final pIdx = <String, InvPartDiff>{for (final e in pMap.entries) e.key.toUpperCase(): e.value}; //大小写归一索引：基准CSV写法与账本MES写法可能不一致
   if (sps.isNotEmpty) {
     for (final d in pMap.values) {
       d.liveBoxes = 0; //有账本数据：先归零，下面逐框累加（保持-1=本机无账本，不显示）
@@ -160,7 +161,7 @@ Future<InvDiffResult> computeInvDiff(BatchInfo task) async {
     if (inScope) locBoxCount[lc] = (locBoxCount[lc] ?? 0) + 1;
     final pn = byCodePart[cd] ?? "";
     if (pn.isEmpty || !inScope) continue;
-    final d = pMap[pn];
+    final d = pIdx[pn];
     if (d == null) continue;
     if (d.liveBoxes < 0) d.liveBoxes = 0;
     final q = byCodeLabels[cd] ?? 0;
@@ -214,12 +215,21 @@ Future<InvDiffResult> computeInvDiff(BatchInfo task) async {
     }
   }
   // ㉖v94t 货位级定位：回填本机最新账本此位在架框数（区别于基准台账，供"基准滞后 vs 实物真少"判定）
+  // ㉖v95 键可能比账本格位粗（整区归位行键=区名如 NB03-C-11、架级基准行=货架名）：精确查不到时按前缀聚合，防误报"此位已空"
   for (final d in lMap.values) {
     if (sps.isEmpty) {
       d.liveN = -1;
-    } else {
-      d.liveN = locBoxCount[d.locCode.trim().toUpperCase()] ?? 0;
+      continue;
     }
+    final lc = d.locCode.trim().toUpperCase();
+    var n = locBoxCount[lc] ?? -1;
+    if (n < 0) {
+      n = 0;
+      locBoxCount.forEach((k, v) {
+        if (k.startsWith('$lc-')) n += v;
+      });
+    }
+    d.liveN = n;
   }
   r.locs.addAll(lMap.values);
   r.locs.sort((a, b) {
@@ -288,18 +298,19 @@ String invPartLocate(InvPartDiff p) {
       final parts = p.liveLoc.entries.toList()..sort((a, b) => b.value.compareTo(a.value) != 0 ? b.value.compareTo(a.value) : a.key.compareTo(b.key));
       out.add("账本此零件在架：${parts.take(5).map((e) => "${e.key}×${e.value}").join("、")}${parts.length > 5 ? " 等${parts.length}位" : ""}");
     }
-    final realOnly = p.realLoc.keys.where((lc) => !p.bookLoc.containsKey(lc)).toList()..sort();
+    // 整区盘点实扫键可能是区级(NB03-C-11)而基准是格级(NB03-C-11-06)：前缀匹配防误报
+    final _bl = p.bookLoc.keys.toList();
+    final _rl = p.realLoc.keys.toList();
+    final realOnly = _rl.where((lc) => !_bl.any((b) => b == lc || b.startsWith('$lc-'))).toList()..sort();
     if (realOnly.isNotEmpty) out.add("扫到货但基准未登记的位：${realOnly.take(4).join("、")}${realOnly.length > 4 ? " 等${realOnly.length}位" : ""}（可能已移库）");
-    final bookOnly = p.bookLoc.keys.where((lc) => !p.realLoc.containsKey(lc)).toList()..sort();
+    final bookOnly = _bl.where((bl) => !_rl.any((lc) => bl == lc || bl.startsWith('$lc-'))).toList()..sort();
     if (bookOnly.isNotEmpty) out.add("基准登记但一码未扫的位：${bookOnly.take(4).join("、")}${bookOnly.length > 4 ? " 等${bookOnly.length}位" : ""}——优先去这些位补扫");
   } else if (diff > 1e-6) {
     if (p.liveBoxes > 0 && p.liveBoxes < p.realBoxes) {
       out.add("实盘比基准多，且最新账本仅 ${p.liveBoxes} 码——可能实货已取走、扫码时框还压在该位，核实后走「应用货位差异」改账");
     } else if (boxesMatch && p.bookLoc.isNotEmpty) {
-      final extra = <String>[];
-      for (final e in p.realLoc.entries) {
-        if (!p.bookLoc.containsKey(e.key)) extra.add(e.key);
-      }
+      final _bl2 = p.bookLoc.keys.toList();
+      final extra = p.realLoc.keys.where((lc) => !_bl2.any((b) => b == lc || b.startsWith('$lc-'))).toList()..sort();
       out.add("框数件数都与最新账本一致（${p.realBoxes} 码）——实物都在架，是基准快照生成时本机账本就缺这些框（拉取未合并/他台未推送），非真盘盈${extra.isNotEmpty ? "：多出位在 ${extra.take(4).join("、")}${extra.length > 4 ? " 等${extra.length}位" : ""}" : ""}；重新生成基准开新盘点即可");
     } else {
       out.add("盘盈：实扫位 ${p.realLoc.keys.take(4).join("、")} vs 基准位 ${p.bookLoc.keys.take(4).join("、")}——核对该位是否出库未消账或货移入未登记");
@@ -330,7 +341,8 @@ String invLocLocate(InvLocDiff l, String? moveNote) {
     out.add("亏空走 MES 调整，盘盈同样走 MES；本按钮只改位置");
   }
   if (l.outsideLabels.isNotEmpty) out.add("另账外扫入：${l.outsideLabels.take(4).join("、")}${l.outsideLabels.length > 4 ? " 等${l.outsideLabels.length}码" : ""}");
-  if (l.labels.isNotEmpty && diff.abs() <= 1e-6) return ""; //账实相符无需定位
+  // 相符且无账外且无串位配对才返空；注意 invPairMoveSuggest 会把已配平行的 realQty 减到≈bookQty（diff≈0），串位提示必须保留
+  if (out.isEmpty || (diff.abs() <= 1e-6 && l.outsideLabels.isEmpty && moveNote == null)) return "";
   return out.join("\n");
 }
 
@@ -1303,12 +1315,22 @@ class _InvDiffPageState extends State<_InvDiffPage> {
       final d = await computeInvDiff(widget.task);
       final t = widget.task;
       final nowMs = DateTime.now().millisecondsSinceEpoch;
+      // ㉖v95 实时基准留痕随报告上收（网页端可见"快照生成时本机账本就落后"）
+      Object? liveMeta;
+      if (t.invBookKey.startsWith('LIVE@')) {
+        try {
+          final sp = await SharedPreferences.getInstance();
+          final raw = sp.getString("inv_live_meta_${t.invBookKey}");
+          if (raw != null && raw.isNotEmpty) liveMeta = jsonDecode(raw);
+        } catch (_) {}
+      }
       await AuthApi.invReport({
         "batchId": t.batchId, "remark": t.batchRemark, "scope": (t.invScope ?? []).join(","),
         "blind": t.blindMode, "bookKey": t.invBookKey, "locKey": t.invLocKey,
         "at": nowMs, "totalScans": d.totalScans, "validScans": d.validScans,
         "mesFail": d.mesFail.length, "dup": d.dup.length, "outside": d.outsideScope.length,
         "applied": applied, "applyTime": applied ? nowMs : 0,
+        if (liveMeta != null) "liveMeta": liveMeta,
         "parts": d.parts.map((p) => {"pn": p.partNo, "nm": p.itemName, "book": p.bookQty, "real": p.realQty, "boxes": p.realBoxes, "out": p.outsideBoxes, "warn": p.warnFlag}).toList(),
         "locs": d.locs.map((l) => {"loc": l.locCode, "pn": l.partNo, "book": l.bookQty, "real": l.realQty, "boxes": l.realBoxes}).toList(),
       });

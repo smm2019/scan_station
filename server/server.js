@@ -3258,6 +3258,16 @@ return send(res, 200, {
         const parts = (Array.isArray(b.parts) ? b.parts : []).slice(0, 3000).map((x) => ({ pn: String(x.pn || '').toUpperCase().slice(0, 40), nm: String(x.nm || '').replace(/\uFFFD/g, '').slice(0, 80), book: num(x.book), real: num(x.real), boxes: num(x.boxes), out: num(x.out), warn: num(x.warn) }));
         const locs = (Array.isArray(b.locs) ? b.locs : []).slice(0, 5000).map((x) => ({ loc: String(x.loc || '').toUpperCase().slice(0, 40), pn: String(x.pn || '').toUpperCase().slice(0, 40), book: num(x.book), real: num(x.real), boxes: num(x.boxes) }));
         const rec = { batchId, remark: String(b.remark || '').slice(0, 80), scope: String(b.scope || '').slice(0, 120), blind: !!b.blind, bookKey: String(b.bookKey || '').slice(0, 60), locKey: String(b.locKey || '').slice(0, 60), by: u.name, at: num(b.at) || Date.now(), totalScans: num(b.totalScans), validScans: num(b.validScans), mesFail: num(b.mesFail), dup: num(b.dup), outside: num(b.outside), applied: !!b.applied, applyTime: num(b.applyTime), parts, locs };
+        // ㉖v95 实时基准快照留痕透传（白名单定长清洗，旧版PDA不带该字段=undefined不影响）
+        if (b.liveMeta && typeof b.liveMeta === 'object') {
+          rec.liveMeta = {
+            pullOk: b.liveMeta.pullOk === true,
+            srvRev: num(b.liveMeta.srvRev), srvTotal: num(b.liveMeta.srvTotal),
+            srvAt: String(b.liveMeta.srvAt || '').slice(0, 40), srvBy: String(b.liveMeta.srvBy || '').slice(0, 40),
+            localRows: num(b.liveMeta.localRows), bookRows: num(b.liveMeta.bookRows), locRows: num(b.liveMeta.locRows),
+            msg: String(b.liveMeta.msg || '').replace(/\uFFFD/g, '').slice(0, 160),
+          };
+        }
         db.inventories = db.inventories || {};
         db.inventories[batchId] = rec; save();
         pushOps(u, '盘点上收', batchId, `零件${parts.length}行 货位${locs.length}行 实扫${rec.validScans}/${rec.totalScans}`);
