@@ -4506,6 +4506,50 @@ return send(res, 200, {
             } else {
               hpush(`↩️ 撤扫 ${target.partNo} 标签 ${code}（${_ij.q}件，账本已有该码不重复复挂，累计 ${issuedQty(target)}/${target.qty}）（${u.name}）`);
             }
+            // ㉖v94o 撤扫物理联动（10/25 N26J220232 现场复盘：账面撤回复位、实物却停在 CK-10 站台——撤扫只动了账，没人管车）：
+            //  ① 叫车还没下发 → 顺手撤销排队项（防车白跑）；② 已下发未叉取 → 联动撤 WMAS 任务，车就地终止；
+            //  ③ 已到站/搬运完成 → 自动发起"站台→原货位"返架叫车（manualOnly 固定终点，与人工入库叫车同一套闸门与对账链）；撤销被拒（车已叉起）→ 提示人工处置，不盲下返架指令。
+            try {
+              const bq = (db.agvQueue || []).filter((x) => String(x.code || '').toUpperCase() === code && ['排队', '下发中', '已下发', '到站', '完成'].includes(x.state)).sort((a, b2) => (b2.at || 0) - (a.at || 0))[0];
+              if (bq && bq.state === '排队') {
+                retireQueueItem(bq, '取消', '撤扫联动：未下发即撤销');
+                hpush(`🛑 撤扫联动：框 ${code} 叫车任务未下发，已同步撤销（货仍在架）`);
+                save();
+              } else if (bq && (bq.state === '下发中' || bq.state === '已下发')) {
+                let cancelled = false;
+                const tk2 = await wmasToken();
+                if (tk2) {
+                  const tn2 = bq.wmsTask || await wmasTaskNoOf(bq, tk2);
+                  if (!tn2) cancelled = true;
+                  else {
+                    const cr2 = await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk2, [tn2]);
+                    cancelled = wmasOk(cr2) || String((cr2 && (cr2.message || cr2.msg)) || '').includes('不存在');
+                  }
+                }
+                if (cancelled) {
+                  retireQueueItem(bq, '取消', '撤扫联动：车未叉取，任务已撤销');
+                  hpush(`🛑 撤扫联动：框 ${code} 在途叫车已撤销（车未叉取，货仍在架 ${_ul || '原货位'}）`);
+                } else {
+                  (bq.trace = bq.trace || []).push('撤扫联动：叫车撤销被拒（车可能已叉取）');
+                  hpush(`⚠️ 撤扫联动：框 ${code} 叫车撤销被拒——车可能已在搬运，到货后请人工返架（账面已复位 ${_ul || '原货位'}）`);
+                  db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'req_arrive', `⚠️ 撤扫联动：框 ${code}（${target.partNo}）叫车撤销被拒，若已送到站台请人工送回货架`, ''));
+                }
+                save();
+              } else if (bq && (bq.state === '到站' || bq.state === '完成') && _ul && (bq.station || bq.stationManual)) {
+                const stn0 = String(bq.station || bq.stationManual || '');
+                const dupIn = (db.agvQueue || []).some((x) => x.type === 'inbound' && String(x.code || '').toUpperCase() === code && ['排队', '下发中', '已下发'].includes(x.state));
+                if (!dupIn) {
+                  const itemB = { id: newId('cq'), code, fromLoc: stn0, stationManual: _ul, station: '', palletType: bq.palletType || palletTypeOf(code), type: 'inbound', manualOnly: true, ref: 'RK-' + code, reqNo: r.no, by: u.name, state: '排队', at: Date.now(), updAt: Date.now(), trace: [], unscanBack: r.no };
+                  db.agvQueue = db.agvQueue || [];
+                  await dispatchOne(itemB, Date.now(), [], [], (db.agvDispatchMode || 'dry') === 'live');
+                  db.agvQueue.push(itemB); save();
+                  const ph = itemB.state === '失败' ? `自动返架被拒(${String(itemB.err || '').slice(0, 40)})——请人工把框从 ${stn0} 送回 ${_ul}` : itemB.state === '已下发' ? `已自动发起返架叫车 ${stn0}→${_ul}，车到架边请确认` : `返架任务已排队 ${stn0}→${_ul}（切真实下发后自动发车）`;
+                  hpush(`🔙 撤扫联动：框 ${code} 实物在站台 ${stn0}，${ph}`);
+                  db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'req_arrive', `🔙 撤扫返架：框 ${code}（${target.partNo}）${ph}`, ''));
+                  notify(r.by, 'req_flow', `你的领料单 ${r.no}：框 ${code} 已撤扫，${ph}`, r.id);
+                } else hpush(`🔙 撤扫联动：框 ${code} 已有在途返架任务，不重复发起`);
+              }
+            } catch (e) { hpush(`⚠️ 撤扫物理联动异常：${e.message}`); }
           } else if (act === 'agv') {
             // 叫AGV登记：仓管从货架叫车叉框后记账，建议区该框标"已叫AGV"防重复叫车/漏叫
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可登记' });
