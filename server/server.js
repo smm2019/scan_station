@@ -2281,7 +2281,18 @@ const server = http.createServer(async (req, res) => {
           // ㉖v82 墓碑拒绝【记录指纹】：同一过期旧行下次推送命中"无新到达"闸静默 kept，不再反复进 rejected 弹窗（实测7标签死循环弹）；
           // 若 PDA 真的重新登记该框（t 变新晚于墓碑）→ 指纹不同且过墓碑闸 → 正常复活，不误伤真重登
           // ㉖v82 拼接拆出行(_split)命中"已出库"墓碑是必然（这些码本就出了），直接静默——旧版进rejected致"货位登记冲突"永远循环（幽灵行留PDA缓存每推必弹），实为误报非真冲突
-          if (tombT && it.t > 0 && it.t < tombT) { skipped++; _fpNew[key] = h; if (!it._split) rejected.push(key); continue; } // 早于墓碑的真改动重登：作废（首次仍提示，二次起静默）
+          // ㉖v97b 静默判据改按【墓碑时刻】：v82 靠内容指纹判"同一旧行重推"，但派生字段(mv归一等)一经修复指纹即漂移，
+          // 静默闸失效反复弹窗（10/25 21:37/21:40 宋明明设备 N26J210449 实锤：发料消账后本机旧缓存回推，每推必拒必弹）。
+          // 同一墓碑只弹一次：tombReject[key]===tombT 即静默；墓碑更新(再次出库)或真重登(t晚于墓碑)不受影响。
+          if (tombT && it.t > 0 && it.t < tombT) {
+            skipped++; _fpNew[key] = h;
+            const _tr = (db.tombReject = db.tombReject || {});
+            if (!it._split && _tr[key] !== tombT) {
+              _tr[key] = tombT;
+              rejected.push(key + '（该框已于 ' + localDT(new Date(tombT).toISOString(), 16) + ' 出库/作废，本机旧缓存回推被挡——无需重新登记，拉取一次自动清掉）');
+            }
+            continue;
+          }
           if (!_fpOld[key] && !Object.keys(_fpOld).length && old && it.t > 0 && Number(old.t) > it.t) { skipped++; rejected.push(key); continue; } // 设备首推无指纹档案：保守回退旧规则（t更旧者拒），防服务重启窗口倒退
           _fpNew[key] = h; // 本轮该设备视图留档
           // ㉖ 货位互斥闸：同一货位不允许被不同框同时占用（多PDA并发登记、过期副本回填都会撞位）；同框兄弟码（同托号）豁免
