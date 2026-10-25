@@ -1336,7 +1336,10 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
       "added": added,
       "updated": updated,
       "deleted": deleted,
-      "total": items.length
+      "total": items.length,
+      "rev": (r["rev"] as num?)?.toInt() ?? -1, // ㉖v94u 服务器账本版本留痕（盘点基准快照对账用）
+      "srvAt": (r["at"] ?? "").toString(),
+      "srvBy": (r["by"] ?? "").toString(),
     };
   } catch (e) {
     LocalLog.err('账本拉取合并', e); // ㉖ 静默自动刷新的失败也留痕（返回值 ok:false 供调用方提示）

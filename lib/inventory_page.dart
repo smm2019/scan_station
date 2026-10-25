@@ -295,6 +295,12 @@ String invPartLocate(InvPartDiff p) {
   } else if (diff > 1e-6) {
     if (p.liveBoxes > 0 && p.liveBoxes < p.realBoxes) {
       out.add("实盘比基准多，且最新账本仅 ${p.liveBoxes} 码——可能实货已取走、扫码时框还压在该位，核实后走「应用货位差异」改账");
+    } else if (boxesMatch && p.bookLoc.isNotEmpty) {
+      final extra = <String>[];
+      for (final e in p.realLoc.entries) {
+        if (!p.bookLoc.containsKey(e.key)) extra.add(e.key);
+      }
+      out.add("框数件数都与最新账本一致（${p.realBoxes} 码）——实物都在架，是基准快照生成时本机账本就缺这些框（拉取未合并/他台未推送），非真盘盈${extra.isNotEmpty ? "：多出位在 ${extra.take(4).join("、")}${extra.length > 4 ? " 等${extra.length}位" : ""}" : ""}；重新生成基准开新盘点即可");
     } else {
       out.add("盘盈：实扫位 ${p.realLoc.keys.take(4).join("、")} vs 基准位 ${p.bookLoc.keys.take(4).join("、")}——核对该位是否出库未消账或货移入未登记");
     }
@@ -748,12 +754,23 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("快照为空：系统账本里没有任何在库零件，请先同步/导入账本再盘"), backgroundColor: Colors.orange, duration: Duration(seconds: 5)));
           return;
         }
+        // ㉖v94u 快照留痕：拉取失败或本机行数落后服务器 → 当场提醒基准可能缺行
+        String warn = "";
+        try {
+          final m = (r["meta"] as Map?) ?? {};
+          if (m["pullOk"] != true) {
+            warn = "\n⚠️与电脑账本合并失败（${m["msg"]}），快照基于本机旧账本";
+          } else {
+            final st = (m["srvTotal"] as num?)?.toInt() ?? -1, lr = (m["localRows"] as num?)?.toInt() ?? -1;
+            if (st >= 0 && lr >= 0 && lr < st) warn = "\n⚠️本机账本 $lr 行 < 服务器 $st 行（v${m["srvRev"]}），快照可能缺框——建议先在各台PDA同步后重建基准";
+          }
+        } catch (_) {}
         if (!mounted) return;
         setState(() {
           _bookKey = _locKey = r["key"].toString();
           _bookName = _locName = "系统实时账本";
           _bookInfo = "零件 $books 个"; _locInfo = "货位行 $locs 条";
-          _liveInfo = "零件 $books 个 · 货位行 $locs 条";
+          _liveInfo = "零件 $books 个 · 货位行 $locs 条$warn";
         });
       } catch (e) {
         if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("快照生成失败：$e"), backgroundColor: Colors.red));

@@ -1075,9 +1075,20 @@ class _FlowTabState extends State<_FlowTab> {
 /// 口径与库存页完全一致：账面=在库框数量合计（零库存零件不入基准，扫到即账外料）；货位=各货位在库框按零件号合计。
 /// 只覆盖 baselineBooks/baselineLocs 两张盘点基准表（与CSV导入同样的整表替换），不触碰采集/发料/账本数据。
 Future<Map<String, dynamic>> buildLiveBaseline() async {
-  await ledgerPullMerge(force: true); // 先与电脑账本合并：多台PDA的在库状态对齐（盘点基准必须最新，强制拉）
+  final pr = await ledgerPullMerge(force: true); // 先与电脑账本合并：多台PDA的在库状态对齐（盘点基准必须最新，强制拉）
   final agg = await computeStock();
   final key = "LIVE@${DateTime.now().millisecondsSinceEpoch}";
+  // ㉖v94u 快照留痕：服务器账本版本 vs 本机合并后行数——现场"明明有2框却报差异"时可判定快照是否落后/拉取失败
+  final localRows = await _globalIsar.shelfPlacements.where().count();
+  final meta = <String, dynamic>{
+    "pullOk": pr["ok"] == true,
+    "srvRev": (pr["rev"] as num?)?.toInt() ?? -1,
+    "srvTotal": (pr["total"] as num?)?.toInt() ?? -1,
+    "srvAt": pr["srvAt"] ?? "",
+    "srvBy": pr["srvBy"] ?? "",
+    "localRows": localRows,
+    "msg": pr["msg"] ?? "",
+  };
   final books = <BaselineBook>[];
   for (final r in agg.parts.values) {
     if (r.partNo.isEmpty || r.inStockQty <= 0) continue;
@@ -1111,7 +1122,14 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
     await _globalIsar.baselineLocs.where().deleteAll();
     await _globalIsar.baselineLocs.putAll(locMap.values.toList());
   });
-  return {"key": key, "books": books.length, "locs": locMap.length};
+  // ㉖v94u 留痕持久化（本地缓存即可——差异报表只在本机生成；key 带快照时刻防旧值串用）
+  meta["locRows"] = locMap.length;
+  meta["bookRows"] = books.length;
+  try {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setString("inv_live_meta_$key", jsonEncode(meta));
+  } catch (_) {}
+  return {"key": key, "books": books.length, "locs": locMap.length, "meta": meta};
 }
 
 class _OpeningTab extends StatelessWidget {
