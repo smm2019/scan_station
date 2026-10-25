@@ -456,10 +456,37 @@ class _InventoryHomePageState extends State<InventoryHomePage> {
                           builder: (ctx, cs) {
                             final cnt = cs.data ?? 0;
                             return Card(
+                              margin: const EdgeInsets.symmetric(vertical: 5),
                               child: ListTile(
+                                contentPadding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+                                isThreeLine: true,
                                 leading: Icon(t.isArchived ? Icons.task_alt : Icons.fact_check_outlined, color: t.isArchived ? Colors.green : const Color(0xFF515BD4)),
-                                title: Text(t.batchRemark.isEmpty ? t.batchId : t.batchRemark, style: const TextStyle(fontWeight: FontWeight.w600)),
-                                subtitle: Text("${t.createTime.substring(0, 16)}  ·  已扫 $cnt 码  ·  ${t.blindMode ? "盲盘" : "监督"}  ·  ${t.invScope.isEmpty ? "全盘" : "循环盘：${t.invScope.join("/")}"}\n账面基准:${t.invBookKey.isEmpty ? "未绑定" : "已绑定"} 货位基准:${t.invLocKey.isEmpty ? "未绑定" : "已绑定"}", style: const TextStyle(fontSize: 12)),
+                                title: Row(children: [
+                                  Expanded(
+                                      child: Text(t.batchRemark.isEmpty ? t.batchId : t.batchRemark,
+                                          style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                                          maxLines: 1, overflow: TextOverflow.ellipsis)),
+                                  Text(t.createTime.substring(5, 16),
+                                      style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                                ]),
+                                // ㉖v96 布局压缩：旧版把全部货位码平铺进副标题，长清单撑爆卡片（10/25 实拍一屏只见两个任务）
+                                subtitle: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Wrap(spacing: 5, runSpacing: 3, children: [
+                                        _invTag("已扫 $cnt 码", const Color(0xFF1A237E), const Color(0xFFE8F0FE)),
+                                        _invTag(t.blindMode ? "盲盘" : "监督", Colors.brown, Colors.orange.shade50),
+                                        _invTag(t.invScope.isEmpty ? "全盘" : "循环盘 ${t.invScope.length} 区", const Color(0xFF00695C), const Color(0xFFE0F2F1)),
+                                        _invTag("基准${(t.invBookKey.isEmpty ? 0 : 1) + (t.invLocKey.isEmpty ? 0 : 1)}/2", t.invBookKey.isEmpty && t.invLocKey.isEmpty ? Colors.red.shade700 : Colors.green.shade700, t.invBookKey.isEmpty && t.invLocKey.isEmpty ? Colors.red.shade50 : Colors.green.shade50),
+                                      ]),
+                                      if (t.invScope.isNotEmpty)
+                                        Padding(
+                                            padding: const EdgeInsets.only(top: 2),
+                                            child: Text(t.invScope.join(" "),
+                                                style: const TextStyle(fontSize: 10.5, color: Colors.black54, fontFamily: "monospace"),
+                                                maxLines: 2,
+                                                overflow: TextOverflow.ellipsis)),
+                                    ]),
                                 trailing: const Icon(Icons.chevron_right),
                                 onTap: () async {
                                   if (t.isArchived) {
@@ -482,6 +509,14 @@ class _InventoryHomePageState extends State<InventoryHomePage> {
     );
   }
 }
+
+/// ㉖v96 盘点任务卡彩色小徽章
+Widget _invTag(String txt, Color fg, Color bg) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+    decoration: BoxDecoration(
+        color: bg, borderRadius: BorderRadius.circular(5)),
+    child: Text(txt,
+        style: TextStyle(fontSize: 10.5, color: fg, fontWeight: FontWeight.w600)));
 
 // ===================== 盘点·新建任务（三步） =====================
 

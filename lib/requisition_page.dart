@@ -1337,7 +1337,6 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final s0 = q["state"]?.toString() ?? "?";
     return s0 == "排队" ? "排队" : s0 == "到站" ? "已到站" : s0 == "完成" ? "完成" : s0 == "失败" ? "失败" : s0 == "取消" ? "取消" : "在途";
   }
-  String _queueStat = ""; // 本单AGV队列状态摘要（一键叫车后显示）
   Timer? _agvTimer;
 
   /// 拉RCS任务表，把已叫AGV的框标出实时配送状态（AGV账号未配置则静默跳过）
@@ -1382,6 +1381,20 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     await _loadQueue();
   }
 
+  /// ㉖v96 队列条计数：按 agvCoarse 粗粒度态统计（与采集页 _qSeg 同语义）
+  int _queueCnt(String coarse) {
+    var n = 0;
+    for (final q in _queueItems) {
+      final s = q["state"]?.toString() ?? "?";
+      if (s == "失败" || s == "取消") {
+        if (coarse == "失败") n++;
+        continue;
+      }
+      if (agvCoarse(q) == coarse) n++;
+    }
+    return n;
+  }
+
   /// 拉本单AGV排队队列状态摘要
   List<Map> _queueItems = [];
   String _queueMode = "dry"; // 服务器真实调度模式：dry演算 / live真实下发
@@ -1391,11 +1404,6 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final mine = List<Map>.from(r["queue"] ?? [])
         .where((q) => q["reqId"] == _r["id"])
         .toList();
-    final cnt = <String, int>{};
-    for (final q in mine) {
-      final s = agvCoarse(q); // ㉖v91 粗粒度3态计数，与网页/流水线同源
-      cnt[s] = (cnt[s] ?? 0) + 1;
-    }
     // 活跃队列项注入配送状态：chip key为"起点|站台"，未分配站台时登记在"起点|已叫"下
     final m2 = Map<String, String>.from(_agvStat);
     for (final q in mine) {
@@ -1411,9 +1419,6 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     setState(() {
       _queueItems = mine;
       _agvStat = m2;
-      _queueStat = cnt.isEmpty
-          ? ""
-          : cnt.entries.map((e) => "${e.key}${e.value}").join(" · ");
       _queueMode = r["mode"]?.toString() ?? "dry";
     });
   }
@@ -1856,20 +1861,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                       fontSize: 11,
                       color: Color(0xFFC62828),
                       fontWeight: FontWeight.w700))),
-        InkWell(
-            onTap: _showQueueSheet,
-            child: Padding(
-                padding: const EdgeInsets.only(bottom: 3),
-                child: Text(
-                    _queueStat.isEmpty
-                        ? "📦 AGV队列：暂无排队 · 点击查看"
-                        : "📦 队列：$_queueStat · 点击查看/取消",
-                    style: TextStyle(
-                        fontSize: 10.5,
-                        color: _queueStat.isEmpty
-                            ? Colors.blueGrey
-                            : const Color(0xFF00695C),
-                        decoration: TextDecoration.underline)))),
+        // ㉖v96 行内队列条删除：多零件行时每行重复显示同一条统计（10/25 用户"太重复"），改整单顶部常驻一条
         const SizedBox(height: 4),
         Wrap(spacing: 6, runSpacing: 4, children: [
           for (final b in flat)
@@ -2001,9 +1993,18 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     if (scanErr != null) {
       setState(() => _busy = false);
       if (!emEligible || !mounted) {
-        // 零件号不符等：直接报错，不放开应急
+        // 零件号不符等：直接报错，不放开应急（㉖v96 升级为弹窗——toast 在连续扫码节奏下无感知，与 v92c 扫重弹窗同族病）
         if (mounted) {
-          widget.toast(scanErr);
+          await showDialog<void>(
+              context: context,
+              builder: (ctx) => AlertDialog(
+                    icon: const Icon(Icons.swap_horiz, color: Colors.red, size: 36),
+                    title: const Text("扫入标签与本行零件不符"),
+                    content: Text("$scanErr\n\n当前发料行：${target["partNo"]} ${target["itemName"] ?? ""}\n\n请核对实物标签：拿错框了，或该标签属于本单其他零件行（可点击对应行切换后再扫）。"),
+                    actions: [
+                      FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text("知道了"))
+                    ],
+                  ));
           _refocusScan();
         }
         return;
@@ -2747,6 +2748,38 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                         fontSize: 12, color: widget.statusColor(st)))),
           ]),
           _buildWizard(items, st),
+          // ㉖v96 整单常驻AGV队列条（采集页同款样式）：旧版每个零件行重复一条文字链，多行单刷屏（10/25 用户）
+          InkWell(
+              onTap: _showQueueSheet,
+              borderRadius: BorderRadius.circular(8),
+              child: Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(top: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFFE8F0FE),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFB3C7F0))),
+                  child: Row(children: [
+                    const Text("🚛", style: TextStyle(fontSize: 14)),
+                    const SizedBox(width: 6),
+                    Expanded(
+                        child: Text(
+                            _queueItems.isEmpty
+                                ? "本单AGV任务：暂无排队（点行内「一键叫车」入队）"
+                                : "本单AGV任务：${_queueCnt("排队")}排 · ${_queueCnt("在途")}在途 · ${_queueCnt("已到站")}到站${_queueCnt("失败") > 0 ? " · ${_queueCnt("失败")}失败" : ""}",
+                            style: const TextStyle(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF1A237E)))),
+                    Text(_queueMode == "live" ? "真实下发" : "演算模式",
+                        style: TextStyle(
+                            fontSize: 10.5,
+                            color: _queueMode == "live"
+                                ? Colors.green.shade700
+                                : Colors.grey)),
+                    const Icon(Icons.chevron_right, size: 18, color: Color(0xFF1A237E)),
+                  ]))),
           if ((_r["remark"]?.toString().isNotEmpty ?? false))
             Text("备注：${_r["remark"]}",
                 style: const TextStyle(fontSize: 12, color: Colors.grey)),
