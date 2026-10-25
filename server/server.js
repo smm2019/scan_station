@@ -4057,10 +4057,24 @@ return send(res, 200, {
         const A = pick(two[0]), B = pick(two[1]); if (!A || !B) return send(res, 500, { ok: false, msg: '快照读取失败' });
         const ma = {}, mb = {}; for (const x of A.items || []) ma[String(x.c).toUpperCase()] = x; for (const x of B.items || []) mb[String(x.c).toUpperCase()] = x;
         const ghosts = [], evap = [], moved = [], qtyCh = [];
+        // ㉖v97 改位归因：快照间位置变动多为正常AGV搬运/人工挪框/网页修正，旧版裸报"改位"让人无法判断是否异常——
+        // 按 网页修正记录 → 近3日操作留痕（叫车/移库/返架/改位/转单/盘点改账）→ 账本行 mv+src 三级还原原因，有据=正常✅
+        const _ops3 = opsLoadDays(3);
+        const _snapAt = Date.parse(A.at) || 0;
+        const _whyMove = (c, y) => {
+          const up = String(c).toUpperCase();
+          const fx = (db.ledgerFixes || []).filter((x) => String(x.code || x.c || '').toUpperCase() === up && (Date.parse(x.time) || 0) >= _snapAt);
+          if (fx.length) return { why: '网页修正：' + String(fx[fx.length - 1].reason || '改位').slice(0, 40), ok: 1 };
+          const hits = _ops3.filter((o) => (String(o.det || '').toUpperCase().includes(up) || String(o.obj || '').toUpperCase() === up) && /叫车|移库|返架|改位|转单|盘点改账|恢复/.test(String(o.act || '')));
+          if (hits.length) { const o = hits[hits.length - 1]; return { why: o.act + '·' + o.by, ok: 1 }; }
+          if (String(y.mv || '') === 'AGV' && String(y.src || '').includes('-CK-')) return { why: 'AGV搬运（' + String(y.src).replace('NB02-', '') + '→' + String(y.l).replace('NB02-', '') + '）', ok: 1 };
+          if (String(y.mv || '') === '人工') return { why: '人工挪框', ok: 1 };
+          return { why: '查无搬运留痕', ok: 0 };
+        };
         const _scv = {}; for (const s0 of Object.values(db.scanlog || {})) { if (!s0.cx) _scv[String(s0.code || '').toUpperCase()] = 1; } let _ghHidden = 0; // ㉖v54 白名单佐证：有有效采集流水=正常采集入库（18:10快照后到达的框次日报幽灵是误报）
         const _obv = {}; for (const o of Object.values(db.outbound || {})) { for (const i of (o.items || [])) { const bc = String(i.barcode || '').toUpperCase(); if (bc) _obv[bc] = 1; } } let _evOk = 0; // v55 出库单标签全集（蒸发框佐证）
         for (const [c, x] of Object.entries(mb)) { if (!ma[c]) { if (_scv[c] || (db.seenOut || {})[c]) { _ghHidden++; continue; } const pn = String(x.p || '').toUpperCase(); ghosts.push({ c, loc: x.l, pn, nm: x.n || (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || '', q: x.q || 0, by: x.by || '', at: x.t ? new Date(x.t).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) : '' }); } }
-        for (const [c, x] of Object.entries(ma)) { if (!mb[c]) { if (_obv[c] || (db.seenOut || {})[c]) { _evOk++; continue; } const t = x.t ? new Date(x.t).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) : ''; evap.push({ c, loc: x.l, p: x.p || '', q: x.q || 0, reg: t }); } else { const y = mb[c]; if (String(y.l).toUpperCase() !== String(x.l).toUpperCase()) moved.push({ c, from: x.l, to: y.l, by: y.by || '' }); if ((Number(y.q) || 0) !== (Number(x.q) || 0)) qtyCh.push({ c, loc: y.l, a: x.q || 0, b: y.q || 0 }); } }
+        for (const [c, x] of Object.entries(ma)) { if (!mb[c]) { if (_obv[c] || (db.seenOut || {})[c]) { _evOk++; continue; } const t = x.t ? new Date(x.t).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) : ''; evap.push({ c, loc: x.l, p: x.p || '', q: x.q || 0, reg: t }); } else { const y = mb[c]; if (String(y.l).toUpperCase() !== String(x.l).toUpperCase()) { const _mw = _whyMove(c, y); moved.push({ c, from: x.l, to: y.l, by: y.by || '', why: _mw.why, ok: _mw.ok }); } if ((Number(y.q) || 0) !== (Number(x.q) || 0)) qtyCh.push({ c, loc: y.l, a: x.q || 0, b: y.q || 0 }); } }
         return send(res, 200, { ok: true, days: [two[0].slice(7, 15), two[1].slice(7, 15)], ghosts, hidden: _ghHidden, evap, evOk: _evOk, moved, qtyCh, noteA: '幽灵框=快照新增且查无有效采集流水（未走采集直接上账），建议补采核实' + (_ghHidden ? '；另有 ' + _ghHidden + ' 个新增已核为正常采集/返架回库' : ''), noteB: '蒸发框=快照消失且查无出库单佐证（真失踪需人工核实）' + (_evOk ? '；另有 ' + _evOk + ' 个消失已核为正常出库' : '') });
       }
       // ---- ㉕F7 交接日报：今日按人聚合（接单/发框/件数/AGV趟/认领/修正） ----
