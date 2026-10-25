@@ -17,6 +17,14 @@ class InvPartDiff {
   int outsideBoxes; //账外料(flag3)计数，不并入realQty
   double outsideQty;
   int warnFlag = 0; //7=双基准矛盾（货位台账合计≠账面基准）
+  // ㉖v94t 差异定位：账面/实扫分别落在哪些货位、账外扫是哪些码（回答"现场明明对得上为何报差异"）
+  final Map<String, double> realLoc = {}; //实扫 货位→件数（账外扫不计）
+  final Map<String, double> bookLoc = {}; //货位台账基准 货位→件数
+  final List<String> outsideDetail = []; //账外扫入明细 "标签@货位"
+  int liveBoxes = -1; //本机最新账本在架框数（-1=无账本数据不显示；循环盘按同范围过滤）
+  double liveQty = 0; //最新账本在架件数
+  int liveStn = 0; //压站台框数（loc含-CK-，物理在但不在货架）
+  final Map<String, int> liveLoc = {}; //最新账本：货位→在架框数
   InvPartDiff(this.partNo, this.itemName, this.bookQty)
       : realQty = 0, realBoxes = 0, outsideBoxes = 0, outsideQty = 0;
 }
@@ -28,6 +36,12 @@ class InvLocDiff {
   double bookQty;
   double realQty;
   int realBoxes;
+  // ㉖v94t 差异定位：本位实扫到的标签码（"码|件数"），供报表"定位/建议"使用
+  final List<String> labels = [];
+  int outsideBoxes = 0;
+  final List<String> outsideLabels = [];
+  int liveN = -1; //本机最新货位账本：此位在架框数（-1=无账本数据）
+  final List<String> bookLabels = []; //基准台账此位预登记的标签码（实扫未扫到时可点名）
   InvLocDiff(this.locCode, this.partNo, this.itemName, this.bookQty)
       : realQty = 0, realBoxes = 0;
 }
@@ -98,17 +112,64 @@ Future<InvDiffResult> computeInvDiff(BatchInfo task) async {
     locAgg[l.partNo] = (locAgg[l.partNo] ?? 0) + l.qty;
   }
   for (final s in valid) {
-    final d = pMap[s.partNo];
-    if (d == null) continue;
-    if (s.flag == 3) { d.outsideBoxes++; d.outsideQty += s.qty; }
-    else { d.realQty += s.qty; d.realBoxes++; }
+    final d = pMap.putIfAbsent(s.partNo, () => InvPartDiff(s.partNo, s.itemName, 0));
+    if (s.flag == 3) {
+      d.outsideBoxes++;
+      d.outsideQty += s.qty;
+      d.outsideDetail.add('${s.goodsCode}@${s.locCode}');
+    } else {
+      d.realQty += s.qty;
+      d.realBoxes++;
+      final lc = s.locCode.trim().toUpperCase();
+      d.realLoc[lc] = (d.realLoc[lc] ?? 0) + s.qty;
+    }
     if (d.itemName.isEmpty) d.itemName = s.itemName;
   }
-  for (final s in valid) {
-    if (!pMap.containsKey(s.partNo)) {
-      final d = InvPartDiff(s.partNo, s.itemName, 0)
-        ..realQty = s.qty ..realBoxes = 1;
-      pMap[s.partNo] = d;
+  // 差异定位：把货位台账基准按零件→货位拆到每行，供报表逐位对比（账面总数对不上时一眼看出差在哪个位）
+  for (final l in locBase) {
+    final d = pMap[l.partNo];
+    if (d != null) {
+      final lc = l.locCode.trim().toUpperCase();
+      d.bookLoc[lc] = (d.bookLoc[lc] ?? 0) + l.qty;
+    }
+  }
+  // ㉖v94t 与本机最新货位账本交叉核对：现场"明明有两框仍报差异"多为基准版本滞后（账面基准是导入时刻的快照）
+  final sps = await _globalIsar.shelfPlacements.where().findAll();
+  final byCodeLabels = <String, double>{}; //标签→件数（MES缓存）
+  final byCodePart = <String, String>{}; //标签→零件号
+  if (sps.isNotEmpty) {
+    final lis = await _globalIsar.labelInfos.where().findAll();
+    for (final li in lis) {
+      final cd = li.goodsCode.trim().toUpperCase();
+      byCodeLabels[cd] = li.qty;
+      byCodePart[cd] = li.partNo;
+    }
+  }
+  final locBoxCount = <String, int>{}; //最新账本：货位→在架框数
+  if (sps.isNotEmpty) {
+    for (final d in pMap.values) {
+      d.liveBoxes = 0; //有账本数据：先归零，下面逐框累加（保持-1=本机无账本，不显示）
+    }
+  }
+  for (final e in sps) {
+    final cd = e.goodsCode.trim().toUpperCase();
+    final lc = e.loc.trim().toUpperCase();
+    if (lc.isEmpty) continue;
+    // 循环盘点：账本侧同口径按范围过滤，否则"全仓在架数"远大于"局部实盘数"必然误判
+    final inScope = scope.isEmpty || invLocInScope(lc, scope) || lc.contains('-CK-');
+    if (inScope) locBoxCount[lc] = (locBoxCount[lc] ?? 0) + 1;
+    final pn = byCodePart[cd] ?? "";
+    if (pn.isEmpty || !inScope) continue;
+    final d = pMap[pn];
+    if (d == null) continue;
+    if (d.liveBoxes < 0) d.liveBoxes = 0;
+    final q = byCodeLabels[cd] ?? 0;
+    if (lc.contains('-CK-')) {
+      d.liveStn++; //压站台：物理在架/在台面上，但不算货架在架框
+    } else {
+      d.liveBoxes++;
+      d.liveQty += q;
+      d.liveLoc[lc] = (d.liveLoc[lc] ?? 0) + 1;
     }
   }
   if (scope.isEmpty) {
@@ -137,11 +198,28 @@ Future<InvDiffResult> computeInvDiff(BatchInfo task) async {
     final k = '${l.locCode}|${l.partNo}';
     final d = lMap.putIfAbsent(k, () => InvLocDiff(l.locCode, l.partNo, l.goodsCode, 0));
     d.bookQty += l.qty;
+    final gl = l.goodsCode.trim().toUpperCase();
+    if (gl.isNotEmpty && !d.bookLabels.contains(gl)) d.bookLabels.add(gl);
   }
   for (final s in valid) {
     final k = '${s.locCode}|${s.partNo}';
     final d = lMap.putIfAbsent(k, () => InvLocDiff(s.locCode, s.partNo, s.itemName, 0));
-    if (s.flag != 3) { d.realQty += s.qty; d.realBoxes++; }
+    if (s.flag != 3) {
+      d.realQty += s.qty;
+      d.realBoxes++;
+      d.labels.add('${s.goodsCode}|${_fmtInvNum(s.qty)}');
+    } else {
+      d.outsideBoxes++;
+      d.outsideLabels.add('${s.goodsCode}|${_fmtInvNum(s.qty)}');
+    }
+  }
+  // ㉖v94t 货位级定位：回填本机最新账本此位在架框数（区别于基准台账，供"基准滞后 vs 实物真少"判定）
+  for (final d in lMap.values) {
+    if (sps.isEmpty) {
+      d.liveN = -1;
+    } else {
+      d.liveN = locBoxCount[d.locCode.trim().toUpperCase()] ?? 0;
+    }
   }
   r.locs.addAll(lMap.values);
   r.locs.sort((a, b) {
@@ -186,6 +264,70 @@ Map<String, String> invPairMoveSuggest(InvDiffResult d) {
 
 String _fmtInvNum(double q) => q == q.roundToDouble() ? q.toInt().toString() : q.toStringAsFixed(2);
 
+/// ㉖v94t 零件级差异"定位/建议"：回答"账面说少了，实物到底在哪、是真少了还是基准旧了"
+String invPartLocate(InvPartDiff p) {
+  final diff = p.realQty - p.bookQty;
+  final out = <String>[];
+  final boxesMatch = p.liveBoxes >= 0 && p.liveBoxes == p.realBoxes;
+  if (diff < -1e-6) {
+    // 盘亏方向：用最新货位账本裁决"基准旧/漏扫" vs "真缺货"
+    if (boxesMatch && (p.liveQty - p.realQty).abs() <= 1e-6) {
+      out.add("框数与件数都和最新货位账本一致——实物都在，是基准快照滞后（快照生成后账本又周转/他台未同步），重新生成基准开新盘点即可");
+    } else if (boxesMatch) {
+      out.add("框数与最新账本一致（都是 ${p.realBoxes} 码）——框都在，差的是每框件数：可能共用/换过标签或 MES 数量有出入，按实扫标签逐码核对件数");
+    } else if (p.liveBoxes > 0) {
+      out.add("最新账本在架 ${p.liveBoxes} 码（${_fmtInvNum(p.liveQty)} 件）${p.liveStn > 0 ? "，另 ${p.liveStn} 码压站台" : ""}——与实盘 ${p.realBoxes} 码有出入，先按下方位置逐位核实物");
+    } else if (p.liveBoxes == 0) {
+      if (p.liveStn > 0) {
+        out.add("货架账本已无此零件，但最新账本显示 ${p.liveStn} 码压着站台——货多半被拉到站台未清/未出账，先去站台查台面");
+      } else {
+        out.add("最新货位账本也已无此零件在架——亏空大概率已出库未走扫码，查近日出库流水/直调单");
+      }
+    }
+    if (p.liveLoc.isNotEmpty) {
+      final parts = p.liveLoc.entries.toList()..sort((a, b) => b.value.compareTo(a.value) != 0 ? b.value.compareTo(a.value) : a.key.compareTo(b.key));
+      out.add("账本此零件在架：${parts.take(5).map((e) => "${e.key}×${e.value}").join("、")}${parts.length > 5 ? " 等${parts.length}位" : ""}");
+    }
+    final realOnly = p.realLoc.keys.where((lc) => !p.bookLoc.containsKey(lc)).toList()..sort();
+    if (realOnly.isNotEmpty) out.add("扫到货但基准未登记的位：${realOnly.take(4).join("、")}${realOnly.length > 4 ? " 等${realOnly.length}位" : ""}（可能已移库）");
+    final bookOnly = p.bookLoc.keys.where((lc) => !p.realLoc.containsKey(lc)).toList()..sort();
+    if (bookOnly.isNotEmpty) out.add("基准登记但一码未扫的位：${bookOnly.take(4).join("、")}${bookOnly.length > 4 ? " 等${bookOnly.length}位" : ""}——优先去这些位补扫");
+  } else if (diff > 1e-6) {
+    if (p.liveBoxes > 0 && p.liveBoxes < p.realBoxes) {
+      out.add("实盘比基准多，且最新账本仅 ${p.liveBoxes} 码——可能实货已取走、扫码时框还压在该位，核实后走「应用货位差异」改账");
+    } else {
+      out.add("盘盈：实扫位 ${p.realLoc.keys.take(4).join("、")} vs 基准位 ${p.bookLoc.keys.take(4).join("、")}——核对该位是否出库未消账或货移入未登记");
+    }
+  }
+  if (p.outsideDetail.isNotEmpty) out.add("账外扫入 ${p.outsideDetail.length} 码：${p.outsideDetail.take(4).join("、")}${p.outsideDetail.length > 4 ? " 等" : ""}");
+  return out.join("\n");
+}
+
+/// ㉖v94t 货位级差异"定位/建议"：点名未扫到的标签、并用最新账本区分"基准旧/漏扫"与"真缺"
+String invLocLocate(InvLocDiff l, String? moveNote) {
+  final out = <String>[];
+  if (moveNote != null) out.add(moveNote);
+  final scanned = l.labels.map((e) => e.split("|").first.toUpperCase()).toSet();
+  final diff = l.realQty - l.bookQty;
+  if (diff < -1e-6) {
+    final miss = l.bookLabels.where((c) => !scanned.contains(c)).toList();
+    if (miss.isNotEmpty) out.add("基准列了但未扫到：${miss.take(5).join("、")}${miss.length > 5 ? " 等${miss.length}码" : ""}");
+    if (l.liveN > 0) {
+      out.add("最新账本此位仍有 ${l.liveN} 码在架——实物多半还在，属漏扫或基准版本旧，先去本位复核");
+    } else if (l.liveN == 0 && l.bookLabels.isNotEmpty) {
+      out.add("最新账本此位已空——差的 ${_fmtInvNum(-diff)} 件大概率已出库未扫码");
+    }
+  } else if (diff > 1e-6) {
+    final extra = scanned.where((c) => !l.bookLabels.contains(c)).toList()..sort();
+    if (extra.isNotEmpty && l.bookLabels.isNotEmpty) out.add("比基准多扫的码：${extra.take(5).join("、")}${extra.length > 5 ? " 等${extra.length}码" : ""}");
+    if (l.liveN >= 0) out.add("最新账本此位 ${l.liveN} 码——实扫 ${l.realBoxes} 码${l.realBoxes == l.liveN ? "与账本吻合：基准台账旧了，改基准重盘或直接应用改账" : "与账本不符：按标签逐码核实物"}");
+    out.add("亏空走 MES 调整，盘盈同样走 MES；本按钮只改位置");
+  }
+  if (l.outsideLabels.isNotEmpty) out.add("另账外扫入：${l.outsideLabels.take(4).join("、")}${l.outsideLabels.length > 4 ? " 等${l.outsideLabels.length}码" : ""}");
+  if (l.labels.isNotEmpty && diff.abs() <= 1e-6) return ""; //账实相符无需定位
+  return out.join("\n");
+}
+
 String _invCsvField(String v) {
   if (v.contains(",") || v.contains("\"") || v.contains("\n")) return "\"${v.replaceAll("\"", "\"\"")}\"";
   return v;
@@ -196,7 +338,7 @@ String buildInvDiffCsv(BatchInfo task, InvDiffResult d) {
   final mv = invPairMoveSuggest(d);
   String s = "盘点任务,${_invCsvField(task.batchId)},${_invCsvField(task.batchRemark)},基准版本 账面:${_invCsvField(task.invBookKey)} 货位:${_invCsvField(task.invLocKey)},范围:${_invCsvField(task.invScope.isEmpty ? "全盘" : task.invScope.join("/"))}\n";
   s += "\n===零件号级差异(对齐基础数据表)===\n";
-  s += "零件号,物料名称,期末库存,实盘数量,差异数量,账外扫入,差异类型,双基准矛盾\n";
+  s += "零件号,物料名称,期末库存,实盘数量,差异数量,账外扫入,差异类型,最新账本在架,双基准矛盾,定位/建议\n";
   for (final p in d.parts) {
     final diff = p.realQty - p.bookQty;
     String type;
@@ -205,14 +347,15 @@ String buildInvDiffCsv(BatchInfo task, InvDiffResult d) {
     else if (diff > 1e-6) type = "盘盈";
     else type = "正常(有账外扫入)";
     if (p.outsideBoxes > 0 && p.bookQty == 0 && p.realBoxes == 0) type = "账外料";
-    s += "${_invCsvField(p.partNo)},${_invCsvField(p.itemName)},${_fmtInvNum(p.bookQty)},${_fmtInvNum(p.realQty)},${_fmtInvNum(diff)},${p.outsideBoxes > 0 ? _fmtInvNum(p.outsideQty) : ''},$type,${p.warnFlag == 7 ? '货位台账合计≠账面，先核两版账' : ''}\n";
+    final live = p.liveBoxes < 0 ? "无账本" : "${p.liveBoxes}码/${_fmtInvNum(p.liveQty)}件${p.liveStn > 0 ? "+${p.liveStn}码压站台" : ""}";
+    s += "${_invCsvField(p.partNo)},${_invCsvField(p.itemName)},${_fmtInvNum(p.bookQty)},${_fmtInvNum(p.realQty)},${_fmtInvNum(diff)},${p.outsideBoxes > 0 ? _fmtInvNum(p.outsideQty) : ''},$type,$live,${p.warnFlag == 7 ? '货位台账合计≠账面，先核两版账' : ''},${_invCsvField(invPartLocate(p))}\n";
   }
   s += "\n===货位级差异(对齐货架列表)===\n";
-  s += "货位编码,零件号,台账数量,实盘数量,差异,定位/建议\n";
+  s += "货位编码,零件号,台账数量,实盘数量,差异,最新账本此位框数,实扫标签码,定位/建议\n";
   for (final l in d.locs) {
     final diff = l.realQty - l.bookQty;
-    final note = mv['${l.locCode}|${l.partNo}'] ?? '';
-    s += "${_invCsvField(l.locCode)},${_invCsvField(l.partNo)},${_fmtInvNum(l.bookQty)},${_fmtInvNum(l.realQty)},${_fmtInvNum(diff)},${_invCsvField(note)}\n";
+    final note = invLocLocate(l, mv['${l.locCode}|${l.partNo}']);
+    s += "${_invCsvField(l.locCode)},${_invCsvField(l.partNo)},${_fmtInvNum(l.bookQty)},${_fmtInvNum(l.realQty)},${_fmtInvNum(diff)},${l.liveN < 0 ? '无账本' : l.liveN},${_invCsvField(l.labels.join(" "))},${_invCsvField(note)}\n";
   }
   if (d.outsideScope.isNotEmpty) {
     s += "\n===范围外清单(登记在未盘点货架，不计盘盈亏，待人工核对)===\n";
@@ -1288,11 +1431,12 @@ class _InvDiffPageState extends State<_InvDiffPage> {
               if (diffParts.isEmpty) const Padding(padding: EdgeInsets.only(left: 8), child: Text("全部账实相符 🎉", style: TextStyle(color: Colors.green)))
               else ...diffParts.map((p) {
                 final diff = p.realQty - p.bookQty;
+                final loc = invPartLocate(p);
                 return Card(
                   child: ListTile(
                     dense: true,
                     title: Text("${p.partNo}  ${p.itemName}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                    subtitle: Text("账面 ${_fmtInvNum(p.bookQty)} / 实盘 ${_fmtInvNum(p.realQty)}${p.outsideBoxes > 0 ? "（另账外扫入 ${p.outsideBoxes} 码 ${_fmtInvNum(p.outsideQty)}）" : ""}${p.warnFlag == 7 ? "\n⚠️双基准矛盾：货位台账合计≠账面，先核账" : ""}", style: const TextStyle(fontSize: 12)),
+                    subtitle: Text("账面 ${_fmtInvNum(p.bookQty)} / 实盘 ${_fmtInvNum(p.realQty)}${p.liveBoxes >= 0 ? " / 最新账本在架 ${p.liveBoxes} 码${p.liveStn > 0 ? "+${p.liveStn} 压站台" : ""}" : ""}${p.outsideBoxes > 0 ? "（另账外扫入 ${p.outsideBoxes} 码 ${_fmtInvNum(p.outsideQty)}）" : ""}${p.warnFlag == 7 ? "\n⚠️双基准矛盾：货位台账合计≠账面，先核账" : ""}${loc.isNotEmpty ? "\n📍$loc" : ""}", style: const TextStyle(fontSize: 12)),
                     trailing: Text(diff > 1e-6 ? "盘盈 +${_fmtInvNum(diff)}" : diff < -1e-6 ? "盘亏 ${_fmtInvNum(diff)}" : (p.outsideBoxes > 0 ? "账外" : "—"), style: TextStyle(color: diff > 0 ? Colors.orange : diff < 0 ? Colors.red : Colors.grey, fontWeight: FontWeight.bold, fontSize: 13)),
                   ),
                 );
@@ -1301,12 +1445,12 @@ class _InvDiffPageState extends State<_InvDiffPage> {
               if (diffLocs.isEmpty) const Padding(padding: EdgeInsets.only(left: 8), child: Text("货位级无差异", style: TextStyle(color: Colors.green)))
               else ...diffLocs.map((l) {
                 final diff = l.realQty - l.bookQty;
-                final note = mv['${l.locCode}|${l.partNo}'];
+                final loc = invLocLocate(l, mv['${l.locCode}|${l.partNo}']);
                 return Card(
                   child: ListTile(
                     dense: true,
                     title: Text("${l.locCode}  ${l.partNo}", style: const TextStyle(fontSize: 13)),
-                    subtitle: Text("台账 ${_fmtInvNum(l.bookQty)} / 实盘 ${_fmtInvNum(l.realQty)}${note != null ? "\n💡$note" : ""}", style: const TextStyle(fontSize: 12)),
+                    subtitle: Text("台账 ${_fmtInvNum(l.bookQty)} / 实盘 ${_fmtInvNum(l.realQty)}${l.liveN >= 0 ? " / 账本现 ${l.liveN} 码" : ""}${l.labels.isNotEmpty ? "\n实扫：${l.labels.take(6).join("、")}${l.labels.length > 6 ? " 等${l.labels.length}码" : ""}" : ""}${loc.isNotEmpty ? "\n💡$loc" : ""}", style: const TextStyle(fontSize: 12)),
                     trailing: Text(diff > 0 ? "+${_fmtInvNum(diff)}" : _fmtInvNum(diff), style: TextStyle(color: diff > 0 ? Colors.orange : Colors.red, fontWeight: FontWeight.bold)),
                   ),
                 );
