@@ -1090,8 +1090,11 @@ Future<Map> ledgerPushNow() async {
                   icon: const Icon(Icons.sync_problem,
                       color: Colors.orange, size: 34),
                   title: const Text("货位登记冲突"),
-                  content: Text(
-                      "${rej.length} 个标签的登记未生效（被其他设备更新的数据覆盖，或目标货位已被别的框占用）：\n${rej.take(8).join("\n")}${rej.length > 8 ? " …" : ""}\n\n请到「位置登记」重新登记这些框的实际货位（先拉取对齐），并和同事核对现场。"),
+                  // ㉖v97b 拒回条目自带原因长文案，多条可超屏——content 包滚动容器；旧文案"请重新登记"
+                  // 对"已出库旧缓存回推"类是误导（重登会复活幽灵行），改为按条目内原因处置
+                  content: SingleChildScrollView(
+                      child: Text(
+                          "${rej.length} 个标签的登记未生效：\n${rej.take(8).join("\n")}${rej.length > 8 ? " …" : ""}\n\n处理：条目注明已出库/作废的无需登记（本机拉取一次自动清掉）；框确实还在架上的，请到「位置登记」重新登记实际货位（先拉取对齐），并和同事核对现场。")),
                   actions: [
                     FilledButton(
                         onPressed: () => Navigator.pop(dc),

@@ -2294,6 +2294,16 @@ const server = http.createServer(async (req, res) => {
             continue;
           }
           if (!_fpOld[key] && !Object.keys(_fpOld).length && old && it.t > 0 && Number(old.t) > it.t) { skipped++; rejected.push(key); continue; } // 设备首推无指纹档案：保守回退旧规则（t更旧者拒），防服务重启窗口倒退
+          // ㉖v97c 复核补闸：本设备从未推过该行(_fpOld无键)、服务器现值登记时刻更新、且内容非服务器历史值
+          // （2280三子句已放行"原样重放"）——旧版此路会直接把别机的新登记覆盖回旧位（弹窗文案
+          // "被其他设备更新的数据覆盖"暗示的真实现象，v95c派生值漂移正是触发器）。拒回带原因+按(键,时刻)去重只提示一次
+          if (old && !_fpOld[key] && it.t > 0 && Number(old.t) > it.t) {
+            skipped++;
+            const _sr = (db.tombReject = db.tombReject || {});
+            const _sk = 'S|' + key + '|' + it.t;
+            if (!_sr[_sk]) { _sr[_sk] = tombT || it.t; rejected.push(key + '（服务器已有更新登记 ' + localDT(new Date(Number(old.t) || 0).toISOString(), 16) + '，本机旧缓存未生效——拉取对齐即可，无需重新登记）'); }
+            continue;
+          }
           _fpNew[key] = h; // 本轮该设备视图留档
           // ㉖ 货位互斥闸：同一货位不允许被不同框同时占用（多PDA并发登记、过期副本回填都会撞位）；同框兄弟码（同托号）豁免
           if (it.l) {
