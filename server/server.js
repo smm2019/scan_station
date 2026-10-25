@@ -1521,6 +1521,51 @@ function queueBoardOf(nowReq) {
 }
 function issuedOf(i) { return (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0, l: '' } : { c: String(x.c || ''), q: Number(x.q) || 0, l: String(x.l || '') }); }
 function uniqCodes(arr) { return [...new Set(arr.map(s => String(s).toUpperCase()))]; }
+// ㉖v94r 出库台账兜底补建（10/25 现场：6608582236/N26J190090 已转MES、账也销了，但出库台账无记录）：
+// 根因=DT 出库单只由 PDA 客户端转单成功后推送，而 outboundPushNow 是 fire-and-forget（无重试、失败仅 debugPrint），
+// 服务端 transfer 分支只写 seenOut 不建台账 → 推送一旦失败，该行出库记录永久缺失，且无人察觉（实测 75 行中缺 1 行）。
+// 兜底：扫描所有 transferred 行，其已发标签若在整个出库台账中查无 → 服务器按行信息补建一条 SRV-DT 台账（幂等：补建后即查到，不再重建）。
+function outboundLedgerFix() {
+  try {
+    const obCodes = new Set();
+    for (const o of Object.values(db.outbound || {})) for (const i of o.items || []) { const c = String(i.barcode || '').toUpperCase(); if (c) obCodes.add(c); }
+    const dict = db.itemDict || {};
+    let fixed = 0;
+    for (const r of db.requisitions || []) {
+      for (const it of r.items || []) {
+        if (it.transferred !== true) continue;
+        const rows = issuedOf(it);
+        if (!rows.length) continue;
+        if (rows.some((e) => obCodes.has(String(e.c || '').toUpperCase()))) continue; // 已有任一条台账记录，视为已落库
+        const items = rows.map((e) => {
+          const c = String(e.c || '').toUpperCase();
+          let fl = String(e.l || '');
+          if (!fl) { const led = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === c); fl = String((led && led.l) || ''); }
+          if (!fl) { const si = (db.seenIn || {})[c]; fl = String((si && si.l) || ''); }
+          const nm = String((dict[String(it.partNo || '')] || {}).nm || '') || String(it.itemName || '');
+          const isAgv = (it.agvCalled || []).some((x) => String(x.c || '').toUpperCase() === c);
+          return { code: String(it.partNo || ''), mitemCode: '', name: nm, qty: Number(e.q) || 0, barcode: c, fromLoc: fl, move: isAgv ? 'AGV' : '人工', checked: false };
+        });
+        const d = new Date(Number(it.transferAt) || Date.now());
+        const p2 = (n) => String(n).padStart(2, '0');
+        const ts = '' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
+        const no = 'SRV-DT' + ts + '-' + String(it.partNo || '').slice(-4);
+        if (db.outbound[no]) continue;
+        const tl = r.toLoc || {};
+        const _so = (db.seenOut || {})[String(items[0].barcode || '').toUpperCase()] || {};
+        db.outbound[no] = { orderNo: no, createdAt: Number(it.transferAt) || Number(_so.at) || Date.now(), toLoc: [tl.WAREHOUSE_NAME, tl.DISTRICT_NAME, tl.LOC_NAME].filter(Boolean).join('/') || '', operator: String(it.transferBy || _so.by || u_nameOf(r) || ''), status: 0, linkReqNo: String(r.no || ''), items, srvFix: 1, srvFixAt: Date.now() };
+        for (const e of items) { obCodes.add(e.barcode); feedDict(e.code, e.name, '出库台账补建'); }
+        fixed++;
+        pushEvent('出库台账补建', String(it.partNo || ''), `${r.no} 行 ${it.partNo} 已转MES但出库台账缺失，服务器已补建 ${no}（${items.length} 框 ${items.reduce((s, x) => s + (Number(x.qty) || 0), 0)} 件）`, Date.now());
+        console.log('[ob-fix] 补建出库台账 ' + no + ' ← ' + r.no + ' ' + it.partNo);
+      }
+    }
+    if (fixed) { db.outboundAt = new Date().toISOString(); db.outboundCount = Object.keys(db.outbound).length; save(); }
+    return fixed;
+  } catch (e) { console.log('[ob-fix] 异常：', e.message); logErr('outboundLedgerFix', e); return 0; }
+}
+function u_nameOf(r) { const u = (db.users || []).find((x) => x.id === (r.by || '')); return u ? u.name : ''; }
+setInterval(outboundLedgerFix, 10 * 60 * 1000).unref(); // 每10分钟兜底扫一遍（幂等）
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 // ㉖v80 ISO串→本地 'YYYY-MM-DD HH:mm'（打印页/看板直显用；旧版直接slice UTC串差8小时）
 function localDT(s, len) { const d = new Date(s); if (isNaN(d.getTime())) return String(s || '').slice(0, len || 16).replace('T', ' '); const p = (n) => String(n).padStart(2, '0'); return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + (len > 16 ? ':' + p(d.getSeconds()) : ''); }
@@ -4702,8 +4747,10 @@ return send(res, 200, {
             target.transferQty = got;
             for (const e of target.issued) { const c1 = String((typeof e === 'string' ? e : e.c) || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Date.now(), no: r.no, by: u.name }; } // ㉖② 转MES=出库承诺，登记历史防标签复用
             target.mesNo = String(b.mesNo || '').trim(); // App 侧出库单号，便于对账
+            target.transferAt = Date.now(); target.transferBy = u.name; // ㉖v94r 转单时刻/人：出库台账兜底补建需要（PDA推送是fire-and-forget，失败即永久缺失）
             hpush(`转MES ${target.partNo} 实发${got}件${got < (Number(target.qty) || 0) ? '（短装' + ((Number(target.qty) || 0) - got) + '件）' : ''}（${u.name}）`);
             finalize();
+            setTimeout(() => { try { outboundLedgerFix(); } catch (_) {} }, 3 * 60000); // ㉖v94r 3分钟后自查该行台账是否落库（给PDA推送留足窗口），缺则补建
           } else if (act === 'skip') {
             // 行级跳过：仓库无货，0件转单，等下次补货可另开单
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可跳过' });
@@ -6014,4 +6061,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); });
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪
