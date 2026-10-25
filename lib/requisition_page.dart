@@ -1382,14 +1382,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   }
 
   /// ㉖v96 队列条计数：按 agvCoarse 粗粒度态统计（与采集页 _qSeg 同语义）
+  /// ㉖v97 复检修正：直接用 agvCoarse 归类，删掉多余的手动失败/取消分支——旧写法把"取消"项误计入"失败"数
   int _queueCnt(String coarse) {
     var n = 0;
     for (final q in _queueItems) {
-      final s = q["state"]?.toString() ?? "?";
-      if (s == "失败" || s == "取消") {
-        if (coarse == "失败") n++;
-        continue;
-      }
       if (agvCoarse(q) == coarse) n++;
     }
     return n;
