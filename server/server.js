@@ -48,7 +48,7 @@ function defaultDb() {
     scanlogAt: '', scanlogCount: 0,
     outbound: {}, // 出库单（按单号存最新快照）
     outboundAt: '', outboundCount: 0,
-    watchlist: [], // ⑮预约来料
+    watchlist: [], // ⑮预约来料 [{userId,partNo,at, qty:预订框数0=仅提醒, itemName, auto:到货自动开领料单, due:期望到货日YYYY-MM-DD, got:累计到料框, filledReq:已转单id}] // ㉖v94n 预约升级：数量预订+进度+自动开单（旧条目无新字段=纯通知型，行为不变）
     inspects: [], seenIn: {}, seenOut: {}, // ㉖④检验工单 / ①②标签生命周期索引 [{userId,partNo,at}]
     groundSlots: {}, // ⑮地面排格数覆盖 {"NB03-A-11":13}，缺省12
     reqTemplates: [], // ㉖v62 产线领料模板 {id,name,by,byName,shared,items,use,at}
@@ -746,6 +746,30 @@ function dailySnap() {
   } catch (e) { console.log('[snap] 失败：', e.message); logErr('dailySnap', e); }
 }
 setInterval(dailySnap, 30 * 60 * 1000).unref();
+// ---- ㉖v94n 预约到期巡检：每日 9 点后一次——数量预约超期望日未达成→提醒预约人（可改日/取消），并给仓管知会；履行后自动消解 ----
+let _bkDueLast = '';
+function bookingDueSweep() {
+  try {
+    const d = new Date();
+    if (d.getHours() < 9) return;
+    const key = snapDay(d);
+    if (_bkDueLast === key) return;
+    _bkDueLast = key;
+    let n = 0;
+    for (const w of db.watchlist || []) {
+      const wq = Number(w.qty) || 0;
+      if (!wq || w.filledReq || !w.due) continue;
+      if (Date.now() <= new Date(w.due + 'T23:59:59').getTime()) continue;
+      const user = db.users.find((x) => x.id === w.userId);
+      if (!user || !user.enabled) continue;
+      const got = Math.max(0, Number(w.got) || 0); // ㉖v94n 与履行链同源：累计到料数
+      notify(user.id, 'watch_in', `⏰ 预约逾期：零件 ${w.partNo} 超期望日 ${w.due.slice(5)} 仍未到齐（${got}/${wq} 框）。可调整期望日、等自动开单，或取消预约`, '');
+      n++;
+    }
+    if (n) { save(); console.log('[booking-due] 逾期提醒 ' + n + ' 条'); }
+  } catch (e) { console.log('[booking-due] 失败：', e.message); logErr('bookingDue', e); }
+}
+setInterval(bookingDueSweep, 30 * 60 * 1000).unref();
 // ---- ㉔每日自动导出：18点后落 D1库位表+D2库存汇总 到 data/exports/daily（留90天，对账免手工）----
 let _expLast = '';
 function dailyExport() {
@@ -1232,6 +1256,28 @@ function sweepAssignOpen() {
 }
 // 框键：有托号按托号合并（整托多码=1框）；无托号按"同货位+同零件号"合并（与PDA库存口径一致）；都缺才一码一框
 // ===== ⑮ 库存事件检测：预约到料 + 断料预警（账本合并后调用） =====
+// ㉖v94n 预约够数履行：数量预订满额→自动开领料单（与手动建单同构：单号LL+本地时间+序号；pending状态；留痕+双方通知）
+// 防呆：已有同零件未完结领料单→不重复开（通知说明）；auto=false→只通知不开单；无领料权限→转告仓管
+function bookingFulfill(w, user, pn, got, want, byName) {
+  try {
+    const open = (db.requisitions || []).find((r) => ['pending', 'accepted'].includes(r.status) && (r.items || []).some((i) => String(i.partNo || '').toUpperCase() === pn));
+    if (open) { w.filledReq = 'dup'; notify(user.id, 'watch_in', `📦 预约达成但已有未完结领料单 ${open.no}（含零件 ${pn}），未重复开单。可在那张单里核销，或先处理后再预约`, open.id); return; }
+    if (w.auto === false) { w.filledReq = 'auto-off'; notify(user.id, 'watch_in', `📦 预约达成：零件 ${pn} 到料 ${got}/${want} 框（你设置了不自动开单）。请自行开领料单或联系仓管`, ''); (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'watch_in', `📦 预约到货：${user.name} 预订的零件 ${pn} 已到 ${got} 框（目标 ${want}）`, '')); return; }
+    const canReq = (db.features[user.role] || {}).requisition === true;
+    if (!canReq) { w.filledReq = 'no-perm'; notify(user.id, 'watch_in', `📦 预约达成：零件 ${pn} 到料 ${got}/${want} 框。当前角色未开领料权限，已转告仓管备料`, ''); (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'watch_in', `📦 预约到货：${user.name} 预订的零件 ${pn} 已到 ${got} 框，请安排备料`, '')); return; }
+    const now = new Date(), ts = localTs(now);
+    const r = { id: newId('rq'), no: `LL${ts}${String(db.requisitions.length % 100).padStart(2, '0')}`, by: user.id, byName: user.name,
+      items: [{ partNo: pn, itemName: String(w.itemName || ''), qty: got, issued: [], rush: false }], status: 'pending',
+      remark: `预约自动开单：${user.name} 预订 ${want} 框，实际到料 ${got} 框（${byName} 入库触发）`, createdAt: now.toISOString(), history: [{ time: now.toISOString(), by: '系统', text: `🤖 预约达成自动开单：零件 ${pn} 到料 ${got}/${want} 框` }],
+      assigneeId: '', assigneeName: '', assignOpenAt: '', rush: false, rushBy: '', needDate: w.due || '', fromBooking: true };
+    db.requisitions.push(r);
+    w.filledReq = r.id; w.filledAt = Date.now();
+    (db.users || []).filter((x) => x.role === 'warehouse' && x.enabled).forEach((x) => notify(x.id, 'req_new', `🤖 预约到齐自动开单：${user.name} 预订零件 ${pn} 已到 ${got} 框 → 领料单 ${r.no}（请按 ${got} 框备料）`, r.id));
+    notify(user.id, 'watch_in', `✅ 预约达成：零件 ${pn} 到料 ${got}/${want} 框，已自动为你开领料单 ${r.no}`, r.id);
+    pushOps(user, '预约自动开单', pn, `到料${got}框 → ${r.no}`);
+    console.log('[booking] ' + pn + ' 够数自动开单 ' + r.no);
+  } catch (e) { console.log('[booking] 履行异常：', e.message); logErr('bookingFulfill', e); }
+}
 function partBoxCounts() {
   const m = {}, seen = {}; // 按框计（同托多码=1框）
   for (const x of db.ledger || []) {
@@ -1245,7 +1291,7 @@ function stockWatchScan(pre, byName) {
   try {
     const post = partBoxCounts();
     const t0 = new Date(); t0.setHours(0, 0, 0, 0);
-    // 预约到料：今日新上账框命中 watchlist
+    // 预约到料：今日新上账框命中 watchlist // ㉖v94n 升级：带数量预订的=算进度→够数自动开领料单(留痕+双方通知)；纯提醒型走旧"每零件每天一次"通知
     const wl = db.watchlist || [];
     if (wl.length) {
       const arrived = {}, _abseen = {};
@@ -1256,11 +1302,31 @@ function stockWatchScan(pre, byName) {
       for (const w of wl) {
         const p = String(w.partNo || '').toUpperCase();
         if (!p || !arrived[p]) continue;
-        const lk = p + '|' + w.userId + '|' + dayKey;
-        if (db.watchSeen[lk]) continue; db.watchSeen[lk] = 1; save();
         const user = db.users.find((x) => x.id === w.userId);
+        const wq = Number(w.qty) || 0;
+        if (!wq) { // 纯提醒型（旧预约）：保持原"每零件每天首次到料通知一次"
+          const lk = p + '|' + w.userId + '|' + dayKey;
+          if (db.watchSeen[lk]) continue; db.watchSeen[lk] = 1; save();
+          if (!user || !user.enabled) continue;
+          notify(w.userId, 'watch_in', `🛒 预约到料（今日首次）：零件 ${p} 今日已入库 ${arrived[p]} 框，当前在架 ${post[p] || 0} 框`, '');
+          continue;
+        }
+        if (w.filledReq === 'dup' && !(db.requisitions || []).find((r) => ['pending', 'accepted'].includes(r.status) && (r.items || []).some((i) => String(i.partNo || '').toUpperCase() === p))) { w.filledReq = ''; w.got = 0; w.arrDate = ''; w.arrLast = 0; } // 未完单已被处理完→本轮重开计数可再履行
+        if (w.filledReq) continue; // 本轮已履行
+        // ㉖v94n 到料计数=跨日累计只增不减（当天快照被消耗会回落，增量法防漏计）：新的一天加当天全部，同日只加超出上次快照的增量
+        const todayArr = arrived[p] || 0;
+        if (String(w.arrDate || '') !== dayKey) { if (todayArr > 0) { w.got = (Number(w.got) || 0) + todayArr; w.arrDate = dayKey; w.arrLast = todayArr; } }
+        else if (todayArr > (Number(w.arrLast) || 0)) { w.got = (Number(w.got) || 0) + (todayArr - (Number(w.arrLast) || 0)); w.arrLast = todayArr; }
+        const got = Number(w.got) || 0;
+        if (got <= (Number(w.notifiedGot) || 0)) continue; // 计数无新增不重复提示
+        w.notifiedGot = got;
+        const pct = Math.min(100, Math.round(got * 100 / wq));
         if (!user || !user.enabled) continue;
-        notify(w.userId, 'watch_in', `🛒 预约到料（今日首次）：零件 ${p} 今日已入库 ${arrived[p]} 框，当前在架 ${post[p] || 0} 框`, '');
+        if (got < wq) {
+          notify(w.userId, 'watch_in', `📦 预约进度：零件 ${p} 已到料 ${got}/${wq} 框（${pct}%），在架 ${post[p] || 0}，够数将自动开领料单`, '');
+        } else {
+          bookingFulfill(w, user, p, got, wq, byName); // 够数→自动开单（内部留痕+通知；auto关闭时降级为提醒）
+        }
       }
     }
     // 断料预警：合并前有、合并后清零；每零件每天最多一次
@@ -3004,9 +3070,7 @@ return send(res, 200, {
         if (cut) pushOps(u, '取消预约', pn, uid);
         return send(res, 200, { ok: true, removed: cut });
       }
-      if (req.method === 'GET' && p === '/api/watchlist') {
-        return send(res, 200, { ok: true, list: (db.watchlist || []).filter((w) => w.userId === u.id) });
-      }
+      // ㉖v94n 旧版 GET /api/watchlist 已删（与富化版重复且抢先命中——预约列表统一走下方富化端点）
       // ===== ㉕N5 任务六段流水线：排队→AGV接单→叉取→载货在途→到站→清台（队列+RCS在途节点+站台状态聚合，只读） =====
       if (req.method === 'GET' && p === '/api/agv/pipeline') {
         const nowMs = Date.now();
@@ -3339,18 +3403,35 @@ return send(res, 200, {
         pushOps(u, '报表回填', from + '~' + to, '新增 ' + done + '/' + n + ' 天快照');
         return send(res, 200, { ok: true, total: n, created: done });
       }
-      if (req.method === 'POST' && p === '/api/watchlist') {
+      if (req.method === 'POST' && p === '/api/watchlist') { // ㉖v94n 预约升级：qty=预订框数(0=仅提醒型旧行为)，due=期望到货日，auto=够数自动开领料单
         const b = await readBody(req);
         const pn = String(b.partNo || '').trim().toUpperCase().slice(0, 40);
         if (!pn) return send(res, 400, { ok: false, msg: '缺少 partNo' });
         db.watchlist = db.watchlist || [];
-        if (b.on === false) { db.watchlist = db.watchlist.filter((w) => !(w.userId === u.id && w.partNo === pn)); }
-        else if (!db.watchlist.some((w) => w.userId === u.id && w.partNo === pn)) {
+        if (b.on === false) { db.watchlist = db.watchlist.filter((w) => !(w.userId === u.id && w.partNo === pn)); save(); return send(res, 200, { ok: true, off: true }); }
+        const qty = Math.max(0, Math.min(9999, Number(b.qty) || 0));
+        const due = /^\d{4}-\d{2}-\d{2}$/.test(String(b.due || '')) ? String(b.due) : '';
+        const itemName = String(b.itemName || '').slice(0, 60);
+        const auto = b.auto !== false;
+        let w = db.watchlist.find((x) => x.userId === u.id && x.partNo === pn);
+        if (!w) {
           if (db.watchlist.length > 3000) return send(res, 400, { ok: false, msg: '预约条目已满，请先清理' });
-          db.watchlist.push({ userId: u.id, partNo: pn, at: Date.now() });
-        }
+          w = { userId: u.id, partNo: pn, at: Date.now() }; db.watchlist.push(w);
+        } else if (qty > 0 && (w.qty !== qty || w.filledReq)) { w.got = 0; w.arrDate = ''; w.arrLast = 0; w.notifiedGot = 0; w.filledReq = ''; w.filledAt = 0; } // ㉖v94n 改数量或已履行过=新一轮：到料计数清零重计（旧单消耗不影响新轮计数）
+        w.qty = qty; w.auto = auto; w.due = due; if (itemName) w.itemName = itemName;
         save();
-        return send(res, 200, { ok: true });
+        return send(res, 200, { ok: true, entry: w });
+      }
+      if (req.method === 'GET' && p === '/api/watchlist') { // ㉖v94n 富化：库存/进度/履行状态/逾期，PDA列表直接渲染
+        const _post = partBoxCounts();
+        const list = (db.watchlist || []).filter((w) => w.userId === u.id).map((w) => {
+          const p = String(w.partNo || '').toUpperCase(), cur = _post[p] || 0, wq = Number(w.qty) || 0;
+          const req0 = w.filledReq && !['dup', 'auto-off', 'no-user', 'no-perm'].includes(w.filledReq) ? (db.requisitions || []).find((x) => x.id === w.filledReq) : null;
+          return Object.assign({}, w, { stock: cur, arrived: Math.max(0, Number(w.got) || 0), target: wq,
+            done: !!w.filledReq, reqNo: req0 ? req0.no : w.filledReq === 'dup' ? '已有未完单未重复开' : w.filledReq === 'auto-off' ? '够数已提醒(未自动开)' : w.filledReq ? '已提醒仓管' : '',
+            overdue: !!(wq && !w.filledReq && w.due && Date.now() > new Date(w.due + 'T23:59:59').getTime()) });
+        });
+        return send(res, 200, { ok: true, list });
       }
       // ===== ㉖ 容器类型可配置：GET 登录即可读（采集页按钮数据源）；POST 仓管/管理员整表保存（留痕） =====
       if (req.method === 'GET' && p === '/api/containers') {

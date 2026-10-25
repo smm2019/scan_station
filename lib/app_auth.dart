@@ -391,12 +391,20 @@ class AuthApi {
   static Future<Map> partProfile(String pn) async =>
       _req("GET", "/api/part/profile?pn=${Uri.encodeComponent(pn)}",
           token: await AuthStore.token());
-  // ⑮预约来料 + 地面排格数
+  // ⑮预约来料 + 地面排格数  ㉖v94n 预约升级：qty=预订框数(0=仅提醒)，due=期望到货日，auto=够数自动开领料单
   static Future<Map> watchlistGet() async =>
       _req("GET", "/api/watchlist", token: await AuthStore.token());
-  static Future<Map> watchlistSet(String partNo, bool on) async =>
+  static Future<Map> watchlistSet(String partNo, bool on,
+      {int qty = 0, String itemName = "", String due = "", bool auto = true}) async =>
       _req("POST", "/api/watchlist",
-          body: {"partNo": partNo, "on": on}, token: await AuthStore.token());
+          body: {
+            "partNo": partNo, "on": on,
+            if (on) "qty": qty,
+            if (on && itemName.isNotEmpty) "itemName": itemName,
+            if (on && due.isNotEmpty) "due": due,
+            if (on) "auto": auto
+          },
+          token: await AuthStore.token());
   static Future<Map> groundSlotsGet() async =>
       _req("GET", "/api/ground-slots", token: await AuthStore.token());
   static Future<Map> groundSlotsSet(List entries) async =>

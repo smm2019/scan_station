@@ -2310,7 +2310,14 @@ class _WatchTabState extends State<_WatchTab> {
               ));
       if (yes != true || !mounted) return;
     }
-    final r = await AuthApi.watchlistSet(picked.partNo, true);
+    final cfg = await _bookingDlg(picked.partNo, picked.itemName);
+    if (cfg == null || !mounted) return;
+    final qq = (cfg["qty"] as int) > 0;
+    final r = await AuthApi.watchlistSet(picked.partNo, true,
+        qty: cfg["qty"] as int,
+        itemName: picked.itemName,
+        due: cfg["due"] as String,
+        auto: cfg["auto"] as bool);
     if (!mounted) return;
     if (r["ok"] != true) {
       ScaffoldMessenger.of(context)
@@ -2318,8 +2325,124 @@ class _WatchTabState extends State<_WatchTab> {
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text("已预约：${picked.partNo} 入库时会通知你"),
+        content: Text(qq
+            ? "已预约：${picked.partNo} 预订 ${cfg["qty"]} 框，够数自动开领料单"
+            : "已预约：${picked.partNo} 入库时会通知你"),
         backgroundColor: Colors.green));
+    await _load();
+  }
+
+  // ㉖v94n 预约设置弹层：预订框数(0=仅提醒旧模式) + 期望到货 + 够数自动开领料单
+  Future<Map?> _bookingDlg(String pn, String itemName,
+      {int initQty = 0, String initDue = "", bool initAuto = true}) async {
+    int qty = initQty;
+    String due = initDue;
+    bool auto = initAuto;
+    String fmtOff(int days) {
+      final d = DateTime.now().add(Duration(days: days));
+      return "${d.year.toString().padLeft(4, "0")}-${d.month.toString().padLeft(2, "0")}-${d.day.toString().padLeft(2, "0")}";
+    }
+    return showDialog<Map>(
+        context: context,
+        builder: (c2) => StatefulBuilder(builder: (bctx2, setSt2) {
+              final dueOpts = <List<String>>[
+                ["", "不限"],
+                [fmtOff(1), "明天"],
+                [fmtOff(3), "3天后"],
+                [fmtOff(7), "一周"],
+              ];
+              return AlertDialog(
+                title: Text("预约来料 $pn",
+                    style: const TextStyle(fontSize: 15)),
+                content: SizedBox(
+                    width: 340,
+                    child: SingleChildScrollView(
+                        child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                      if (itemName.isNotEmpty)
+                        Text(itemName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.blueGrey)),
+                      const SizedBox(height: 6),
+                      const Text("预订框数（0=只提醒不开单）",
+                          style: TextStyle(fontSize: 12)),
+                      Wrap(spacing: 6, children: [0, 1, 2, 3, 5, 10].map((v) {
+                        return ChoiceChip(
+                            label: Text(v == 0 ? "仅提醒" : "$v 框"),
+                            selected: qty == v,
+                            selectedColor: const Color(0xFFB2DFDB),
+                            onSelected: (_) => setSt2(() => qty = v));
+                      }).toList()),
+                      if (qty > 0) ...[
+                        const SizedBox(height: 6),
+                        const Text("期望到货", style: TextStyle(fontSize: 12)),
+                        Wrap(
+                            spacing: 6,
+                            children: dueOpts.map((d) {
+                              return ChoiceChip(
+                                  label: Text(d[1]),
+                                  selected: due == d[0],
+                                  selectedColor: const Color(0xFFB2DFDB),
+                                  onSelected: (_) => setSt2(() => due = d[0]));
+                            }).toList()),
+                        SwitchListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text("够数自动开领料单",
+                                style: TextStyle(fontSize: 12)),
+                            value: auto,
+                            onChanged: (v) => setSt2(() => auto = v)),
+                      ],
+                      const SizedBox(height: 2),
+                      Text(
+                          qty > 0
+                              ? "来料入库累计到 $qty 框后，按实际到料数自动开领料单并通知仓管"
+                              : "到料时站内通知你（纯提醒模式）",
+                          style: const TextStyle(
+                              fontSize: 11, color: Colors.grey)),
+                    ]))),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2),
+                      child: const Text("取消")),
+                  FilledButton(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF00897B)),
+                      onPressed: () => Navigator.pop(
+                          c2, {"qty": qty, "due": due, "auto": auto}),
+                      child: const Text("确认预约")),
+                ],
+              );
+            }));
+  }
+
+  // ㉖v94n 修改已有预约（卡片铅笔按钮）
+  Future<void> _edit(Map w) async {
+    final pn = w["partNo"]?.toString() ?? "";
+    if (pn.isEmpty) return;
+    final pr = widget.agg.parts[pn];
+    final nm = pr == null ? "" : pr.itemName;
+    final cfg = await _bookingDlg(pn, nm,
+        initQty: (w["target"] as num?)?.toInt() ?? 0,
+        initDue: w["due"]?.toString() ?? "",
+        initAuto: w["auto"] != false);
+    if (cfg == null || !mounted) return;
+    final r = await AuthApi.watchlistSet(pn, true,
+        qty: cfg["qty"] as int,
+        itemName: nm,
+        due: cfg["due"] as String,
+        auto: cfg["auto"] as bool);
+    if (!mounted) return;
+    if (r["ok"] != true) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text("修改失败：${r["msg"]}")));
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("预约已更新：$pn"), backgroundColor: Colors.green));
     await _load();
   }
 
@@ -2385,14 +2508,36 @@ class _WatchTabState extends State<_WatchTab> {
                             final at = (w["at"] as num?)?.toInt() ?? 0;
                             final pr = widget.agg.parts[pn];
                             final inStock = pr != null && pr.inBoxes > 0;
+                            // ㉖v94n 数量预约：进度/履行态（target=0 为纯提醒型，显示同旧版）
+                            final tgt = (w["target"] as num?)?.toInt() ?? 0;
+                            final got = (w["arrived"] as num?)?.toInt() ?? 0;
+                            final done = w["done"] == true;
+                            final overdue = w["overdue"] == true;
+                            final reqNo = w["reqNo"]?.toString() ?? "";
+                            final sub = tgt <= 0
+                                ? (inStock
+                                        ? "✅ 已到料 · 在架 ${pr.inBoxes} 框 · ${_fmtInvNum(pr.inStockQty)} 件"
+                                        : "⏳ 等待来料中") +
+                                    (at > 0 ? " · 预约于 ${_invRelTime(DateTime.fromMillisecondsSinceEpoch(at))}" : "")
+                                : done
+                                    ? "✅ 已转领料单 $reqNo"
+                                    : "到料 $got/$tgt 框（${(got * 100 / tgt).round()}%）· 在架 ${(w["stock"] as num?)?.toInt() ?? 0}" +
+                                        (overdue ? " · ⏰已超期望日" : "") +
+                                        (w["due"]?.toString().isNotEmpty == true ? " · 期望 ${w["due"]}" : "");
                             return Card(
                                 margin: const EdgeInsets.symmetric(vertical: 4),
-                                color: inStock ? const Color(0xFFE8F5E9) : null,
+                                color: done
+                                    ? const Color(0xFFE8F5E9)
+                                    : overdue
+                                        ? const Color(0xFFFFF3E0)
+                                        : inStock ? const Color(0xFFF1F8E9) : null,
                                 child: ListTile(
                                   dense: true,
                                   leading: Icon(
-                                      inStock ? Icons.shopping_cart : Icons.shopping_cart_outlined,
-                                      color: inStock ? const Color(0xFF2E7D32) : const Color(0xFF00897B),
+                                      done ? Icons.check_circle : Icons.shopping_cart,
+                                      color: done
+                                          ? const Color(0xFF2E7D32)
+                                          : const Color(0xFF00897B),
                                       size: 22),
                                   title: Text(
                                       pr != null && pr.itemName.isNotEmpty ? "${pn}  ${pr.itemName}" : pn,
@@ -2402,17 +2547,35 @@ class _WatchTabState extends State<_WatchTab> {
                                           fontSize: 14,
                                           fontFamily: "monospace",
                                           fontWeight: FontWeight.w600)),
-                                  subtitle: Text(
-                                      (inStock
-                                              ? "✅ 已到料 · 在架 ${pr.inBoxes} 框 · ${_fmtInvNum(pr.inStockQty)} 件"
-                                              : "⏳ 等待来料中") +
-                                          (at > 0 ? " · 预约于 ${_invRelTime(DateTime.fromMillisecondsSinceEpoch(at))}" : ""),
-                                      style: TextStyle(
-                                          fontSize: 11,
-                                          color: inStock ? const Color(0xFF2E7D32) : Colors.grey)),
+                                  subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(sub,
+                                            style: TextStyle(
+                                                fontSize: 11,
+                                                color: done
+                                                    ? const Color(0xFF2E7D32)
+                                                    : overdue
+                                                        ? Colors.deepOrange
+                                                        : Colors.grey)),
+                                        if (tgt > 0 && !done)
+                                          ClipRRect(
+                                              borderRadius: BorderRadius.circular(3),
+                                              child: LinearProgressIndicator(
+                                                  minHeight: 4,
+                                                  value: (got / tgt).clamp(0.0, 1.0),
+                                                  backgroundColor: const Color(0xFFE0E0E0),
+                                                  color: overdue ? Colors.deepOrange : const Color(0xFF00897B)))
+                                      ]),
                                   trailing: Row(
                                       mainAxisSize: MainAxisSize.min,
                                       children: [
+                                        if (tgt > 0)
+                                          IconButton(
+                                              tooltip: "修改预约",
+                                              icon: const Icon(Icons.edit_outlined,
+                                                  size: 18, color: Color(0xFF00897B)),
+                                              onPressed: () => _edit(w)),
                                         IconButton(
                                             tooltip: "查看档案",
                                             icon: const Icon(Icons.info_outline,
