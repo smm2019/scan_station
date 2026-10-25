@@ -2318,7 +2318,7 @@ const server = http.createServer(async (req, res) => {
           }
           if (old) { updated++; const fl = []; for (const k of ['l', 'p', 'q', 'b', 'f', 'mv']) { const av = String(old[k] == null ? '' : old[k]), bv = String(it[k] == null ? '' : it[k]); if (av !== bv) fl.push(k + ':' + (av || '∅') + '→' + (bv || '∅')); } if (fl.length) _diffs.push(it.c + ' ' + fl.join(' ')); if (String(old.l) !== String(it.l)) _diffs.length === 0 && _diffs.push(it.c + ' l:' + old.l + '→' + it.l); } else { added++; seenNew.add(key); _diffs.push(it.c + ' 入账@' + it.l + (it.p ? '(' + it.p + ')' : '')); }
           ledgerPut(cur, key, { ...it, by: u.name, rec: rec0 }, old);
-          if (tombT) tomb.delete(key); // 新到达=重新登记，复活
+          if (tombT) { tomb.delete(key); if (db.tombReject) delete db.tombReject[key]; } // 新到达=重新登记，复活（拒弹记录一并清：该框将来再次出库时还能提醒一次）
         }
         db.syncFp[u.id] = Object.assign({}, _fpOld, _fpNew); // 合并保留：部分推送不清掉未含行的指纹
         for (const d of dels) {
@@ -2339,6 +2339,7 @@ const server = http.createServer(async (req, res) => {
         if (!cur.size && !tomb.size && !dels.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
         db.ledger = [...cur.values()];
         db.ledgerTomb = [...tomb.entries()].map(([c, v]) => ({ c, t: v.t, rec: v.rec })).sort((a, b2) => b2.t - a.t).slice(0, 20000);
+        if (db.tombReject && Object.keys(db.tombReject).length > 5000) { const _k = Object.keys(db.tombReject); _k.sort((a, b2) => (Number(db.tombReject[a]) || 0) - (Number(db.tombReject[b2]) || 0)); for (const k of _k.slice(0, _k.length - 5000)) delete db.tombReject[k]; } // ㉖v97b 拒弹记录上限剪枝（防无界增长）
         if (db.locReserve) { for (const l of Object.keys(db.locReserve)) { if (cur.has(String(db.locReserve[l].code || '').toUpperCase()) || rec0 - (Number(db.locReserve[l].at) || 0) > RES_TTL_MS) delete db.locReserve[l]; } } // ㉖v54 标签落账(任意位)或预占过期→释放
         db.ledgerRev = (db.ledgerRev || 0) + 1;
         db.ledgerAt = new Date().toISOString();
@@ -4070,12 +4071,14 @@ return send(res, 200, {
         const ghosts = [], evap = [], moved = [], qtyCh = [];
         // ㉖v97 改位归因：快照间位置变动多为正常AGV搬运/人工挪框/网页修正，旧版裸报"改位"让人无法判断是否异常——
         // 按 网页修正记录 → 近3日操作留痕（叫车/移库/返架/改位/转单/盘点改账）→ 账本行 mv+src 三级还原原因，有据=正常✅
-        const _ops3 = opsLoadDays(3);
+        // ㉖v97b 复核修正：留痕惰性加载——概览每30秒轮询本端点，无改位行时不白读3天JSONL
+        let _ops3 = null;
         const _snapAt = Date.parse(A.at) || 0;
         const _whyMove = (c, y) => {
           const up = String(c).toUpperCase();
           const fx = (db.ledgerFixes || []).filter((x) => String(x.code || x.c || '').toUpperCase() === up && (Date.parse(x.time) || 0) >= _snapAt);
           if (fx.length) return { why: '网页修正：' + String(fx[fx.length - 1].reason || '改位').slice(0, 40), ok: 1 };
+          if (!_ops3) _ops3 = opsLoadDays(3);
           const hits = _ops3.filter((o) => (String(o.det || '').toUpperCase().includes(up) || String(o.obj || '').toUpperCase() === up) && /叫车|移库|返架|改位|转单|盘点改账|恢复/.test(String(o.act || '')));
           if (hits.length) { const o = hits[hits.length - 1]; return { why: o.act + '·' + o.by, ok: 1 }; }
           if (String(y.mv || '') === 'AGV' && String(y.src || '').includes('-CK-')) return { why: 'AGV搬运（' + String(y.src).replace('NB02-', '') + '→' + String(y.l).replace('NB02-', '') + '）', ok: 1 };
