@@ -228,6 +228,10 @@ class AuthApi {
   static Future<Map> reqWarehouseUsers() async =>
       _req("GET", "/api/requisitions/warehouse-users",
           token: await AuthStore.token());
+
+  /// ㉖v98c 领料闸门预检：返回 {mode, pend[], block[]}（服务器统一判定，含宽限期与急料豁免）
+  static Future<Map> reqGate() async =>
+      _req("GET", "/api/requisitions/gate", token: await AuthStore.token());
   /// ㉖v62 建单提效：本人近60天常领清单（频次×最近排序，带上次数量与在架托数）
   static Future<Map> reqFrequent() async =>
       _req("GET", "/api/requisitions/frequent", token: await AuthStore.token());
@@ -319,6 +323,10 @@ class AuthApi {
   static Future<Map> scanlogDeleteBatch(String batch) async =>
       _req("POST", "/api/scanlog/delete",
           body: {"batch": batch}, token: await AuthStore.token());
+  /// ㉖v98c 物料号补录批量上收：items=[{c,pn,mc}]，服务器沉淀字典+标签修正表
+  static Future<Map> mitemBatch(List items) async =>
+      _req("POST", "/api/mitem/batch",
+          body: {"items": items}, token: await AuthStore.token());
   // ---- RCS(哈工库讯AGV)：配置同步（服务器代轮询做催扫/站台面板）+ 站台状态查询 ----
   static Future<Map> rcsConfigSync(
           {required String host,

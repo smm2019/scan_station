@@ -526,6 +526,30 @@ function archiveOld() {
   } catch (e) { console.log('[archive] 失败：', e.message); logErr('archiveOld', e); }
 }
 setInterval(archiveOld, 30 * 60 * 1000).unref();
+// ---- ㉖v98c 物料号（MES MITEM_CODE）：零件号→物料号字典 + 标签级修正表，由采集流水 mc 字段与补录工具沉淀 ----
+// 取值优先级：补录修正表(标签级) > 该标签最新流水 mc > 零件号字典。老标签没mc时，同零件号的新采集/补录会自动回补。
+function feedMitem(pn, mc, src) {
+  try {
+    pn = String(pn || '').toUpperCase().trim(); mc = String(mc || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim();
+    if (!pn || !mc || pn.length > 40 || mc.length > 40) return false;
+    db.mitemDict = db.mitemDict || {};
+    const old = db.mitemDict[pn];
+    if (old && old.mc === mc) return false;
+    db.mitemDict[pn] = { mc, src: src || '', at: Date.now() };
+    const keys = Object.keys(db.mitemDict);
+    if (keys.length > 5000) { keys.sort((a, b) => (db.mitemDict[a].at || 0) - (db.mitemDict[b].at || 0)).slice(0, keys.length - 5000).forEach((k) => delete db.mitemDict[k]); }
+    return true;
+  } catch (_) { return false; }
+}
+function mitemOf(code, pn) { // 三级取值：标签修正表 → 流水mc → 零件号字典（pn空时用流水派生零件号兜底）
+  try {
+    const c = String(code || '').toUpperCase(), p0 = String(pn || '').toUpperCase();
+    const fx = (db.mitemFix || {})[c]; if (fx && fx.mc) return fx.mc;
+    const mt = scanMetaOf()[c]; if (mt && mt.mc) return mt.mc;
+    const p = p0 || (mt && mt.pn ? String(mt.pn).toUpperCase() : '');
+    const d = (db.mitemDict || {})[p]; return (d && d.mc) || '';
+  } catch (_) { return ''; }
+}
 // ---- ㉒G7 物料字典：零件号→名称，由采集流水/出库单自动沉淀 ----
 function feedDict(pn, nm, src) {
   try {
@@ -544,7 +568,7 @@ function feedDict(pn, nm, src) {
 const EXP_LABELS = { D1: '库位表', D2: '库存汇总', D3: '入库流水', D4: '出库流水', D5: 'AGV任务', D6: 'AGV异常事件', D7: '工作量报表', D8: '领料台账', D9: '活动流审计', D10: '盘点结果', PACK: '月度对账包' };
 const EXP_CAL = {
   '盘点结果': [['差异类型', '盘亏=实少于账面；盘盈=实多于账面；账外=扫入基准外标签'], ['口径', '零件级按数量合计、货位级按货位×零件组合；双基准矛盾行标记warn'], ['范围', '按盘点上收时间筛选；数据来自PDA结束盘点时自动上收']],
-  '库位表': [['货位', '完整库位编码：NB02-区-架-层F / NB03-区-排-格'], ['标签号', '一框可贴多码；同托号多码=同一框'], ['登记时间', '采集设备时钟（展示用）；多机冲突仲裁=内容指纹+服务器到达时刻：真改动才生效，未变重推/旧副本不覆盖他人，删除按墓碑拦截'], ['来源', '采集入账/手工登记/网页修正/返架/移库']],
+  '库位表': [['货位', '完整库位编码：NB02-区-架-层F / NB03-区-排-格'], ['标签号', '一框可贴多码；同托号多码=同一框'], ['登记时间', '采集设备时钟（展示用）；多机冲突仲裁=内容指纹+服务器到达时刻：真改动才生效，未变重推/旧副本不覆盖他人，删除按墓碑拦截'], ['来源', '进仓搬运锚点：AGV=接货站台；人工=地面区排（粗码已补全为完整区码 NB03-C-12）；文字=登记/修正来源']],
   '领料台账': [['处理分钟', '接单到签收/拒单/取消的分钟数（服务器时钟）'], ['范围', '按下单时间筛选；全量台账按月导出对账']],
   '活动流审计': [['动作', '登录/账本合并/合并diff/改位/返架/配置/模式/导出/账号/告警认领等关键写操作'], ['范围', '按天JSONL持久留痕近180天（data/ops/，每日摘要哈希断链防篡改）；密码等凭据不入审计流'], ['详情', '账本合并含字段级前值→后值diff（l=货位 p=零件 q=数量 b=批次 f=料框 mv=搬运方式，∅=原无值）；单次合并最多样例40条+总数'], ['断链', 'digest-日期.json 记录 前日链值→当日全行sha256；改任一行历史即校验不通过']],
   '库存汇总': [['在架框数', '按"框=托"去重：同托号多标签计1框；无托号按同货位+同零件号合并'], ['在架数量', '每框取框内标签数量最大值后按框求和（与PDA库存页同口径）'], ['占用货位数', '该零件涉及的货位格数（去重）'], ['货位分布(TOP5)', '按该零件占用格数排序前5货位（NB区简写×框数）'], ['最近入库/最近出库', '采集流水/出库单最大时刻（主库窗口内）'], ['零库存', '勾选后并入曾有出入流水/字典记录但当前在架 0 框的零件（框数/数量/货位均为 0，动向列为历史时刻）']],
@@ -628,7 +652,7 @@ function buildWork(from, to) {
   const _ledMap = {}; for (const x of db.ledger || []) { const c0 = String(x.c || '').toUpperCase(); if (c0 && !_ledMap[c0]) _ledMap[c0] = x; }
   for (const o of Object.values(db.outbound || {})) {
     const t = Number(o.createdAt) || 0; if (t < from || t > to) continue;
-    const day = wdstr(t), who = String(o.operator || '').trim() || '未知';
+    const day = wdstr(t), who = opNameOf(o.operator) || '未知'; // ㉖v98c 剥账号，"宋明明"与"宋明明(smm123)"归并同一人
     const boxes = new Set(); let qty = 0;
     for (const i of (o.items || [])) { const c = String(i.barcode || '').toUpperCase(); if (!c) continue; qty += Number(i.qty) || 0; const lx = _ledMap[c]; boxes.add(lx ? boxKeyOf(lx) : 'C|' + c); }
     if (!boxes.size) continue;
@@ -660,6 +684,44 @@ function buildWork(from, to) {
   }
   return { persons, days, cars };
 }
+// ㉖v98c 疑似串位配对（与 PDA 盘点报表 invPairMoveSuggest 同算法的服务器版）：同零件 A位亏-N、B位盈+N → 亏位标"→ B移N"、盈位标"← A移回N"。
+// 贪心配对按亏多/盈多排序，配平部分不重复计；仅用于 D10 货位级差异"定位/建议"列，不改任何盘点数据。
+function invPairMoveSuggest(locs) {
+  const out = {}, byPart = {};
+  for (const l of locs || []) { const k = String(l.pn || '').toUpperCase(); (byPart[k] = byPart[k] || []).push(l); }
+  const fmt = (q) => String(q) === String(Math.round(q)) ? String(Math.round(q)) : String(Math.round(q * 100) / 100);
+  for (const rows of Object.values(byPart)) {
+    const negs = rows.filter((l) => (Number(l.book) || 0) > 0 && (Number(l.real) || 0) - (Number(l.book) || 0) < -1e-6).sort((a, b) => ((Number(a.real) || 0) - (Number(a.book) || 0)) - ((Number(b.real) || 0) - (Number(b.book) || 0)));
+    const poss = rows.filter((l) => (Number(l.real) || 0) - (Number(l.book) || 0) > 1e-6).sort((a, b) => ((Number(b.real) || 0) - (Number(b.book) || 0)) - ((Number(a.real) || 0) - (Number(a.book) || 0)));
+    const give0 = {}; for (const p of poss) give0[String(p.loc).toUpperCase()] = (Number(p.real) || 0) - (Number(p.book) || 0);
+    let pi = 0;
+    for (const n of negs) {
+      let need = (Number(n.book) || 0) - (Number(n.real) || 0);
+      const nk = String(n.loc).toUpperCase() + '|' + String(n.pn || '').toUpperCase();
+      while (need > 1e-6 && pi < poss.length) {
+        const p = poss[pi], pkS = String(p.loc).toUpperCase(), give = give0[pkS];
+        if (give <= 1e-6) { pi++; continue; }
+        const mv = need < give ? need : give;
+        const mvS = fmt(mv);
+        out[nk] = (out[nk] ? out[nk] + '；' : '') + '疑似串位 → ' + p.loc + ' 移 ' + mvS;
+        const pk = pkS + '|' + String(p.pn || '').toUpperCase();
+        out[pk] = (out[pk] ? out[pk] + '；' : '') + '疑似串位 ← ' + n.loc + ' 移回 ' + mvS;
+        need -= mv; give0[pkS] = give - mv;
+        if (give0[pkS] <= 1e-6) pi++;
+      }
+    }
+  }
+  return out;
+}
+// ㉖v98c 搬运方式显示归一：早期版本写入被截断的残值（"人工"→"工"、"登记"→"登"）在导出层还原。
+// 纯显示层：账本存储 mv 不动（mv 参与 AGV 链路反查等判定，只此函数消费显示值），AGV/正常值原样。
+function mvDisp(s) { const v = String(s == null ? '' : s).trim(); if (v === '工' || v === '人') return '人工'; if (v === '登') return '登记'; return v; }
+// ㉖v98c 导出"来源"列显示归一：人工框的粗区码（C12/B3 这类"区字母+排号"）补全为完整区码 NB03-C-12，与货位列口径一致。
+// 纯导出层格式化：只作用于"库位表"来源列文本，AGV 站台、已是货位/格位粒度的值、文字类来源（返架/网页修正等）原样；账本存储与逻辑判定（AGV链路反查等）不动。
+function srcDisp(s) { const v = String(s == null ? '' : s).trim().toUpperCase(); const m = /^([A-Z])(\d{1,2})$/.exec(v); return m ? 'NB03-' + m[1] + '-' + String(m[2]).padStart(2, '0') : v; }
+// ㉖v98c 操作人姓名归一：PDA 旧版把"姓名(账号)"整体写进 operator（如"宋明明(smm123)"），显示/统计统一剥掉尾部括号账号。
+// 只影响展示与按人统计归并；原始 operator 存储不动（账号仍可被流水搜索命中）。
+function opNameOf(s) { return String(s == null ? '' : s).replace(/\s*\((?:[^()]*)\)\s*$/, '').trim(); }
 function buildExport(ds, fRaw) {
   const f = { from: String((fRaw && fRaw.from) || '').slice(0, 10), to: String((fRaw && fRaw.to) || '').slice(0, 10) };
   if (fRaw && fRaw.arch) f.arch = '1'; if (fRaw && fRaw.zero) f.zero = '1'; // 快照条件登记补全：含归档/零库存开关可追溯
@@ -668,7 +730,7 @@ function buildExport(ds, fRaw) {
   const to = f.to ? Date.parse(f.to + 'T23:59:59') : Infinity;
   const CAP = 20000;
   const mk = (label, headers, types, rows, src) => ({ label, headers, types, rows: rows.slice(0, CAP), total: rows.length, src, f, caliber: EXP_CAL[label] || [] });
-  if (ds === 'D1') return mk('库位表', ['货位', '标签号', '零件号', '物料名称', '数量', '批次', '料框', '登记人', '登记时间', '搬运方式', '来源'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], ledgerView().map((x) => [x.l, x.c, x.p || '', x.n || '', x.q || 0, x.b || '', x.f || '', x.by || '', expTs(x.t), x.mv || '', x.src || '']).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), '货位账本（服务器合并快照；批次=MES标签打印日期）');
+  if (ds === 'D1') return mk('库位表', ['货位', '标签号', '零件号', '物料号', '物料名称', '数量', '批次', '料框', '登记人', '登记时间', '搬运方式', '来源'], ['S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], ledgerView().map((x) => [x.l, x.c, x.p || '', mitemOf(x.c, x.p), x.n || '', x.q || 0, x.b || '', x.f || '', x.by || '', expTs(x.t), mvDisp(x.mv), srcDisp(x.src)]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), '货位账本（服务器合并快照；批次=MES标签打印日期；物料号=MES MITEM_CODE，老标签按零件号字典自动回补）');
   if (ds === 'D2') { const m = {}; for (const x of db.ledger) { const pn = String(x.p || '').toUpperCase() || '(无零件号)'; const k = boxKeyOf(x); const e = (m[pn] = m[pn] || { b: {}, locs: {}, nm: '' }); e.b[k] = (e.b[k] || 0) + (Number(x.q) || 0); e.locs[String(x.l).toUpperCase()] = (e.locs[String(x.l).toUpperCase()] || 0) + 1; if (!e.nm && x.n) e.nm = x.n; } // ㉖ 框数量=框内各标签之和
     // ㉕B12 最近出入动向：入库=采集流水最大t；出库=出库单明细最大createdAt
     const lastIn = {}, lastOut = {};
@@ -679,13 +741,13 @@ function buildExport(ds, fRaw) {
     if (fRaw && (fRaw.zero === '1' || fRaw.zero === true)) { for (const pn of new Set([...Object.keys(lastIn), ...Object.keys(lastOut), ...Object.keys(db.itemDict || {})])) if (!m[pn]) rows.push([pn, (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || '', 0, 0, 0, '', expTs(lastIn[pn] || 0), expTs(lastOut[pn] || 0)]); } // 零库存：有过流水但当前无在架
     rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
     return mk('库存汇总', ['零件号', '物料名称', '在架框数', '在架数量', '占用货位数', '货位分布(TOP5)', '最近入库', '最近出库'], ['S', 'S', 'N', 'N', 'N', 'S', 'S', 'S'], rows, '货位账本按框聚合（动向取自主库窗口，含归档勾选不影响本表）'); }
-  if (ds === 'D3') { const _sl = _arch ? Object.assign(archLoad('scanlog'), db.scanlog || {}) : (db.scanlog || {}); const rows = Object.values(_sl).filter((s) => (s.t || 0) >= (from || 0) && (s.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((s) => [expTs(s.t), s.code, s.pn || '', s.nm || '', s.q || 0, printLot(s.mk, s.lot), (s.wt === 0 ? s.st : s.gl) || '', s.ct || '', s.pid || '', s.op || '', s.cx ? '已作废' : '', s.rm || '']); return mk('入库流水', ['时间', '标签号', '零件号', '物料名', '数量', '批次', '初始货位', '容器类型', '托号', '操作人', '状态', '备注'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '采集流水（全厂合并；批次=MES标签打印日期）'); }
-  if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), i.code || '', i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', o.operator || '']); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '零件号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调）'); }
+  if (ds === 'D3') { const _sl = _arch ? Object.assign(archLoad('scanlog'), db.scanlog || {}) : (db.scanlog || {}); const rows = Object.values(_sl).filter((s) => (s.t || 0) >= (from || 0) && (s.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((s) => [expTs(s.t), s.code, s.pn || '', mitemOf(s.code, s.pn), s.nm || '', s.q || 0, printLot(s.mk, s.lot), (s.wt === 0 ? s.st : s.gl) || '', s.ct || '', s.pid || '', s.op || '', s.cx ? '已作废' : '', s.rm || '']); return mk('入库流水', ['时间', '标签号', '零件号', '物料号', '物料名', '数量', '批次', '初始货位', '容器类型', '托号', '操作人', '状态', '备注'], ['S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '采集流水（全厂合并；批次=MES标签打印日期；物料号=MES MITEM_CODE）'); }
+  if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), i.code || '', mitemOf(i.barcode || '', i.code), i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', opNameOf(o.operator)]); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '零件号', '物料号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调；物料号=MES MITEM_CODE）'); }
   if (ds === 'D5') { const reqOfTask = {}; for (const q of db.agvQueue || []) { const tn = String(q.taskNo || ''); if (tn && q.reqNo && !reqOfTask[tn]) reqOfTask[tn] = q.reqNo; } // 关联单=按RCS任务号配对（完成项队列留存可回溯）
-    const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失', expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', reqOfTask[no] || '']);
+    const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失', expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', reqOfTask[no] || '', '', '']); // ㉖v98c 末两列=标签号/物料号：完成行=RCS沉淀无标签信息留空，在途行有码
     // ㉕B10 未完成在途并入同表（状态=排队/下发中/已下发/到站/失败），补"状态/关联单"两列
-    for (const q of db.agvQueue || []) { if (['完成', '取消'].includes(q.state)) continue; const at = Number(q.at) || 0; if ((from && at < from) || at > to) continue; rows.push([q.wmsTask || q.taskNo || '未生成', q.type === 'transfer' ? '移库' : q.type === 'inbound' ? '入库' : q.type === 'insp' ? '检验下架' : q.type === 'inspback' ? '检验归位' : '出库', q.fromLoc || q.from || '', q.station || q.to || '', '', '', expTs(q.sentAt || 0) || '', expTs(q.dockAt || 0) || '', Math.round((Date.now() - at) / 1000), q.state, q.reqNo || '']); } // ㉖ 检验任务入队后方向列完整映射
-    return mk('AGV任务', ['任务号', '方向', '起点', '终点', '车辆', '接令', '叉出', '到站', '时长秒', '状态', '关联单'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S'], rows, 'RCS任务沉淀（近30天六节点）+未完成在途队列（时长秒=已耗时）'); }
+    for (const q of db.agvQueue || []) { if (['完成', '取消'].includes(q.state)) continue; const at = Number(q.at) || 0; if ((from && at < from) || at > to) continue; rows.push([q.wmsTask || q.taskNo || '未生成', q.type === 'transfer' ? '移库' : q.type === 'inbound' ? '入库' : q.type === 'insp' ? '检验下架' : q.type === 'inspback' ? '检验归位' : '出库', q.fromLoc || q.from || '', q.station || q.to || '', '', '', expTs(q.sentAt || 0) || '', expTs(q.dockAt || 0) || '', Math.round((Date.now() - at) / 1000), q.state, q.reqNo || '', String(q.code || '').toUpperCase(), mitemOf(q.code || '', '')]); } // ㉖ 检验任务入队后方向列完整映射
+    return mk('AGV任务', ['任务号', '方向', '起点', '终点', '车辆', '接令', '叉出', '到站', '时长秒', '状态', '关联单', '标签号', '物料号'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S'], rows, 'RCS任务沉淀（近30天六节点；完成行=历史沉淀无标签信息）+未完成在途队列（时长秒=已耗时；在途行含标签号/物料号）'); }
   if (ds === 'D6') { // ㉕B11 补持续时长/是否恢复：同车事件流内配对（告警→该车其后首条恢复；无配对=至今未恢复）
     const evs = buildEvents(); const pend = {};
     for (let i = evs.length - 1; i >= 0; i--) { const e = evs[i]; const w = String(e.who || ''); if (e.kind === '告警' || e.kind === '红牌' || e.kind === '升级') { pend[w] = e; } else if (e.kind === '恢复' && pend[w] && e.ts >= pend[w].ts) { pend[w]._rt = e.ts; pend[w] = null; } }
@@ -715,7 +777,7 @@ function buildExport(ds, fRaw) {
     const parts = [
       { label: '盘点总览', headers: ['批次', '备注', '模式', '盘点人', '结束时间', '总扫次', '有效扫次', 'MES失败', '重复', '账外', '已应用改账', '零件行数', '零件差异行'], types: ['S', 'S', 'S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S', 'N', 'N'], rows: sel.map((r) => [r.batchId, r.remark || '', r.blind ? '盲盘' : '监督', r.by || '', expTs(r.at), r.totalScans || 0, r.validScans || 0, r.mesFail || 0, r.dup || 0, r.outside || 0, r.applied ? ('是·' + expTs(r.applyTime)) : '否', (r.parts || []).length, (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length]), src: 'PDA盘点上收汇总', caliber: EXP_CAL['盘点结果'] },
       { label: '零件级差异', headers: ['批次', '零件号', '物料名称', '账面数量', '实盘数量', '差异', '实盘框数', '账外框', '双基准矛盾'], types: ['S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S'], rows: sel.flatMap((r) => (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6 || p.out > 0 || p.warn === 7).map((p) => [r.batchId, p.pn, p.nm || '', p.book, p.real, Math.round((p.real - p.book) * 100) / 100, p.boxes, p.out, p.warn === 7 ? '⚠矛盾' : ''])), src: '零件级差异（含账外/矛盾）', caliber: [] },
-      { label: '货位级差异', headers: ['批次', '货位', '零件号', '台账数量', '实盘数量', '差异', '实盘框数'], types: ['S', 'S', 'S', 'N', 'N', 'N', 'N'], rows: sel.flatMap((r) => (r.locs || []).filter((l) => Math.abs(l.real - l.book) > 1e-6).map((l) => [r.batchId, l.loc, l.pn, l.book, l.real, Math.round((l.real - l.book) * 100) / 100, l.boxes])), src: '货位×零件级差异', caliber: [] },
+      { label: '货位级差异', headers: ['批次', '货位', '零件号', '台账数量', '实盘数量', '差异', '实盘框数', '定位/建议'], types: ['S', 'S', 'S', 'N', 'N', 'N', 'N', 'S'], rows: sel.flatMap((r) => { const sg = invPairMoveSuggest(r.locs || []); return (r.locs || []).filter((l) => Math.abs(l.real - l.book) > 1e-6).map((l) => [r.batchId, l.loc, l.pn, l.book, l.real, Math.round((l.real - l.book) * 100) / 100, l.boxes, sg[String(l.loc).toUpperCase() + '|' + String(l.pn).toUpperCase()] || '']); }), src: '货位×零件级差异（定位/建议=同零件亏盈互配推断疑似串位，与PDA盘点报表同算法）', caliber: EXP_CAL['盘点结果'] },
     ];
     return { label: '盘点结果' + (bid ? '_' + bid : ''), parts, rows: parts[1].rows, total: parts.reduce((s, p) => s + p.rows.length, 0), f: { from: f.from, to: f.to, batchId: bid || '全部' } };
   }
@@ -752,9 +814,16 @@ function sseTick(nowMs) {
       } catch (_) {}
     }).catch(() => {});
     db.stnTl = db.stnTl || {};
+    // ㉖v98c 甘特严重bug修复：旧版只遍历 rcsStations 在册站台，且把不在册站台的时间线整条删除——
+    // 站台清台后记录被删→历史抹掉→8小时全绿"空闲"假象（10/28 实测：当天发了几十趟车，甘特无一格占用/有货）。
+    // 改为对全部12台每轮持续采样：无记录=空闲（转空闲边界得以保留），历史不再被删；键集合稳定无需清理。
     const st = db.rcsStations || {};
-    for (const k of Object.keys(st)) { const want = st[k].state === '有货' ? '有货' : st[k].state === '占用中' ? '占用' : '空闲'; const a = db.stnTl[k] || (db.stnTl[k] = []); const last = a[a.length - 1]; if (!last || last.s !== want) a.push({ s: want, t: nowMs }); if (a.length > 300) db.stnTl[k] = a.slice(-300); }
-    for (const k of Object.keys(db.stnTl)) { if (!st[k]) delete db.stnTl[k]; }
+    for (const k of AGV_STNS) {
+      const want = st[k] && st[k].state === '有货' ? '有货' : st[k] && st[k].state === '占用中' ? '占用' : '空闲';
+      const a = db.stnTl[k] || (db.stnTl[k] = []); const last = a[a.length - 1];
+      if (!last || last.s !== want) a.push({ s: want, t: nowMs });
+      if (a.length > 300) db.stnTl[k] = a.slice(-300);
+    }
   } catch (_) {}
 }
 
@@ -1163,8 +1232,30 @@ const PARAMS = {
   stnWinPct:      { grp: '调度策略', name: '站台时间窗系数', unit: '%', min: 50, max: 300, d: 100, tip: '预约窗=路网行程+60秒缓冲+该台平均清台时长×系数；窗内站台不派新单，防两车前后脚撞台' },
   lowTier:        { grp: '调度策略', name: '入库常用层上限', unit: '层', min: 1, max: 4, d: 3, tip: 'AUTO自动分配的硬性层约束：只在1~N层找空位（同架/同区集中也在层圈内生效），圈内全满才上更高层；4=不限。AGV叉高层耗时且重心高风险大，建议3' },
   strictFifo:     { grp: '调度策略', name: '严格FIFO发料', unit: '开关', min: 0, max: 1, d: 1, tip: '1=扫码发料只允许「取货建议」清单里的标签（含同托兄弟码与已叫车框）。晚批次码：PDA黄窗确认→服务端复核放行（工单+事件双留痕）。㉖v98 发齐不藏框：行发齐后该零件仍在架未扫的框继续显示在建议区（灰框），仓管点扫=弹超发确认，确认后放行留痕；不确认则留待下次。幽灵码（不在任何清单）仍拒绝。0=回退旧行为（服务端不拦，仅PDA提醒）' },
+  gateMode:       { grp: '领料闸门', name: '待签收闸门模式', unit: '档', min: 0, max: 2, d: 1, tip: '物料员手里有货到待签收的领料单时能否下新单。0=关闭；1=宽限后拦（推荐）：待签收单滞留超宽限期才拦，急料单在豁免上限内不拦；2=严格：有待签收即拦（急料豁免上限内同样放行）。只拦物料员角色，管理员代下不受限' },
+  gateGraceMin:   { grp: '领料闸门', name: '待签收宽限期', unit: '分钟', min: 0, max: 240, d: 30, tip: '模式1生效：待签收单从"备齐到站"（readyAt）起算，超过此时长仍未签收才拦新单；0=有待签收立即拦。给物料员留出去线边送货/回车间的正常时间' },
+  gateRushMaxMin: { grp: '领料闸门', name: '急料豁免上限', unit: '分钟', min: 0, max: 1440, d: 120, tip: '㉖v98c 急料待签收单享受豁免的最长滞留（从备齐到站readyAt起算）：超上限照常拦——防"每单都勾急"把闸门变免死金牌、急料单囤两天不领（10/29 现场：某物料员22张急料待签收畅通下单）。0=急料永远豁免（旧行为）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
+// ㉖v98c 领料闸门集中判定（服务器权威，两端预检与 POST 兜底共用同一函数，口径永不漂移）
+// gateMode：0=关 / 1=宽限后拦 / 2=严格有待即拦
+// 急料单豁免限时（v98c）：滞留超 gateRushMaxMin 不再豁免——急给足时间领，囤两天不领就是不急
+// 宽限期从 readyAt（备齐到站时刻）起算；旧单无 readyAt 视为已滞留
+function reqGateOf(userId) {
+  const mode = P().gateMode, out = { mode, pend: [], block: [] };
+  if (!mode) return out;
+  const nowMs = Date.now(), grace = P().gateGraceMin * 60000, rushCap = P().gateRushMaxMin * 60000;
+  for (const r of db.requisitions || []) {
+    if (r.by !== userId || r.status !== 'ready') continue;
+    out.pend.push(r);
+    const age = nowMs - (Number(r.readyAt) || 0);
+    const rush = !!r.rush || (r.items || []).some((i) => i.rush === true);
+    if (rush && (!rushCap || age < rushCap)) continue; // 急料豁免限时
+    if (mode === 1 && age < grace) continue;
+    out.block.push(r);
+  }
+  return out;
+}
 // ㉖v90 排号清单解析："11-18,20" / [11,12,...] / 数组字符串 → 去重排序的 1~40 数字数组；空/非法 → null（=未配置，沿用排数逻辑）
 function parseRowList(v) {
   try {
@@ -1208,7 +1299,9 @@ function notify(toUserId, type, text, reqId) {
       return;
     }
     { const np = db.prefs && db.prefs[toUserId] && db.prefs[toUserId].notes; if (np && np.v && type !== 'car_alarm' && np.v[NTYPE[type] || type] === false) return; } // ㉕F5 个人退订生效
-    const key = toUserId + '|' + type;
+    // ㉖v98c 车辆告警按车名分合并键：AGV07 不再并进 AGV06 的文案（此前"等2条"实为跨车污染）；非🚨类（恢复/认领/升级/WMAS）键唯一=永不合并必推送
+    let key = toUserId + '|' + type;
+    if (type === 'car_alarm') { const g = /^🚨\s*(\S+?)\s*车辆告警/.exec(String(text || '')); key += '|' + (g ? g[1] : 'x' + now + '_' + Math.random().toString(36).slice(2, 6)); }
     const rk = _nrate.get(toUserId) || [Math.floor(now / 60000), 0];
     if (rk[0] !== Math.floor(now / 60000)) { rk[0] = Math.floor(now / 60000); rk[1] = 0; }
     rk[1]++; _nrate.set(toUserId, rk);
@@ -1220,8 +1313,7 @@ function notify(toUserId, type, text, reqId) {
         const n = (last.n || 1) + 1; last.n = n; last.at2 = now;
         const base = db.notifications[idx].text.replace(/（等 \d+ 条，已合并）$/, '');
         db.notifications[idx].text = base + '（等 ' + n + ' 条，已合并）';
-        db.notifications[idx].time = new Date(now).toISOString(); db.notifications[idx].read = false;
-        try { const uu = db.users.find((x) => x.id === toUserId); sseSend({ t: 'notif', to: toUserId, who: uu ? uu.name : toUserId, type, text: db.notifications[idx].text, reqId: reqId || '' }); } catch (_) {}
+        // ㉖v98c 合并静默化：不再刷新时间、不再标未读、不再SSE推送——手机不会把旧告警以"现在"重弹；条数与明细在消息列表可见
         return;
       }
     }
@@ -1231,14 +1323,14 @@ function notify(toUserId, type, text, reqId) {
       if (newest) {
         const n = (newest._mn || 1) + 1; newest._mn = n;
         const base = newest.text.replace(/（等 \d+ 条，已合并）$/, '');
-        newest.text = base + '（等 ' + n + ' 条，已合并）'; newest.time = new Date(now).toISOString(); newest.read = false;
-        try { const uu = db.users.find((x) => x.id === toUserId); sseSend({ t: 'notif', to: toUserId, who: uu ? uu.name : toUserId, type, text: newest.text, reqId: reqId || '' }); } catch (_) {}
+        newest.text = base + '（等 ' + n + ' 条，已合并）'; // ㉖v98c 限流合并同样静默化：不刷时间不标未读不再推（防风暴时连环弹"现在"）
         return;
       }
     }
     const id = newId('n');
     db.notifications.push({ id, to: toUserId, type, text, reqId: reqId || '', time: new Date().toISOString(), read: false });
     _nq.set(key, { id, at: now, at2: now, n: 0 });
+    if (_nq.size > 300) _nq.delete(_nq.keys().next().value); // ㉖v98c 车辆告警键含随机后缀，滚动清理防内存缓涨
     if (db.notifications.length > P().notifKeep) db.notifications = db.notifications.slice(-P().notifKeep); // ㉖ 保留条数可调（原硬编码500）
     try { const uu = db.users.find((x) => x.id === toUserId); sseSend({ t: 'notif', to: toUserId, who: uu ? uu.name : toUserId, type, text, reqId: reqId || '' }); } catch (_) {}
   } catch (_) {}
@@ -1509,7 +1601,8 @@ function agvMapOf(i) {
   return m;
 }
 // 取货建议：PDA 同步的货位账本（含托号 pid）→ 按框（同托多码=1框）FIFO 选框；agvMap 标记已叫AGV的框
-function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
+// sugCodes（㉖v98c 可选）：接单时刻盖章的本行建议框全码集（it.sugCodes）——发齐态灰框以"当初真正建议过"为准
+function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
   const agv = agvMap || {};
   const ex = excludeCodes || new Set();
   const match = ledgerView().filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase()); // ㉖ 用派生批次视图：FIFO 按 MES 打印日期先后（YYYY-MM-DD 字典序=时间序）
@@ -1532,9 +1625,20 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap) {
   // 只能把到站框走直调拆单出库（10/24 LL…4913 复盘：390框到CK-11因发齐被藏码，被迫走DT单）。超发可在转单窗撤扫返架，两害相权可记录优先
   if (!(needQty > 0)) {
     const calledPending = boxes.filter(bx => bx.agv).flatMap(bx => bx.items.map(it => ({ c: it.c, q: it.q, l: bx.l, b: bx.b, f: bx.f, agv: bx.agv })));
-    // ㉖v98 发齐后剩余未拣框不再隐藏（10/27 用户拍板"扫了新框代表两筐都发？不——旧框要可见可扫，仓管决定"）：
-    // leftBoxes=该零件仍在架未扫的框（含更早批），端上灰显，扫=超发放行留痕，不扫=留待下次
-    const leftBoxes = boxes.flatMap(bx => bx.items.map(it => ({ c: it.c, q: it.q, l: bx.l, b: bx.b, f: bx.f, agv: bx.agv })));
+    // ㉖v98 发齐后剩余未拣框不隐藏（10/27 用户拍板：扫了新框，旧框要可见可扫，仓管决定超发一起拣）
+    // ㉖v98c 收窄 v3·接单盖章优先（10/29 用户拍板"只扫建议的码，先扫新框老框也要继续扫"）：
+    // 灰框=【接单时刻盖章的本行建议框】∩ 仍在架未扫——真正"系统让你拣的"集合，与新框先扫的实际动线一致；
+    // 老单无盖章 → 回退批次前沿法（已扫框最大批次之前的在架框视为建议过）；已扫批次全未知 → 全列保守兜底。
+    let leftBoxes;
+    const _sug = Array.isArray(sugCodes) && sugCodes.length ? new Set(sugCodes.map(c => String(c).toUpperCase())) : null;
+    if (_sug) {
+      leftBoxes = boxes.filter(bx => bx.allCodes.some(c => _sug.has(String(c).toUpperCase()))).flatMap(bx => bx.items.map(it => ({ c: it.c, q: it.q, l: bx.l, b: bx.b, f: bx.f, agv: bx.agv })));
+    } else {
+      let _frontier = '';
+      { const mm0 = scanMetaOf();
+        for (const c0 of ex) { const m0 = mm0[String(c0).toUpperCase()]; const lt0 = m0 && m0.mk ? printLot(m0.mk, '') : ''; if (lt0 > _frontier) _frontier = lt0; } }
+      leftBoxes = (_frontier ? boxes.filter(bx => String(bx.b || '') <= _frontier) : boxes).flatMap(bx => bx.items.map(it => ({ c: it.c, q: it.q, l: bx.l, b: bx.b, f: bx.f, agv: bx.agv })));
+    }
     return { boxes: [], flatBoxes: [], total: 0, over: 0, inStock: 0, noInfoQty: noInfoKeys.size, need: 0, done: true, calledPending, leftBoxes };
   }
   let acc = 0; const pick = [];
@@ -1572,7 +1676,7 @@ function reqView(r, lite) {
     const excl = new Set(((i.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
     // ㉖v79c 建议口径=【剩余需求】（原始需求−已发件数），发齐即空；旧版传原始需求致"发完还建议"超发隐患
     const _got = (i.issued || []).reduce((s, x) => s + (typeof x === 'string' ? 0 : (Number(x.q) || 0)), 0);
-    return { ...i, suggest: pickSuggest(i.partNo, Math.max(0, (Number(i.qty) || 0) - _got), excl, agvMapOf(i)) };
+    return { ...i, suggest: pickSuggest(i.partNo, Math.max(0, (Number(i.qty) || 0) - _got), excl, agvMapOf(i), i.sugCodes) };
   });
   return { ...r, items, statusText: REQ_STATUS_TEXT[r.status] || r.status };
 }
@@ -1965,7 +2069,7 @@ function ro(){
   box.innerHTML='<table><thead><tr><th>出库单号</th><th>时间</th><th>操作人</th><th>转入货位</th><th>关联领料单</th><th>标签</th><th>核对</th><th>明细（标签·零件·数量·原货位）</th></tr></thead><tbody>'+
     arr.map(function(o){
       var its=o.items||[];var cked=its.filter(function(e){return e.checked===true}).length;
-      return '<tr><td class="mono">'+esc(o.orderNo)+'</td><td class="mono">'+t2s(o.createdAt)+'</td><td>'+esc(o.operator||'')+'</td><td>'+esc(o.toLoc||'')+'</td><td class="mono">'+esc(o.linkReqNo||'')+'</td><td>'+its.length+'</td><td>'+(its.length&&cked===its.length?'<span class="ck">全部已核对</span>':cked+'/'+its.length)+'</td><td style="max-width:460px">'+its.map(function(e){return '<div class="mono" style="font-size:11px">'+esc(e.barcode)+' · '+esc(e.code)+' · '+esc(e.qty)+(e.fromLoc?' · <b>原 '+esc(e.fromLoc)+'</b>':'')+(e.move?' · '+(e.move==='AGV'?'<span style="color:#1565C0">🚗AGV</span>':'<span style="color:#888">🚶人工</span>'):'')+'</div>'}).join('')+'</td></tr>'
+      return '<tr><td class="mono">'+esc(o.orderNo)+'</td><td class="mono">'+t2s(o.createdAt)+'</td><td>'+esc(String(o.operator||'').replace(/\s*\((?:[^()]*)\)\s*$/,''))+'</td><td>'+esc(o.toLoc||'')+'</td><td class="mono">'+esc(o.linkReqNo||'')+'</td><td>'+its.length+'</td><td>'+(its.length&&cked===its.length?'<span class="ck">全部已核对</span>':cked+'/'+its.length)+'</td><td style="max-width:460px">'+its.map(function(e){return '<div class="mono" style="font-size:11px">'+esc(e.barcode)+' · '+esc(e.code)+' · '+esc(e.qty)+(e.fromLoc?' · <b>原 '+esc(e.fromLoc)+'</b>':'')+(e.move?' · '+(e.move==='AGV'?'<span style="color:#1565C0">🚗AGV</span>':'<span style="color:#888">🚶人工</span>'):'')+'</div>'}).join('')+'</td></tr>'
     }).join('')+'</tbody></table>';
 }
 function ri(){
@@ -2043,12 +2147,14 @@ function ledgerHash(x) { return crypto.createHash('sha1').update([Number(x && x.
 function ledgerPut(cur, code, row, prev) { const hist = ((prev && prev.hist) || []).concat(prev ? [{ t: Number(prev.t) || 0, h: ledgerHash(prev) }] : []).slice(-3); cur.set(code, Object.assign({}, row, { hist })); }
 // ---- ㉖ 批次口径（用户拍板）：以 MES 标签打印时间(DATETIME_CREATED)的日期为准，如 2026-10-13T08:56:55 → 2026-10-13 ----
 // 打印时间缺失/不可解析时回退原 LOT_NO，绝不返回空（避免网页批次列变空白）。
-function printLot(mk, fallback) { const s = String(mk || '').trim(); const p = (n) => String(n).padStart(2, '0'); const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/); if (m) return m[1] + '-' + p(+m[2]) + '-' + p(+m[3]); if (s) { const d = new Date(s); if (!isNaN(d.getTime())) return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); } return String(fallback || ''); }
+// ㉖v98c Excel序列号防呆（与 PDA lotFromPrintDate 同规则）：LOT_NO 被 MES 侧 Excel 污染成日期序列号（46308=2026-10-13）时自动还原；纯数字5位且在 36526~80000 区间才转，真批次流水号不受影响。
+function lotDeSerial(v, p) { const em = /^(\d{5})$/.exec(String(v).trim()); if (em) { const n = +em[1]; if (n >= 36526 && n <= 80000) { const d = new Date(Date.UTC(1899, 11, 30) + n * 86400000); return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()); } } return String(v); }
+function printLot(mk, fallback) { const s = String(mk || '').trim(); const p = (n) => String(n).padStart(2, '0'); const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/); if (m) return m[1] + '-' + p(+m[2]) + '-' + p(+m[3]); if (s) { const d = new Date(s); if (!isNaN(d.getTime())) return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()); } return lotDeSerial(String(fallback || ''), p); }
 // 标签号 → MES打印时间 映射（账本行不存打印时间，统一从采集流水取；带条数+时间戳失效，防无界增长）
 let _metaMap = null, _metaKey = '', _metaAt = 0; // ㉖v98 _metaAt=构建时刻（健康面板展示/失效用）
 // 标签号 → 采集流水元信息（MES打印时间 + 最新有效一条的零件号/物料名/数量）：
 // 旧版 PDA 推的账本行零件字段可能为空——统一从流水回填
-function scanMetaOf() { const key = (db.scanlogCount || 0) + '|' + (db.scanlogAt || ''); if (_metaMap && _metaKey === key) return _metaMap; const m = {}; for (const s of Object.values(db.scanlog || {})) { const c = String(s.code || '').toUpperCase(); if (!c) continue; const e = m[c] = m[c] || { mk: '', pn: '', nm: '', q: 0, ct: '', t: -1 }; if (!e.mk && s.mk) e.mk = String(s.mk); const t = Number(s.t) || 0; if (!s.cx && t >= e.t) { e.t = t; e.pn = String(s.pn || ''); e.nm = String(s.nm || ''); e.q = Number(s.q) || 0; e.ct = String(s.ct || ''); } } _metaMap = m; _metaKey = key; _metaAt = Date.now(); return m; }
+function scanMetaOf() { const key = (db.scanlogCount || 0) + '|' + (db.scanlogAt || ''); if (_metaMap && _metaKey === key) return _metaMap; const m = {}; for (const s of Object.values(db.scanlog || {})) { const c = String(s.code || '').toUpperCase(); if (!c) continue; const e = m[c] = m[c] || { mk: '', pn: '', nm: '', q: 0, ct: '', mc: '', t: -1 }; if (!e.mk && s.mk) e.mk = String(s.mk); const t = Number(s.t) || 0; if (!s.cx && t >= e.t) { e.t = t; e.pn = String(s.pn || ''); e.nm = String(s.nm || ''); e.q = Number(s.q) || 0; e.ct = String(s.ct || ''); e.mc = String(s.mc || ''); } } _metaMap = m; _metaKey = key; _metaAt = Date.now(); return m; }
 // 账本只读视图（批次派生 + 空零件字段回填）：仅供查询出口/看板/导出/取货建议/零件档案使用；
 // 绝不用于写路径——ledgerHash 依赖库内原值做增量同步仲裁，改派生值会触发全量重推。
 // ㉖v98 代际缓存：旧版每次调用全表重扫+逐行 Object.assign（pickSuggest 每行一次 → 领料列表一次请求重算上百遍，
@@ -2060,7 +2166,7 @@ function ledgerView() {
   const key = (db.ledgerRev || 0) + '|' + (db.scanlogAt || '') + '|' + ((db.ledger || []).length);
   if (_lvCache && _lvKey === key && Date.now() - _lvAt < 60000) return _lvCache;
   const mm = scanMetaOf();
-  const out = (db.ledger || []).map((x) => { const mt = mm[String(x.c || '').toUpperCase()]; if (!mt) return x; const patch = {}; if (mt.mk) patch.b = printLot(mt.mk, x.b); if (!(x.p || '') && mt.pn) patch.p = mt.pn; if (!(x.n || '') && mt.nm) patch.n = mt.nm; if (!(Number(x.q) > 0) && mt.q) patch.q = mt.q; if (!(x.f || '') && mt.ct) patch.f = mt.ct; return Object.keys(patch).length ? Object.assign({}, x, patch) : x; });
+  const out = (db.ledger || []).map((x) => { const mt = mm[String(x.c || '').toUpperCase()]; const bRaw = String(x.b || ''); const bFix = printLot((mt && mt.mk) || '', bRaw); const patch = {}; if (bFix && bFix !== bRaw) patch.b = bFix; if (!(x.p || '') && mt && mt.pn) patch.p = mt.pn; if (!(x.n || '') && mt && mt.nm) patch.n = mt.nm; if (!(Number(x.q) > 0) && mt && mt.q) patch.q = mt.q; if (!(x.f || '') && mt && mt.ct) patch.f = mt.ct; return Object.keys(patch).length ? Object.assign({}, x, patch) : x; }); // ㉖v98c b 无条件过 printLot（序列号还原/打印日期优先），其余仍仅补缺
   _lvCache = out; _lvKey = key; _lvAt = Date.now(); return out;
 }
 // ㉖v52 容器类型兜底：账本行 f 为空（旧版 PDA/异常路径未记录）→ 从采集流水最新有效一条取 ct
@@ -2517,7 +2623,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         for (const it of raw) {
           const k = String((it && it.k) || '').slice(0, 120);
           if (!k) continue;
-          snap[k] = { code: String(it.code || '').toUpperCase(), wt: Number(it.wt) || 0, st: String(it.st || ''), gl: String(it.gl || ''), ct: String(it.ct || ''), rm: String(it.rm || '').slice(0, 120), batch: String(it.batch || ''), cx: !!it.cx, t: Number(it.t) || 0, pn: String(it.pn || ''), q: Number(it.q) || 0, mk: String(it.mk || ''), op: String(it.op || '').slice(0, 40), nm: String(it.nm || '').replace(/\uFFFD/g, '').slice(0, 80), lot: String(it.lot || '').slice(0, 40), pid: String(it.pid || '') }; // ㉓乱码清洗
+          snap[k] = { code: String(it.code || '').toUpperCase(), wt: Number(it.wt) || 0, st: String(it.st || ''), gl: String(it.gl || ''), ct: String(it.ct || ''), rm: String(it.rm || '').slice(0, 120), batch: String(it.batch || ''), cx: !!it.cx, t: Number(it.t) || 0, pn: String(it.pn || ''), q: Number(it.q) || 0, mk: String(it.mk || ''), op: String(it.op || '').slice(0, 40), nm: String(it.nm || '').replace(/\uFFFD/g, '').slice(0, 80), lot: String(it.lot || '').slice(0, 40), mc: String(it.mc || '').replace(/[\uFFFD]/g, '').trim().slice(0, 40), pid: String(it.pid || '') }; // ㉓乱码清洗；㉖v98c +mc物料号
         }
         if (!Object.keys(snap).length) return send(res, 400, { ok: false, msg: '无有效条目（需 k 主键）' });
         db.scanlog = Object.assign(db.scanlog || {}, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
@@ -2533,11 +2639,37 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           const f = _glIdx[String(v.code || '').toUpperCase()];
           if (f) { v.gl = f; db.scanlog[k] = v; }
         }
-        for (const s of Object.values(snap)) feedDict(s.pn, s.nm, '采集流水'); // ㉒G7 字典沉淀
+        for (const s of Object.values(snap)) { feedDict(s.pn, s.nm, '采集流水'); feedMitem(s.pn, s.mc, '采集流水'); } // ㉒G7 字典沉淀；㉖v98c 物料号同步沉淀
         db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
         save();
         console.log(`[scanlog] ${u.name} 同步流水 +${Object.keys(snap).length} → 共 ${db.scanlogCount} 条`);
         return send(res, 200, { ok: true, count: db.scanlogCount, pushed: Object.keys(snap).length });
+      }
+      // ===== ㉖v98c 物料号补录批量上收（PDA 补录工具）：items=[{c:标签,pn:零件号,mc:物料号}] =====
+      // 双写：①零件号→物料号字典（同零件号老标签自动回补）②标签级修正表（同零件多物料号时以实测标签为准，优先级最高）
+      if (req.method === 'POST' && p === '/api/mitem/batch') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可补录物料号' });
+        const b = await readBody(req);
+        const raw = Array.isArray(b.items) ? b.items : [];
+        if (!raw.length) return send(res, 400, { ok: false, msg: 'items 为空' });
+        if (raw.length > 500) return send(res, 400, { ok: false, msg: '单次最多500条' });
+        db.mitemFix = db.mitemFix || {};
+        const _loc = {}; for (const x of ledgerView()) { const cc = String(x.c || '').toUpperCase(); if (cc && !_loc[cc]) _loc[cc] = String(x.l || ''); } // 标签当前货位取服务器账本现值（留痕用，不依赖PDA上报）
+        let fixNew = 0, conflict = 0;
+        for (const it of raw) {
+          const c = String((it && it.c) || '').toUpperCase().trim(), pn = String((it && it.pn) || '').toUpperCase().trim(), mc = String((it && it.mc) || '').trim();
+          if (!c || !mc || c.length > 40 || pn.length > 40 || mc.length > 40) continue;
+          feedMitem(pn, mc, '补录' + (u.name ? '·' + u.name : ''));
+          const old = db.mitemFix[c];
+          if (!old || old.mc !== mc) {
+            if (old && old.mc !== mc) conflict++; // 同标签换物料号=MES改标签，覆盖并计数留痕
+            db.mitemFix[c] = { mc, pn, by: String(u.name || ''), at: Date.now(), since: _loc[c] || '' };
+            fixNew++;
+          }
+        }
+        save();
+        pushOps(u, '物料号补录', fixNew + ' 标签', '字典沉淀+修正表写入' + (conflict ? '，覆盖冲突 ' + conflict : ''));
+        return send(res, 200, { ok: true, fix: fixNew, dict: Object.keys(db.mitemDict || {}).length });
       }
       // 删除某批次采集流水（PDA 删批同步电脑，防看板残留）
       if (req.method === 'POST' && p === '/api/scanlog/delete') {
@@ -2969,6 +3101,10 @@ return send(res, 200, {
           spKey = String((sl0 && sl0.st) || (led0 && led0.src) || '').toUpperCase();
           if (spKey && !wantCk) wantCk = /-CK-/.test(spKey) ? 'in' : 'out'; // 起点是站台→入库回架任务；起点是货架→出库任务
         }
+        let obAt = 0; // ㉖v98c 出库单锚点：发料消账后队列/流水/账本三锚点全灭，出库明细 fromLoc 是最后的坐标
+        if (!spKey) {
+          for (const o of Object.values(db.outbound || {})) { const _oi = (o.items || []).find((i) => String(i.barcode || '').toUpperCase() === code); if (_oi && _oi.fromLoc) { const _ot = Number(o.createdAt) || 0; if (_ot >= obAt) { spKey = String(_oi.fromLoc).toUpperCase(); wantCk = 'out'; obAt = _ot; } } } // 同码历史多张出库单→取最新一张锚定
+        }
         let task = null;
         // ㉖v94k 双坐标纠偏（10/24 17:52 N26J240104 现场：链路显示"叉出17:46"早于"采集17:52"，实为同站台上一框 AGV-0039 被错配）：
         // 队列项已出队时只按"起点+最近完成"匹配，同站台连续多框必然张冠李戴。入库方向（起点=站台）改按
@@ -2977,11 +3113,12 @@ return send(res, 200, {
         if (wantCk === 'in') { const led1 = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code); if (led1 && String(led1.mv || '') === 'AGV') epWant = String(led1.l || '').toUpperCase(); }
         if (q && q.wmsTask && db.agvTasks && db.agvTasks[q.wmsTask]) { const _t0 = db.agvTasks[q.wmsTask]; if (!epWant || String(_t0.ep || '').toUpperCase() === epWant) task = { ..._t0, no: q.wmsTask }; else task = null; } // ㉖v94k 旧数据wmsTask本身可能串单记错(104记成0039,真单0047)：入库带终点校验，不符弃之走回退匹配
         if (!task) { // 时间窗+起点匹配最近一条任务
-          const lo0 = q ? (q.at || 0) - 3600000 : Date.now() - 2 * 86400000;
+          const lo0 = q ? (q.at || 0) - 3600000 : (obAt ? obAt - 6 * 3600000 : Date.now() - 2 * 86400000);
+          const hi0 = obAt ? obAt + 600000 : Infinity; // ㉖v98c 出库锚点：任务完成在发料前~后10分钟内（AGV先送台后人扫），收紧防同货位历史任务错配
           const ledR = !q && epWant ? (((db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code) || {}).rec || 0) : 0;
           const lo = ledR ? Math.max(lo0, ledR - 600000) : lo0; // 入库回退：窗口收到采集时刻前10分钟，防抓更早的同站台他框任务
           for (const [no, t] of Object.entries(db.agvTasks || {})) {
-            if (!((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey && t.fin >= lo && (!task || t.fin > task.fin))) continue;
+            if (!((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey && t.fin >= lo && t.fin <= hi0 && (!task || t.fin > task.fin))) continue;
             if (!q && epWant && String(t.ep || '').toUpperCase() !== epWant) continue; // 已出队+入库：终点必须=账本货位
             task = { ...t, no };
           }
@@ -2994,19 +3131,21 @@ return send(res, 200, {
         const tl = task ? [task.buildAt ? `建单 ${fmt2(task.buildAt)}` : '', task.ex ? `接令 ${fmt2(task.ex)}` : '', task.pick ? `叉出 ${fmt2(task.pick)}` : '', task.fin ? `到站 ${fmt2(task.fin)}` : ''].filter(Boolean).join(' · ') : '';
         // 完整出库链路：领料单history(下单/接单/发料/转MES/签收) + 队列(入队/下发) + RCS(接令/叉出/到站)
         let rq = null, rit = null;
-        for (const r of db.requisitions || []) { for (const i of r.items || []) { if ((i.agvCalled || []).some((e) => String(e.c).toUpperCase() === code)) { rq = r; rit = i; break; } } if (rq) break; }
+        // ㉖v98c 匹配扩至 issued：发料后叫车标记被 clearQueueCall 清除，旧版只认 agvCalled → "下单→签收"整段节点消失
+        for (const r of db.requisitions || []) { for (const i of r.items || []) { const _hit = (i.agvCalled || []).some((e) => String(e.c).toUpperCase() === code) || (i.issued || []).some((e) => String(typeof e === 'string' ? e : (e.c || '')).toUpperCase() === code); if (_hit) { rq = r; rit = i; break; } } if (rq) break; }
         const chain = { reqNo: rq ? rq.no : (q ? q.reqNo : ''), created: rq ? (Date.parse(rq.createdAt || '') || 0) : 0 };
         if (rq) {
           const hist = rq.history || [];
           const findT = (pred) => { for (const hh of hist) { if (pred(String(hh.text || ''))) { const t2 = Date.parse(hh.time) || 0; if (t2) return t2; } } return 0; };
           chain.accept = findT((s) => s.startsWith('接单'));
           chain.issue = findT((s) => s.includes('发料') && s.includes(code));
-          chain.transfer = findT((s) => s.includes('转MES'));
+          chain.transfer = findT((s) => s.includes('转MES') && s.includes(String((rit && rit.partNo) || ''))); // ㉖v98c 多行单按本行零件号匹配（旧版取首条=串他行时刻）
           chain.confirm = findT((s) => s.startsWith('签收确认'));
           const ce = (rit.agvCalled || []).find((e) => String(e.c).toUpperCase() === code);
           chain.call = Date.parse((ce && ce.t) || '') || 0;
         }
         chain.enqueue = q ? (q.at || 0) : 0;
+        { const _si = (db.seenIn || {})[code]; if (_si && Number(_si.t)) chain.inAt = Number(_si.t), chain.inLoc = String(_si.l || ''), chain.inBy = String(_si.by || ''); } // ㉖v98c 入账登记：流水归档后 seenIn 仍可溯源"何时入账、初始货位"
         chain.dispatch = q ? (q.sentAt || 0) : (task ? (task.ex || 0) : 0); // ㉖ 出队后用RCS接令时刻兜底（接令必在下发后一刻内）
         if (task) { chain.exe = task.ex || 0; chain.pick = task.pick || 0; chain.arrive = task.fin || 0; }
         if (q && q.state === '完成') chain.cleared = q.updAt || 0;
@@ -3218,7 +3357,7 @@ return send(res, 200, {
           let rel = no === Q || REQS.has(codeOf(o.linkReqNo));
           if (!rel) for (const it of o.items || []) { if (CODES.has(codeOf(it.barcode)) || (partExpand && PNS.has(codeOf(it.code)))) { rel = true; break; } }
           if (!rel) continue;
-          push(o.createdAt, 'out', '📤 出库 ' + no, (o.items || []).map((i) => String(i.barcode || i.code || '') + '×' + (Number(i.qty) || 0)).join('、') + (o.toLoc ? ' → ' + o.toLoc : ''), o.operator || '');
+          push(o.createdAt, 'out', '📤 出库 ' + no, (o.items || []).map((i) => String(i.barcode || i.code || '') + '×' + (Number(i.qty) || 0)).join('、') + (o.toLoc ? ' → ' + o.toLoc : ''), opNameOf(o.operator));
         }
         // — ⑤ AGV 调度状态 + 决策留痕 trace
         for (const x of qItems) {
@@ -3270,7 +3409,7 @@ return send(res, 200, {
         const _outCodes = new Set(); for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) _outCodes.add(String(i.barcode || '').toUpperCase());
         const inb = _sl.slice(0, 60).map((st) => ({ t: Number(st.t) || 0, code: st.code, q: Number(st.q) || 0, lot: printLot(st.mk, st.lot), loc: (st.wt === 0 ? st.st : st.gl) || '', op: st.op || '', cx: !!st.cx, unreg: !st.cx && !(db.ledger || []).some((x) => String(x.c || '').toUpperCase() === String(st.code || '').toUpperCase()) && !_outCodes.has(String(st.code || '').toUpperCase()) && !db.seenOut[String(st.code || '').toUpperCase()] }));
         const outAll = [];
-        for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) { if (String(i.code || '').toUpperCase() !== pn) continue; outAll.push({ t: Number(o.createdAt) || 0, no: o.orderNo, q: Number(i.qty) || 0, tag: i.barcode || '', from: i.fromLoc || '', to: o.toLoc || '', req: o.linkReqNo || '', by: o.operator || '' }); }
+        for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) { if (String(i.code || '').toUpperCase() !== pn) continue; outAll.push({ t: Number(o.createdAt) || 0, no: o.orderNo, q: Number(i.qty) || 0, tag: i.barcode || '', from: i.fromLoc || '', to: o.toLoc || '', req: o.linkReqNo || '', by: opNameOf(o.operator) }); }
         outAll.sort((a, x) => x.t - a.t);
         const demand = [];
         for (const r of db.requisitions || []) {
@@ -3539,14 +3678,18 @@ return send(res, 200, {
       }
       if (req.method === 'GET' && p === '/api/dict') {
         const q = (url.searchParams.get('q') || '').trim().toUpperCase();
-        let list = Object.entries(db.itemDict || {}).map(([pn, v]) => ({ pn, nm: v.nm, src: v.src }));
+        const _md = db.mitemDict || {}; // ㉖v98c 物料号字典（零件号→MITEM_CODE）
+        let list = Object.entries(db.itemDict || {}).map(([pn, v]) => ({ pn, nm: v.nm, src: v.src, mc: (_md[pn] && _md[pn].mc) || '' }));
         // ㉖v95b 联想数据源合并账本在架零件（字典可能滞后于账本，领料新建弹层按此自动带名）
         { const _have = new Set(list.map((x) => x.pn));
-          for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); if (!pn || _have.has(pn)) continue; _have.add(pn); list.push({ pn, nm: String(x.n || '').replace(/[\uFFFD]/g, ''), src: '账本' }); } }
-        if (q) list = list.filter((x) => x.pn.includes(q) || x.nm.toUpperCase().includes(q));
+          for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); if (!pn || _have.has(pn)) continue; _have.add(pn); list.push({ pn, nm: String(x.n || '').replace(/[\uFFFD]/g, ''), src: '账本', mc: (_md[pn] && _md[pn].mc) || '' }); }
+          // ㉖v98c 物料号字典独有键并入：补录端点只写 mitemDict 不写名称字典，否则纯补录零件在字典页不可见（nm 空不影响领料联想带名）
+          for (const pn of Object.keys(_md)) { if (!pn || _have.has(pn)) continue; _have.add(pn); list.push({ pn, nm: '', src: (_md[pn] && _md[pn].src) || '物料号字典', mc: (_md[pn] && _md[pn].mc) || '' }); } }
+        if (q) list = list.filter((x) => x.pn.includes(q) || x.nm.toUpperCase().includes(q) || String(x.mc || '').includes(q)); // ㉖v98c 可按物料号搜
         list.sort((a, b) => a.pn.localeCompare(b.pn));
-        if ((url.searchParams.get('miss') || '') === '1') { // ㉖G8 缺口扫描：出现在账本/流水/出库/领料但字典无名的零件号
-          const named = new Set(Object.entries(db.itemDict || {}).filter(([, v]) => String(v && v.nm || '').trim()).map(([k]) => k));
+        if ((url.searchParams.get('miss') || '') === '1' || (url.searchParams.get('miss') || '') === '2') { // ㉖G8 缺口扫描：=1 物料名缺口；㉖v98c =2 物料号缺口（在用零件号但 mitemDict 无值）
+          const _isMc = (url.searchParams.get('miss') || '') === '2';
+          const named = new Set(Object.entries(_isMc ? db.mitemDict || {} : (db.itemDict || {})).filter(([, v]) => String((v && (v.mc || v.nm)) || '').trim()).map(([k]) => k));
           const seen = {};
           const feed = (pn, hint) => { pn = String(pn || '').toUpperCase().trim(); if (!pn || named.has(pn)) return; const e = (seen[pn] = seen[pn] || { pn, src: '', n: 0 }); e.n++; if (!e.src && hint) e.src = hint; };
           for (const x of db.ledger || []) feed(x.p, '账本');
@@ -3554,31 +3697,46 @@ return send(res, 200, {
           for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) feed(i.code || i.pn, '出库单');
           for (const r of db.requisitions || []) for (const it of (r.items || [])) feed(it.partNo, '领料单');
           const miss = Object.values(seen).sort((a, b) => b.n - a.n || a.pn.localeCompare(b.pn));
-          return send(res, 200, { ok: true, miss: true, total: miss.length, list: miss.slice(0, 500) });
+          return send(res, 200, { ok: true, miss: true, mc: _isMc, total: miss.length, list: miss.slice(0, 500) });
         }
         return send(res, 200, { ok: true, total: list.length, list: list.slice(0, q ? 300 : 6000) }); // ㉖v95b 无q=领料联想全量缓存（局域网一次性拉取）
       }
-      // ---- ㉖G8 批量补录：items=[{pn,nm}] 或 text="零件号,名称"逐行；仅仓管/管理员；进字典+活动流 ----
+      // ---- ㉖G8 批量补录：items=[{pn,nm,mc}] 或 text="零件号,名称[,物料号]"逐行；仅仓管/管理员；进字典+活动流 ----
       if (req.method === 'POST' && p === '/api/dict') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可补录物料字典' });
         const b = await readBody(req);
         let pairs = [];
-        if (Array.isArray(b.items)) pairs = b.items.map((it) => [String((it && it.pn) || ''), String((it && it.nm) || '')]);
-        else if (typeof b.text === 'string') pairs = b.text.split(/[\r\n]+/).map((l) => { const i = l.search(/[，,\t]/); return i < 0 ? [l, ''] : [l.slice(0, i), l.slice(i + 1)]; });
+        if (Array.isArray(b.items)) pairs = b.items.map((it) => [String((it && it.pn) || ''), String((it && it.nm) || ''), String((it && it.mc) || '')]);
+        else if (typeof b.text === 'string') pairs = b.text.split(/[\r\n]+/).map((l) => { const p = l.split(/[，,\t]/); return [p[0] || '', p[1] || '', p[2] || '']; });
         db.itemDict = db.itemDict || {};
-        let set = 0, skip = 0;
+        // ㉖v98c 自动拾取索引：零件号→最新有效流水mc（用户只粘零件号清单时，系统先从已有数据捡，捡不到才报缺）
+        const _pnMc = {};
+        for (const s of Object.values(db.scanlog || {})) { const p = String(s.pn || '').toUpperCase(), m = String(s.mc || '').trim(); if (s.cx || !p || !m) continue; const e = _pnMc[p]; if (!e || (Number(s.t) || 0) >= e.t) _pnMc[p] = { mc: m, t: Number(s.t) || 0 }; }
+        for (const f of Object.values(db.mitemFix || {})) { const p = String((f && f.pn) || '').toUpperCase(); if (p && f.mc && !_pnMc[p]) _pnMc[p] = { mc: String(f.mc), t: Number(f.at) || 0 }; }
+        let set = 0, skip = 0, mcSet = 0, mcAuto = 0, lack = 0;
         for (let pr of pairs) {
           let pn = String(pr[0] || '').toUpperCase().trim(), nm = String(pr[1] || '').trim().replace(/[，,\t]/g, ' ');
-          if (!pn || pn.length > 40 || !nm) { skip++; continue; }
+          const mcIn = String(pr[2] || '').toUpperCase().trim();
+          if (!pn || pn.length > 40) { if (nm) skip++; continue; }
           if (nm.length > 80) nm = nm.slice(0, 80);
-          const old = db.itemDict[pn];
-          if (old && old.nm === nm) { skip++; continue; }
-          db.itemDict[pn] = { nm, unit: (old && old.unit) || '', src: '手工补录', by: u.name, at: Date.now() };
-          set++;
+          if (nm) { // 有名称才动物料名字典
+            const old = db.itemDict[pn];
+            if (old && old.nm === nm) { skip++; } else {
+              db.itemDict[pn] = { nm, unit: (old && old.unit) || '', mc: (old && old.mc) || '', src: '手工补录', by: u.name, at: Date.now() };
+              set++;
+            }
+          }
+          if (mcIn) { if (feedMitem(pn, mcIn, '字典补录·' + u.name)) mcSet++; } // 第三列=物料号（可单独只填 pn,,mc）；同值不重复计
+          else if (!((db.mitemDict || {})[pn] && (db.mitemDict[pn].mc))) { // 没给物料号且字典也没有→先自动拾取，拾不到记缺
+            const auto = _pnMc[pn];
+            if (auto && feedMitem(pn, auto.mc, '流水自动拾取')) mcAuto++;
+            else if (!auto) lack++;
+          }
+          if (!nm && !mcIn) skip++;
         }
-        save(); pushOps(u, '补录字典', set + '项', skip ? ('跳过' + skip) : '');
-        console.log(`[dict] ${u.name} 批量补录 ${set} 项`);
-        return send(res, 200, { ok: true, set, skip });
+        save(); pushOps(u, '补录字典', set + '项' + (mcSet ? ' +物料号' + mcSet + '项' : '') + (mcAuto ? ' +自动' + mcAuto : ''), (skip ? '跳过' + skip : '') + (lack ? ' 缺对应' + lack : ''));
+        console.log(`[dict] ${u.name} 批量补录 ${set} 项（物料号 ${mcSet}+自动 ${mcAuto}，缺 ${lack}）`);
+        return send(res, 200, { ok: true, set, skip, mcSet, mcAuto, lack });
       }
       // ---- ㉖G8 交叉自愈：凡同一零件号在 ledger/scanlog/outbound 任一处有名字，补进字典无名项（零外部请求）----
       if (req.method === 'POST' && p === '/api/dict/heal') {
@@ -4244,18 +4402,19 @@ return send(res, 200, {
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
         const dstr = (ms) => { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()}`; };
         // 今日入库：采集流水按标签去重（排除作废）
+        // ㉖v98c 近7日窗口修正：原窗口=[今天, 今天+6]，昨天/前天 dayIdx 为负被丢弃，图表只剩当天一根柱。
+        // 改为 [今天-6, 今天]：winStart 为 7 天前零点，桶序 0..6 与标签同步左移，历史数据正常入桶。
+        const winStart = todayStart - 6 * dayMs;
         const inToday = new Map();
         const trendIn = Array(7).fill(0), trendOut = Array(7).fill(0);
         for (const s of Object.values(db.scanlog || {})) {
           if (s.cx || !s.t) continue;
-          const dayIdx = Math.floor((s.t - todayStart) / dayMs);
-          if (dayIdx >= 0 && dayIdx <= 6) { trendIn[dayIdx] = 0; } // 占位，下面统一算
           if (s.t >= todayStart) { if (!inToday.has(s.code) || (inToday.get(s.code).t || 0) < s.t) inToday.set(s.code, s); }
         }
         const inBoxes = inToday.size;
         const inQty = [...inToday.values()].reduce((s, x) => s + (Number(x.q) || 0), 0);
         // 7日入库/出库按天分桶（标签数口径）
-        const bucket = (arr, m) => { const day = Math.floor((m - todayStart) / dayMs); if (day >= 0 && day <= 6) arr[day]++; };
+        const bucket = (arr, m) => { const day = Math.floor((m - winStart) / dayMs); if (day >= 0 && day <= 6) arr[day]++; };
         const inSeen = new Set(), outSeen = new Set();
         for (const s of Object.values(db.scanlog || {})) {
           if (s.cx || !s.t || !s.code || inSeen.has(s.code + Math.floor(s.t / dayMs))) continue;
@@ -4286,23 +4445,29 @@ return send(res, 200, {
         return send(res, 200, { ok: true, at: new Date().toISOString(),
           kpi: { inBoxes, inQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday: agvDoneToday, agvQueue: queueNow,
             stockBoxes: new Set(ledgerView().map((x) => boxKeyOf(x))).size, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal: stnOn, inspWait, stnToday, stnAliases }, // ㉖ 在库框数=按框聚合（同托多标签/同位同件=1框），与库存汇总D2同口径；此前误用标签条数(421)致与占位货位(412)不等
-          trend: Array.from({ length: 7 }, (_, i) => ({ d: dstr(todayStart + i * dayMs), in: trendIn[i], out: trendOut[i], ds: new Date(todayStart + i * dayMs).toISOString().slice(0, 10) })) });
+          // ㉖v98c 窗口左移同步标签；ds 改本地年月日拼（原 toISOString 是 UTC，东八区本地零点会少一天，下钻流水查错日期）
+          trend: Array.from({ length: 7 }, (_, i) => { const dt = new Date(winStart + i * dayMs); return { d: dstr(winStart + i * dayMs), in: trendIn[i], out: trendOut[i], ds: dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0') }; }) });
       }
       // ================= ⑦ AGV效率报表（只读聚合 db.agvTasks，登录可看；days=1~30） =================
       if (req.method === 'GET' && p === '/api/agv/report') {
         const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '7') || 7));
-        const since = Date.now() - days * 86400000;
+        // ㉖v98c 窗口改自然日：旧版 days*86400000 滚动窗（"今日"=昨天此刻起，混入昨日傍晚单，与工作量报表按日 158 对不上）
+        const dayBase = new Date(); dayBase.setHours(0, 0, 0, 0);
+        const since = days === 1 ? dayBase.getTime() : dayBase.getTime() - (days - 1) * 86400000;
         const tasks = Object.values(db.agvTasks || {}).filter((t) => (t.fin || 0) >= since);
         const byCar = {}; // 车号 → {n,durSum,out,in}
         const heat = Array.from({ length: 7 }, () => Array(24).fill(0)); // 近7日×24h 任务热力
-        const dayBase = new Date(); dayBase.setHours(0, 0, 0, 0); dayBase.setDate(dayBase.getDate() - 6);
+        const heatBase = new Date(dayBase); heatBase.setDate(heatBase.getDate() - 6);
         let noCarN = 0; // ㉖v61 RCS未回车号的任务（exeAgvId缺失）单列，不再伪装成 AGV00
         for (const t of tasks) {
           if (!t.car) { noCarN++; } else {
             const b = (byCar[t.car] = byCar[t.car] || { n: 0, durSum: 0, out: 0, in: 0 });
             b.n++; if (t.dur) b.durSum += t.dur; if (t.ck === 'out') b.out++; else if (t.ck === 'in') b.in++;
           }
-          const di = Math.floor((t.fin - dayBase.getTime()) / 86400000), hr = new Date(t.fin).getHours();
+        }
+        // ㉖v98c 热力独立扫全量近7日（旧版搭 tasks 循环便车，选"今日"时热力只剩一行）
+        for (const t of Object.values(db.agvTasks || {})) {
+          const di = Math.floor((t.fin - heatBase.getTime()) / 86400000), hr = new Date(t.fin).getHours();
           if (di >= 0 && di < 7 && hr >= 0 && hr < 24) heat[di][hr]++;
         }
         const cars = Object.entries(byCar).map(([id, v]) => ({ car: Number(id), n: v.n, out: v.out, in: v.in, avgDur: v.n && v.durSum ? Math.round(v.durSum / v.n) : 0 }))
@@ -4310,7 +4475,7 @@ return send(res, 200, {
         if (noCarN) cars.push({ car: -1, n: noCarN, out: 0, in: 0, avgDur: 0 }); // car=-1 前端显示"车号缺失"
         const totalN = tasks.length, totalDur = tasks.reduce((s, t) => s + (t.dur || 0), 0);
         return send(res, 200, { ok: true, days, totalN, avgDur: totalN ? Math.round(totalDur / totalN) : 0,
-          cars, heat, heatDays: Array.from({ length: 7 }, (_, i) => dstr(dayBase.getTime() + i * 86400000)) });
+          cars, heat, heatDays: Array.from({ length: 7 }, (_, i) => dstr(heatBase.getTime() + i * 86400000)) });
       }
       // ================= ⑬ APK 自动更新：版本查询 + 下载（登录可用） =================
       const APP_DIR = path.join(DATA_DIR, 'app');
@@ -4488,6 +4653,12 @@ return send(res, 200, {
         if (req.method === 'POST' && p === '/api/requisitions') {
           if (!canReq) return send(res, 403, { ok: false, msg: '当前角色未开通领料下单' });
           const b = await readBody(req);
+          // ㉖v98c 待签收闸门（服务器权威兜底）：物料员手里有未签收单→禁止下新单，逼出"先清旧单"闭环
+          // 目的：防物料员囤单/漏签收导致线边物料账实脱节；两端弹层是体验，此处防旧版APK/网页绕过
+          if (u.role === 'material') {
+            const g = reqGateOf(u.id);
+            if (g.block.length) return send(res, 409, { ok: false, code: 'pending_confirm', msg: `您有 ${g.block.length} 张领料单货到待签收未处理（${g.block.slice(0, 3).map((r) => r.no).join('、')}${g.block.length > 3 ? '…' : ''}），请先完成签收再下新单` });
+          }
           const items = Array.isArray(b.items) ? b.items : [];
           const clean = [];
           for (const it of items) {
@@ -4551,6 +4722,11 @@ return send(res, 200, {
         }
 
         // 列表：物料员看自己的，仓管/管理员看全部；scope=todo 只看待办
+        if (req.method === 'GET' && p === '/api/requisitions/gate') { // ㉖v98c 闸门预检（两端建单前调用）：返回待签收单与是否该拦
+          const g = reqGateOf(u.id);
+          const wrap = (r) => ({ id: r.id, no: r.no, readyAt: Number(r.readyAt) || 0, rush: !!r.rush || (r.items || []).some((i) => i.rush === true), n: (r.items || []).length });
+          return send(res, 200, { ok: true, mode: g.mode, pend: g.pend.map(wrap), block: g.block.map(wrap) });
+        }
         if (req.method === 'GET' && p === '/api/requisitions') {
           sweepAssignOpen();
           const q = (url.searchParams.get('scope') || '').trim();
@@ -4670,6 +4846,16 @@ return send(res, 200, {
               }
             }
             r.status = 'accepted'; r.acceptedBy = u.name; r.acceptedAt = new Date().toISOString();
+            // ㉖v98c 接单盖章：把此刻每行的 FIFO 建议框码集固化进行数据（sugCodes）——
+            // 之后无论先扫了哪框（现场常先碰到新批），发齐态灰框仍按"当初建议过的"显示，不随账本变化漂移
+            try {
+              for (const it0 of r.items || []) {
+                if (it0.transferred || it0.skipped) continue;
+                const ex0 = new Set(((it0.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
+                const sg0 = pickSuggest(it0.partNo, Number(it0.qty) || 0, ex0, agvMapOf(it0));
+                it0.sugCodes = (sg0.boxes || []).flatMap(bx => bx.codes || []);
+              }
+            } catch (_) {}
             hpush(`接单（${u.name}）${r.assigneeName && r.assigneeId !== u.id ? '，原指定 ' + r.assigneeName + ' 超时未接' : ''}`);
             notify(r.by, 'req_accept', `你的领料单 ${r.no} 已由 ${u.name} 接单备料`, r.id);
             if (r.assigneeId && r.assigneeId !== u.id) { const aU = db.users.find((x) => x.id === r.assigneeId); if (aU && aU.enabled) notify(r.assigneeId, 'req_reassign', `📢 你被指定的领料单 ${r.no} 已由 ${u.name} 接单，请勿再备料`, r.id); } // ⑲防原指定人白备料
@@ -4741,7 +4927,7 @@ return send(res, 200, {
             if (P().strictFifo === 1 && b.emergency !== true) {
               const _excl = new Set(normIssued(target).map((e) => String(e.c).toUpperCase()));
               const _need = Math.max(0, (Number(target.qty) || 0) - issuedQty(target));
-              const _sg = pickSuggest(target.partNo, _need, _excl, agvMapOf(target));
+              const _sg = pickSuggest(target.partNo, _need, _excl, agvMapOf(target), target.sugCodes);
               const _allow = new Set();
               for (const bx of (_sg.boxes || [])) { for (const c of (bx.allCodes || bx.codes || [])) _allow.add(String(c).toUpperCase()); for (const it of (bx.items || [])) _allow.add(String(it.c).toUpperCase()); }
               for (const f of (_sg.flatBoxes || [])) _allow.add(String(f.c || '').toUpperCase());
@@ -4760,7 +4946,8 @@ return send(res, 200, {
                 } else if (_lb.has(code.toUpperCase()) || _allow.has(code.toUpperCase())) {
                   return send(res, 400, { ok: false, code: 'over-confirm', msg: `行 ${target.partNo} 已发齐（${issuedQty(target)}/${target.qty} 件），标签 ${code} 属超发——确认连这框一起发请再扫一次（端上弹确认）；不想要就留待下次领用` });
                 } else {
-                  return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已发齐（${issuedQty(target)}/${target.qty} 件），标签 ${code} 不在该零件在架清单内，拒绝录入` });
+                  const _onLed = (db.ledger || []).some((x) => String(x.c || '').toUpperCase() === code.toUpperCase());
+                  return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已发齐（${issuedQty(target)}/${target.qty} 件），标签 ${code} ${_onLed ? '不在本行取货建议框内（未建议的在架框留待下次领用；确需连它一起发走「应急登记」）' : '不在该零件在架清单内'}，拒绝录入` });
                 }
               }
               if (!_overPass && _allow.size && !_allow.has(code.toUpperCase())) {
@@ -5888,6 +6075,16 @@ async function wmasStuckPush(nowMs) {
     }
   }
 }
+function funnelArchive(q) { // ㉖v98c 队列项 2 小时出队+clearQueueCall 删标记 → 漏斗关联链断裂（10/28 现场：1069 任务/124 单，漏斗全空"样本不足"）。完成瞬间把时间戳归档进 agvCalled 条目本身：去 q 标记（不占"排队中"语义，建议区行为不变）、加 fin 标记（agvMapOf 跳过）、存 sent/disp/dock/stn/from/task 供 buildFunnel 直读
+  const rq = (db.requisitions || []).find((x) => x.id === q.reqId); if (!rq) return;
+  const cu = String(q.code || '').toUpperCase(); if (!cu) return;
+  for (const it of rq.items || []) for (const e of it.agvCalled || []) {
+    if (String(e.c || '').toUpperCase() !== cu) continue;
+    e.sent = q.at || 0; e.disp = q.sentAt || 0; e.dock = q.dockAt || 0; e.clr = q.updAt || 0; // clr=清台(完成迁移)时刻，hold 段口径与旧版一致
+    e.stn = String(q.station || e.s || ''); e.from = String(q.fromLoc || ''); e.task = String(q.wmsTask || '');
+    e.fin = 1; delete e.q; if (!e.t) e.t = new Date(q.at || Date.now()).toISOString();
+  }
+}
 function clearQueueCall(reqId, code) { // 队列项取消/失败出队 → 解除该框排队叫车标记，允许重新叫车
   const rq = db.requisitions.find((x) => x.id === reqId); if (!rq) return;
   for (const it of rq.items || []) {
@@ -6080,7 +6277,7 @@ async function agvDispatch(nowMs, runT) {
         if (fin) { q.state = '到站'; q.dockAt = fin; q.updAt = nowMs; (q.trace = q.trace || []).push('RCS沉淀旁证：搬运已完成，快照未抓到到站，按记录推进'); }
       }
     } else if (q.state === '到站') {
-      if (!has) { q.state = '完成'; q.dockAt = q.dockAt || nowMs; q.updAt = nowMs; clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); } // ㉖v94k 完成刷新updAt（完成表"结束时间/全程耗时"取updAt，旧版不刷→显示成下发时刻的1秒假耗时）；㉖v72b 任务闭环：货离台=发走/清台，清叫车标记允许该框未来重新入队
+      if (!has) { q.state = '完成'; q.dockAt = q.dockAt || nowMs; q.updAt = nowMs; funnelArchive(q); clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); } // ㉖v94k 完成刷新updAt（完成表"结束时间/全程耗时"取updAt，旧版不刷→显示成下发时刻的1秒假耗时）；㉖v72b 任务闭环：货离台=发走/清台，清叫车标记允许该框未来重新入队；㉖v98c 出队前归档漏斗时间戳
     }
   }
   // 失败项保留30分钟供查看原因后自动出队（重新一键叫车即可再入队）；完成/取消保留2小时
@@ -6182,6 +6379,7 @@ async function carAlarmWatch(tk, nowMs) {
   { const _ids = new Set(cars.map((x) => x.agvId).filter((v) => v !== undefined && v !== null).map(Number));
     for (const id of Object.keys(db.rcsCarAlarm)) if (!_ids.has(Number(id))) delete db.rcsCarAlarm[id]; }
   db.carAlarms = db.carAlarms || []; // 告警历史落库（供追溯）
+  { const f = db.carFlap || {}; for (const k of Object.keys(f)) if (nowMs - f[k] > 30 * 60000) delete f[k]; } // ㉖v98c 抖动锚点30分钟自动过期
   const logAlarm = (id, name, kind, msg) => { db.carAlarms.push({ at: nowMs, id, name, kind, msg }); if (db.carAlarms.length > 500) db.carAlarms = db.carAlarms.slice(-500); pushEvent(kind === 'recover' ? '恢复' : kind === 'ack' ? '已认领' : kind === 'escalate' ? '升级' : kind === 'redflag' ? '红牌' : '告警', name, msg, nowMs); };
   for (const c of cars) {
     const id = c.agvId; if (id === undefined || id === null) continue;
@@ -6196,12 +6394,29 @@ async function carAlarmWatch(tk, nowMs) {
     const fp = parts.join('|');
     const rec = db.rcsCarAlarm[id];
     if (!fp) {
-      if (rec && rec.notified) { const msg = `✅ ${name} 告警已恢复（原：${rec.fp}）`; db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, '')); logAlarm(id, name, 'recover', msg); console.log('[car-alarm-recover] ' + msg); }
+      if (rec && rec.notified) {
+        const msg = `✅ ${name} 告警已恢复（原：${rec.fp}）`;
+        if (rec.notified !== 'muted') db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, '')); // ㉖v98c 被静音的抖动告警，恢复也静默
+        db.carFlap = db.carFlap || {}; db.carFlap[id + '|' + rec.fp] = nowMs; // ㉖v98c 抖动冷却锚点：同车同指纹10分钟内再报不再弹（急停除外）
+        logAlarm(id, name, 'recover', msg); console.log('[car-alarm-recover] ' + msg);
+      }
       delete db.rcsCarAlarm[id];
       continue;
     }
-    if (!rec || rec.fp !== fp) { db.rcsCarAlarm[id] = { fp, since: nowMs, notified: false, severe: estop }; continue; } // 新告警/变化：重置计时
+    if (!rec || rec.fp !== fp) { // 新告警/变化：重置计时
+      const flapped = !estop && db.carFlap && db.carFlap[id + '|' + fp] && nowMs - db.carFlap[id + '|' + fp] < 10 * 60000; // ㉖v98c 恢复后10分钟内复发=网络抖动，压住不弹只留痕
+      db.rcsCarAlarm[id] = { fp, since: nowMs, notified: flapped ? 'muted' : false, severe: estop };
+      if (flapped) logAlarm(id, name, 'flap', `🔇 ${name} 告警抖动抑制：${fp}（恢复后10分钟内复发，未推送）`);
+      continue;
+    }
     const j = db.rcsCarAlarm[id];
+    if (j.notified === 'muted' && nowMs - j.since > 15 * 60000) { // ㉖v98c 安全阀：静音告警持续超15分钟=不是抖动是真故障，升级为正式通知
+      j.notified = true;
+      const msg = `🚨 ${name} 车辆告警：${fp}（持续超15分钟，非瞬时抖动）`;
+      db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', msg, ''));
+      logAlarm(id, name, 'alarm', msg); console.log('[car-alarm-flap2real] ' + msg);
+      continue;
+    }
     if (!j.notified) {
       if (nowMs - j.since < (j.severe ? 0 : 90 * 1000)) continue; // 急停立即，其余宽限90s防瞬时抖动
       j.notified = true; j.esc = 0;
@@ -6231,21 +6446,22 @@ function buildFunnel(days) {
     for (const it of r.items || []) for (const e of (it.agvCalled || [])) {
       const code = String(e.c || '').toUpperCase();
       const calledAt = Date.parse(e.t || '') || 0; if (!calledAt || calledAt < since) continue;
+      // ㉖v98c 优先读完成时归档的时间戳（funnelArchive 写入），队列项 2 小时出队后漏斗仍完整；在途任务回退读活跃队列
       const q = (db.agvQueue || []).find((x) => String(x.code).toUpperCase() === code && Math.abs((x.at || 0) - calledAt) < 120000);
-      const sentAt = q ? (q.at || 0) : calledAt, dispAt = q ? (q.sentAt || 0) : 0;
-      const stn = ((q && q.station) || String(e.s || '')).toUpperCase();
-      const fromLoc = String((q && q.fromLoc) || it.loc || '').toUpperCase();
-      const tk = (q && q.wmsTask && db.agvTasks[q.wmsTask]) // ①taskNo精确关联（WMAS与RCS同号）
+      const sentAt = (e.sent || 0) || (q ? (q.at || 0) : calledAt), dispAt = (e.disp || 0) || (q ? (q.sentAt || 0) : 0);
+      const stn = (String(e.stn || '') || (q && q.station) || String(e.s || '')).toUpperCase();
+      const fromLoc = (String(e.from || '') || String((q && q.fromLoc) || it.loc || '')).toUpperCase();
+      const tk = ((e.task && db.agvTasks[e.task]) || (q && q.wmsTask && db.agvTasks[q.wmsTask])) // ①taskNo精确关联（WMAS与RCS同号）；㉖v98c 归档任务号优先
         || (fromLoc && stn ? findTask(fromLoc, stn, sentAt - 60000, Math.max(dispAt, sentAt) + 6 * 3600000) : null); // ②兜底：起终点+时间窗
       const s = { call: 0, queue: 0, dispatch: 0, pick: 0, arrive: 0, hold: 0, total: 0 };
       if (acceptT) s.call = (calledAt - acceptT) / 60000;
-      if (dispAt) s.queue = (dispAt - sentAt) / 60000;
+      if (dispAt && sentAt) s.queue = (dispAt - sentAt) / 60000;
       if (tk) {
         if (tk.ex) s.dispatch = (tk.ex - (dispAt || sentAt)) / 60000;
         if (tk.pick && tk.ex) s.pick = (tk.pick - tk.ex) / 60000;
         if (tk.fin && tk.pick) s.arrive = (tk.fin - tk.pick) / 60000;
-        if (s.queue > 0 && s.dispatch > 0 && tk.fin) s.total = (tk.fin - sentAt) / 60000;
-        const clearedAt = q && q.state === '完成' ? (q.updAt || 0) : (issuedSet.has(code) ? Math.max(tk.fin, nowMs) : 0);
+        if (tk.fin && sentAt) s.total = (tk.fin - sentAt) / 60000; // ㉖v98c 端到端放宽：旧版要求排队>0且下发>0双条件，任一时间戳缺失即无样本
+        const clearedAt = e.clr ? Math.max(tk.fin, e.clr) : (q && q.state === '完成' ? (q.updAt || 0) : (issuedSet.has(code) ? Math.max(tk.fin, nowMs) : 0)); // ㉖v98c 归档 clr=清台时刻，hold=清台-任务完成
         if (clearedAt && clearedAt > tk.fin) s.hold = (clearedAt - tk.fin) / 60000;
       }
       samples.push(s);

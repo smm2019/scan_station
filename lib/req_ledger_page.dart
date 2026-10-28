@@ -436,7 +436,8 @@ class _ReqLedgerPageState extends State<ReqLedgerPage> {
                     child: Text("${p.partNo}  ${p.itemName}",
                         maxLines: 1, overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700))),
-                TextButton.icon(
+                if (Auth.can("requisition")) // ㉖v98c 无下单权限（仓管/检验员）不显示续领按钮（10/29 用户拍板）
+                  TextButton.icon(
                     style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6), visualDensity: VisualDensity.compact, foregroundColor: const Color(0xFF515BD4)),
                     onPressed: () => _again(p),
                     icon: const Icon(Icons.refresh, size: 15),
@@ -469,13 +470,13 @@ class _ReqLedgerPageState extends State<ReqLedgerPage> {
                       dense: true,
                       title: Text("${x["pn"]} ${_names[x["pn"]] ?? ""}", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12.5)),
                       subtitle: Text("${x["by"]} · ${_fmtInvNum(x["qty"])} 件 · ${x["no"]}${x["rush"] == true ? " · 🔥急料" : ""}", style: const TextStyle(fontSize: 11)),
-                      trailing: TextButton(
+                      trailing: Auth.can("requisition") ? TextButton( // ㉖v98c 无下单权限（仓管/检验员）不显示续领
                           onPressed: () {
                             Navigator.pop(ctx);
                             kReqAgain.value = "${x["pn"]}|${_fmtInvNum(x["qty"])}|${DateTime.now().millisecondsSinceEpoch}"; // 点行=照这行量续领
                             Navigator.pop(context);
                           },
-                          child: const Text("续领", style: TextStyle(fontSize: 11.5))),
+                          child: const Text("续领", style: TextStyle(fontSize: 11.5))) : null,
                       )),
                 ])));
   }

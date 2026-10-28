@@ -57,6 +57,7 @@ part 'console_web_page.dart'; // ㉖⑯ 网页控制台驾驶舱（内嵌全功�
 part 'notify_service.dart'; // ⑭系统通知+语音播报
 part 'shortage_report_page.dart'; // ㉖v74 缺料反馈：一键生成生产部格式缺料单，分享微信
 part 'req_ledger_page.dart'; // ㉖v76 领料账本：时间窗消耗聚合/撑几天预警/一键续领/呆滞榜/报告分享
+part 'mitem_backfill_page.dart'; // ㉖v98c 物料号补录：扫标签查MES取MITEM_CODE上收，字典回补老标签导出列
 
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);
@@ -346,12 +347,14 @@ class RecordExtra {
   String goodsCode; // 关联 ScanRecord.goodsCode（货码唯一）
   String palletId = ""; // 托号，空串=非整托记录
   String mesItemName = ""; // 物料描述（MES返回名称字段）
+  String mesMitem = ""; // ㉖v98c 物料号（MES返回MITEM_CODE；Isar加字段自动迁移，老记录默认空串）
   String mesLotNo = ""; // 批次（MES返回LOT_NO）
   String operator = ""; // 采集操作人（登录账号姓名，库存入库流水用）
   RecordExtra({
     required this.goodsCode,
     this.palletId = "",
     this.mesItemName = "",
+    this.mesMitem = "",
     this.mesLotNo = "",
     this.operator = "",
   });
@@ -1124,6 +1127,8 @@ Future<bool> mesSilentLogin() async {
 // ===================== MES单码查询（采集页/盘点页共用；失效自动静默重登并重试一次） =====================
 /// ㉖ 批次口径：以 MES 标签打印时间(DATETIME_CREATED)的日期为准。
 /// 例 "2026-10-13T08:56:55" → "2026-10-13"。解析不出则回退 [fallback]（原 LOT_NO），绝不返回空。
+/// ㉖v98c Excel序列号防呆：部分标签 LOT_NO 被 MES 侧 Excel 污染成日期序列号（如 46308=2026-10-13），
+/// 纯数字5位且落在 36526(2000-01-01)~80000(2119年) 区间自动转回日期；真批次号(4-5位流水)不在此区间不受影响。
 String lotFromPrintDate(String printTime, String fallback) {
   final s = printTime.trim();
   final p = (int n) => n.toString().padLeft(2, '0');
@@ -1132,6 +1137,15 @@ String lotFromPrintDate(String printTime, String fallback) {
   if (s.isNotEmpty) {
     final dt = DateTime.tryParse(s);
     if (dt != null) return '${dt.year}-${p(dt.month)}-${p(dt.day)}';
+  }
+  final fb = fallback.trim();
+  final em = RegExp(r'^(\d{5})$').firstMatch(fb);
+  if (em != null) {
+    final n = int.parse(em.group(1)!);
+    if (n >= 36526 && n <= 80000) {
+      final d = DateTime.utc(1899, 12, 30).add(Duration(days: n));
+      return '${d.year}-${p(d.month)}-${p(d.day)}';
+    }
   }
   return fallback;
 }
@@ -1233,6 +1247,7 @@ Future<Map<String, dynamic>> _mesQueryOnce(String labelNo) async {
       return {
         'ok': true,
         'partNo': (row["PartCode"] ?? row["MITEM_CODE"])?.toString() ?? '',
+        'mitemCode': (row["MITEM_CODE"] ?? '').toString(), // ㉖v98c 物料号：此前查完即丢，现随流水上收+字典沉淀
         'qty': (row["QTY"] as num?)?.toDouble() ?? 0,
         'createTime': _ct,
         'itemName':
@@ -2366,6 +2381,7 @@ class _MainPageState extends State<MainPage>
       double? mesQty;
       String? mesCreateTime;
       String mesItemName = "";
+      String mesMitem = ""; // ㉖v98c 物料号 MITEM_CODE
       String mesLotNo = "";
       try {
         final mesResult = await mesQueryLabel(code);
@@ -2376,6 +2392,7 @@ class _MainPageState extends State<MainPage>
           mesQty = (mesResult["qty"] as num?)?.toDouble();
           mesCreateTime = ct.isEmpty ? null : ct;
           mesItemName = mesResult["itemName"]?.toString() ?? "";
+          mesMitem = mesResult["mitemCode"]?.toString() ?? "";
           mesLotNo = mesResult["lotNo"]?.toString() ?? "";
           if (mesResult["relogin"] == true) {
             // ㉖v80 降噪：续期成功静默（查询已正常，无需打断扫码）
@@ -2459,6 +2476,7 @@ class _MainPageState extends State<MainPage>
           goodsCode: code,
           palletId: palletIdForSave,
           mesItemName: mesItemName,
+          mesMitem: mesMitem,
           mesLotNo: mesLotNo,
           operator: Auth.user?.name ?? Auth.user?.username ?? "",
         );
@@ -5023,6 +5041,16 @@ class SettingsMenuPage extends StatelessWidget {
                     backgroundColor:
                         r["ok"] == true ? Colors.green : Colors.red));
               },
+            ),
+          if (_isWhRole)
+            _settingTile(
+              context,
+              icon: Icons.qr_code_2,
+              color: const Color(0xFF00897B),
+              title: "物料号补录",
+              subtitle: "扫货架标签查MES补物料号（导出表物料号列老数据回补；同零件号自动扩散，重复扫自动去重）",
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const MitemBackfillPage())),
             ),
           if (_isWhRole)
             _settingTile(

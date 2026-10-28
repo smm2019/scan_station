@@ -1469,6 +1469,7 @@ Future<void> scanPushNow() async {
         "mk": r.mesCreateTime ?? "",
         "op": x?.operator ?? "",
         "nm": x?.mesItemName ?? "",
+        "mc": x?.mesMitem ?? "", // ㉖v98c 物料号（MES MITEM_CODE），服务器沉淀零件号→物料号字典供全量回补
         // ㉖ 批次口径：按 MES 标签打印时间派生，缺失回退原 LOT_NO
         "lot": lotFromPrintDate(r.mesCreateTime ?? "", x?.mesLotNo ?? ""),
         "pid": x?.palletId ?? "",

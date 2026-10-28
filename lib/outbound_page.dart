@@ -9,7 +9,7 @@ class OutboundOrder {
   late String orderNo;      // 直调单号 DTyyyyMMddHHmmss
   late int createdAt;       // 毫秒时间戳
   late String toLoc;        // 转入货位展示串
-  late String operator;     // 操作人姓名(账号)
+  late String operator;     // 操作人姓名（㉖v98c 起不再带账号；存量旧单由服务器剥尾兼容）
   late int status;          // 0=未核对完 1=全部已核对
   late String itemsJson;    // [{code,name,qty,barcode,checked}]
   String linkReqNo = "";    // 关联领料单号（领料发料转MES生成的出库单填写，直调为空）
@@ -45,7 +45,7 @@ Future<OutboundOrder> createOutboundOrder(List<Map<String, dynamic>> rows, Map<S
     ..orderNo = "DT$ts"
     ..createdAt = now.millisecondsSinceEpoch
     ..toLoc = "${to["WAREHOUSE_NAME"] ?? ""}/${to["DISTRICT_NAME"] ?? ""}/${to["LOC_NAME"] ?? ""}"
-    ..operator = user == null ? "-" : "${user.name}(${user.username})"
+    ..operator = user == null ? "-" : user.name // ㉖v98c 只写姓名：旧版"姓名(账号)"格式已由服务器显示层兼容剥离
     ..status = 0
     ..linkReqNo = linkReqNo
     ..itemsJson = jsonEncode(items);

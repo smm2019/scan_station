@@ -233,6 +233,58 @@ class _RequisitionPageState extends State<RequisitionPage>
       };
 
   Future<void> _create({Map<String, String>? prefill}) async {
+    // ㉖v98c 待签收预检：调服务器统一判定端点（reqGateOf），口径与 POST 兜底闸门永不漂移
+    // 规则：只拦物料员；急料单豁免；模式1有待签收宽限期（默认30分钟）；参数在网页控制台「运营参数→领料闸门」可调
+    // 链式引导：多张拦下→逐张签收，每轮重查，全部清零才放行建单
+    if (Auth.user?.role == 'material') {
+      while (mounted) {
+        List<Map> block = [];
+        try {
+          final j = await AuthApi.reqGate();
+          if (j["ok"] != true) break; // 查询失败不拦（POST 兜底闸门仍在），网络抖动不误伤下单
+          block = List<Map>.from(j["block"] ?? []);
+        } catch (_) {
+          break;
+        }
+        if (!mounted) return;
+        if (block.isEmpty) break; // 无拦下单（含急料豁免/宽限期内）→ 放行建单
+        final names = block.map((r) => "${r["no"]}（${(r["n"] as num?)?.toInt() ?? 0}行）").join("\n");
+        final go = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+                icon: const Icon(Icons.hourglass_bottom, color: Colors.teal, size: 32),
+                title: const Text("先签收，再下单"),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text("您有 ${block.length} 张领料单货到待签收未处理，签收后才能下新单：",
+                      style: const TextStyle(fontSize: 13)),
+                  const SizedBox(height: 6),
+                  Container(
+                      constraints: const BoxConstraints(maxHeight: 160),
+                      child: SingleChildScrollView(
+                          child: Text(names,
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  fontFamily: "monospace",
+                                  color: Colors.blueGrey)))),
+                  const SizedBox(height: 6),
+                  Text(block.length > 1 ? "（将逐张引导签收，全部清零后可下单）" : "（急料单豁免有时限；宽限期内可正常下单）",
+                      style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                ]),
+                actions: [
+                  TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("稍后再说")),
+                  FilledButton.icon(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      icon: const Icon(Icons.check_circle_outline, size: 18),
+                      label: Text("签收这${block.length > 1 ? " ${block.length}" : ""}张（从第1张开始）")),
+                ]));
+        if (go != true) return; // 放弃下单
+        if (!mounted) return;
+        final ch = await _detail(block.first); // 打开第一张详情=签收弹层
+        if (ch != true) return; // 没签收就关掉→退出引导不反复骚扰（POST 闸门仍兜底）
+        // 签完返回→重查闸门，还有下一张拦下单则继续引导，清零放行建单
+      }
+    }
+    if (!mounted) return;
     // 从库存选零件号下单：多行 items；prefill=再来一单（原单零件号+数量带入，可改）
     final agg = await computeStock();
     if (!mounted) return;
@@ -315,7 +367,7 @@ class _RequisitionPageState extends State<RequisitionPage>
       _toast((r["msg"] ?? "提交失败").toString());
   }
 
-  Future<void> _detail(Map rq) async {
+  Future<bool?> _detail(Map rq) async {
     // ㉖v98 列表 lite 化后卡片无 suggest：打开详情时拉一次单张全量（失败静默用行数据兜底）
     try {
       final r = await AuthApi.reqOne(rq["id"].toString());
@@ -330,6 +382,7 @@ class _RequisitionPageState extends State<RequisitionPage>
             statusColor: _statusColor,
             onAgain: _again));
     if (changed == true) _load();
+    return changed; // ㉖v98c 返回是否发生签收等变更（链式引导判断用）
   }
 
   /// ㉖ 再来一单：把原单零件号+数量带入新建弹层（可改），下单人为当前账号
@@ -1855,7 +1908,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                   pend.isEmpty
                       ? (left.isEmpty
                           ? "✅ 该行已发齐 ${_fmtInvNum(_issuedQtyOf(item))} 件——无需再叫车，点「转MES出库」收尾"
-                          : "✅ 该行已发齐 ${_fmtInvNum(_issuedQtyOf(item))} 件 · 还有 ${left.length} 框未拣（如下灰框，可留着下次）")
+                          : "✅ 该行已发齐 ${_fmtInvNum(_issuedQtyOf(item))} 件 · 还有 ${left.length} 个建议框未扫（如下：可继续扫=连这框一起发，弹确认；不扫则留待下次）")
                       : "✅ 该行已发齐 ${_fmtInvNum(_issuedQtyOf(item))} 件，但还有 ${pend.length} 个已叫车标签未扫码",
                   style: TextStyle(
                       fontSize: 11,
@@ -1901,12 +1954,12 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                                       fontWeight: FontWeight.w700))));
                     }).toList()),
               ],
-              // ㉖v98 剩余未拣框（未叫车的）灰显列出：不隐藏，仓管决定"超发一起拣"（扫码会弹确认）还是留着下次
+              // ㉖v98 剩余未拣框不再隐藏（用户拍板：扫了大框后，早批框要可见可扫，仓管决定是否超发一起拣）
               if (left.where((b) => !pend.any((p2) => (p2["c"]?.toString().toUpperCase() ?? "") == (b["c"]?.toString().toUpperCase() ?? ""))).isNotEmpty) ...[
                 const Padding(
                     padding: EdgeInsets.only(top: 4, bottom: 3),
                     child: Text(
-                        "📦 该零件仍有在架框未拣（点复制可扫=超发一起出，弹确认；不扫则留待下次领用）",
+                        "📦 本行建议框未扫（可继续扫发=超发一起出，弹确认；不扫则留待下次领用）",
                         style: TextStyle(
                             fontSize: 10.5, color: Color(0xFF607D8B)))),
                 Wrap(
@@ -1975,6 +2028,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       );
     }
     final canCtl = Auth.can("agv_control"); // 叫车是车辆控制权限：物料员只见建议不露叫车按钮
+    // ㉖v98c 建议框展示序=先进先出（10/29 用户拍板：新批在前只是动线参考，清单仍按批次早→晚排；
+    // 重点是发齐后剩余建议框继续显示可扫，由服务器盖章集保障）；黄窗豁免建议集内框保留=先扫新框不被打扰
     // ㉖v82 严重超发警告：整筐最小方案也超发过需求本身（如补109件却要叫2400大筐）——红字劝退，建议改小批凑单或留待下次
     final severeOver = sg["severeOver"] == true;
     // 同货位标签总数（>1 即同托多码），用于 chip 上标注"同托多码"
@@ -2211,6 +2266,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     }
     // 🟡 FIFO 提醒（v98 按用户拍板保持人工裁决）：扫入批次晚于建议最早批次 → 黄窗确认，确认即放行+双留痕；
     // 本单已叫车框不提醒（车不能白跑）；应急登记时批次未知不判
+    // ㉖v98c 建议集内框不提醒：现场找料先碰到新批属正常动线，先扫新框再扫老框都是"扫建议的码"；
+    // 只有扫【建议清单之外】的晚批框才弹（那才是真跳批）
     Map<String, dynamic>? fifoMark; // 非空=用户确认过跳批，随scan上报留痕
     if (em == null) {
       final sg = target["suggest"];
@@ -2219,6 +2276,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         final called = <String>{
           ...List<Map>.from(target["agvCalled"] ?? []).map((e) => (e["c"] ?? "").toString().toUpperCase()),
           ...List<Map>.from(sg["calledPending"] ?? []).map((f) => (f["c"] ?? "").toString().toUpperCase()),
+        };
+        final sugSet = <String>{
+          ...List<Map>.from(sg["flatBoxes"] ?? []).map((f) => (f["c"] ?? "").toString().toUpperCase()),
+          for (final bx in List<Map>.from(sg["boxes"] ?? [])) ...(List.from(bx["codes"] ?? const []).map((c) => c.toString().toUpperCase())),
         };
         for (final bx in List<Map>.from(sg["boxes"] ?? [])) {
           final bb = (bx["b"] ?? "").toString().trim();
@@ -2230,7 +2291,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         if (scanLot.isNotEmpty &&
             oldest.isNotEmpty &&
             scanLot.compareTo(oldest) > 0 &&
-            !called.contains(code.toUpperCase())) {
+            !called.contains(code.toUpperCase()) &&
+            !sugSet.contains(code.toUpperCase())) {
           if (!mounted) return;
           setState(() => _busy = false);
           final go = await showDialog<bool>(
@@ -3421,6 +3483,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                       icon: const Icon(Icons.done_all),
                       label: const Text("确认收到货物"))),
             if (widget.onAgain != null &&
+                Auth.can("requisition") && // ㉖v98c 再来一单=下单动作：无领料下单权限（仓管/检验员）不显示（10/29 用户拍板）
                 List<Map>.from(_r["items"] ?? []).isNotEmpty)
               ConstrainedBox(
                   constraints: const BoxConstraints(minWidth: 110),

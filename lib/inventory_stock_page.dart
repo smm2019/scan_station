@@ -1468,6 +1468,22 @@ Future<_PPData> loadPartProfile(String partNo) async {
     for (final p in await isar.shelfPlacements.where().findAll()) p.goodsCode: p
   };
   final outHit = <String, Map<String, Object>>{};
+  // ㉖v98c 严重修复（10/29 现场：出库后汇总1728、档案却2128，差=刚出库的400）：
+  // 档案页旧口径"出库台账匹配不到=在库"与汇总页"账本权威"天然漂移——出库单 barcode 与流水 code 不一致
+  // （同托兄弟码/转单换码/出库行缺码）时，同一框会被算两遍：流水框算在库 + 出库码补建算已出库，
+  // 当前库存虚高。改为以服务器账本为在库权威：码在账本=在库（不标出库），不在账本且出库台有=已出库。
+  // 账本拉取失败（离线）→ ledOn=null 回退旧逻辑，不阻断档案页。
+  Set<String>? ledOn;
+  try {
+    final lg = await AuthApi.ledgerGet().timeout(const Duration(seconds: 8));
+    if (lg["ok"] == true) {
+      ledOn = <String>{};
+      for (final x in List<Map>.from(lg["items"] ?? [])) {
+        if ((x["p"]?.toString() ?? "").toUpperCase() == key) ledOn.add((x["c"]?.toString() ?? "").toUpperCase());
+      }
+      ledOn.remove('');
+    }
+  } catch (_) {}
   // 服务器出库单先入表，本机出库单覆盖（本机更权威）：别台设备转单的框也能拿到出库链路
   try {
     final ob = await AuthApi.outboundGet().timeout(const Duration(seconds: 8));
@@ -1517,6 +1533,7 @@ Future<_PPData> loadPartProfile(String partNo) async {
     } catch (_) {}
   }
   void fillOut(_PPBox b) {
+    if (ledOn != null && ledOn.contains(b.barcode.toUpperCase())) return; // ㉖v98c 账本在架=在库权威，出库台账不覆盖当前事实
     final oh = outHit[b.barcode.toUpperCase()];
     if (oh == null) return;
     b.outTime = DateTime.fromMillisecondsSinceEpoch(oh["t"] as int);
@@ -1611,6 +1628,7 @@ Future<_PPData> loadPartProfile(String partNo) async {
   for (final entry in outHit.entries) {
     final bc = entry.key;
     if (seen.contains(bc)) continue;
+    if (ledOn != null && ledOn.contains(bc)) continue; // ㉖v98c 码仍在账本（如撤扫返架后旧出库单残留）→ 不补建已出库框，防重复计
     final oh = entry.value;
     if ((oh["code"]?.toString().toUpperCase() ?? "") != key) continue;
     final b = _PPBox()
@@ -1637,10 +1655,15 @@ Future<_PPData> loadPartProfile(String partNo) async {
       continue;
     }
     d.inQty += b.qty;
+    // ㉖v98c 当前库存严格按服务器账本命中（与库存汇总页同源）：出库后同托兄弟码/重复登记框
+    // 不在出库台账里，旧口径"无出库记录=在库"把它们算进库存 → 档案虚高（10/29 现场 2128 vs 1728）。
+    // 账本无+出库台账无 = 漏登记/已消失框：不计当前库存（汇总同样不计），靠 v83 未登记标记提示补登。
+    // 离线（ledOn=null）回退旧行为。
+    final onLed = ledOn == null ? b.outTime == null : ledOn.contains(b.barcode.toUpperCase());
     if (b.outTime != null) {
       d.outBoxes++;
       d.outQty += b.qty;
-    } else {
+    } else if (onLed) {
       d.inBoxes++;
       d.stockQty += b.qty;
     }
