@@ -2113,6 +2113,15 @@ class _MainPageState extends State<MainPage>
       posInfo = "AGV站台${exist.stationNo}";
     } else {
       posInfo = "人工货位${exist.groundLocation}";
+      // ㉖v98 显示修正（10/29 用户"显示G6没位置却还分配G6"）：groundLocation 是采集时选的粗区码，
+      // 与账本实际落位可能不一致（中途改选区/自动落到相邻排空格），造成"满位还被分配"错觉——
+      // 优先按货码查本机账本完整格位如实显示，查不到再回退粗码
+      final led = await _isar.shelfPlacements
+          .filter()
+          .goodsCodeEqualTo(code.toUpperCase())
+          .findAll();
+      final realLoc = led.map((e) => e.loc).where((l) => l.trim().isNotEmpty).join("、");
+      if (realLoc.isNotEmpty) posInfo = "人工货位$realLoc";
     }
     final res = await showDialog<String>(
       context: context,
@@ -4995,17 +5004,22 @@ class SettingsMenuPage extends StatelessWidget {
           else
             _settingTile(
               context,
-              icon: Icons.cloud_download,
+              icon: Icons.sync,
               color: Colors.teal,
-              title: "拉取货位账本",
-              subtitle: "从电脑服务器合并最新账本（库存/领料选件用）",
+              title: "一键对齐服务器",
+              subtitle: "拉最新货位账本+零件全集（库存/领料/预约显示不对时点一下；只刷新不删本机数据，离线未传的扫描记录安全）",
               onTap: () async {
-                final r = await ledgerPullMerge(force: true); // ㉖ 手动入口强制拉，不受20秒节流跳过
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text("正在与服务器对齐…"),
+                    backgroundColor: Colors.blueGrey,
+                    duration: Duration(seconds: 2)));
+                invalidatePartsBacking(); // ㉖v98 零件全集 5 分钟缓存一并强制过期
+                final r = await ledgerPullMerge(force: true); // 手动入口强制拉，不受20秒节流跳过
                 if (!context.mounted) return;
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(
                     content: Text(r["ok"] == true
-                        ? "账本已合并：新增 ${r["added"]} · 更新 ${r["updated"]} · 删除 ${r["deleted"]}（共 ${r["total"]} 条）"
-                        : "拉取失败：${r["msg"]}"),
+                        ? "✅ 已对齐服务器：新增 ${r["added"]} · 更新 ${r["updated"]} · 删除 ${r["deleted"]}（共 ${r["total"]} 行）"
+                        : "对齐失败：${r["msg"]}（检查网络或服务器地址）"),
                     backgroundColor:
                         r["ok"] == true ? Colors.green : Colors.red));
               },

@@ -269,7 +269,41 @@ Future<_StockAgg> computeStock() async {
     if (row.itemName.isEmpty) row.itemName = op.itemName;
     row.opening += op.qty;
   }
+  // ㉖v98 并入服务器零件全集（字典∪账本∪流水∪出库∪领料）：
+  // 零库存清单原靠本机采集流水撑（新设备/清内存后"查无此件"，物料员搜不到也无法预约；
+  // 且账本世代对齐会清空本机流水，老设备同样会一夜归零）——改用全厂背书，任何设备结果一致
+  final backing = await _partsBackingCached();
+  for (final e in backing.entries) {
+    final pn = e.key;
+    final row = agg.parts.putIfAbsent(pn, () => _StockPartRow()..partNo = pn);
+    if (row.itemName.isEmpty && e.value.isNotEmpty) row.itemName = e.value;
+  }
   return agg;
+}
+
+/// 零件全集缓存（5 分钟）：库存页 45 秒自动刷新不重复打服务器
+Map<String, String> _backingCache = {};
+int _backingAt = 0;
+void invalidatePartsBacking() { _backingAt = 0; } // ㉖v98 一键对齐时强制下次重拉全集（0 让 5 分钟窗失效）
+Future<Map<String, String>> _partsBackingCached() async {
+  final now = DateTime.now().millisecondsSinceEpoch;
+  if (_backingCache.isNotEmpty && now - _backingAt < 300000) return _backingCache;
+  try {
+    final r = await AuthApi.partsBacking().timeout(const Duration(seconds: 8));
+    if (r["ok"] == true) {
+      final m = <String, String>{};
+      for (final x in List<Map>.from(r["list"] ?? [])) {
+        final pn = (x["pn"]?.toString() ?? "").trim().toUpperCase();
+        if (pn.isEmpty) continue;
+        m[pn] = x["nm"]?.toString() ?? "";
+      }
+      if (m.isNotEmpty) {
+        _backingCache = m;
+        _backingAt = now;
+      }
+    }
+  } catch (_) {} // 服务器不通：退回本机口径（已有行不受影响），不阻塞库存页
+  return _backingCache;
 }
 
 String _invRelTime(DateTime t) {
@@ -299,6 +333,7 @@ class _InventoryStockPageState extends State<InventoryStockPage>
   late TabController _tc;
   _StockAgg? _agg;
   bool _loading = true;
+  bool _busyPull = false; // ㉖v98 状态灯防重入
   String _search = "";
   @override
   void initState() {
@@ -309,10 +344,27 @@ class _InventoryStockPageState extends State<InventoryStockPage>
         const Duration(seconds: 45), (_) => _reloadSilent()); // ⑪自动刷新
   }
 
+  // ㉖v98 同步状态灯：绿<2分钟 · 橙<10分钟 · 红≥10分钟（点灯=立即强制对齐）
+  Color _syncLampColor() {
+    final t = ledgerLastSyncAt;
+    if (t == null) return Colors.red;
+    final age = DateTime.now().difference(t);
+    if (age.inMinutes < 2) return const Color(0xFF43A047);
+    if (age.inMinutes < 10) return const Color(0xFFEF6C00);
+    return const Color(0xFFE53935);
+  }
+
   Future<void> _autoPullThenReload() async {
     // ㉖ 进页强制与服务器账本对齐（旧5分钟节流致"别台刚入库的框本机看不到"）；函数内20秒全局节流防重复
-    await ledgerPullMerge(force: true);
-    await _reload();
+    if (_busyPull) return;
+    _busyPull = true;
+    try {
+      await ledgerPullMerge(force: true);
+      await _reload();
+    } finally {
+      _busyPull = false;
+      if (mounted) setState(() {}); // ㉖v98 对齐完成灯色即时转绿
+    }
   }
 
   @override
@@ -369,9 +421,24 @@ class _InventoryStockPageState extends State<InventoryStockPage>
           if (ledgerLastSyncAt != null)
             Padding(
                 padding: const EdgeInsets.only(right: 2),
-                child: Text(
-                    '同步 ${TimeOfDay.fromDateTime(ledgerLastSyncAt!).format(context)}',
-                    style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey))),
+                child: Tooltip(
+                    message: '上次与服务器对齐：${TimeOfDay.fromDateTime(ledgerLastSyncAt!).format(context)}\n点圆点立即重新对齐（绿<2分钟 · 橙<10分钟 · 红≥10分钟）',
+                    child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: _busyPull ? null : _autoPullThenReload,
+                        child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                            child: Row(mainAxisSize: MainAxisSize.min, children: [
+                              Container(
+                                  width: 9, height: 9,
+                                  decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: _syncLampColor())),
+                              const SizedBox(width: 3),
+                              Text(
+                                  '同步 ${TimeOfDay.fromDateTime(ledgerLastSyncAt!).format(context)}',
+                                  style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+                            ]))))),
           if (Auth.can("agv_control"))
             IconButton(
                 tooltip: "货架移库（AGV整架搬位）",
@@ -1116,6 +1183,60 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
       }
     }
   }
+  // ㉖v97 基准补框：computeStock 会整框跳过"零件号解析不到"的在架码（流水 mesPartNo 为空/已作废，
+  // 或无流水且 MES 缓存缺失），明明在架却不进基准 → 盘点报"账面 520 实物 1320"假盘亏。
+  // 精确复算其跳过条件找出这些码，用 MES 缓存/流水回填零件号补进两表；已入基准的码（含同托兄弟码）绝不双计
+  final recByCode = <String, List<dynamic>>{}; // 大写码→该码全部有效流水（按时间序）
+  for (final r in await _globalIsar.scanRecords.where().findAll()) {
+    (recByCode[r.goodsCode.trim().toUpperCase()] ??= []).add(r);
+  }
+  final labelInfos = await _globalIsar.labelInfos.where().findAll();
+  final infoByCode = {for (final li in labelInfos) li.goodsCode.trim().toUpperCase(): li};
+  final bIdx = <String, int>{
+    for (var i = 0; i < books.length; i++) books[i].partNo.trim().toUpperCase(): i
+  };
+  var backfilled = 0;
+  for (final p in await _globalIsar.shelfPlacements.where().findAll()) {
+    final cd = p.goodsCode.trim().toUpperCase();
+    if (cd.isEmpty) continue;
+    final rs = recByCode[cd];
+    String pn;
+    double q;
+    if (rs != null && rs.isNotEmpty) {
+      // 有流水：computeStock 的入基准条件=存在"未作废且 mesPartNo 非空"的流水；有则本码已计，跳过
+      final ok = rs.where((r) => !(r as dynamic).isCancel && ((r.mesPartNo ?? "").trim().isNotEmpty)).toList();
+      if (ok.isNotEmpty) continue;
+      // 全被跳过：从 MES 缓存回填
+      final li = infoByCode[cd];
+      pn = (li?.partNo ?? "").trim().toUpperCase();
+      q = li?.qty ?? 0;
+    } else {
+      // 无流水：ledger-only 分支入基准条件=info 存在、未标记 missing、partNo 非空；满足则已计，跳过
+      final li = infoByCode[cd];
+      if (li != null && !li.missing && li.partNo.trim().isNotEmpty) continue;
+      pn = (li?.partNo ?? "").trim().toUpperCase();
+      q = li?.qty ?? 0;
+    }
+    if (pn.isEmpty || q <= 0) continue; // 确实无法回填：盘点扫到按账外料口径处理
+    final nm = infoByCode[cd]?.itemName.trim() ?? "";
+    backfilled++;
+    final bi = bIdx[pn];
+    if (bi != null) {
+      final ob = books[bi];
+      books[bi] = BaselineBook(fileKey: key, partNo: ob.partNo, itemName: ob.itemName, bookQty: ob.bookQty + q); // 基准总账按零件号唯一行，累加合并
+    } else {
+      bIdx[pn] = books.length;
+      books.add(BaselineBook(fileKey: key, partNo: pn, itemName: nm, bookQty: q));
+    }
+    final lc = p.loc.trim().toUpperCase();
+    final lk = "$lc|$pn";
+    final old = locMap[lk];
+    if (old != null) {
+      old.qty += q;
+    } else {
+      locMap[lk] = BaselineLoc(fileKey: key, locCode: p.loc, partNo: pn, qty: q, goodsCode: p.goodsCode);
+    }
+  }
   await _globalIsar.writeTxn(() async {
     await _globalIsar.baselineBooks.where().deleteAll();
     await _globalIsar.baselineBooks.putAll(books);
@@ -1125,6 +1246,7 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
   // ㉖v94u 留痕持久化（本地缓存即可——差异报表只在本机生成；key 带快照时刻防旧值串用）
   meta["locRows"] = locMap.length;
   meta["bookRows"] = books.length;
+  meta["backfilled"] = backfilled; // ㉖v97 零件号缺失回填进基准的框数（留痕可查）
   try {
     final sp = await SharedPreferences.getInstance();
     await sp.setString("inv_live_meta_$key", jsonEncode(meta));

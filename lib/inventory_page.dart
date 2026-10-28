@@ -982,22 +982,78 @@ class _InvScanPageState extends State<_InvScanPage> {
           rec.itemName = mes["itemName"];
           rec.lotNo = mes["lotNo"];
           rec.qty = mes["qty"];
+          // ㉖v97 串位防错闸：单货位模式下核对该标签货位账本登记位，与当前绑定位不符→现场三选一确认
+          //（修"在 -03 扫了 -05 的标签整框记到 -03，造成一边假盈一边假亏"）
+          if (_curLoc.isNotEmpty) {
+            var spHits = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(code).findAll();
+            final up = code.trim().toUpperCase();
+            if (up != code) spHits = [...spHits, ...await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(up).findAll()];
+            final spLoc = spHits.map((e) => e.loc.trim().toUpperCase()).firstWhere((l) => l.isNotEmpty, orElse: () => "");
+            if (spLoc.isNotEmpty && spLoc != _curLoc.trim().toUpperCase()) {
+              final pick = await showDialog<int>(
+                  context: context,
+                  builder: (dc) => AlertDialog(
+                      icon: const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 34),
+                      title: const Text("标签登记位与当前盘点位不符"),
+                      content: Text("标签「$code」货位账本登记在：\n　$spLoc\n当前绑定盘点位：\n　$_curLoc\n\n请核对实物此刻在哪个格位再选择（选错会造成两边假盈亏）。", style: const TextStyle(fontSize: 13, height: 1.5)),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(dc, 2), child: const Text("取消，重扫")),
+                        TextButton(onPressed: () => Navigator.pop(dc, 0), child: Text("确认在 $_curLoc")),
+                        FilledButton(onPressed: () => Navigator.pop(dc, 1), child: Text("按账本位 $spLoc 盘")),
+                      ]));
+              if (pick == null || pick == 2) {
+                if (mounted) setState(() => _codeCtrl.clear());
+                return; // 取消：不录入
+              }
+              if (pick == 1) {
+                _curLoc = spLoc;
+                rec.locCode = spLoc; // 本条记录同步改挂账本位（rec 在弹窗前已创建）
+                setState(() {});
+              } // 切到账本登记位继续
+            }
+          }
           // 3. 账内外 + 串位 + 超量
           final bookHit = await _globalIsar.baselineBooks.filter().partNoEqualTo(rec.partNo).findAll();
-          // ㉖v86 整区归位：零件在该区有台账货位→归到具体位（多处取第一条并备注）；无→挂区名走串位口径
+          // ㉖v98 整区/整架归位（地面货位实际是绑 NB03-B-12 整架扫，不逐格位绑）：
+          // 首选按货位账本中"该标签"的登记格位精确归位（账本一框一位，同零件两框各归 -03/-05，
+          // 修旧版按零件号归位把两框全堆第一格 → 一格虚盈他格虚亏）；账本查无再按零件号台账轮转兜底
           String effLoc = _curLoc;
           if (_curLoc.isEmpty && _curZone.isNotEmpty) {
-            final zoneRows = (await _globalIsar.baselineLocs
-                    .filter().partNoEqualTo(rec.partNo).findAll())
-                .where((e) => invZoneOf(e.locCode) == _curZone)
-                .toList();
-            if (zoneRows.isNotEmpty) {
-              effLoc = zoneRows.first.locCode.toUpperCase();
-              rec.locCode = effLoc; //归位改写：报表/差异按具体货位聚合
-              if (zoneRows.length > 1) rec.remark = "该区多处登记此零件，归至 ${zoneRows.map((e) => e.locCode).take(3).join("、")}";
+            String? tagLoc;
+            try {
+              final up0 = code.trim().toUpperCase();
+              var spHits = await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(code).findAll();
+              if (up0 != code) spHits = [...spHits, ...await _globalIsar.shelfPlacements.filter().goodsCodeEqualTo(up0).findAll()];
+              for (final sp in spHits) {
+                final l = sp.loc.trim().toUpperCase();
+                if (l.isNotEmpty && invZoneOf(l) == _curZone) { tagLoc = l; break; }
+              }
+            } catch (_) {}
+            if (tagLoc != null) {
+              effLoc = tagLoc;
+              rec.locCode = tagLoc; // 标签级归位：报表/差异按账本格位聚合
             } else {
-              // 零件在本区台账无登记位：挂区名（与 rec.locCode 占位一致），串位提示显示"货区「NB03-A-11」"而非空货位
-              effLoc = _curZone;
+              final zoneRows = ((await _globalIsar.baselineLocs
+                          .filter().partNoEqualTo(rec.partNo).findAll())
+                      .where((e) => invZoneOf(e.locCode) == _curZone)
+                      .map((e) => e.locCode.trim().toUpperCase())
+                      .toSet()
+                      .toList())
+                ..sort();
+              if (zoneRows.isNotEmpty) {
+                // 同零件在本区登记多格：第 N 框归第 N 格（轮转），不再全堆第一格
+                final prior = await _globalIsar.inventoryScans
+                    .filter().taskIdEqualTo(widget.task.batchId).findAll();
+                final used = prior
+                    .where((s) => s.flag != 1 && s.flag != 2 && (s.partNo ?? "").trim().toUpperCase() == (rec.partNo ?? "").trim().toUpperCase() && invZoneOf(s.locCode) == _curZone)
+                    .length;
+                effLoc = zoneRows[used % zoneRows.length];
+                rec.locCode = effLoc;
+                if (zoneRows.length > 1) rec.remark = "账本无此标签登记位，按台账轮转归至 ${zoneRows.join("、")}";
+              } else {
+                // 零件在本区台账无登记位：挂区名（串位提示显示"货区「NB03-A-11」"而非空货位）
+                effLoc = _curZone;
+              }
             }
           }
           final locHit = await _globalIsar.baselineLocs

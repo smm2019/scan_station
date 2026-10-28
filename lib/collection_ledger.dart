@@ -417,6 +417,10 @@ extension CollectionLedgerExt on _MainPageState {
   /// 地面区内自动分配格位：zone 形如 "B13"；返回该排第一个空位编码，满则 null
   Future<String?> nb03AutoSlot(String zone) async {
     if (zone.isEmpty || zone.length < 2) return null;
+    // ㉖v98 分配前强制与服务器账本对齐（10/29 用户"显示G6没位置却还分配G6"根因）：
+    // 本机账本 20 秒节流+45 秒周期，别台 PDA 刚填满的排本机还显示有空→把满位分出去；
+    // 此处 force 拉一次（内部含失败容错），保证空位判定基于最新全厂占用
+    await ledgerPullMerge(force: true);
     final g = zone.substring(0, 1);
     final nn = zone.substring(1).padLeft(2, '0');
     final prefix = 'NB03-$g-$nn';

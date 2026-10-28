@@ -245,6 +245,10 @@ class AuthApi {
   static Future<Map> reqList({String scope = ""}) async => _req("GET",
       scope.isEmpty ? "/api/requisitions" : "/api/requisitions?scope=$scope",
       token: await AuthStore.token());
+  /// ㉖v98 单张全量（详情弹层打开时拉一次带 suggest 取货建议；列表 lite 化配套）
+  static Future<Map> reqOne(String id) async =>
+      _req("GET", "/api/requisitions/${Uri.encodeComponent(id)}",
+          token: await AuthStore.token());
   /// ㉖v52 备料排队看板：my=本人某单号则返回该单排位；留空返回全员排队全景
   static Future<Map> reqQueue({String my = ""}) async => _req(
       "GET",
