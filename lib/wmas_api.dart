@@ -334,6 +334,7 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
     }
     await WmasConfig.save(
         host: _hostCtrl.text, account: _accCtrl.text, pwd: _pwdCtrl.text);
+    if (!mounted) return; // ㉖v98b 保存为await，期间弹窗可能已关：setState前守卫（v97 PDA-34660同款病）
     setState(() {
       _ok = true;
       _msg = "已保存";

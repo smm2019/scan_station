@@ -2181,6 +2181,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     final fromLoc = ledOld.isNotEmpty ? ledOld.first.loc : "";
     Map<String, dynamic>? em; // 应急登记结果 {qty, why}；null=走正常流程或放弃
     if (scanErr != null) {
+      if (!mounted) return; // ㉖v98b 防崩（v97 PDA-34660同款）：上方await后弹层可能已关，守卫必须在setState之前
       setState(() => _busy = false);
       if (!emEligible || !mounted) {
         // 零件号不符等：直接报错，不放开应急（㉖v96 升级为弹窗——toast 在连续扫码节奏下无感知，与 v92c 扫重弹窗同族病）
@@ -2258,6 +2259,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         }
       }
     }
+    // ㉖v98b 崩溃修复（10-27 PDA-34660 v97 实锤）：上方 MES 查询/黄窗均为 await，期间弹层被关闭
+    // 则此处 setState 打在已销毁 element 上抛 Null check；补守卫静默退出（scan 结果服务器已幂等，重扫即可）
+    if (!mounted) return;
     setState(() => _busy = true);
     Future<Map> doScan({bool overOk = false}) => AuthApi.reqAction(_r["id"].toString(), "scan", {
       "barcode": code,
@@ -2574,6 +2578,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         widget.toast(
             "已本地转单（${_fmtInvNum(_issuedQtyOf(item))}件），出库单 ${ob.orderNo}",
             err: false);
+        if (!mounted) return; // ㉖v98b createOutboundOrder 为 await，期间弹层可能已关
         setState(() {
           _r = Map.from(res["req"]);
           _issuePart = null;
@@ -2753,6 +2758,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         widget.toast("货位设置失败：${res["msg"]}");
         return;
       }
+      if (!mounted) return; // ㉖v98b reqSetLoc 为 await，期间弹层可能已关
       setState(() {
         _to = to;
         _r = Map.from(res["req"]);
@@ -3347,7 +3353,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                               final note = await _askReason(st == 'accepted'
                                   ? "催备料（可写哪个零件急用）"
                                   : "催接单（可补充说明）");
-                              if (note == null) return;
+                              if (note == null || !mounted) return; // ㉖v98b 同款守卫：弹窗关闭后 setState 防崩
                               setState(() => _busy = true);
                               final res = await AuthApi.reqAction(
                                   _r["id"].toString(), "urge", {"note": note});

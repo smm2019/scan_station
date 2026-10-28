@@ -227,6 +227,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
         else { fail++; } // 网络等异常：不写缓存，下次可重试
       }
       done++;
+      if (!mounted) break; // ㉖v98b 上方 await 期间页面可能已关：循环头守卫在 await 前，救不了本轮 setState
       setState(() {}); // 刷新进度
     }
     if (!mounted) return;

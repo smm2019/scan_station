@@ -1127,6 +1127,7 @@ class _InvScanPageState extends State<_InvScanPage> {
         }
         await SystemSound.play(judge.level == "green" ? SystemSoundType.click : SystemSoundType.alert);
       } catch (_) {}
+      if (!mounted) return; // ㉖v98b 震动/音效均为 await，期间页面可能已退出：setState 前守卫
       setState(() {
         _lastJudge = judge;
         _lastCode = code;

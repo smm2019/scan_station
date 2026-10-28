@@ -832,6 +832,7 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
         _refocus(_locFocus);
         return;
       }
+      if (!mounted) return; // ㉖v98b mesLocInfo 为 await，期间弹层可能已关：setState 前守卫
       setState(() {
         _to = {
           "WAREHOUSE_CODE": d["WAREHOUSE_CODE"]?.toString() ?? "",
