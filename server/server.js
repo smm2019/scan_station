@@ -2732,7 +2732,8 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       }
       // ---- ㉖⑰ 货架位占用查询（服务器账本权威）：PDA 入库自动分配货位用，多PDA不再各算各的 ----
       if (req.method === 'GET' && p === '/api/ledger/locs') {
-        const m = {}; for (const x of db.ledger || []) { const L = String(x.l || '').toUpperCase(); if (/^NB02-/.test(L) && !/-CK-/.test(L)) (m[L] = m[L] || []).push(String(x.c || '')); }
+        const all = url.searchParams.get('all') === '1'; // ㉖v99 all=1 附 NB03 地面格（手动选位弹层实时化；默认口径不变=仅NB02）
+        const m = {}; for (const x of db.ledger || []) { const L = String(x.l || '').toUpperCase(); if (all ? /^NB0[23]-/.test(L) : (/^NB02-/.test(L) && !/-CK-/.test(L))) (m[L] = m[L] || []).push(String(x.c || '')); }
         pruneReserve(); for (const [l, r] of Object.entries(db.locReserve || {})) { (m[l] = m[l] || []).push(String(r.code || '')); } // ㉖v54 预占即占用：旧版PDA与picker一并避让
         return send(res, 200, { ok: true, byLoc: m });
       }

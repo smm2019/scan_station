@@ -531,8 +531,9 @@ class AuthApi {
       _req("GET", "/api/agv/carryState?t=" + Uri.encodeComponent(taskNo),
           token: await AuthStore.token());
   // ㉖⑰ 服务器权威货架占用（入库自动分配货位用，多PDA统一）
-  static Future<Map> ledgerLocs() async =>
-      _req("GET", "/api/ledger/locs", token: await AuthStore.token());
+  static Future<Map> ledgerLocs({bool all = false}) async =>
+      _req("GET", "/api/ledger/locs${all ? '?all=1' : ''}",
+          token: await AuthStore.token()); // ㉖v99 all=1 附地面格（选位弹层实时核对）
   // ㉖v54 原子预占分配：服务器算位+锁位一体（多PDA并发不撞位）
   static Future<Map> ledgerReserve(String code, String partNo) async =>
       _req("POST", "/api/ledger/reserve",

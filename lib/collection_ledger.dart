@@ -35,6 +35,25 @@ extension CollectionLedgerExt on _MainPageState {
     return map;
   }
 
+  /// ㉖v99 选位弹层实时占用视图：服务器权威（账本 ∪ 他机预占），本机缓存仅作降级底。
+  /// 旧版弹层只读本机 shelfPlacements（20 秒节流拉取），别机刚登记的格位显示为空可点，
+  /// 点完推送才被服务器货位互斥闸拒——"看着空、点不动、过会儿才刷新"的困惑根因即此。
+  Future<Map<String, List<String>>> _liveLocs() async {
+    final byLoc = await _ledgerByLoc();
+    try {
+      final lv = await AuthApi.ledgerLocs(all: true);
+      if (lv["ok"] == true && lv["byLoc"] is Map) {
+        (lv["byLoc"] as Map).forEach((k, v) {
+          final codes = (v as List).map((e) => e.toString()).toList();
+          byLoc.update(k.toString(), (l) => [...l, ...codes.where((c) => !l.contains(c))], ifAbsent: () => codes);
+        });
+      }
+    } catch (e) {
+      LocalLog.err('选位实时占用·服务器不可达降级本机', e); // 离线：退回本机口径，弹层仍可用
+    }
+    return byLoc;
+  }
+
   /// 常用层优先（层数上限=服务器参数 _lowTier）：候选里先取层号≤N的，层圈全占才退高层
   String? _preferLow3(List<String> cands) {
     for (final l in cands) {
@@ -456,7 +475,7 @@ extension CollectionLedgerExt on _MainPageState {
 
   ///NB02 picker：选区→16架×4层网格，占用显示标签，点空位回填
   Future<void> _pickNb02() async {
-    final byLoc = await _ledgerByLoc();
+    final byLoc = await _liveLocs(); // ㉖v99 实时占用（含他机预占），不再只读20秒节流的本机缓存
     if (!mounted) return;
     String zone = _ledgerLocCtrl.text.length > 5 ? _ledgerLocCtrl.text[5] : 'A';
     if (!'ABCDEFGH'.contains(zone)) zone = 'A';
@@ -554,7 +573,7 @@ extension CollectionLedgerExt on _MainPageState {
     final num = gl.substring(1).padLeft(2, '0');
     final prefix = 'NB03-$g-$num';
     final maxSlot = nb03SlotMax(prefix);
-    final byLoc = await _ledgerByLoc();
+    final byLoc = await _liveLocs(); // ㉖v99 实时占用（含他机预占）
     if (!mounted) return;
     final cells = <Widget>[];
     for (var s = 1; s <= maxSlot; s++) {
