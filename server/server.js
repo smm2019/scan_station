@@ -2545,7 +2545,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
               continue pushLoop;
             }
           }
-          if (!old) { _seen[key] = { by: u.name, t: rec0, l: it.l, p: it.p || '' }; } // ㉖ 首次入账登记，永久防重
+          if (!old) { _seen[key] = { by: u.name, t: rec0, l: it.l, p: it.p || '', q: Number(it.q) || 0, lot: String(it.b || ''), pid: String(it.pid || '') }; } // ㉖ 首次入账登记，永久防重；㉖v99 富字段（数量/批次/托号）：流水归档后链路"入账登记"节点仍可显示入了多少
           if (old) { // ㉖⑱ 多机字段保护：本机无该框采集流水时 mv 退化为默认"登记"、src/pid 缺失，不得抹掉别机写入的真值（"数据被覆盖"根因之一）
             const _mvIn = String(it.mv || ''), _mvOld = String(old.mv || '');
             if ((!_mvIn || _mvIn === '登记') && _mvOld && _mvOld !== '登记') it.mv = _mvOld;
@@ -3146,7 +3146,7 @@ return send(res, 200, {
           chain.call = Date.parse((ce && ce.t) || '') || 0;
         }
         chain.enqueue = q ? (q.at || 0) : 0;
-        { const _si = (db.seenIn || {})[code]; if (_si && Number(_si.t)) chain.inAt = Number(_si.t), chain.inLoc = String(_si.l || ''), chain.inBy = String(_si.by || ''); } // ㉖v98c 入账登记：流水归档后 seenIn 仍可溯源"何时入账、初始货位"
+        { const _si = (db.seenIn || {})[code]; if (_si && Number(_si.t)) chain.inAt = Number(_si.t), chain.inLoc = String(_si.l || ''), chain.inBy = String(_si.by || ''), chain.inQ = Number(_si.q) || 0, chain.inLot = String(_si.lot || ''), chain.inPid = String(_si.pid || ''), chain.inPn = String(_si.p || ''); } // ㉖v98c 入账登记：流水归档后 seenIn 仍可溯源"何时入账、初始货位"；㉖v99 富字段与 /api/trace 对齐（数量/批次/托号/零件号）
         chain.dispatch = q ? (q.sentAt || 0) : (task ? (task.ex || 0) : 0); // ㉖ 出队后用RCS接令时刻兜底（接令必在下发后一刻内）
         if (task) { chain.exe = task.ex || 0; chain.pick = task.pick || 0; chain.arrive = task.fin || 0; }
         if (q && q.state === '完成') chain.cleared = q.updAt || 0;
@@ -3336,6 +3336,12 @@ return send(res, 200, {
         }
         scans.sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0));
         for (const st of scans.slice(0, 60)) push(st.t, st.cx ? 'scanx' : 'scan', (st.cx ? '❌ 已撤销采集 ' : '📥 采集入库 ') + String(st.code || ''), (st.pn ? '零件 ' + st.pn + ' · ' : '') + '数量 ' + (Number(st.q) || 0) + ((st.wt === 0 ? st.st : st.gl) ? ' · ' + (st.wt === 0 ? st.st : st.gl) : ''), st.op || '');
+        // — ㉖v99 ②b 流水已归档框的 seenIn 兜底：无采集流水记录但历史录入索引有 → 补"📝 入账登记"事件
+        // （出库后链路只剩出库半条的根因：流水90天归档后入库信息消失；seenIn 富字段带数量/批次/托号=终身出生证明）
+        { const _scanHas = new Set(); for (const st of scans) { const c = codeOf(st.code); if (c && !st.cx) _scanHas.add(c); }
+          let _bi = 0;
+          for (const c of CODES) { if (_scanHas.has(c) || _bi++ > 30) continue; const si = (db.seenIn || {})[c]; if (!si || !Number(si.t)) continue;
+            push(si.t, 'scan', '📝 入账登记（流水已归档） ' + c, (si.p ? '零件 ' + si.p + ' · ' : '') + (Number(si.q) ? '数量 ' + Number(si.q) + ' · ' : '') + (si.l ? '初始位 ' + si.l : '') + (si.pid ? ' · 托号 ' + si.pid : '') + (si.lot ? ' · 批次 ' + si.lot : ''), si.by || ''); } }
         // — ③ 领料单：单号命中 / 已发含本框 /（零件查询）含该零件
         for (const r of db.requisitions || []) {
           const no = codeOf(r.no);
@@ -4245,7 +4251,13 @@ return send(res, 200, {
       if (req.method === 'GET' && p === '/api/counts') {
         let archScan = 0, archOut = 0; try { for (const f of fs.readdirSync(path.join(DATA_DIR, 'archive'))) { if (/scanlog/.test(f)) archScan += Object.keys(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', f), 'utf8'))).length; else if (/outbound/.test(f)) archOut += Object.keys(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', f), 'utf8'))).length; } } catch (_) {}
         const live = Object.values(db.scanlog || {}).filter((x) => !x.cx).length;
-        return send(res, 200, { ok: true, at: new Date().toISOString(), ledger: (db.ledger || []).length, scanlogLive: live, scanlogTotal: Object.keys(db.scanlog || {}).length, archScan, outbound: Object.keys(db.outbound || {}).length, archOut, reqs: (db.requisitions || []).length, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).length, queueTotal: (db.agvQueue || []).length, tasks: Object.keys(db.agvTasks || {}).length, events: (db.carEvents || []).length, ops: opsLoadDays(30).length, inspects: (db.inspects || []).length, inspectActive: (db.inspects || []).filter((q) => ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state)).length, seenIn: Object.keys(db.seenIn || {}).length, seenOut: Object.keys(db.seenOut || {}).length, dict: Object.keys(db.itemDict || {}).length, ledRev: db.ledgerRev || 0, ledAt: db.ledgerAt || '', backup: fs.existsSync(path.join(DATA_DIR, 'backups')) ? fs.readdirSync(path.join(DATA_DIR, 'backups')).filter((f) => /^db-.*\.json$/.test(f)).length : 0 });
+        // ㉖v99 今日出入库全厂口径（自然日，服务器时钟）：入库=今日有效流水去重标签，出库=今日出库单去重标签
+        // PDA 库存页 KPI 原按本机流水/本机遇历算，谁扫的算谁的→两台设备同屏数字不一致（0 vs 40）；改取此口径后全厂一致
+        const _day0 = new Date(); _day0.setHours(0, 0, 0, 0);
+        const _tin = new Set(), _tout = new Set();
+        for (const s of Object.values(db.scanlog || {})) { if (!s.cx && (Number(s.t) || 0) >= _day0.getTime() && s.code) _tin.add(String(s.code).toUpperCase()); }
+        for (const o of Object.values(db.outbound || {})) { if ((Number(o.createdAt) || 0) >= _day0.getTime()) for (const i of (o.items || [])) { const bc = String(i.barcode || '').toUpperCase(); if (bc) _tout.add(bc); } }
+        return send(res, 200, { ok: true, at: new Date().toISOString(), todayIn: _tin.size, todayOut: _tout.size, ledger: (db.ledger || []).length, scanlogLive: live, scanlogTotal: Object.keys(db.scanlog || {}).length, archScan, outbound: Object.keys(db.outbound || {}).length, archOut, reqs: (db.requisitions || []).length, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).length, queueTotal: (db.agvQueue || []).length, tasks: Object.keys(db.agvTasks || {}).length, events: (db.carEvents || []).length, ops: opsLoadDays(30).length, inspects: (db.inspects || []).length, inspectActive: (db.inspects || []).filter((q) => ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state)).length, seenIn: Object.keys(db.seenIn || {}).length, seenOut: Object.keys(db.seenOut || {}).length, dict: Object.keys(db.itemDict || {}).length, ledRev: db.ledgerRev || 0, ledAt: db.ledgerAt || '', backup: fs.existsSync(path.join(DATA_DIR, 'backups')) ? fs.readdirSync(path.join(DATA_DIR, 'backups')).filter((f) => /^db-.*\.json$/.test(f)).length : 0 });
       }
       // ---- ㉖ 系统连接状态：RCS(哈工库讯) / WMAS(AGV下发) 配置与最近成功时刻（MES 凭据在 PDA 本地，由 App 自查）----
       if (req.method === "GET" && p === "/api/sysstatus") {
@@ -5529,8 +5541,8 @@ function seenInBackfill() { // ㉖ 首次升级：现存账本+采集流水的�
     if (db.seenInBackfilled) return;
     db.seenIn = db.seenIn || {};
     let n = 0;
-    for (const x of db.ledger || []) { const c = String(x.c || '').toUpperCase(); if (c && !db.seenIn[c]) { db.seenIn[c] = { by: x.by || '', t: Number(x.t) || Date.now(), l: x.l, p: x.p || '' }; n++; } }
-    for (const st of Object.values(db.scanlog || {})) { const c = String(st.code || '').toUpperCase(); if (c && !db.seenIn[c]) { db.seenIn[c] = { by: st.op || '', t: Number(st.t) || Date.now(), l: (st.wt === 0 ? st.gl : st.st) || '', p: st.pn || '' }; n++; } }
+    for (const x of db.ledger || []) { const c = String(x.c || '').toUpperCase(); if (c && !db.seenIn[c]) { db.seenIn[c] = { by: x.by || '', t: Number(x.t) || Date.now(), l: x.l, p: x.p || '', q: Number(x.q) || 0, lot: String(x.b || ''), pid: String(x.pid || '') }; n++; } } // ㉖v99 富字段
+    for (const st of Object.values(db.scanlog || {})) { const c = String(st.code || '').toUpperCase(); if (c && !db.seenIn[c]) { db.seenIn[c] = { by: st.op || '', t: Number(st.t) || Date.now(), l: (st.wt === 0 ? st.st : st.gl) || '', p: st.pn || '', q: Number(st.q) || 0, lot: String(st.lot || ''), pid: String(st.pid || '') }; n++; } } // ㉖v99 富字段；修 wt 三元写反（AGV模式初始位=站台st，非地面gl）
     db.seenInBackfilled = 1; if (n) console.log('[seenIn] 历史标签回填 ' + n + ' 个');
   } catch (_) {}
 }

@@ -1289,6 +1289,7 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
     final infoUpserts = <LabelInfo>[];
     final rmIds = <int>{};
     final tombAdds = <String, int>{};
+    final pidPatches = <String, String>{}; // ㉖v99 跳过行的托号补写集（码→托号）
     final now = DateTime.now().millisecondsSinceEpoch;
     for (final x in items) {
       final c = (x["c"] ?? "").toString().trim().toUpperCase();
@@ -1297,7 +1298,13 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
       final t = (x["t"] as num?)?.toInt() ?? 0;
       if ((tombMap[c] ?? 0) >= t && t > 0) continue; // 本机已删除且更新 → 不复活
       final me = localMap[c];
-      if (me != null && me.assignedAt >= t) continue; // 本机登记时间更新 → 保留本机
+      if (me != null && me.assignedAt >= t) {
+        // ㉖v99 托号自愈：行未变化走跳过分支，但旧版缓存的 LabelInfo 没有托号——服务器有而本机无则补写，
+        // 否则该设备永远拿不到"别机整托扫入"的托号知识，框合并退化成按货位拆→在库框数各设备不一致（314 vs 305）
+        final pid0 = (x["pid"] ?? "").toString().trim().toUpperCase();
+        if (pid0.isNotEmpty) pidPatches[c] = pid0;
+        continue;
+      }
       upserts.add(ShelfPlacement()
         ..goodsCode = c
         ..loc = l
@@ -1312,6 +1319,7 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
           ..itemName = (x["n"] ?? "").toString()
           ..qty = (x["q"] as num?)?.toDouble() ?? 0
           ..lotNo = (x["b"] ?? "").toString()
+          ..palletId = (x["pid"] ?? "").toString().trim().toUpperCase() // ㉖v99 托号入缓存（框合并键优先按托）
           ..missing = false
           ..syncedAt = now);
       }
@@ -1347,6 +1355,17 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
               .deleteAll();
         }
         await _globalIsar.labelInfos.putAll(infoUpserts);
+      }
+      // ㉖v99 托号自愈：未变化跳过行的旧 LabelInfo 缓存缺托号 → 从服务器账本补写（只补空值不覆盖本机真值）
+      for (final e in pidPatches.entries) {
+        final li = await _globalIsar.labelInfos
+            .filter()
+            .goodsCodeEqualTo(e.key)
+            .findFirst();
+        if (li != null && li.palletId.isEmpty) {
+          li.palletId = e.value;
+          await _globalIsar.labelInfos.put(li);
+        }
       }
     });
     if (tombAdds.isNotEmpty) {

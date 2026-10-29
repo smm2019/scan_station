@@ -1662,6 +1662,37 @@ class _MainPageState extends State<MainPage>
   bool _srvDownWarned = false;
   Set<String> _bannerSeen = {}; // ㉖v50 已弹过横幅的消息 id（接口只读后防重复轰炸）
   final Map<String, String> _bannerDay = {}; // ㉖v54 类型→最近弹横幅日：每类每天只打扰一次，后续静默进消息中心
+  // ㉖v99 弹通知时刻闸+状态持久化（10/29 现场：昨日16:53创建、已签收的单，PDA 重启后 10:16 又弹"现在"）：
+  // 服务器未读列表常驻（read 仅由消息中心清除），而 _bannerSeen/_bannerDay 原为内存态——重启即清零，
+  // 首轮轮询把全部历史未读当"本轮新消息"重放轰炸，且"每类每天一次"限流也被重启重置。
+  // 修复：①只弹"本次进程启动后产生"的消息（时刻闸，旧未读仍在消息中心可查、角标不丢）
+  //      ②seen/day 落 SharedPreferences，跨重启持久，双保险防时钟异常与反复重启重放
+  // 复检加固：时刻闸留 2 分钟余量（bootMs 前移）——消息 time 是服务器时钟、bootMs 是本机时钟，
+  // PDA 时钟偏快时刚发的新消息不得被误判为"启动前旧消息"而漏弹；漏防的旧消息重弹由持久 seen 兜底
+  static final int _bootMs = DateTime.now().millisecondsSinceEpoch - 120000;
+  static const String _kBannerSeenSp = 'banner_seen_v99';
+  static const String _kBannerDaySp = 'banner_day_v99';
+  bool _bannerRestored = false;
+  Future<void> _restoreBannerState(SharedPreferences sp) async {
+    if (_bannerRestored) return;
+    _bannerRestored = true;
+    try {
+      for (final s in sp.getStringList(_kBannerSeenSp) ?? const <String>[]) _bannerSeen.add(s);
+      for (final s in sp.getStringList(_kBannerDaySp) ?? const <String>[]) {
+        final i = s.indexOf('|');
+        if (i > 0) _bannerDay[s.substring(0, i)] = s.substring(i + 1);
+      }
+    } catch (_) {}
+  }
+  bool _bannerDirty = false; // 复检加固：脏判断——无新收编不重复全量写盘（30秒轮询高频路径）
+  Future<void> _persistBannerState(SharedPreferences sp) async {
+    if (!_bannerDirty) return;
+    _bannerDirty = false;
+    try {
+      await sp.setStringList(_kBannerSeenSp, _bannerSeen.toList());
+      await sp.setStringList(_kBannerDaySp, _bannerDay.entries.map((e) => '${e.key}|${e.value}').toList());
+    } catch (_) {}
+  }
   Future<void> _pollNotifications() async {
     if (Auth.user == null) return;
     final r = await AuthApi.notifications();
@@ -1685,29 +1716,44 @@ class _MainPageState extends State<MainPage>
     if (!mounted) return;
     final list = List<Map>.from(r["notifications"] ?? []);
     if (list.isEmpty) return;
-    // ㉖v50 接口改只读后未读会常驻：按消息 id 本地去重，只对"本轮新出现"的弹横幅
-    list.removeWhere((m) => _bannerSeen.contains(m["id"]?.toString() ?? ""));
-    if (list.isEmpty) return;
+    final sp = await SharedPreferences.getInstance();
+    await _restoreBannerState(sp); // ㉖v99 首轮恢复持久去重态
+    // ㉖v99 时刻闸：启动前的旧未读直接记为已见（消息中心仍可见、角标仍在），只弹启动后的新消息
+    list.removeWhere((m) {
+      final id = m["id"]?.toString() ?? "";
+      if (_bannerSeen.contains(id)) return true;
+      final tms = DateTime.tryParse(m["time"]?.toString() ?? "")?.millisecondsSinceEpoch ?? 0;
+      if (tms > 0 && tms <= _bootMs) {
+        if (_bannerSeen.add(id)) _bannerDirty = true; // 旧消息静默收编，不再进横幅判定
+        return true;
+      }
+      return false;
+    });
+    if (list.isEmpty) {
+      unawaited(_persistBannerState(sp)); // 收编结果落盘，重启不重演
+      return;
+    }
     for (final m in list) {
-      _bannerSeen.add(m["id"]?.toString() ?? "");
+      if (_bannerSeen.add(m["id"]?.toString() ?? "")) _bannerDirty = true;
     }
     if (_bannerSeen.length > 600) {
       _bannerSeen = _bannerSeen.skip(_bannerSeen.length - 400).toSet();
+      _bannerDirty = true;
     }
     // ㉖v53 三档分级：仅"弹横幅档"(=2)进横幅；静默档(=1)只更新角标不打扰，关闭档(=0)服务器不发
-    final sp = await SharedPreferences.getInstance();
     int lvOf(Map m) {
       final key = RemindPrefs.keyOf(m["type"]?.toString() ?? "");
       return key == null ? 2 : RemindPrefs.levelOfSp(sp, key); // 未归类类型默认弹
     }
     final pop = list.where((m) => lvOf(m) == 2).toList();
-    if (pop.isEmpty) return; // 本轮全是静默消息：角标靠服务端 unread 计数，无需任何横幅
+    if (pop.isEmpty) { unawaited(_persistBannerState(sp)); return; } // 本轮全是静默消息：角标靠服务端 unread 计数，无需任何横幅
     // ㉖v54 每类横幅每天只打扰一次：当日再来的同类自动静默（消息中心角标计数不变），car_alarm 安全底线豁免
     final _d0 = DateTime.now();
     final _today = "${_d0.year}-${_d0.month}-${_d0.day}";
     pop.removeWhere((m) { final k = m["type"]?.toString() ?? ""; return k != "car_alarm" && _bannerDay[k] == _today; });
-    if (pop.isEmpty) return;
-    for (final m in pop) { final _k = m["type"]?.toString() ?? ""; if (_k != "car_alarm") _bannerDay[_k] = _today; } // 本轮合并横幅已打扰，涉及类型当日不再弹
+    if (pop.isEmpty) { unawaited(_persistBannerState(sp)); return; }
+    for (final m in pop) { final _k = m["type"]?.toString() ?? ""; if (_k != "car_alarm" && _bannerDay[_k] != _today) { _bannerDay[_k] = _today; _bannerDirty = true; } } // 本轮合并横幅已打扰，涉及类型当日不再弹
+    unawaited(_persistBannerState(sp)); // ㉖v99 seen/day 持久化（脏判断，无变化不写盘）
     final first = pop.first;
     final text = first["text"]?.toString() ?? "领料单有新消息";
     // ⑭系统通知（悬浮横幅/锁屏/息屏可达）：按类别开关，点击直达领料页

@@ -16,6 +16,7 @@ class LabelInfo {
   double qty = 0;          // 数量
   String lotNo = "";       // 批次
   String createTime = "";  // MES 入库时间原文
+  String palletId = "";    // ㉖v99 托号（拉取合并自服务器账本 pid；框合并键优先按托，缺此字段致各设备框数不一致）
   bool missing = false;    // 查询成功但 MES 无此标签（避免反复重查）
   late int syncedAt;       // 本地缓存时间
 }
@@ -183,10 +184,12 @@ class _LocationRegPageState extends State<LocationRegPage> {
   Future<void> _saveLabelInfo(String code, String partNo, String itemName, double qty, String lotNo, String createTime, bool missing) async {
     final up = code.toUpperCase();
     await _globalIsar.writeTxn(() async {
+      // ㉖v99 托号保留：MES 查询不返回托号，先删后写会把账本同步来的托号洗掉→框合并退化拆框，故旧托号原样带走
+      final oldPid = (await _globalIsar.labelInfos.filter().goodsCodeEqualTo(up).findFirst())?.palletId ?? "";
       await _globalIsar.labelInfos.filter().goodsCodeEqualTo(up).deleteAll();
       await _globalIsar.labelInfos.put(LabelInfo()
         ..goodsCode = up ..partNo = partNo ..itemName = itemName ..qty = qty
-        ..lotNo = lotNo ..createTime = createTime ..missing = missing
+        ..lotNo = lotNo ..createTime = createTime ..palletId = oldPid ..missing = missing
         ..syncedAt = DateTime.now().millisecondsSinceEpoch);
     });
   }

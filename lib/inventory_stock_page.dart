@@ -221,9 +221,16 @@ Future<_StockAgg> computeStock() async {
   }
 
   // 零件汇总与货架分布：先按"框键"合并标签级框（同托多码=1框，数量求和；㉖v59方案B：逐码发料，任一码在库即框在库，在库量=未发码之和），再派生统计
+  // ㉖v99 托号两级回退：本机采集扩展（自己扫的托）→ LabelInfo 账本缓存（别机扫的托，拉取时已带 pid 入库）——
+  // 旧版只认本机扩展托号，未亲手扫过整托的设备把同托分位框按货位拆开数，在库框数各设备不一致（314 vs 305）
   final merged = <String, _StockBox>{};
+  String pidOf(String code) {
+    final a = extraMap[code]?.palletId ?? "";
+    if (a.isNotEmpty) return a;
+    return infoMap[code]?.palletId ?? "";
+  }
   for (final b in boxesByKey.values) {
-    final k = boxKey(extraMap[b.barcode]?.palletId ?? "", b.loc, b.partNo, b.barcode);
+    final k = boxKey(pidOf(b.barcode), b.loc, b.partNo, b.barcode);
     final old = merged[k];
     if (old == null) {
       merged[k] = b;
@@ -256,10 +263,15 @@ Future<_StockAgg> computeStock() async {
     }
   }
 
-  // ㉖v52 今日出入库框数（自然日）：入库=今日扫描有效流水去重标签，出库=今日出库单去重标签
+  // ㉖v99 今日出入库改服务器全厂口径（自然日）：旧版按本机流水/本机遇历统计，"谁扫的算谁的"→
+  // 两台仓管设备同屏 0 vs 40 不一致。取 /api/counts todayIn/todayOut（60秒缓存，45秒自动刷新的库存页够用）；
+  // 服务器不通时保留本机口径兜底（下方 fallback 值），离线不空白
   final _day0 = DateTime.now().copyWith(hour: 0, minute: 0, second: 0, millisecond: 0);
-  agg.todayIn = agg.inRows.where((r) => !r.cancelled && r.time.isAfter(_day0)).map((r) => r.barcode.toUpperCase()).toSet().length;
-  agg.todayOut = agg.outRows.where((r) => r.time.isAfter(_day0)).map((r) => r.barcode.toUpperCase()).toSet().length;
+  final _fbIn = agg.inRows.where((r) => !r.cancelled && r.time.isAfter(_day0)).map((r) => r.barcode.toUpperCase()).toSet().length;
+  final _fbOut = agg.outRows.where((r) => r.time.isAfter(_day0)).map((r) => r.barcode.toUpperCase()).toSet().length;
+  final _srv = await _todayCountsCached();
+  agg.todayIn = _srv?["todayIn"] as int? ?? _fbIn;
+  agg.todayOut = _srv?["todayOut"] as int? ?? _fbOut;
 
   // 期初
   for (final op in openings) {
@@ -285,6 +297,29 @@ Future<_StockAgg> computeStock() async {
 Map<String, String> _backingCache = {};
 int _backingAt = 0;
 void invalidatePartsBacking() { _backingAt = 0; } // ㉖v98 一键对齐时强制下次重拉全集（0 让 5 分钟窗失效）
+
+// ㉖v99 今日出入库全厂口径缓存（60 秒）：/api/counts todayIn/todayOut；失败返回 null 由调用方本机兜底
+Map<String, int>? _todayCache;
+int _todayCacheAt = 0;
+int _todayFailAt = 0; // ㉖v99 复检加固：失败退避 120 秒——库存页45秒自动刷新，离线时不再每轮空等6秒超时
+Future<Map<String, int>?> _todayCountsCached() async {
+  final now = DateTime.now().millisecondsSinceEpoch;
+  if (_todayCache != null && now - _todayCacheAt < 60000) return _todayCache;
+  if (_todayCache == null && now - _todayFailAt < 120000) return null; // 从未成功且在退避期：直接本机兜底
+  try {
+    final r = await AuthApi.counts().timeout(const Duration(seconds: 6));
+    if (r["ok"] == true && r["todayIn"] is num) {
+      _todayCache = {"todayIn": (r["todayIn"] as num).toInt(), "todayOut": ((r["todayOut"] as num?) ?? 0).toInt()};
+      _todayCacheAt = now;
+      _todayFailAt = 0;
+      return _todayCache;
+    }
+    _todayFailAt = now;
+  } catch (_) {
+    _todayFailAt = now;
+  } // 服务器不通：退避窗口内不再打点
+  return _todayCache; // 拉取失败但有过旧值：续用旧值（比闪回本机口径稳）
+}
 Future<Map<String, String>> _partsBackingCached() async {
   final now = DateTime.now().millisecondsSinceEpoch;
   if (_backingCache.isNotEmpty && now - _backingAt < 300000) return _backingCache;
@@ -2953,9 +2988,47 @@ class _TracePageState extends State<TracePage> {
     return "${p(dt.month)}-${p(dt.day)} ${p(dt.hour)}:${p(dt.minute)}";
   }
 
+  static const _wk = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  static String _dayHead(DateTime dt) =>
+      "${dt.year}年${dt.month}月${dt.day}日 ${_wk[dt.weekday - 1]}";
+
+  /// 关键节点强调（出生/离场/闭环三锚点加粗底色）
+  static bool _isKey(String k, String title) =>
+      title.contains("采集入库") || title.contains("入账登记") || title.contains("出库 ") || title.contains("签收确认") || title.contains("转MES");
+
+  /// 事件按自然日分组（新→旧展示更贴合"最近发生了什么"，组内保持时间正序=一生从左到右读）
+  List<Map<String, Object>> _groupEvents(List<Map> evs) {
+    final rows = <Map<String, Object>>[];
+    String? lastDay;
+    final sorted = evs.reversed.toList(); // 新→旧
+    for (final e in sorted) {
+      final tt = (e["t"] as num?)?.toInt() ?? 0;
+      final day = tt > 0 ? DateTime.fromMillisecondsSinceEpoch(tt) : null;
+      final dk = day == null ? "?" : "${day.year}-${day.month}-${day.day}";
+      if (dk != lastDay) {
+        lastDay = dk;
+        rows.add({"head": day == null ? "时间未知" : _dayHead(day), "n": 0});
+      }
+      rows.add({"ev": e});
+    }
+    // 组内倒序→改成正序（阅读方向=时间线从左到右/从上到下）
+    final out = <Map<String, Object>>[];
+    var buf = <Map<String, Object>>[];
+    Map<String, Object>? head;
+    for (final r in rows) {
+      if (r.containsKey("head")) {
+        if (head != null) { out.add(head!); out.addAll(buf.reversed); buf = []; }
+        head = r;
+      } else { buf.add(r); }
+    }
+    if (head != null) { out.add(head); out.addAll(buf.reversed); }
+    return out;
+  }
+
   @override
   Widget build(BuildContext context) {
     final evs = (_res?["events"] is List) ? List<Map>.from(_res!["events"]) : <Map>[];
+    final _grouped = _groupEvents(evs); // ㉖v99 日期分组时间线
     final kind = _res?["kind"]?.toString() ?? "";
     final count = (_res?["count"] as num?)?.toInt() ?? evs.length;
     final onShelf = (_res?["onShelf"] as num?)?.toInt() ?? 0;
@@ -3036,10 +3109,9 @@ class _TracePageState extends State<TracePage> {
                             : ListView.builder(
                                 padding:
                                     const EdgeInsets.fromLTRB(10, 0, 10, 16),
-                                itemCount:
-                                    evs.length + (count > evs.length ? 1 : 0),
+                                itemCount: _grouped.length + (count > evs.length ? 1 : 0),
                                 itemBuilder: (ctx, i) {
-                                  if (i >= evs.length) {
+                                  if (i >= _grouped.length) {
                                     return Padding(
                                         padding: const EdgeInsets.all(12),
                                         child: Text(
@@ -3049,7 +3121,31 @@ class _TracePageState extends State<TracePage> {
                                                 fontSize: 11.5,
                                                 color: Colors.grey)));
                                   }
-                                  final e = evs[i];
+                                  final row = _grouped[i];
+                                  if (row.containsKey("head")) {
+                                    return Padding(
+                                        padding: const EdgeInsets.fromLTRB(2, 14, 2, 4),
+                                        child: Row(children: [
+                                          Container(
+                                              padding: const EdgeInsets.symmetric(
+                                                  horizontal: 8, vertical: 2),
+                                              decoration: BoxDecoration(
+                                                  color: const Color(0xFF515BD4),
+                                                  borderRadius:
+                                                      BorderRadius.circular(9)),
+                                              child: Text("${row["head"]}",
+                                                  style: const TextStyle(
+                                                      fontSize: 11,
+                                                      color: Colors.white,
+                                                      fontWeight:
+                                                          FontWeight.w700))),
+                                          const SizedBox(width: 8),
+                                          const Expanded(
+                                              child: Divider(
+                                                  color: Color(0xFFDDE3EC))),
+                                        ]));
+                                  }
+                                  final e = row["ev"] as Map;
                                   final k = e["kind"]?.toString() ?? "";
                                   final c = _kCol[k] ?? Colors.blueGrey;
                                   final tt = (e["t"] as num?)?.toInt() ?? 0;
@@ -3059,15 +3155,42 @@ class _TracePageState extends State<TracePage> {
                                   final title = e["title"]?.toString() ?? "";
                                   final detail = e["detail"]?.toString() ?? "";
                                   final actor = e["actor"]?.toString() ?? "";
-                                  final head =
-                                      dt == null ? title : "${_fmtT(dt)}  $title";
+                                  final key = _isKey(k, title);
                                   return Padding(
                                       padding: const EdgeInsets.only(top: 7),
                                       child: Row(
                                           crossAxisAlignment:
                                               CrossAxisAlignment.start,
                                           children: [
+                                            // 左轨：时间 + 竖线连接（时间线视觉）
+                                            SizedBox(
+                                                width: 44,
+                                                child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .end,
+                                                    children: [
+                                                      Text(
+                                                          dt == null
+                                                              ? "--:--"
+                                                              : "${dt.hour.toString().padLeft(2, "0")}:${dt.minute.toString().padLeft(2, "0")}",
+                                                          style: TextStyle(
+                                                              fontSize: 10.5,
+                                                              fontFamily:
+                                                                  "monospace",
+                                                              color:
+                                                                  Colors.blueGrey.shade400)),
+                                                      if (i < _grouped.length -
+                                                          1)
+                                                        Container(
+                                                            width: 1.6,
+                                                            height: 30,
+                                                            color: const Color(
+                                                                0xFFDDE3EC)),
+                                                    ])),
+                                            const SizedBox(width: 6),
                                             Container(
+                                                margin: const EdgeInsets.only(top: 2),
                                                 padding:
                                                     const EdgeInsets.all(4),
                                                 decoration: BoxDecoration(
@@ -3081,12 +3204,31 @@ class _TracePageState extends State<TracePage> {
                                                     color: c)),
                                             const SizedBox(width: 8),
                                             Expanded(
-                                                child: Column(
+                                                child: Container(
+                                                    padding: const EdgeInsets
+                                                        .symmetric(
+                                                        horizontal: 8,
+                                                        vertical: 5),
+                                                    decoration: BoxDecoration(
+                                                        color: key
+                                                            ? c.withOpacity(
+                                                                0.06)
+                                                            : Colors.white,
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                                7),
+                                                        border: Border.all(
+                                                            color: key
+                                                                ? c.withOpacity(
+                                                                    0.45)
+                                                                : const Color(
+                                                                    0xFFE7EBF2))),
+                                                    child: Column(
                                                     crossAxisAlignment:
                                                         CrossAxisAlignment
                                                             .start,
                                                     children: [
-                                                  Text(head,
+                                                  Text(title,
                                                       style: TextStyle(
                                                           fontSize: 12,
                                                           fontWeight:
@@ -3105,7 +3247,7 @@ class _TracePageState extends State<TracePage> {
                                                             fontSize: 11,
                                                             color:
                                                                 Colors.grey)),
-                                                ])),
+                                                ]))),
                                           ]));
                                 })),
       ]),
