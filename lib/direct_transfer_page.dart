@@ -238,7 +238,11 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
       // 提交成功 → 落库一张出库单（零件号/物料名字/数量/标签号），供仓管对照出库与逐箱备料
       try {
         final ob = await createOutboundOrder(_rows, _to);
-        _toast("提交成功，已生成出库单 ${ob.orderNo}", err: false);
+        // ㉖v100 去向非线边仓=移仓（不计出库统计口径，台账与报表标注"移仓"）；关键词由服务器心跳下发，离线保留上次值
+        final _toDisp = "${_to["WAREHOUSE_NAME"] ?? ""}/${_to["DISTRICT_NAME"] ?? ""}/${_to["LOC_NAME"] ?? ""}";
+        _toast(isMoveToLoc(_toDisp)
+            ? "提交成功，已生成移仓单 ${ob.orderNo}（去向非线边仓，不计出库）"
+            : "提交成功，已生成出库单 ${ob.orderNo}", err: false);
       } catch (e) {
         _toast("提交成功，但出库单落库失败：$e");
       }

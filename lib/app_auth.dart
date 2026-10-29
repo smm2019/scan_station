@@ -5,6 +5,15 @@ part of 'main.dart';
 
 /// ㉒G11 服务器时钟偏移（毫秒）：本机显示时间统一校正用；心跳/登录时更新
 int kClockOffsetMs = 0;
+/// ㉖v100 出库去向关键词（逗号分隔，服务器参数 outWhKeys 心跳下发，默认"线边仓"）：
+/// 直调/转单去向含任一关键词=出库，全不含=移仓（不计出库统计）。仅用于提示文案，判定权威在服务器。
+String kOutWhKeys = "线边仓";
+/// 去向是否移仓（与服务器 isMoveOrder 同判据；空去向按出库）
+bool isMoveToLoc(String to) {
+  final keys = kOutWhKeys.split(RegExp('[,，]')).map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+  if (keys.isEmpty || to.trim().isEmpty) return false;
+  return !keys.any((k) => to.contains(k));
+}
 // ---- 第3档 PDA显示偏好：字号档位(响应式即时生效)/扫码自动聚焦 ----
 final ValueNotifier<double> kFontScaleN =
     ValueNotifier(1.0); // std=1.0 lg=1.18 xl=1.35
@@ -669,6 +678,9 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
           .toUtc()
           .difference(DateTime.now().toUtc())
           .inMilliseconds; // ㉒G11 服务器-本机偏差
+    // ㉖v100 出库去向关键词（服务器参数 outWhKeys 下发）：直调提交后按去向提示"出库单/移仓单"；离线保留上次值
+    if (r["outWhKeys"] is String && (r["outWhKeys"] as String).trim().isNotEmpty)
+      kOutWhKeys = (r["outWhKeys"] as String).trim();
     Auth.user = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
     Auth.features = Map<String, bool>.from(r["features"] ?? {});
     AuthStore.markVerified();

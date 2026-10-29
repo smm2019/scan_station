@@ -1047,7 +1047,7 @@ class _FlowTabState extends State<_FlowTab> {
     } else {
       for (final r in widget.agg.outRows.reversed) {
         views.add(_FlowView(r.time, r.partNo, r.itemName, r.barcode, r.qty,
-            "${r.orderNo} · ${r.loc} · ${r.operator}"));
+            "${r.orderNo} · ${isMoveToLoc(r.loc) ? "🔄移仓→" : ""}${r.loc} · ${r.operator}")); // ㉖v100 去向非线边仓=移仓标注
       }
     }
     var list = views;
@@ -1997,7 +1997,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
             if (b.cancelled)
               _stepLine(Icons.block, Colors.grey, "已作废", "人工作废，不计入库存"),
             if (b.outTime != null)
-              _stepLine(Icons.logout, const Color(0xFFE65100), "出库",
+              _stepLine(Icons.logout, const Color(0xFFE65100), isMoveToLoc(b.outTo) ? "移仓" : "出库", // ㉖v100 去向非线边仓=移仓（与服务器同判据，不计出库口径）
                   "${_t(b.outTime)}  ·  ${b.outFrom.isNotEmpty ? b.outFrom : "?"} → ${b.outTo}  ·  ${b.outMove.isEmpty ? "" : "${b.outMove}搬运 · "}${b.outOrder}${b.outLink.isNotEmpty ? "（领料单 ${b.outLink}）" : ""}  ·  ${b.outOperator}"),
             if (b.agvChain.isNotEmpty)
               _stepLine(Icons.route, Colors.indigo, "AGV链路", b.agvChain),

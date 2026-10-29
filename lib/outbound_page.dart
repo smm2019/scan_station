@@ -148,7 +148,7 @@ class _OutboundListPageState extends State<OutboundListPage> {
                           margin: const EdgeInsets.symmetric(vertical: 5),
                           child: ListTile(
                             leading: CircleAvatar(backgroundColor: Colors.blueGrey.withOpacity(0.12), child: const Icon(Icons.inventory_2_outlined, color: Colors.blueGrey)),
-                            title: Text("${ro["orderNo"]}  ${_fmtMs(ro["createdAt"])}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                            title: Text("${ro["orderNo"]}  ${_fmtMs(ro["createdAt"])}${(ro["mv"] == 1 || isMoveToLoc(ro["toLoc"]?.toString() ?? "")) ? "  🔄移仓" : ""}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)), // ㉖v100 服务器mv标记+本机同判据兜底（旧服务器无mv字段时）
                             subtitle: Text("${ro["toLoc"]}\n${rItems.length} 张 · 合计 $rQty ｜ ${ro["operator"]} ｜ 其他设备单据", style: const TextStyle(fontSize: 12)),
                             isThreeLine: true,
                             trailing: const Icon(Icons.chevron_right),
@@ -168,7 +168,7 @@ class _OutboundListPageState extends State<OutboundListPage> {
                             backgroundColor: done ? Colors.green.shade100 : Colors.orange.shade100,
                             child: Icon(done ? Icons.check_circle : Icons.pending, color: done ? Colors.green : Colors.orange),
                           ),
-                          title: Text(o.orderNo, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                          title: Text("${o.orderNo}${isMoveToLoc(o.toLoc) ? "  🔄移仓" : ""}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)), // ㉖v100 去向非线边仓=移仓（不计出库口径）
                           subtitle: Text("${_fmt(o.createdAt)} ｜ ${o.toLoc}\n${items.length} 张标签 · 合计 $totalQty ｜ 已核对 $checked/${items.length}", style: const TextStyle(fontSize: 12)),
                           isThreeLine: true,
                           trailing: const Icon(Icons.chevron_right),

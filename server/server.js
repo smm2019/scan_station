@@ -604,6 +604,7 @@ function stockRiskOf(days) {
   const N = Math.min(180, Math.max(7, Number(days) || 60));
   const cut = Date.now() - N * 864e5;
   const outAgg = {};
+  // ㉖v100 口径注释：此处【有意不剔除移仓单】——呆滞判定看"实物是否久未动"，转到冷冲件仓同样离开本库，属物理动向非业务出库
   for (const o of Object.values(db.outbound || {})) {
     const t = Number(o.createdAt) || 0; if (t < cut) continue;
     for (const it of o.items || []) { const pn = String(it.code || '').toUpperCase(); if (!pn) continue; const a = outAgg[pn] = outAgg[pn] || { qty: 0, last: 0 }; a.qty += Number(it.qty) || 0; if (t > a.last) a.last = t; }
@@ -651,6 +652,7 @@ function buildWork(from, to) {
   // 出库：㉖v61 按托归并计框（与入库口径统一：框=托）——barcode 反查账本 boxKeyOf（托号优先/同位同件合并/缺则按标签），件数合计；操作人记o.operator
   const _ledMap = {}; for (const x of db.ledger || []) { const c0 = String(x.c || '').toUpperCase(); if (c0 && !_ledMap[c0]) _ledMap[c0] = x; }
   for (const o of Object.values(db.outbound || {})) {
+    if (isMoveOrder(o)) continue; // ㉖v100 移仓单不计出库工作量（用户口径：完全不计；移仓劳动暂未单列，需要时再加列）
     const t = Number(o.createdAt) || 0; if (t < from || t > to) continue;
     const day = wdstr(t), who = opNameOf(o.operator) || '未知'; // ㉖v98c 剥账号，"宋明明"与"宋明明(smm123)"归并同一人
     const boxes = new Set(); let qty = 0;
@@ -733,6 +735,7 @@ function buildExport(ds, fRaw) {
   if (ds === 'D1') return mk('库位表', ['货位', '标签号', '零件号', '物料号', '物料名称', '数量', '批次', '料框', '登记人', '登记时间', '搬运方式', '来源'], ['S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], ledgerView().map((x) => [x.l, x.c, x.p || '', mitemOf(x.c, x.p), x.n || '', x.q || 0, x.b || '', x.f || '', x.by || '', expTs(x.t), mvDisp(x.mv), srcDisp(x.src)]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))), '货位账本（服务器合并快照；批次=MES标签打印日期；物料号=MES MITEM_CODE，老标签按零件号字典自动回补）');
   if (ds === 'D2') { const m = {}; for (const x of db.ledger) { const pn = String(x.p || '').toUpperCase() || '(无零件号)'; const k = boxKeyOf(x); const e = (m[pn] = m[pn] || { b: {}, locs: {}, nm: '' }); e.b[k] = (e.b[k] || 0) + (Number(x.q) || 0); e.locs[String(x.l).toUpperCase()] = (e.locs[String(x.l).toUpperCase()] || 0) + 1; if (!e.nm && x.n) e.nm = x.n; } // ㉖ 框数量=框内各标签之和
     // ㉕B12 最近出入动向：入库=采集流水最大t；出库=出库单明细最大createdAt
+    // ㉖v100 口径注释：此处【有意含移仓单】——"最近出库"回答"这零件最后一次离开本库是什么时候"，物理动向不区分去向
     const lastIn = {}, lastOut = {};
     for (const s of Object.values(db.scanlog || {})) { if (s.cx) continue; const pn = String(s.pn || '').toUpperCase(); if (!pn) continue; lastIn[pn] = Math.max(lastIn[pn] || 0, s.t || 0); }
     for (const o of Object.values(db.outbound || {})) { const t = Number(o.createdAt) || 0; for (const i of (o.items || [])) { const pn = String(i.code || '').toUpperCase(); if (pn) lastOut[pn] = Math.max(lastOut[pn] || 0, t); } }
@@ -742,7 +745,7 @@ function buildExport(ds, fRaw) {
     rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
     return mk('库存汇总', ['零件号', '物料名称', '在架框数', '在架数量', '占用货位数', '货位分布(TOP5)', '最近入库', '最近出库'], ['S', 'S', 'N', 'N', 'N', 'S', 'S', 'S'], rows, '货位账本按框聚合（动向取自主库窗口，含归档勾选不影响本表）'); }
   if (ds === 'D3') { const _sl = _arch ? Object.assign(archLoad('scanlog'), db.scanlog || {}) : (db.scanlog || {}); const rows = Object.values(_sl).filter((s) => (s.t || 0) >= (from || 0) && (s.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((s) => [expTs(s.t), s.code, s.pn || '', mitemOf(s.code, s.pn), s.nm || '', s.q || 0, printLot(s.mk, s.lot), (s.wt === 0 ? s.st : s.gl) || '', s.ct || '', s.pid || '', s.op || '', s.cx ? '已作废' : '', s.rm || '']); return mk('入库流水', ['时间', '标签号', '零件号', '物料号', '物料名', '数量', '批次', '初始货位', '容器类型', '托号', '操作人', '状态', '备注'], ['S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '采集流水（全厂合并；批次=MES标签打印日期；物料号=MES MITEM_CODE）'); }
-  if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), i.code || '', mitemOf(i.barcode || '', i.code), i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', opNameOf(o.operator)]); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '零件号', '物料号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调；物料号=MES MITEM_CODE）'); }
+  if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; const _mv = isMoveOrder(o) ? '移仓' : '出库'; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), _mv, i.code || '', mitemOf(i.barcode || '', i.code), i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', opNameOf(o.operator)]); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '单据类型', '零件号', '物料号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调；物料号=MES MITEM_CODE；单据类型=移仓即去向非线边仓的仓间转移，不计出库统计口径）'); }
   if (ds === 'D5') { const reqOfTask = {}; for (const q of db.agvQueue || []) { const tn = String(q.taskNo || ''); if (tn && q.reqNo && !reqOfTask[tn]) reqOfTask[tn] = q.reqNo; } // 关联单=按RCS任务号配对（完成项队列留存可回溯）
     const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失', expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', reqOfTask[no] || '', '', '']); // ㉖v98c 末两列=标签号/物料号：完成行=RCS沉淀无标签信息留空，在途行有码
     // ㉕B10 未完成在途并入同表（状态=排队/下发中/已下发/到站/失败），补"状态/关联单"两列
@@ -1107,7 +1110,7 @@ function nb02AssignFree(partNo) {
 // ---- ㉖v56 调度策略助手：A周转分 / B巷道在途 / C站台时间窗 ----
 function partTurnover() { // 周转分=窗口内出库件数 + 采集入库件数×0.1（出库主导）
   const cut = Date.now() - P().abcWindow * 864e5; const m = {};
-  for (const o of Object.values(db.outbound || {})) { const t = Number(o.createdAt) || 0; if (t < cut) continue; for (const i of (o.items || [])) { const p = String(i.code || '').toUpperCase(); if (p) m[p] = (m[p] || 0) + (Number(i.qty) || 0); } }
+  for (const o of Object.values(db.outbound || {})) { if (isMoveOrder(o)) continue; const t = Number(o.createdAt) || 0; if (t < cut) continue; for (const i of (o.items || [])) { const p = String(i.code || '').toUpperCase(); if (p) m[p] = (m[p] || 0) + (Number(i.qty) || 0); } } // ㉖v100 移仓不算生产消耗，不计周转分
   for (const sc of Object.values(db.scanlog || {})) { if (sc.cx) continue; const t = Number(sc.t) || 0; if (t < cut) continue; const p = String(sc.pn || '').toUpperCase(); if (p) m[p] = (m[p] || 0) + (Number(sc.q) || 0) * 0.1; }
   return m;
 }
@@ -1235,8 +1238,13 @@ const PARAMS = {
   gateMode:       { grp: '领料闸门', name: '待签收闸门模式', unit: '档', min: 0, max: 2, d: 1, tip: '物料员手里有货到待签收的领料单时能否下新单。0=关闭；1=宽限后拦（推荐）：待签收单滞留超宽限期才拦，急料单在豁免上限内不拦；2=严格：有待签收即拦（急料豁免上限内同样放行）。只拦物料员角色，管理员代下不受限' },
   gateGraceMin:   { grp: '领料闸门', name: '待签收宽限期', unit: '分钟', min: 0, max: 240, d: 30, tip: '模式1生效：待签收单从"备齐到站"（readyAt）起算，超过此时长仍未签收才拦新单；0=有待签收立即拦。给物料员留出去线边送货/回车间的正常时间' },
   gateRushMaxMin: { grp: '领料闸门', name: '急料豁免上限', unit: '分钟', min: 0, max: 1440, d: 120, tip: '㉖v98c 急料待签收单享受豁免的最长滞留（从备齐到站readyAt起算）：超上限照常拦——防"每单都勾急"把闸门变免死金牌、急料单囤两天不领（10/29 现场：某物料员22张急料待签收畅通下单）。0=急料永远豁免（旧行为）' },
+  outWhKeys:      { grp: '统计口径', str: 1, name: '出库去向关键词', unit: '文本', min: 0, max: 0, d: '线边仓', tip: '㉖v100 判定"真出库"的 MES 仓名关键词（多个用逗号分隔）。直调单去向含任一关键词=出库；全不含=移仓（如冷冲件仓/热压单件仓/代发仓）——移仓单照常可查可审计，但不计今日出库/工作量出库/周转分/呆滞判定，报表标注"移仓"。留空=全部按出库算（回退旧口径）' },
 };
-function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } return o; }
+function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; if (d.str) { o[k] = (typeof v === 'string') ? v : d.d; } else { o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } } return o; }
+// ㉖v100 出库/移仓判定：直调/转单成功后系统都落"出库单"，但业务上只有转入线边仓才算出库；
+// 转冷冲件仓等其他仓是仓间移仓（实物离开本库但非生产领用）。按去向名含关键词判定（关键词=参数 outWhKeys，逗号分隔）。
+// 去向为空的旧单保守按出库（不改 LL 转单既有口径）；判据只用于【统计与展示】，消账/防重/链路等物理动作不受影响。
+function isMoveOrder(o) { const keys = String(P().outWhKeys || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean); if (!keys.length) return false; const to = String((o && o.toLoc) || '').trim(); if (!to) return false; return !keys.some((k) => to.includes(k)); }
 // ㉖v98c 领料闸门集中判定（服务器权威，两端预检与 POST 兜底共用同一函数，口径永不漂移）
 // gateMode：0=关 / 1=宽限后拦 / 2=严格有待即拦
 // 急料单豁免限时（v98c）：滞留超 gateRushMaxMin 不再豁免——急给足时间领，囤两天不领就是不急
@@ -2336,7 +2344,8 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       if (fl) arr = arr.filter(x => String(x.linkReqNo || '').toUpperCase() === fl);
       const fq = (url.searchParams.get('q') || '').trim().toUpperCase();
       if (fq) arr = arr.filter(x => String(x.orderNo || '').toUpperCase().includes(fq) || String(x.linkReqNo || '').toUpperCase().includes(fq) || String(x.toLoc || '').toUpperCase().includes(fq) || String(x.operator || '').toUpperCase().includes(fq) || (x.items || []).some((i) => String(i.code || '').toUpperCase().includes(fq) || String(i.name || '').toUpperCase().includes(fq) || String(i.barcode || '').toUpperCase().includes(fq))); // ㉖B7 关键字过滤
-      return send(res, 200, { ok: true, at: db.outboundAt, total: db.outboundCount, count: arr.length, items: arr.slice(0, 500) });
+      // ㉖v100 每单现算 mv（不落库——参数 outWhKeys 一改即生效）：1=移仓单（去向非线边仓），PDA台账/网页列表据此标注
+      return send(res, 200, { ok: true, at: db.outboundAt, total: db.outboundCount, count: arr.length, items: arr.slice(0, 500).map((x) => Object.assign({}, x, { mv: isMoveOrder(x) ? 1 : 0 })) });
     }
     if (req.method === 'GET' && p === '/board/data') {
       if (!pageAuthOk(req, url)) { const tk = String(url.searchParams.get('t') || ''); res.writeHead(302, { Location: '/console' + (tk ? '?t=' + encodeURIComponent(tk) : '') }); res.end(); return; }
@@ -2424,7 +2433,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
 
       // 心跳/取当前身份+功能开关（App 前台恢复与定时轮询调用；停用即时生效靠它）
       if (req.method === 'GET' && p === '/api/me') {
-        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, serverTime: new Date().toISOString() });
+        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, outWhKeys: String(P().outWhKeys || '线边仓'), serverTime: new Date().toISOString() }); // ㉖v100 出库去向关键词下发：PDA 直调提交后按去向提示"出库单/移仓单"
       }
 
       // ㉖v59 个人中心：我的登录设备/会话（本人可见可踢，不含 admin 拉黑等管理动作）
@@ -3471,7 +3480,7 @@ return send(res, 200, {
         const _outCodes = new Set(); for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) _outCodes.add(String(i.barcode || '').toUpperCase());
         const inb = _sl.slice(0, 60).map((st) => ({ t: Number(st.t) || 0, code: st.code, q: Number(st.q) || 0, lot: printLot(st.mk, st.lot), loc: (st.wt === 0 ? st.st : st.gl) || '', op: st.op || '', cx: !!st.cx, unreg: !st.cx && !(db.ledger || []).some((x) => String(x.c || '').toUpperCase() === String(st.code || '').toUpperCase()) && !_outCodes.has(String(st.code || '').toUpperCase()) && !db.seenOut[String(st.code || '').toUpperCase()] }));
         const outAll = [];
-        for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) { if (String(i.code || '').toUpperCase() !== pn) continue; outAll.push({ t: Number(o.createdAt) || 0, no: o.orderNo, q: Number(i.qty) || 0, tag: i.barcode || '', from: i.fromLoc || '', to: o.toLoc || '', req: o.linkReqNo || '', by: opNameOf(o.operator) }); }
+        for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) { if (String(i.code || '').toUpperCase() !== pn) continue; outAll.push({ t: Number(o.createdAt) || 0, no: o.orderNo, q: Number(i.qty) || 0, tag: i.barcode || '', from: i.fromLoc || '', to: o.toLoc || '', req: o.linkReqNo || '', by: opNameOf(o.operator), mv: isMoveOrder(o) ? 1 : 0 }); } // ㉖v100 mv=1 移仓单（去向非线边仓），前端标注保留可见
         outAll.sort((a, x) => x.t - a.t);
         const demand = [];
         for (const r of db.requisitions || []) {
@@ -3486,7 +3495,7 @@ return send(res, 200, {
         let nm = ''; for (const b of Object.values(bm)) { if (b.nm) { nm = b.nm; break; } }
         if (!nm && inb.length) { const rec = Object.values(db.scanlog || {}).find((st) => String(st.pn || '').toUpperCase() === pn && st.nm); nm = rec ? rec.nm : ''; }
         if (!nm && db.itemDict && db.itemDict[pn]) nm = db.itemDict[pn].nm || '';
-        return send(res, 200, { ok: true, pn, name: String(nm || '').slice(0, 80), boxes, qty, inb, inbTotal: _sl.filter((st) => !st.cx).length, out: outAll.slice(0, 200), outTotal: outAll.length, demand, watchers, watched: watchers.some((w) => w.uid === u.id) });
+        return send(res, 200, { ok: true, pn, name: String(nm || '').slice(0, 80), boxes, qty, inb, inbTotal: _sl.filter((st) => !st.cx).length, out: outAll.slice(0, 200), outTotal: outAll.filter((x) => !x.mv).length, mvTotal: outAll.filter((x) => x.mv).length, demand, watchers, watched: watchers.some((w) => w.uid === u.id) }); // ㉖v100 outTotal=真出库；mvTotal=移仓单行（去向非线边仓）单列
       }
       if (req.method === 'POST' && p === '/api/watchlist/rm') {
         if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可代他人取消预约' });
@@ -4311,7 +4320,7 @@ return send(res, 200, {
         const _day0 = new Date(); _day0.setHours(0, 0, 0, 0);
         const _tin = new Set(), _tout = new Set();
         for (const s of Object.values(db.scanlog || {})) { if (!s.cx && (Number(s.t) || 0) >= _day0.getTime() && s.code) _tin.add(String(s.code).toUpperCase()); }
-        for (const o of Object.values(db.outbound || {})) { if ((Number(o.createdAt) || 0) >= _day0.getTime()) for (const i of (o.items || [])) { const bc = String(i.barcode || '').toUpperCase(); if (bc) _tout.add(bc); } }
+        for (const o of Object.values(db.outbound || {})) { if (isMoveOrder(o)) continue; if ((Number(o.createdAt) || 0) >= _day0.getTime()) for (const i of (o.items || [])) { const bc = String(i.barcode || '').toUpperCase(); if (bc) _tout.add(bc); } } // ㉖v100 移仓不算出库
         return send(res, 200, { ok: true, at: new Date().toISOString(), todayIn: _tin.size, todayOut: _tout.size, ledger: (db.ledger || []).length, scanlogLive: live, scanlogTotal: Object.keys(db.scanlog || {}).length, archScan, outbound: Object.keys(db.outbound || {}).length, archOut, reqs: (db.requisitions || []).length, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).length, queueTotal: (db.agvQueue || []).length, tasks: Object.keys(db.agvTasks || {}).length, events: (db.carEvents || []).length, ops: opsLoadDays(30).length, inspects: (db.inspects || []).length, inspectActive: (db.inspects || []).filter((q) => ['waitOut','toStation','atStation','waitBack','returning'].includes(q.state)).length, seenIn: Object.keys(db.seenIn || {}).length, seenOut: Object.keys(db.seenOut || {}).length, dict: Object.keys(db.itemDict || {}).length, ledRev: db.ledgerRev || 0, ledAt: db.ledgerAt || '', backup: fs.existsSync(path.join(DATA_DIR, 'backups')) ? fs.readdirSync(path.join(DATA_DIR, 'backups')).filter((f) => /^db-.*\.json$/.test(f)).length : 0 });
       }
       // ---- ㉖ 系统连接状态：RCS(哈工库讯) / WMAS(AGV下发) 配置与最近成功时刻（MES 凭据在 PDA 本地，由 App 自查）----
@@ -5291,7 +5300,7 @@ return send(res, 200, {
       }
       if (req.method === 'GET' && p === '/api/admin/params') {
         const cur = P();
-        const items = Object.entries(PARAMS).filter(([, d]) => !d.hide).map(([k, d]) => ({ k, grp: d.grp || '其他', name: d.name, unit: d.unit, min: d.min, max: d.max, def: d.d, val: cur[k], tip: d.tip, set: (db.params || {})[k] !== undefined })); // ㉖v69 hide=下架不展示（存储配置：高架固定/地面有专区）
+        const items = Object.entries(PARAMS).filter(([, d]) => !d.hide).map(([k, d]) => ({ k, grp: d.grp || '其他', name: d.name, unit: d.unit, min: d.min, max: d.max, def: d.d, val: cur[k], tip: d.tip, str: d.str ? 1 : 0, set: (db.params || {})[k] !== undefined })); // ㉖v69 hide=下架不展示（存储配置：高架固定/地面有专区）；㉖v100 str=1 文本参数（如出库去向关键词）
         return send(res, 200, { ok: true, items, cfgRev: db.cfgRev || 0 });
       }
       // ---- ㉖ 系统错误日志：服务器自身异常留痕（请求500/后台任务/未捕获），供控制后台定位 ----
@@ -5312,9 +5321,14 @@ return send(res, 200, {
         const changed = [], bad = [];
         for (const [k, v] of Object.entries(inp)) {
           const d = PARAMS[k]; if (!d) { bad.push(String(k)); continue; }
+          db.params = db.params || {};
+          if (d.str) { // ㉖v100 文本参数：去首尾空白、限长200（关键词清单不需要更长）；空串=恢复默认由 P() 兜底逻辑处理（存空串视同自定义空=全部按出库）
+            const s = String(v == null ? '' : v).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, 200);
+            if (db.params[k] !== s) { db.params[k] = s; changed.push(d.name + '=' + (s || '(空)')); }
+            continue;
+          }
           const num = Number(v);
           if (!Number.isFinite(num) || num < d.min || num > d.max) { bad.push(d.name + '=' + v + '（应 ' + d.min + '~' + d.max + '）'); continue; }
-          db.params = db.params || {};
           if (db.params[k] !== num) { db.params[k] = num; changed.push(d.name + '=' + num + d.unit); }
         }
         if (bad.length) return send(res, 400, { ok: false, msg: '取值不合法：' + bad.join('，') });
