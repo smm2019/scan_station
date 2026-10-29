@@ -168,6 +168,9 @@ class AuthApi {
           serverOverride: server);
   static Future<Map> me() async =>
       _req("GET", "/api/me", token: await AuthStore.token());
+  // ㉖v101 项目字典（零件号→项目码多值，网页「项目」页维护）：登录可读，库存页/缺料页筛选数据源
+  static Future<Map> projGet() async =>
+      _req("GET", "/api/proj", token: await AuthStore.token());
   // ㉖⑯ 内嵌网页免登录：用原生会话换发一枚不绑设备指纹的网页 token
   static Future<Map> webSession() async =>
       _req("POST", "/api/web/session", token: await AuthStore.token());

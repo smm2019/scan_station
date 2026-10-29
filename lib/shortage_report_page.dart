@@ -19,7 +19,7 @@ class _ShortageItem {
   double needQty; // 在途需求（未满足件数）
   String needFrom; // 需求来源单号摘要
   String kind = ""; // ㉖v75 口径徽章：零库存/欠料/低水位
-  String proj = ""; // ㉖v75 归属项目关键字（空=其他）
+  List<String> proj = const []; // ㉖v75 归属项目（原单值String）；㉖v101 升级多值：字典可挂多码，空=其他
   bool checked; // 是否纳入本次分享
   TextEditingController descC = TextEditingController();
   TextEditingController lotC = TextEditingController();
@@ -199,10 +199,16 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         ..lot = zero ? "" : (lastLot[pn] ?? "")
         ..kind = zero ? "零库存" : (short ? "欠料" : "低水位");
       it.carModel = _carRe.firstMatch(it.itemName)?.group(1) ?? "";
-      // ㉖v75 项目归属：自定义关键字表按序匹配（不区分大小写包含），先命中先归；都未命中=其他
-      final nmUp = it.itemName.toUpperCase();
-      for (final p in _projects) {
-        if (p.trim().isNotEmpty && nmUp.contains(p.trim().toUpperCase())) { it.proj = p.trim().toUpperCase(); break; }
+      // ㉖v101 项目归属两级：①项目字典（网页「项目」页维护、服务器权威）命中码优先，可多值
+      // ②字典未覆盖的零件回退 ㉖v75 本机关键字表（名称包含即命中，先命中先归，单值）——离线/未配置不空转
+      final dictP = projOfPn(it.partNo);
+      if (dictP.isNotEmpty) {
+        it.proj = dictP;
+      } else {
+        final nmUp = it.itemName.toUpperCase();
+        for (final p in _projects) {
+          if (p.trim().isNotEmpty && nmUp.contains(p.trim().toUpperCase())) { it.proj = [p.trim().toUpperCase()]; break; }
+        }
       }
       final tail = nd > 0 ? "，待领 ${_fmtInvNum(nd)} 件" : "";
       it.desc = zero
@@ -243,7 +249,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       if (_proj == "__other__") {
         if (it.proj.isNotEmpty) return false;
       } else if (_proj.isNotEmpty) {
-        if (it.proj != _proj) return false;
+        if (!it.proj.contains(_proj)) return false; // ㉖v101 多值任一命中
       }
       if (k.isNotEmpty && !it.partNo.toLowerCase().contains(k) && !it.itemName.toLowerCase().contains(k)) return false;
       return true;
@@ -258,7 +264,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       if (it.kind == "欠料" && !_showShort) return false;
       if (it.kind == "低水位" && !_showLow) return false;
       if (k.isNotEmpty && !it.partNo.toLowerCase().contains(k) && !it.itemName.toLowerCase().contains(k)) return false;
-      return p.isEmpty ? true : (p == "__other__" ? it.proj.isEmpty : it.proj == p);
+      return p.isEmpty ? true : (p == "__other__" ? it.proj.isEmpty : it.proj.contains(p)); // ㉖v101 多值任一命中
     }).length;
   }
 
@@ -447,7 +453,8 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                       children: [
                         ...[
                           ["", "全部"],
-                          for (final p in _projects.where((x) => x.trim().isNotEmpty)) [p.toUpperCase(), p.toUpperCase()],
+                          // ㉖v101 候选=项目字典码 ∪ 本机关键字表（大写去重；字典在前，网页维护的正式项目优先曝光）
+                          for (final p in {..._projCodesCache.map((c) => c.toUpperCase()), ..._projects.where((x) => x.trim().isNotEmpty).map((e) => e.trim().toUpperCase())}) [p, p],
                           ["__other__", "其他"],
                         ].map((e) => Padding(
                             padding: const EdgeInsets.only(right: 6, top: 4),

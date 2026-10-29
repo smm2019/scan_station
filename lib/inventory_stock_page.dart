@@ -91,6 +91,7 @@ class _StockBox {
 
 /// 全量聚合（数据量万级以内，内存计算毫秒级）
 Future<_StockAgg> computeStock() async {
+  await projRefresh(); // ㉖v101 项目字典缓存（10分钟窗+失败退避6秒超时；多数周期立即返回，首个周期慢一轮网络）
   final isar = _globalIsar;
   final agg = _StockAgg();
   final records = await isar.scanRecords.where().findAll();
@@ -297,6 +298,37 @@ Future<_StockAgg> computeStock() async {
 Map<String, String> _backingCache = {};
 int _backingAt = 0;
 void invalidatePartsBacking() { _backingAt = 0; } // ㉖v98 一键对齐时强制下次重拉全集（0 让 5 分钟窗失效）
+
+// ㉖v101 项目字典缓存（10分钟新鲜窗+失败退避120秒）：/api/proj 的 list/map；失败保留旧值不阻塞页面。
+// 维护在网页「项目」页（PDA 只消费）；空清单=还没配置，下拉自动隐藏，功能零入侵。
+Map<String, List<String>> _projMapCache = {};
+List<String> _projCodesCache = [];
+int _projAt = 0;
+int _projFailAt = 0;
+Future<void> projRefresh() async {
+  final now = DateTime.now().millisecondsSinceEpoch;
+  if (now - _projAt < 600000) return; // 10分钟内不重复拉
+  if (now - _projFailAt < 120000) return; // 任意失败后120秒静默（沿用旧缓存）
+  try {
+    final r = await AuthApi.projGet().timeout(const Duration(seconds: 6));
+    if (r["ok"] == true) {
+      final m = <String, List<String>>{};
+      (r["map"] as Map?)?.forEach((k, v) {
+        if (v is List) m[k.toString().toUpperCase()] = v.map((e) => e.toString()).toList();
+      });
+      _projMapCache = m;
+      _projCodesCache = ((r["list"] as List?) ?? [])
+          .map((x) => (x is Map ? x["code"] : x).toString())
+          .toList();
+      _projAt = now;
+    } else {
+      _projFailAt = now;
+    }
+  } catch (_) {
+    _projFailAt = now; // 离线/超时静默降级，下轮45秒刷新再试
+  }
+}
+List<String> projOfPn(String pn) => _projMapCache[pn.toUpperCase()] ?? const [];
 
 // ㉖v99 今日出入库全厂口径缓存（60 秒）：/api/counts todayIn/todayOut；失败返回 null 由调用方本机兜底
 Map<String, int>? _todayCache;
@@ -532,6 +564,7 @@ class _StockSummaryTab extends StatefulWidget {
 
 class _StockSummaryTabState extends State<_StockSummaryTab> {
   String _flt = ""; // ""全部 / stale滞留7天+ / zero断料 / loc按货位分布排序
+  String _proj = ""; // ㉖v101 项目码筛选（""=全部；下拉仅在项目字典非空时显示）
 
   Future<void> _export(BuildContext ctx) async {
     final b = StringBuffer("零件号,物料名字,在库框数,在库数量,期初(可选),历史入库合计,历史出库合计\n");
@@ -554,6 +587,11 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
   Color _ageColor(int ageH) =>
       ageH >= 168 ? const Color(0xFFE53935) : (ageH >= 72 ? const Color(0xFFFB8C00) : const Color(0xFF43A047));
 
+  // ㉖v101 项目下拉条目（DropdownMenuItem value 不可为空串重复，选中态由外层 value 控制）
+  DropdownMenuItem<String> _pcItem(String v, String lbl, String cur) => DropdownMenuItem<String>(
+      value: v,
+      child: Text(lbl, style: TextStyle(fontSize: 11.5, fontWeight: v == cur ? FontWeight.w700 : FontWeight.w400, color: v.isEmpty ? Colors.blueGrey : const Color(0xFF00897B))));
+
   @override
   Widget build(BuildContext context) {
     final agg = widget.agg;
@@ -570,6 +608,10 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
       rows = rows.where((r) => r.staleBoxes > 0).toList();
     } else if (_flt == "zero") {
       rows = rows.where((r) => r.inBoxes == 0 && r.stock <= 0).toList();
+    }
+    // ㉖v101 项目筛选：按项目字典本地缓存匹配（多值任一命中；未配的零件在选中项目下不显示）
+    if (_proj.isNotEmpty) {
+      rows = rows.where((r) => projOfPn(r.partNo).contains(_proj)).toList();
     }
     // ㉖v69 界面优化：零库存沉底成组（单次稳定排序：组间沉底、组内保持零件号/分散度次序，避免两轮sort打乱）
     rows.sort((x, y) {
@@ -662,6 +704,25 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
             chip('zero', '⛔零库存', const Color(0xFF757575)),
             const SizedBox(width: 6),
             chip('loc', '📍按分散度', const Color(0xFF00897B)),
+            if (_projCodesCache.isNotEmpty || (_proj.isNotEmpty && !_projCodesCache.contains(_proj))) ...[
+              // ㉖v101 项目筛选下拉：项目字典（网页「项目」页维护）非空才显示；当前值悬空（码被删）仍列入防assert
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: BoxDecoration(
+                    border: Border.all(color: const Color(0xFF00897B)),
+                    borderRadius: BorderRadius.circular(14)),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    value: _proj,
+                    isDense: true,
+                    style: const TextStyle(fontSize: 11.5, color: Color(0xFF00897B), fontWeight: FontWeight.w600),
+                    items: [_pcItem('', '📦全部项目', _proj), ..._projCodesCache.map((c) => _pcItem(c, c, _proj)), if (!_projCodesCache.contains(_proj) && _proj.isNotEmpty) _pcItem(_proj, '$_proj(已删)', _proj)],
+                    onChanged: (v) => setState(() => _proj = v ?? ""),
+                  ),
+                ),
+              ),
+            ],
             const Spacer(),
             TextButton.icon(
                 style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6), visualDensity: VisualDensity.compact, foregroundColor: const Color(0xFF07C160)),

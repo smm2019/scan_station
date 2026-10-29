@@ -563,6 +563,70 @@ function feedDict(pn, nm, src) {
     if (keys.length > 5000) { keys.sort((a, b) => (db.itemDict[a].at || 0) - (db.itemDict[b].at || 0)).slice(0, keys.length - 5000).forEach((k) => delete db.itemDict[k]); }
   } catch (_) {}
 }
+// ---- ㉖v101 项目字典：零件号→项目码（多值归属）；纯查询视图，出入库/发料/消账物理链路零改动 ----
+// projDict：{码:{nm,at}} 项目清单（≤200 上限，小规模不剪枝）；projMap：{PN:[码,…]} 归属（单PN≤20码）
+// projSuggest 只从物料名派生"建议"（实测97%名称自带车型字样），【永不写库】——项目是业务概念，
+// 系统无法凭空知晓归属（同物料号"字典是存不是知"原则），必须人工确认经 /api/proj/set 入典。
+const PROJ_BRANDS = ['吉利', '沃尔沃', '长城', '比亚迪', '上汽', '广汽', '理想', '蔚来', '小鹏', '零跑', '问界', '极氪', '岚图', '奇瑞', '长安', '东风', '大众', '丰田', '本田', '日产', '奔驰', '宝马', '奥迪', '特斯拉', '小米'];
+const PROJ_BRAND_RX = new RegExp('(' + PROJ_BRANDS.join('|') + ')\\s*([A-Z]{1,3}\\d{2,4}[A-Z]?(?:/\\d{2,4}[A-Z]?)?)', 'g'); // 品牌+车型码（含"V446/451K"共享写法）
+const PROJ_PAREN_RX = /[（(]([A-Z][A-Z0-9/]{2,13})[）)]/g; // 括号车型码；图纸号（CSTD/HSTD开头）剔除，纯数字SAP码天然不匹配
+function projBases(mm) { // 归一键：'V446K'→['V446'] 'E281E'→['E281'] 'V446/451K'→['V446','V451']（第二段继承前缀字母）
+  const parts0 = String(mm || '').toUpperCase().replace(/\s/g, '').split('/');
+  const lead0 = (String(parts0[0]).match(/^[A-Z]+/) || [''])[0].slice(0, 3);
+  const out = [];
+  for (let p of parts0) {
+    if (!p) continue;
+    if (!/^[A-Z]/.test(p)) p = lead0 + p;
+    const m = p.match(/^([A-Z]{1,3}\d{2,4})/);
+    if (m && !out.includes(m[1])) out.push(m[1]);
+  }
+  return out;
+}
+function projSuggest() { // 只读分析：itemDict 未入典零件按名称派生分组建议；变体（V446/V446K）折叠同组并标 suspect 供界面确认
+  const map = db.projMap || {};
+  const groups = {};
+  let hitPn = 0, missPn = 0, skipped = 0;
+  for (const [pn0, e] of Object.entries(db.itemDict || {})) {
+    const pn = String(pn0 || '').toUpperCase();
+    const nm = String((e && e.nm) || '');
+    if (!nm) continue;
+    if (map[pn] && map[pn].length) { skipped++; continue; } // 已入典不再建议
+    const cands = [];
+    let m;
+    PROJ_BRAND_RX.lastIndex = 0;
+    while ((m = PROJ_BRAND_RX.exec(nm))) cands.push({ brand: m[1], token: m[2] });
+    const anyBrand = PROJ_BRANDS.find((b) => nm.includes(b)) || '';
+    PROJ_PAREN_RX.lastIndex = 0;
+    while ((m = PROJ_PAREN_RX.exec(nm))) {
+      const t = m[1];
+      if (/^[HC]{1,2}STD/.test(t)) continue; // 图纸号碎片（CSTD180188/HHSTD230717）不是项目
+      cands.push({ brand: anyBrand, token: t });
+    }
+    let got = false; const seenKey = new Set();
+    for (const c0 of cands) {
+      for (const base of projBases(c0.token)) {
+        const key = c0.brand + base;
+        if (seenKey.has(key)) continue; seenKey.add(key);
+        got = true;
+        const g = (groups[key] = groups[key] || { code: key, brand: c0.brand, base, variants: {}, pns: [] });
+        const vt = c0.token.toUpperCase().replace(/\s/g, '');
+        g.variants[vt] = (g.variants[vt] || 0) + 1;
+        if (g.pns.length < 600) g.pns.push(pn);
+      }
+    }
+    if (got) hitPn++; else missPn++;
+  }
+  const list = Object.values(groups).map((g) => {
+    g.suspect = Object.keys(g.variants).length > 1; // 多变体折叠组（V446/V446K）默认不勾选，人工确认主码
+    g.n = g.pns.length;
+    g.variants = Object.entries(g.variants).sort((a, b) => b[1] - a[1]).map(([t, n]) => ({ t, n }));
+    return g;
+  });
+  list.sort((a, b) => b.n - a.n);
+  return { ok: true, groups: list, hitPn, missPn, skipped };
+}
+function projCodeOk(c) { return /^[一-龥A-Z0-9\/-]{1,24}$/.test(c) && /\d/.test(c); } // 项目码：中文品牌/大写字母数字/斜杠连字符，须含数字（车型码特征），≤24；禁空格（与派生分组码口径一致）
+function projOf(pn) { try { return (db.projMap || {})[String(pn || '').toUpperCase()] || []; } catch (_) { return []; } } // 零件→项目码列表（未配=空，纯查询视图）
 
 // ---- ㉓导出中心：快照登记（谁/何时/数据集/条件/行数/SHA1），CSV带血缘注释头、XLS带口径sheet（SpreadsheetML零依赖） ----
 const EXP_LABELS = { D1: '库位表', D2: '库存汇总', D3: '入库流水', D4: '出库流水', D5: 'AGV任务', D6: 'AGV异常事件', D7: '工作量报表', D8: '领料台账', D9: '活动流审计', D10: '盘点结果', PACK: '月度对账包' };
@@ -739,13 +803,13 @@ function buildExport(ds, fRaw) {
     const lastIn = {}, lastOut = {};
     for (const s of Object.values(db.scanlog || {})) { if (s.cx) continue; const pn = String(s.pn || '').toUpperCase(); if (!pn) continue; lastIn[pn] = Math.max(lastIn[pn] || 0, s.t || 0); }
     for (const o of Object.values(db.outbound || {})) { const t = Number(o.createdAt) || 0; for (const i of (o.items || [])) { const pn = String(i.code || '').toUpperCase(); if (pn) lastOut[pn] = Math.max(lastOut[pn] || 0, t); } }
-    const mkRow = (pn, e) => { const bs = Object.values(e.b); const locs = Object.entries(e.locs).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l, n]) => l.split('-').slice(1).join('-') + '×' + n).join('、') + (Object.keys(e.locs).length > 5 ? '…' : ''); return [pn, (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || e.nm, bs.length, bs.reduce((s2, v) => s2 + v, 0), Object.keys(e.locs).length, locs, expTs(lastIn[pn] || 0), expTs(lastOut[pn] || 0)]; };
+    const mkRow = (pn, e) => { const bs = Object.values(e.b); const locs = Object.entries(e.locs).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([l, n]) => l.split('-').slice(1).join('-') + '×' + n).join('、') + (Object.keys(e.locs).length > 5 ? '…' : ''); return [pn, (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || e.nm, projOf(pn).join(';'), bs.length, bs.reduce((s2, v) => s2 + v, 0), Object.keys(e.locs).length, locs, expTs(lastIn[pn] || 0), expTs(lastOut[pn] || 0)]; };
     let rows = Object.entries(m).map(([pn, e]) => mkRow(pn, e));
-    if (fRaw && (fRaw.zero === '1' || fRaw.zero === true)) { for (const pn of new Set([...Object.keys(lastIn), ...Object.keys(lastOut), ...Object.keys(db.itemDict || {})])) if (!m[pn]) rows.push([pn, (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || '', 0, 0, 0, '', expTs(lastIn[pn] || 0), expTs(lastOut[pn] || 0)]); } // 零库存：有过流水但当前无在架
+    if (fRaw && (fRaw.zero === '1' || fRaw.zero === true)) { for (const pn of new Set([...Object.keys(lastIn), ...Object.keys(lastOut), ...Object.keys(db.itemDict || {})])) if (!m[pn]) rows.push([pn, (db.itemDict && db.itemDict[pn] && db.itemDict[pn].nm) || '', projOf(pn).join(';'), 0, 0, 0, '', expTs(lastIn[pn] || 0), expTs(lastOut[pn] || 0)]); } // 零库存：有过流水但当前无在架
     rows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-    return mk('库存汇总', ['零件号', '物料名称', '在架框数', '在架数量', '占用货位数', '货位分布(TOP5)', '最近入库', '最近出库'], ['S', 'S', 'N', 'N', 'N', 'S', 'S', 'S'], rows, '货位账本按框聚合（动向取自主库窗口，含归档勾选不影响本表）'); }
+    return mk('库存汇总', ['零件号', '物料名称', '所属项目', '在架框数', '在架数量', '占用货位数', '货位分布(TOP5)', '最近入库', '最近出库'], ['S', 'S', 'S', 'N', 'N', 'N', 'S', 'S', 'S'], rows, '货位账本按框聚合（动向取自主库窗口，含归档勾选不影响本表）'); }
   if (ds === 'D3') { const _sl = _arch ? Object.assign(archLoad('scanlog'), db.scanlog || {}) : (db.scanlog || {}); const rows = Object.values(_sl).filter((s) => (s.t || 0) >= (from || 0) && (s.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((s) => [expTs(s.t), s.code, s.pn || '', mitemOf(s.code, s.pn), s.nm || '', s.q || 0, printLot(s.mk, s.lot), (s.wt === 0 ? s.st : s.gl) || '', s.ct || '', s.pid || '', s.op || '', s.cx ? '已作废' : '', s.rm || '']); return mk('入库流水', ['时间', '标签号', '零件号', '物料号', '物料名', '数量', '批次', '初始货位', '容器类型', '托号', '操作人', '状态', '备注'], ['S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '采集流水（全厂合并；批次=MES标签打印日期；物料号=MES MITEM_CODE）'); }
-  if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; const _mv = isMoveOrder(o) ? '移仓' : '出库'; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), _mv, i.code || '', mitemOf(i.barcode || '', i.code), i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', opNameOf(o.operator)]); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '单据类型', '零件号', '物料号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调；物料号=MES MITEM_CODE；单据类型=移仓即去向非线边仓的仓间转移，不计出库统计口径）'); }
+  if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; const _mv = isMoveOrder(o) ? '移仓' : '出库'; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), _mv, i.code || '', projOf(i.code).join(';'), mitemOf(i.barcode || '', i.code), i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', opNameOf(o.operator)]); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '单据类型', '零件号', '所属项目', '物料号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调；物料号=MES MITEM_CODE；单据类型=移仓即去向非线边仓的仓间转移，不计出库统计口径；所属项目=项目字典多值分号连接）'); }
   if (ds === 'D5') { const reqOfTask = {}; for (const q of db.agvQueue || []) { const tn = String(q.taskNo || ''); if (tn && q.reqNo && !reqOfTask[tn]) reqOfTask[tn] = q.reqNo; } // 关联单=按RCS任务号配对（完成项队列留存可回溯）
     const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失', expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', reqOfTask[no] || '', '', '']); // ㉖v98c 末两列=标签号/物料号：完成行=RCS沉淀无标签信息留空，在途行有码
     // ㉕B10 未完成在途并入同表（状态=排队/下发中/已下发/到站/失败），补"状态/关联单"两列
@@ -3495,7 +3559,7 @@ return send(res, 200, {
         let nm = ''; for (const b of Object.values(bm)) { if (b.nm) { nm = b.nm; break; } }
         if (!nm && inb.length) { const rec = Object.values(db.scanlog || {}).find((st) => String(st.pn || '').toUpperCase() === pn && st.nm); nm = rec ? rec.nm : ''; }
         if (!nm && db.itemDict && db.itemDict[pn]) nm = db.itemDict[pn].nm || '';
-        return send(res, 200, { ok: true, pn, name: String(nm || '').slice(0, 80), boxes, qty, inb, inbTotal: _sl.filter((st) => !st.cx).length, out: outAll.slice(0, 200), outTotal: outAll.filter((x) => !x.mv).length, mvTotal: outAll.filter((x) => x.mv).length, demand, watchers, watched: watchers.some((w) => w.uid === u.id) }); // ㉖v100 outTotal=真出库；mvTotal=移仓单行（去向非线边仓）单列
+        return send(res, 200, { ok: true, pn, name: String(nm || '').slice(0, 80), projs: projOf(pn), boxes, qty, inb, inbTotal: _sl.filter((st) => !st.cx).length, out: outAll.slice(0, 200), outTotal: outAll.filter((x) => !x.mv).length, mvTotal: outAll.filter((x) => x.mv).length, demand, watchers, watched: watchers.some((w) => w.uid === u.id) }); // ㉖v100 outTotal=真出库；mvTotal=移仓单行（去向非线边仓）单列；㉖v101 projs=所属项目码
       }
       if (req.method === 'POST' && p === '/api/watchlist/rm') {
         if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可代他人取消预约' });
@@ -3808,6 +3872,50 @@ return send(res, 200, {
         save(); pushOps(u, '补录字典', set + '项' + (mcSet ? ' +物料号' + mcSet + '项' : '') + (mcAuto ? ' +自动' + mcAuto : ''), (skip ? '跳过' + skip : '') + (lack ? ' 缺对应' + lack : ''));
         console.log(`[dict] ${u.name} 批量补录 ${set} 项（物料号 ${mcSet}+自动 ${mcAuto}，缺 ${lack}）`);
         return send(res, 200, { ok: true, set, skip, mcSet, mcAuto, lack });
+      }
+      // ===== ㉖v101 项目字典（零件号→项目码多值；纯查询维度，物理链路零改动）=====
+      if (req.method === 'GET' && p === '/api/proj') {
+        return send(res, 200, { ok: true, list: Object.entries(db.projDict || {}).map(([code, v]) => ({ code, nm: (v && v.nm) || '' })).sort((a, b) => String(b.code).localeCompare(String(a.code))), map: db.projMap || {} }); // 登录可读：PDA 缓存 + 网页筛选共用
+      }
+      if (req.method === 'POST' && p === '/api/proj/set') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可维护项目字典' });
+        const b = await readBody(req);
+        db.projDict = db.projDict || {}; db.projMap = db.projMap || {};
+        let pairs = [];
+        if (Array.isArray(b.items)) for (const it of b.items) { const pn = String((it && it.pn) || '').toUpperCase().trim(); const cs = Array.isArray(it && it.codes) ? it.codes : String((it && it.codes) || '').split(/[,，;；\s]+/); pairs.push([pn, cs.map((c) => String(c).toUpperCase().trim()).filter(Boolean)]); }
+        else if (typeof b.text === 'string') pairs = b.text.split(/[\r\n]+/).map((l) => { const seg = l.split(/[,，\t]/); return [String(seg[0] || '').toUpperCase().trim(), seg.slice(1).join(',').split(/[,，;；\s]+/).map((c) => String(c).toUpperCase().trim()).filter(Boolean)]; }); // 行格式：零件号,项目码1,项目码2 或 零件号;码1;码2
+        // 新建码：codes 里出现但清单没有的自动入典（码必须形如车型码），>200 拒绝继续新增
+        const known = () => Object.keys(db.projDict).length;
+        let set = 0, cleared = 0, bad = 0, newCodes = 0;
+        for (const [pn, cs0] of pairs) {
+          if (!pn || pn.length > 40) { bad++; continue; }
+          const cs = [...new Set(cs0)];
+          if (cs.length > 20) { bad++; continue; }
+          for (const c of cs) { if (!projCodeOk(c)) { bad++; } else if (!db.projDict[c]) { if (known() >= 200) { bad++; continue; } db.projDict[c] = { nm: '', at: Date.now() }; newCodes++; } }
+          const valid = cs.filter((c) => projCodeOk(c) && db.projDict[c]);
+          if (!valid.length) { if (db.projMap[pn]) { delete db.projMap[pn]; cleared++; } continue; } // 空/全非法码=清除归属
+          const old = db.projMap[pn];
+          if (!old || old.join('|') !== valid.join('|')) { db.projMap[pn] = valid; set++; }
+        }
+        save(); pushOps(u, '项目字典', `${set} 项归属` + (cleared ? ` 清除${cleared}` : '') + (newCodes ? ` 新码${newCodes}` : '') + (bad ? ` 无效${bad}` : ''), '');
+        console.log(`[proj] ${u.name} set：归属${set} 清除${cleared} 新码${newCodes} 无效${bad}`);
+        return send(res, 200, { ok: true, set, cleared, newCodes, bad, dict: Object.keys(db.projDict).length, mapped: Object.keys(db.projMap).length });
+      }
+      if (req.method === 'POST' && p === '/api/proj/suggest') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可执行' });
+        try { return send(res, 200, projSuggest()); } catch (e) { return send(res, 500, { ok: false, msg: String(e.message || e) }); }
+      }
+      if (req.method === 'POST' && p === '/api/proj/rm') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可维护项目字典' });
+        const b = await readBody(req);
+        const code = String(b.code || '').toUpperCase().trim();
+        if (!db.projDict || !db.projDict[code]) return send(res, 400, { ok: false, msg: '项目码不存在' });
+        delete db.projDict[code];
+        let unbind = 0;
+        for (const [pn, cs] of Object.entries(db.projMap || {})) { const nx = cs.filter((c) => c !== code); if (nx.length === cs.length) continue; if (!nx.length) delete db.projMap[pn]; else db.projMap[pn] = nx; unbind++; }
+        save(); pushOps(u, '项目字典', `删码 ${code}`, `解绑 ${unbind} 零件`);
+        console.log(`[proj] ${u.name} 删码 ${code}（解绑 ${unbind}）`);
+        return send(res, 200, { ok: true, unbind });
       }
       // ---- ㉖G8 交叉自愈：凡同一零件号在 ledger/scanlog/outbound 任一处有名字，补进字典无名项（零外部请求）----
       if (req.method === 'POST' && p === '/api/dict/heal') {
