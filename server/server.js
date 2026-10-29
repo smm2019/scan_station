@@ -5546,6 +5546,35 @@ function seenInBackfill() { // ㉖ 首次升级：现存账本+采集流水的�
     db.seenInBackfilled = 1; if (n) console.log('[seenIn] 历史标签回填 ' + n + ' 个');
   } catch (_) {}
 }
+// ㉖v100 补丁迁移：老回填三元写反（wt===0取gl/wt===1取st）→ 条目 l 或空（AGV框gl空）或反向病非空错值
+// （地面框被写成 NB02-CK-站台；AGV框残留地面粗码）。seenInBackfilled 一次性开关已置1的生产库不会再走
+// 修正版回填，此处按流水现值幂等纠正/补齐；流水已归档条目不动（无对账依据，宁缺毋滥）。
+// l 修正判据（按模式特征识别病值，不误伤账本来源正确值——账本AGV框l=NB02货架位、地面框l=NB03格位均合法）：
+//   wt=0(AGV)：l 应为 NB02 开头（站台/货架位）；空 或 非NB02前缀（粗码H09/NB03残留）→ 用流水 st 纠正
+//   wt=1(地面)：l 应为 NB03 格位；空 → 补 gl；NB02 开头（反向病：地面框不可能是高位架）→ 用 gl 覆盖
+function seenInPatchV100() {
+  try {
+    if (db.seenInPatchedV100) return;
+    let n = 0;
+    const byCode = {};
+    for (const st of Object.values(db.scanlog || {})) { const c = String(st.code || '').toUpperCase(); if (c) (byCode[c] = byCode[c] || []).push(st); }
+    for (const [c, e] of Object.entries(db.seenIn || {})) {
+      const sts = byCode[c]; if (!sts || !sts.length) continue;
+      const s = sts.slice().sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0))[0]; // 最新一条流水为准
+      const agv = (Number(s.wt) || 0) === 0, stL = String(s.st || '').toUpperCase(), glL = String(s.gl || '').toUpperCase();
+      const wantL = agv ? stL : glL, curL = String(e.l || '').trim().toUpperCase();
+      const sick = !curL || (agv ? !/^NB02-/.test(curL) : /^NB02-/.test(curL)); // 病值判定（AGV:空/非NB02；地面:空/NB02开头）
+      if (sick && wantL) { if (curL !== wantL) { e.l = wantL; n++; } } // 正确值或已一致则不动
+      if (!Number(e.q) && Number(s.q)) { e.q = Number(s.q); n++; }
+      if (!e.lot && s.lot) { e.lot = String(s.lot); n++; }
+      if (!e.pid && s.pid) { e.pid = String(s.pid); n++; }
+      if (!e.p && s.pn) { e.p = String(s.pn); n++; }
+      if (!e.by && s.op) { e.by = String(s.op); n++; }
+    }
+    db.seenInPatchedV100 = 1; save();
+    if (n) console.log('[seenIn] v100 补丁纠正/补齐 ' + n + ' 字段');
+  } catch (_) {}
+}
 // ㉖④ 检验工单状态机推进：toStation→atStation（站台快照出现本框标签）；returning→done（归位后该框回到原货位=账本命中）；waitReturn→returned（该框经出库通道出账）
 function updateInspects(nowMs) {
   try {
@@ -6495,4 +6524,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目

@@ -305,7 +305,9 @@ int _todayFailAt = 0; // ㉖v99 复检加固：失败退避 120 秒——库存�
 Future<Map<String, int>?> _todayCountsCached() async {
   final now = DateTime.now().millisecondsSinceEpoch;
   if (_todayCache != null && now - _todayCacheAt < 60000) return _todayCache;
-  if (_todayCache == null && now - _todayFailAt < 120000) return null; // 从未成功且在退避期：直接本机兜底
+  // 复检v100：退避不再限"从未成功"——曾成功过但服务器转离线时，过期后每45秒仍会空等6秒超时；
+  // 任意失败后 120 秒内一律直接回退（有旧值用旧值，无旧值 null→本机口径）
+  if (now - _todayFailAt < 120000) return _todayCache;
   try {
     final r = await AuthApi.counts().timeout(const Duration(seconds: 6));
     if (r["ok"] == true && r["todayIn"] is num) {
