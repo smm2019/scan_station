@@ -1103,21 +1103,30 @@ Future<Map> ledgerPushNow() async {
         epoch: sp0.getString(_kLedgerEpoch) ?? ""); // ㉖v69 带世代：服务器据此拦旧缓存
     // ⑲改位冲突提示：推送被他人更新数据压过的标签=本机登记未生效，弹窗提醒重新登记
     final rej = r["rejected"];
-    if (r["ok"] == true && rej is List && rej.isNotEmpty) {
-      debugPrint('[ledger] 冲突标签: $rej');
+    final rejLoc = r["rejectedLoc"]; // ㉖v100 货位格式防线①：病值货位被拒回，与改位冲突分两类提示
+    final rejL = rej is List ? rej.whereType<String>().toList() : <String>[];
+    final rejLocL = rejLoc is List ? rejLoc.whereType<String>().toList() : <String>[];
+    if (rejL.isNotEmpty || rejLocL.isNotEmpty) {
+      debugPrint('[ledger] 拒回: 压回${rejL.length} 格式不符${rejLocL.length}');
       final ctx = _globalNavigatorKey.currentContext;
       if (ctx != null) {
+        // ㉖v97b 拒回条目自带原因长文案，多条可超屏——content 包滚动容器；旧文案"请重新登记"
+        // 对"已出库旧缓存回推"类是误导（重登会复活幽灵行），改为按条目内原因处置
         unawaited(showDialog(
             context: ctx,
             builder: (dc) => AlertDialog(
                   icon: const Icon(Icons.sync_problem,
                       color: Colors.orange, size: 34),
-                  title: const Text("货位登记冲突"),
-                  // ㉖v97b 拒回条目自带原因长文案，多条可超屏——content 包滚动容器；旧文案"请重新登记"
-                  // 对"已出库旧缓存回推"类是误导（重登会复活幽灵行），改为按条目内原因处置
+                  title: Text(rejL.isEmpty
+                      ? "货位格式不符"
+                      : (rejLocL.isEmpty ? "货位登记冲突" : "部分登记未生效")),
                   content: SingleChildScrollView(
-                      child: Text(
-                          "${rej.length} 个标签的登记未生效：\n${rej.take(8).join("\n")}${rej.length > 8 ? " …" : ""}\n\n处理：条目注明已出库/作废的无需登记（本机拉取一次自动清掉）；框确实还在架上的，请到「位置登记」重新登记实际货位（先拉取对齐），并和同事核对现场。")),
+                      child: Text([
+                        if (rejLocL.isNotEmpty)
+                          "${rejLocL.length} 个标签货位编码格式不符、未上账：\n${rejLocL.take(6).join("\n")}${rejLocL.length > 6 ? " …" : ""}\n\n处理：请到「位置登记」重新选择货位——须是 NB02-A-08-2F 这类货架位或 NB03-B-13-07 这类地面格位；站台码（NB02-CK-xx）与粗区码（H09）不能作为在库货位。\n",
+                        if (rejL.isNotEmpty)
+                          "${rejLocL.isNotEmpty ? "————————\n" : ""}${rejL.length} 个标签的登记未生效（被其他设备更新的数据压回）：\n${rejL.take(8).join("\n")}${rejL.length > 8 ? " …" : ""}\n\n处理：条目注明已出库/作废的无需登记（本机拉取一次自动清掉）；框确实还在架上的，请到「位置登记」重新登记实际货位（先拉取对齐），并和同事核对现场。",
+                      ].join())),
                   actions: [
                     FilledButton(
                         onPressed: () => Navigator.pop(dc),

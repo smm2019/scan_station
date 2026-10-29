@@ -1374,6 +1374,10 @@ async function unscanRollbackOne(r, target, code, u, hpush) {
   const _fk = _ul ? (db.ledger || []).filter((x) => String(x.l || '').toUpperCase() === _ul && String(x.c || '').toUpperCase() !== code && String(x.p || '').toUpperCase() !== String(target.partNo || '').toUpperCase()) : [];
   if (_ul && _fk.length) {
     hpush(`↩️ 退回 ${target.partNo} 标签 ${code}（${_ij.q}件，原货位 ${_ul} 现已被 ${_fk.map((x) => x.c).join("/")} 登记占用，未复挂——该框请按实物位置用「位置登记」补账，累计 ${issuedQtyG(target)}/${target.qty}）（${u.name}）`);
+  } else if (_ul && !locStrict(_ul)) {
+    // ㉖v100 货位格式防线（退回复位层）：原货位取自 issued 行或 seenIn 兜底——后者对 AGV 框存的是【入账时初始位=站台码】
+    // （合法语义），但站台不是存储位，直接复挂会把框标在 NB02-CK 上（反向病的最后一条写入路径）。格式不符→不盲目复挂。
+    hpush(`↩️ 退回 ${target.partNo} 标签 ${code}（${_ij.q}件，原货位记录「${_ul}」是站台/粗码非存储位，未复挂——请按实物到 PDA「位置登记」补账，累计 ${issuedQtyG(target)}/${target.qty}）（${u.name}）`);
   } else if (_ul && !db.ledger.some((x) => String(x.c || '').toUpperCase() === code)) {
     db.ledger.push({ c: code, l: _ul, f: String(_ij.f || ''), t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(_ij.n || target.itemName || ''), q: Number(_ij.q) || 0, b: String(_ij.b || ''), pid: String(_ij.pid || ''), mv: '登记', src: '退回复位', by: u.name });
     (db.ledgerTomb = db.ledgerTomb || []).splice(0, db.ledgerTomb.length, ...db.ledgerTomb.filter((x) => String(x.c).toUpperCase() !== code));
@@ -1543,6 +1547,24 @@ function boxKeyOf(x) {
   const l = String(x.l || '').toUpperCase(), p = String(x.p || '').toUpperCase();
   return (l && p) ? 'L|' + l + '|' + p : 'C|' + String(x.c).toUpperCase();
 }
+// ===== ㉖v100 货位格式防线（模块级共享判据，作用于【写入源头】三处）=====
+//   防线① /api/ledger/sync：账本 l 必须满足 locStrict，病值条目拒回（PDA 弹窗点名）——硬拦零误伤
+//   防线② /api/scanlog/sync：流水字段跨模式错配只体检留痕、不回改（流水=现场原始证据）
+//   防线③ /api/scanlog/cancel 恢复分支：按 wt 取到的位不满足 locStrict 则不上账（AGV 流水 st=站台码）
+// 现场实测依据（10/29 全量核查，判据据此设计以零误伤）：
+//   账本 l 全量 100% 符合 locStrict（10/29 现网 374 行）、0 行站台码/粗码/混用形态混入 → 可硬拦且能收紧
+//   流水 wt=0：st 372/372 全为站台码；gl 非空 222 行、152 个唯一值全是合法 NB02 货架位
+//             （AGV 模式 gl 记"目标货架位"属正常语义，不得判病）
+//   流水 wt=1：gl 完整格位 312 行 + 粗码 7 行（H7/C11…系 v83/v85c 在管的"待补录"态，不得拦）
+//   真·跨模式错配（用户所问"站台写成地面库位/地面写成站台"）实测各 0 行 → 硬拦零误伤
+// 注意 mv 不可用作交叉判据：mv=人工/登记 而 l=NB02 有 27 行合法（Excel 导入存量、人工上架高位架）
+// 注意与 seenIn 补丁（㉖v100）判据【有意不同】：seenIn.l 记"入账时初始位"，AGV 框合法值本就是站台码，
+//   故补丁按 NB02/NB03 前缀特征判病、不能用 locStrict——两者作用对象与语义不同，不是口径漂移。
+// 前缀-尾段配对（实测真实数据 0 行混用 → 收紧零误伤）：NB02 高架尾段必为层号[1-4]F、NB03 地面尾段必为两位数字格位
+const locStrict = (l) => { const s = String(l || '').trim().toUpperCase(); return /^NB02-[A-H]-\d{1,2}-[1-4]F$/.test(s) || /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(s); }; // 完整货架位/地面格位（混用即病值）
+const locStation = (l) => /^NB02-CK-\d{1,2}$/.test(String(l || '').trim().toUpperCase()); // 出库/检验站台码（实测无字母区段）
+// 跨模式错配：AGV 模式却把地面格位(NB03)填进初始位 st / 地面模式却把站台码填进 gl —— 二者物理互斥
+const flowModeBad = (wt, st, gl) => { const s = String(st || '').trim().toUpperCase(), g = String(gl || '').trim().toUpperCase(); return Number(wt) === 0 ? /^NB03-/.test(s) : locStation(g); };
 // ㉖v95b 容器类型乱码归一（模块级共享：启动迁移自愈 + 推送清洗兜底）：剥离坏字符后与容器类型字典（db值+show值）
 // 四级匹配——精确→唯一前缀→唯一包含→唯一子序列（"2.4铁框"中段字符整个丢失仍救回"2.4米铁框"）；多义/无解返回剥离值不臆造
 const _ctBad = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
@@ -2464,6 +2486,10 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         const _epSent = String(b.epoch || '').trim();
         if (db.ledgerEpoch && _epSent && _epSent !== db.ledgerEpoch) return send(res, 200, { ok: false, code: 'epochStale', epoch: db.ledgerEpoch, msg: '本机账本为旧世代（服务器账本已整表替换），请先拉取对齐后再推送' });
         const seen = new Set(); const clean = [];
+        // ㉖v100 货位格式防线①：账本 l 必须是完整格位/货架位。实测在库 356 行 100% 符合 locStrict、
+        // 0 行站台码(NB02-CK-xx)/粗码(H09)混入 → 硬拦零误伤。病值一旦上账，选位/地图/链路/seenIn/导出
+        // 全链路被污染且事后无人纠——防线必须建在写入源头，seenIn 补丁只作存量兜底。
+        const rejectedLoc = []; let locBad = 0;
         // ㉖v80 拼接码防线：PDA 重启前缓存的 Excel 拼接行（"A; B"）会随推送复活，与服务器已拆单码行双计（实测 D-01-2F 双计315件）。
         // 到达即拆成单码行（q均分同迁移口径，t/内容一致→指纹闸自然判"未变"幂等跳过）；已出库码由墓碑闸拦截
         const _pushClean = (it) => {
@@ -2478,7 +2504,20 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           // ㉖v95b 乱码清洗补齐 f/p/b/src（旧版只洗 n/mv，容器类型"托<乱码>"混进账本与合并diff留痕）
           const _cw = (s0, cap) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, cap);
           const it = (() => { const c = String((it0 && it0.c) || '').trim().toUpperCase(); const l = String((it0 && it0.l) || '').trim().toUpperCase(); if (!c || !l) return null; if (seen.has(c)) return null; seen.add(c); return { c, l, f: ctNorm(it0 && it0.f, db.containerTypes), t: Number(it0 && it0.t) || 0, p: _cw(it0 && it0.p, 40).toUpperCase(), n: _cw(it0 && it0.n, 80), q: Number(it0 && it0.q) || 0, b: _cw(it0 && it0.b, 40), pid: _cw(it0 && it0.pid, 40), mv: (() => { const s0 = _cw(it0 && it0.mv, 20); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工') || s0 === '人') return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: _cw(it0 && it0.src, 40) }; })(); // ㉓乱码清洗+㉖v61b mv归一+㉖v95b f归一（对账包搬运方式列数据源）
-          if (it) _pushClean(it);
+          // ㉖v100 货位格式防线（账本层）：账本 l 必须是完整货架位/地面格位（locStrict）。实测在库 356 行
+          // 100% 符合、0 行站台码/粗码混入 → 用 locStrict 硬拦零误伤；站台码 NB02-CK 属"在途/出库位"，
+          // 一旦进账本会把 AGV/地面框标成站台（用户所问反向病）并污染选位/地图/链路/导出，故一并拒。
+          // 同一标签同一病值只点名一次（下轮重推静默，防弹窗循环）；标签改登记为合法位后正常上账并清拒回记录。
+          if (it) {
+            if (!locStrict(it.l)) {
+              locBad++;
+              const _lr = (db.locReject = db.locReject || {});
+              if (_lr[it.c] !== it.l) {
+                _lr[it.c] = it.l;
+                rejectedLoc.push(it.c + '（货位「' + it.l + '」格式不符——应选 NB02-A-08-2F 这类货架位或 NB03-B-13-07 这类地面格位，请到「位置登记」重新选择）');
+              }
+            } else { if (db.locReject) delete db.locReject[it.c]; _pushClean(it); }
+          }
         }
         // 增量合并：按标签号 upsert + 墓碑删除，多PDA互不覆盖
         // ㉔S1 时间戳双轨（F2加固）：指纹=登记时刻+内容（含t）；"无新到达"=与本机上次推送一致(含已删行的旧副本)
@@ -2573,10 +2612,11 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (!tm && (!old || t > base)) { cur.delete(c); tomb.set(c, { t, rec: rec0 }); if (!hist || hist.t !== t) histAll[c] = { t, rec: rec0 }; delApplied++; _diffs.push(c + ' 消位' + (old ? '(原' + old.l + ')' : '')); } else if (!tm) delSkipped++; // 别台后续又登记→删除作废
           else { tomb.set(c, { t: tm.t, rec: tm.rec }); delSkipped++; }
         }
-        if (!cur.size && !tomb.size && !dels.length) return send(res, 400, { ok: false, msg: '无有效条目（需 c=标签 且 l=货位）' });
+        if (!cur.size && !tomb.size && !dels.length) return send(res, 400, { ok: false, msg: rejectedLoc.length ? '本批条目货位格式全部不符，未上账' : '无有效条目（需 c=标签 且 l=货位）', rejectedLoc: rejectedLoc.slice(0, 20) });
         db.ledger = [...cur.values()];
         db.ledgerTomb = [...tomb.entries()].map(([c, v]) => ({ c, t: v.t, rec: v.rec })).sort((a, b2) => b2.t - a.t).slice(0, 20000);
         if (db.tombReject && Object.keys(db.tombReject).length > 5000) { const _k = Object.keys(db.tombReject); _k.sort((a, b2) => (Number(db.tombReject[a]) || 0) - (Number(db.tombReject[b2]) || 0)); for (const k of _k.slice(0, _k.length - 5000)) delete db.tombReject[k]; } // ㉖v97b 拒弹记录上限剪枝（防无界增长）
+        if (db.locReject && Object.keys(db.locReject).length > 2000) { const _lk = Object.keys(db.locReject); for (const k of _lk.slice(0, _lk.length - 2000)) delete db.locReject[k]; } // ㉖v100 格式拒回记录上限剪枝（正常随标签改合法登记即清除，此处防异常累积）
         if (db.locReserve) { for (const l of Object.keys(db.locReserve)) { if (cur.has(String(db.locReserve[l].code || '').toUpperCase()) || rec0 - (Number(db.locReserve[l].at) || 0) > RES_TTL_MS) delete db.locReserve[l]; } } // ㉖v54 标签落账(任意位)或预占过期→释放
         db.ledgerRev = (db.ledgerRev || 0) + 1;
         db.ledgerAt = new Date().toISOString();
@@ -2608,8 +2648,8 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           }
         } catch (e) { console.log('[urgent-in] 异常：', e.message); }
         // ㉖diff 汇总进活动流：单次合并一条（样例40条+计数，防刷爆滚窗）
-        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${locConflict ? ' 货位冲突' + locConflict : ''}${rejected.length ? ' 拒回' + rejected.length : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
-        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, locConflict, rejected: rejected.slice(0, 50) });
+        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${locConflict ? ' 货位冲突' + locConflict : ''}${rejected.length ? ' 拒回' + rejected.length : ''}${locBad ? ' 格式拒' + locBad : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
+        return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, locConflict, rejected: rejected.slice(0, 50), rejectedLoc: rejectedLoc.slice(0, 20) });
       }
 
       // ================= 采集流水 / 出库单同步（PDA 全量推送，仓管/管理员） =================
@@ -2639,6 +2679,17 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           const f = _glIdx[String(v.code || '').toUpperCase()];
           if (f) { v.gl = f; db.scanlog[k] = v; }
         }
+        // ㉖v100 货位格式防线②（流水层·只体检不回改）：跨模式错配=AGV 模式初始位 st 却填地面格位(NB03)、
+        // 地面模式 gl 却填站台码(NB02-CK)。现场采集逻辑不可能产出这种值，只可能是缺陷或脏数据（实测存量 0 行）。
+        // 流水是采集现场的原始证据，服务器擅自改写字段=篡改证据、风险大于收益，故命中即留痕进日志+活动流，
+        // 供追查源头设备与批次；真正上账的 l 已由防线①硬拦，脏流水不会污染账本。
+        let _flowSick = 0; const _fsSamp = [];
+        for (const v of Object.values(snap)) {
+          if (!flowModeBad(v.wt, v.st, v.gl)) continue;
+          _flowSick++;
+          if (_fsSamp.length < 5) _fsSamp.push(String(v.code || '?') + (Number(v.wt) === 0 ? '·AGV st=' : '·地面 gl=') + String(Number(v.wt) === 0 ? v.st : v.gl));
+        }
+        if (_flowSick) { console.log(`[flow-loc] ⚠ ${u.name} 本批流水 ${_flowSick} 条跨模式货位错配：${_fsSamp.join(' ; ')}`); try { pushOps(u, '货位格式体检', _flowSick + ' 条错配', _fsSamp.join(' ; ')); } catch (_) {} }
         for (const s of Object.values(snap)) { feedDict(s.pn, s.nm, '采集流水'); feedMitem(s.pn, s.mc, '采集流水'); } // ㉒G7 字典沉淀；㉖v98c 物料号同步沉淀
         db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
         save();
@@ -2783,7 +2834,11 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         } else { // 恢复：按原货位重登账本（货位被占则只恢复流水不强行上账）
           const loc = String((rec.wt === 0 ? rec.st : rec.gl) || '').toUpperCase();
           const foreign = [...cur.values()].filter((x) => String(x.l).toUpperCase() === loc && String(x.c).toUpperCase() !== code);
-          if (loc && !foreign.length && !cur.has(code)) {
+          // ㉖v100 货位格式防线（恢复层）：AGV 流水取 st=站台码 NB02-CK、或历史粗码/空值，均不得写入账本 l
+          // （否则恢复动作自己造出"地面/AGV框标成站台"的反向病）。格式不符=仅恢复流水不上账，留痕提示人工补登。
+          if (loc && !locStrict(loc)) {
+            ledgerMsg = '，⚠原货位「' + loc + '」非完整货架/格位（站台或粗码），仅恢复流水未上账——请按实物到「位置登记」补账';
+          } else if (loc && !foreign.length && !cur.has(code)) {
             ledgerPut(cur, code, { c: code, l: loc, f: rec.ct || '', t: Date.now(), p: rec.pn || '', n: rec.nm || '', q: Number(rec.q) || 0, b: rec.lot || '', pid: rec.pid || '', src: '网页恢复' });
             db.ledgerTomb = (db.ledgerTomb || []).filter((x) => String(x.c).toUpperCase() !== code);
             (db.seenIn = db.seenIn || {})[code] = { by: u.name, t: Date.now(), l: loc, p: rec.pn || '' };
@@ -5552,6 +5607,8 @@ function seenInBackfill() { // ㉖ 首次升级：现存账本+采集流水的�
 // l 修正判据（按模式特征识别病值，不误伤账本来源正确值——账本AGV框l=NB02货架位、地面框l=NB03格位均合法）：
 //   wt=0(AGV)：l 应为 NB02 开头（站台/货架位）；空 或 非NB02前缀（粗码H09/NB03残留）→ 用流水 st 纠正
 //   wt=1(地面)：l 应为 NB03 格位；空 → 补 gl；NB02 开头（反向病：地面框不可能是高位架）→ 用 gl 覆盖
+// ⚠ 勿与「㉖v100 货位格式防线」的 locStrict 混用：防线作用于账本 l（在库位，站台码非法）；
+//   本补丁作用于 seenIn.l（入账时初始位，AGV 框合法值本就是站台码 NB02-CK）——语义不同，判据有意不同。
 function seenInPatchV100() {
   try {
     if (db.seenInPatchedV100) return;
