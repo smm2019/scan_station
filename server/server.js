@@ -662,7 +662,18 @@ function expXls(d) {
 }
 // ---- ㉓G12 工作量报表聚合：入库(框=托去重)/出库/修正/返架按人按日 + 领料时效 + AGV按车 ----
 function wdstr(ms) { const d = new Date(ms); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
-function wdName(s) { return String(s || '').trim().replace(/[（(][^）)]*[）)]$/, '').trim() || '未知'; } // MES回写常带(账号)后缀，统计归一
+function wdName(s) { s = String(s || '').trim().replace(/[（(][^）)]*[）)]$/, '').trim(); if (_opBad(s)) s = opUserMatch(s) || s; return s || '未知'; } // MES回写常带(账号)后缀，统计归一；㉖v101 含坏字符的操作人按用户表子序列归并到真人
+// ---- ㉖v101 操作人乱码治理：PDA 推来的文本偶发 UTF-8 字节错位（宋明明→◆◆明明/宋◆◆◆明），
+// 同一批次其余记录正常→单字段级损坏。判据=剥离坏字符后的干净串是某用户姓名的字符子序列且【唯一】命中→归并真人；
+// 歧义或无命中保持原样不硬猜（宁可多列一行也不把 A 的活记到 B 头上）----
+const _opBad = (s) => /[\uFFFD\u25C6\uFFFC]/.test(String(s || ''));
+function opUserMatch(s0) {
+  const t = String(s0 || '').replace(/[\uFFFD\u25C6\uFFFC]/g, '').trim();
+  if (!t) return '';
+  const hits = [];
+  for (const x of db.users || []) { const nm = String(x.name || '').trim(); if (nm.length < 2 || nm === t) continue; let i = 0; for (const ch of nm) { if (ch === t[i]) i++; if (i === t.length) break; } if (i === t.length) hits.push(nm); }
+  return hits.length === 1 ? hits[0] : '';
+}
 // ===== ㉖v63 断料预测与循环盘点辅助（顶层：路由与 frequent 共用） =====
 function stockRiskOf(days) {
   const N = Math.min(180, Math.max(7, Number(days) || 60));
@@ -2736,7 +2747,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         for (const it of raw) {
           const k = String((it && it.k) || '').slice(0, 120);
           if (!k) continue;
-          snap[k] = { code: String(it.code || '').toUpperCase(), wt: Number(it.wt) || 0, st: String(it.st || ''), gl: String(it.gl || ''), ct: String(it.ct || ''), rm: String(it.rm || '').slice(0, 120), batch: String(it.batch || ''), cx: !!it.cx, t: Number(it.t) || 0, pn: String(it.pn || ''), q: Number(it.q) || 0, mk: String(it.mk || ''), op: String(it.op || '').slice(0, 40), nm: String(it.nm || '').replace(/\uFFFD/g, '').slice(0, 80), lot: String(it.lot || '').slice(0, 40), mc: String(it.mc || '').replace(/[\uFFFD]/g, '').trim().slice(0, 40), pid: String(it.pid || '') }; // ㉓乱码清洗；㉖v98c +mc物料号
+          snap[k] = { code: String(it.code || '').toUpperCase(), wt: Number(it.wt) || 0, st: String(it.st || ''), gl: String(it.gl || ''), ct: String(it.ct || ''), rm: String(it.rm || '').slice(0, 120), batch: String(it.batch || ''), cx: !!it.cx, t: Number(it.t) || 0, pn: String(it.pn || ''), q: Number(it.q) || 0, mk: String(it.mk || ''), op: (_opBad(it.op) ? u.name : String(it.op || '')).slice(0, 40), nm: String(it.nm || '').replace(/[\uFFFD\u25C6\uFFFC]/g, '').slice(0, 80), lot: String(it.lot || '').slice(0, 40), mc: String(it.mc || '').replace(/[\uFFFD\u25C6\uFFFC]/g, '').trim().slice(0, 40), pid: String(it.pid || '') }; // ㉓乱码清洗；㉖v98c +mc物料号；㉖v101 op坏字符改用推送账号真名（扫码人=本人，服务器权威；nm/mc清洗类同步补◆）
         }
         if (!Object.keys(snap).length) return send(res, 400, { ok: false, msg: '无有效条目（需 k 主键）' });
         db.scanlog = Object.assign(db.scanlog || {}, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
@@ -5754,6 +5765,44 @@ function seenInPatchV100() {
     if (n) console.log('[seenIn] v100 补丁纠正/补齐 ' + n + ' 字段');
   } catch (_) {}
 }
+// ㉖v101 存量迁移：采集流水 op 字段字节错位乱码（10/29 现场：工作量报表"宋明明/◆◆明明/宋◆◆◆明"裂成三行）。
+// 判据①同批次多数原则：批次内其余记录同名=铁证（实测14:1），取【最长】多数名（14个"宋明明"胜过1个"◆明明"）；
+// 判据②兜底：批次无多数时按用户表子序列唯一匹配（与 wdName 同判据）。只改坏值，正常名一律不动；幂等开关。
+function opFixV101() {
+  try {
+    if (db.opFixedV101) return;
+    const byBatch = {};
+    for (const s of Object.values(db.scanlog || {})) { const b = String(s.batch || ''); if (!b) continue; (byBatch[b] = byBatch[b] || []).push(s); }
+    let n = 0;
+    for (const [b, list] of Object.entries(byBatch)) {
+      const bads = list.filter((s) => _opBad(s.op));
+      if (!bads.length) continue;
+      const good = {};
+      for (const s of list) { if (_opBad(s.op)) continue; const o = String(s.op || '').trim(); if (o) good[o] = (good[o] || 0) + 1; }
+      const gks = Object.keys(good).sort((a, x) => good[x] - good[a] || x.length - a.length);
+      const fix = gks.length ? gks[0] : ''; // 最长名打平按长度取胜（防批次里混着"宋明明"与错剪的"明明"）
+      for (const s of bads) {
+        const to = fix || opUserMatch(s.op);
+        if (to && String(s.op) !== to) { s.op = to; n++; }
+      }
+    }
+    db.opFixedV101 = 1; save();
+    if (n) console.log('[op-fix] v101 迁移修复采集流水操作人乱码 ' + n + ' 条');
+  } catch (_) {}
+}
+// ㉖v101 存量清理：旧版 App 格数页每次保存全量提交 A~D×18=72 条（值=默认12），污染 groundSlots（实测现网 72 条全是冗余）。
+// 值等于当前默认格数的覆盖项与"无覆盖"语义完全等价（服务器格数回退=P().gndCols），删除之。
+// 若今后默认参数调整，这些排随新默认走——这正是"从未有意覆盖"的正确语义。幂等开关，一次性。
+function gsCleanV101() {
+  try {
+    if (db.gscCleanedV101) return;
+    const defC = P().gndCols, gs = db.groundSlots || {};
+    let n = 0;
+    for (const [k, v] of Object.entries(gs)) { if (Number(v) === defC) { delete gs[k]; n++; } }
+    db.gscCleanedV101 = 1; save();
+    if (n) console.log('[gnd-slots] v101 清理冗余格数覆盖（=默认' + defC + '） ' + n + ' 条');
+  } catch (_) {}
+}
 // ㉖④ 检验工单状态机推进：toStation→atStation（站台快照出现本框标签）；returning→done（归位后该框回到原货位=账本命中）；waitReturn→returned（该框经出库通道出账）
 function updateInspects(nowMs) {
   try {
@@ -6703,4 +6752,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目

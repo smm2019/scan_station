@@ -15,6 +15,9 @@ fs.mkdirSync(TDIR, { recursive: true });
 fs.copyFileSync(path.join(SRC, 'db.json'), path.join(TDIR, 'db.json'));
 fs.copyFileSync(path.join(SRC, 'secret.key'), path.join(TDIR, 'secret.key'));
 const db0 = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
+// 测试隔离：主库可能已由用户真实配置 projDict/projMap（10/29 实测 4码179项），副本必须清空回"初始空字典"前提，
+// 否则 S1/U3/U4"初始为空/建议不落库"断言被真实数据破坏（断言对象是端点行为，不是用户数据）
+delete db0.projDict; delete db0.projMap;
 const salt = crypto.randomBytes(16).toString('hex');
 const hashPw = (pw, s) => crypto.scryptSync(String(pw), s, 32).toString('hex');
 const mkU = (id, un, nm, role) => ({ id, username: un, name: nm, role, enabled: true, createdAt: Date.now(), mustChangePw: false, salt, passHash: hashPw('E2e#Prj!pw', salt) });

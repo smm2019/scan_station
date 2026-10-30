@@ -39,22 +39,41 @@ class _LocationRegPageState extends State<LocationRegPage> {
   @override
   void dispose() { _labelCtrl.dispose(); _labelFocus.dispose(); _locCtrl.dispose(); super.dispose(); }
 
-  /// ⑮ 地面排格数设置：每排默认12格，可改成任意数（1~60），存服务器全局共享
+  /// ⑮ 地面排格数设置：默认格数可改成任意数（1~60），存服务器全局共享
+  /// ㉖v101 口径修复：旧版清单写死 A~D×18 排、默认 12 格——现场地面是 A/B/C/F/G/H 六区
+  /// （网页版权威口径 ABCDEFGH），后四区在库 80+ 框却没有配置入口。
+  /// 现在与网页版同口径：区=A~H；排清单三级取值=真实排号清单 lists > 按区排数覆盖 rows > 全局默认；
+  /// 默认格数用服务器 def.cols；停用排 offs 行尾标注。
   Future<void> _openGroundSlots() async {
     final r = await AuthApi.groundSlotsGet();
     if (!mounted) return;
     if (r["ok"] != true) { _toast("读取格数配置失败：${r["msg"]}"); return; }
     final slots = Map<String, dynamic>.from(r["slots"] ?? {});
-    // 排清单：A~D × 01~18（地面规划区），已改过的排优先显示当前值
+    final def = Map<String, dynamic>.from(r["def"] ?? {});
+    final int defCols = (def["cols"] as num?)?.toInt() ?? 12;
+    final int defRows = (def["rows"] as num?)?.toInt() ?? 18;
+    final zoneRows = Map<String, dynamic>.from(r["rows"] ?? {});
+    final lists = Map<String, dynamic>.from(r["lists"] ?? {});
+    final offs = Map<String, dynamic>.from(r["offs"] ?? {});
     final rows = <String, int>{};
-    for (final g in ['A', 'B', 'C', 'D']) {
-      for (var n = 1; n <= 18; n++) {
-        final k = 'NB03-$g-${n.toString().padLeft(2, "0")}';
-        rows[k] = (slots[k] as num?)?.toInt() ?? 12;
+    for (final z in ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']) {
+      final lst = lists[z];
+      final List<int> rowArr;
+      if (lst is List && lst.isNotEmpty) {
+        rowArr = lst.map((e) => (e as num).toInt()).toList(); // 真实排号清单优先（现场排号可不连续，如A区仅11-18）
+      } else {
+        final zr = zoneRows[z];
+        final n = zr == null ? defRows : (zr as num).toInt(); // 按区排数覆盖；0=整区停用，不列排
+        rowArr = [for (var i = 1; i <= n; i++) i];
+      }
+      for (final n in rowArr) {
+        final k = 'NB03-$z-${n.toString().padLeft(2, "0")}';
+        rows[k] = (slots[k] as num?)?.toInt() ?? defCols;
       }
     }
+    final orig = Map<String, int>.from(rows); // 初值快照：保存时只提交变化排（diff），不再全量写库
     final ctrl = TextEditingController();
-    final batchCtrl = TextEditingController(text: "12"); // 批量设置目标格数
+    final batchCtrl = TextEditingController(text: "$defCols"); // 批量设置目标格数（跟随服务器默认口径）
     Future<int?> _askNum(BuildContext c2, String title, int init) async {
       final e = TextEditingController(text: "$init");
       final v = await showDialog<int>(context: c2, builder: (d2) => AlertDialog(
@@ -78,7 +97,7 @@ class _LocationRegPageState extends State<LocationRegPage> {
               decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "筛选排号，如 A-11 / B13", border: OutlineInputBorder())),
           const SizedBox(height: 6),
           Row(children: [
-            const Text("默认每排 12 格；点数字可直接输入", style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+            Text("默认每排 $defCols 格；点数字可直接输入", style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
             const Spacer(),
             SizedBox(width: 52, child: TextField(controller: batchCtrl, keyboardType: TextInputType.number, maxLength: 2, style: const TextStyle(fontSize: 12.5), decoration: const InputDecoration(counterText: "", isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6), border: OutlineInputBorder()))),
             TextButton(style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact),
@@ -92,8 +111,8 @@ class _LocationRegPageState extends State<LocationRegPage> {
                   setSt(() { for (final k in ks) { rows[k] = v; } });
                 }, child: const Text("批量应用", style: TextStyle(fontSize: 12))),
             TextButton(style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6), visualDensity: VisualDensity.compact),
-                onPressed: () => setSt(() { for (final k in visibleKeys()) { rows[k] = 12; } }),
-                child: const Text("恢复12", style: TextStyle(fontSize: 12, color: Colors.blueGrey))),
+                onPressed: () => setSt(() { for (final k in visibleKeys()) { rows[k] = defCols; } }),
+                child: Text("恢复$defCols", style: const TextStyle(fontSize: 12, color: Colors.blueGrey))),
           ]),
           const SizedBox(height: 2),
           Expanded(child: ListView(children: visibleKeys().map((k) => Padding(padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1), child: Row(children: [
@@ -105,13 +124,19 @@ class _LocationRegPageState extends State<LocationRegPage> {
                     child: Text("${rows[k]}", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF00897B))))),
             const SizedBox(width: 6),
             IconButton.filledTonal(visualDensity: VisualDensity.compact, constraints: const BoxConstraints(minWidth: 34, minHeight: 34), padding: EdgeInsets.zero, iconSize: 18, icon: const Icon(Icons.add), onPressed: () => setSt(() { if (rows[k]! < 60) rows[k] = rows[k]! + 1; })),
-            Expanded(child: Text(rows[k] == 12 ? "" : "已改（默认12）", textAlign: TextAlign.right, style: const TextStyle(fontSize: 10.5, color: Colors.orange))),
+            Expanded(child: Text(offs.containsKey(k) ? "⚠停用排" : (rows[k] == defCols ? "" : "已改（默认$defCols）"), textAlign: TextAlign.right, style: TextStyle(fontSize: 10.5, color: offs.containsKey(k) ? Colors.red : Colors.orange))),
           ]))).toList())),
         ])),
         actions: [
           TextButton(onPressed: () => Navigator.pop(dctx), child: const Text("取消")),
           FilledButton(onPressed: () async {
-            final entries = rows.entries.map((e) => {"prefix": e.key, "count": e.value}).toList();
+            // ㉖v101 diff 提交：只发与初值不同的排；改回默认值发 count=0（服务器 1~60 外=删除该排配置恢复默认）。
+            // 旧版每次全量提交几十条（含无脑写默认值），污染 groundSlots 且会覆盖他机并发修改。
+            final entries = <Map>[
+              for (final e in rows.entries)
+                if (orig[e.key] != e.value) {"prefix": e.key, "count": e.value == defCols ? 0 : e.value}
+            ];
+            if (entries.isEmpty) { _toast("没有改动", err: false); return; }
             final rr = await AuthApi.groundSlotsSet(entries);
             if (!bctx.mounted) return;
             Navigator.pop(dctx);
