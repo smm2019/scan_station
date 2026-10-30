@@ -6548,6 +6548,17 @@ async function agvDispatch(nowMs, runT) {
       }
     } else if (q.state === '到站') {
       if (!has) { q.state = '完成'; q.dockAt = q.dockAt || nowMs; q.updAt = nowMs; funnelArchive(q); clearQueueCall(q.reqId, q.code); releaseStnBook(q.code); } // ㉖v94k 完成刷新updAt（完成表"结束时间/全程耗时"取updAt，旧版不刷→显示成下发时刻的1秒假耗时）；㉖v72b 任务闭环：货离台=发走/清台，清叫车标记允许该框未来重新入队；㉖v98c 出队前归档漏斗时间戳
+    } else if (q.state === '完成' && (q.type === 'inbound' || q.type === 'inspback') && !has) {
+      // ㉖v102 误判自愈回退：旧版旁证错配把在途任务判成"完成"（10/30 N26J300069）。防线修了新增，存量脏状态靠这里收敛——
+      // RCS 在途清单里仍有 起点=fromLoc 且 终点=station 的任务（且台上看不到本框）→ 说明搬运根本没结束，回退"已下发"重走对账。
+      // 台上已扫到本框(has)不回退：到站是事实，"完成"由清台机制接管，与在途任务同号并存属 RCS 快照滞后。
+      const _live = (db.rcsRun || []).some((t) => String(t.sp || '').toUpperCase() === String(q.fromLoc || '').toUpperCase() && String(t.ep || '').toUpperCase() === String(q.station || '').toUpperCase() && !(t.fin || 0));
+      if (_live) { q.state = '已下发'; q.dockAt = 0; q.updAt = nowMs; (q.trace = q.trace || []).push('自愈回退：RCS 仍有本趟在途任务，撤销误判完成，继续对账'); }
+      else {
+        // 本趟已沉淀（事故窗口已过）：dockAt 若被旧版错配成他趟完成时刻（0067 记成 0059 的），按本趟 fin 修正；改对后条件不再成立=幂等
+        const _own = (db.agvTasks || {})[String(q.wmsTask || '')];
+        if (_own && _own.fin && String(_own.ep || '').toUpperCase() === String(q.station || '').toUpperCase() && q.dockAt !== _own.fin) { q.dockAt = _own.fin; q.updAt = nowMs; (q.trace = q.trace || []).push('v102 修正：完成时刻原被错配为他趟任务，已按本趟沉淀改正'); }
+      }
     }
   }
   // 失败项保留30分钟供查看原因后自动出队（重新一键叫车即可再入队）；完成/取消保留2小时
@@ -6567,7 +6578,13 @@ async function agvDispatch(nowMs, runT) {
     // 此时按 RCS 完成时刻判完成。否则该项会一直停在"已下发"，随后被超时兜底误判为失败。
     // 注意 db.agvTasks 以 RCS 调度号为 key，与队列项 wmsTask(WMAS任务号)/taskNo(容器号)不同域，
     // 直查基本命不中 → 与 /api/agv/taskOf 同口径：按 方向in + 起点=fromLoc + fin≥下发时刻 取最近一条。
-    const _rk = String(_q.wmsTask || ''), _rt = (db.agvTasks || {})[_rk] || (() => { const _sp = String(_q.fromLoc || '').toUpperCase(), _lo = (_q.sentAt || _q.at || 0) - 60000; let _b = null; for (const t of Object.values(db.agvTasks || {})) { if (t.ck !== 'in' || String(t.sp || '').toUpperCase() !== _sp || (t.fin || 0) < _lo) continue; if (!_b || (t.fin || 0) > (_b.fin || 0)) _b = t; } return _b; })();
+    const _rk = String(_q.wmsTask || '');
+    // ㉖v102 旁证必须终点匹配（10/30 14:05 现场 N26J300069：0067 仍在途，回退旁证抓到刚沉淀的 0059(ep=C-05-3F≠本项目标 C-10-2F)→提前判"完成"，
+    //   链路显示前框车号/任务号/落位；N26J300039 同款抓到 0058 的完成时刻→dockAt 早于 sentAt。出库旁证(6537段)本有终点校验，唯此处缺）。
+    //   直查命中但 ep 不符=串单，同样弃之走 WMAS 查询。
+    let _rt = (db.agvTasks || {})[_rk] || null;
+    if (_rt && _q.station && String(_rt.ep || '').toUpperCase() !== String(_q.station).toUpperCase()) _rt = null;
+    if (!_rt) { const _sp = String(_q.fromLoc || '').toUpperCase(), _ep = String(_q.station || '').toUpperCase(), _lo = (_q.sentAt || _q.at || 0) - 60000; let _b = null; for (const t of Object.values(db.agvTasks || {})) { if (t.ck !== 'in' || String(t.sp || '').toUpperCase() !== _sp || (t.fin || 0) < _lo) continue; if (_ep && String(t.ep || '').toUpperCase() !== _ep) continue; if (!_b || (t.fin || 0) > (_b.fin || 0)) _b = t; } _rt = _b; }
     if (_rt && _rt.fin) { _q.state = '完成'; _q.dockAt = _rt.fin; _q.updAt = nowMs; continue; }
     const _lr = await wmasHttp('GET', '/api/logistics/agv-task/list?pageNum=1&pageSize=5&taskNo=' + encodeURIComponent(_q.wmsTask), _itk); const _rec = ((_lr && _lr.data && _lr.data.records) || []).find((z) => String(z.taskNo) === String(_q.wmsTask)); if (_rec) { const _st = String(_rec.status || '').toUpperCase(); if (['PUSHED', 'DISPATCHED', 'IN_TRANSIT'].includes(_st)) { if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { retireQueueItem(_q, '失败', (_q.type === 'inspback' ? '检验归位超' : '入库搬运超') + P().staleMin + '分钟未完成，请核查'); } } else if (_st.includes('CANCEL') || _st.includes('REJECT')) { retireQueueItem(_q, '取消', 'AGV任务已在下游取消（RCS/WMAS侧操作），资源已释放'); inspQueueRollback(_q, null); } else { _q.state = '完成'; _q.dockAt = nowMs; _q.updAt = nowMs; clearQueueCall(_q.reqId, _q.code); releaseStnBook(_q.code); } } else if (nowMs - (_q.sentAt || _q.at) > P().staleMin * 60000) { retireQueueItem(_q, '失败', 'WMAS任务记录不可查，请核对货位'); inspQueueRollback(_q, null); } } catch (_) {} } } }
   // ㉖v72 出库负向对账（WMAS取消/驳回/查无→队列同步+资源回收），必须赶在超时兜底前跑；30秒节流防 WMAS 接口高频
