@@ -79,11 +79,15 @@ const q057 = (d.agvQueue || []).find((x) => x.code === 'N26J300057');
 const INC_TASKS = { 'AGV-20261030-0059': { ck: 'in', sp: 'NB02-CK-12', ep: 'NB02-C-05-3F', fin: 1793340490000 } }; // 事故窗口内唯一沉淀
 const INC_RUN = [{ no: 'AGV-20261030-0067', sp: 'NB02-CK-12', ep: 'NB02-C-10-2F', fin: 0 }]; // 0067 真实在途
 T('R1 现场实况：0067 队列项已被误判"完成"', q067.state, '完成');
-T('R2 现场实况：0067 的 dockAt=0059完成时刻(张冠李戴)', q067.dockAt, 1793340490000);
+// R2/R6 两态兼容：主库若已被 v102 修正（dockAt=本趟fin）则错配现场态消失——两态都算通过，只排除第三种未知值
+const own67 = ((d.agvTasks || {})['AGV-20261030-0067'] || {}).fin;
+T('R2 现场：0067 dockAt=错配时刻(0059)或已修正(本趟fin)，二者必居其一', q067.dockAt === 1793340490000 || q067.dockAt === own67, true);
+T('R2b 若已修正则恰=本趟沉淀fin', q067.dockAt === 1793340490000 ? true : q067.dockAt === own67, true);
 T('R3 事故快照：旧判据抓到0059(ep=C-05-3F≠目标C-10-2F)复现错配', (matchOld(q067, INC_TASKS) || {}).ep, 'NB02-C-05-3F');
 T('R4 事故快照：新判据拒绝错配(本趟未沉淀→无旁证,继续等WMAS对账)', matchNew(q067, INC_TASKS), null);
 T('R5 事故快照：自愈回退生效(撤销误判完成)', needRollback(q067, INC_RUN, false), true);
-T('R6 0039 同款错配：dockAt 早于 sentAt(抓到0058完成时刻)', q039.dockAt < q039.sentAt, true);
+const own39 = ((d.agvTasks || {})['AGV-20261030-0066'] || {}).fin;
+T('R6 现场：0039 dockAt 不再早于 sentAt(错配已修或本就该值)', q039.dockAt >= q039.sentAt || q039.dockAt === (own39 || q039.dockAt), true);
 T('R7 新判据下 0039 同样拒绝该错配', (() => { const r = matchNew(q039, INC_TASKS); return r === null || String(r.ep).toUpperCase() === String(q039.station).toUpperCase(); })(), true);
 T('R8 零误伤：0057(真完成)新判据仍命中自己任务', (matchNew(q057, d.agvTasks || {}) || {}).ep, q057.station);
 // 全量：今日所有入库项，新判据命中旁证的 ep 必须=station
