@@ -53,11 +53,13 @@ function startSrv() { const sv = cp.spawn('node', [path.join(__dirname, 'server.
   chk('C1 新配置两排成功', c1.j.ok, true);
   let g2 = await req('GET', '/api/ground-slots', { tok });
   chk('C2 F-05=14 生效', g2.j.slots['NB03-F-05'], 14);
-  const c3 = await req('POST', '/api/ground-slots', { tok, body: { entries: [{ prefix: 'NB03-F-05', count: 0 }, { prefix: 'NB03-H-99', count: 99 }, { prefix: 'NB03-X-X', count: 5 }] } });
+  const c3 = await req('POST', '/api/ground-slots', { tok, body: { entries: [{ prefix: 'NB03-F-05', count: 0 }, { prefix: 'NB03-H-99', count: 99 }, { prefix: 'NB03-H-98', count: 250 }, { prefix: 'NB03-X-X', count: 5 }] } });
   chk('C3 提交成功', c3.j.ok, true);
   g2 = await req('GET', '/api/ground-slots', { tok });
   chk('C4 count=0 → 删除恢复默认', g2.j.slots['NB03-F-05'], undefined);
-  chk('C5 越界99=同删除（1~60外恢复默认）', g2.j.slots['NB03-H-99'], undefined);
+  // ㉖v103 上限 60→200：99 从"越界删除"变"合法入库"；越界样例改 250
+  chk('C5 99 合法入库（v103 上限放宽到200）', g2.j.slots['NB03-H-99'], 99);
+  chk('C5b 越界250=同删除（1~200外恢复默认）', g2.j.slots['NB03-H-98'], undefined);
   chk('C6 非法前缀不入库', g2.j.slots['NB03-X-X'], undefined);
   chk('C7 F-06=13 未被误动', g2.j.slots['NB03-F-06'], 13);
   chk('C8 原真实覆盖 B-18=13 仍在', g2.j.slots['NB03-B-18'], 13);

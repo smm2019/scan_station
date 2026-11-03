@@ -282,6 +282,26 @@ extension CollectionLedgerExt on _MainPageState {
         final s = q["state"]?.toString() ?? "?";
         cnt[s] = (cnt[s] ?? 0) + 1;
       }
+      // ㉖v103 防重复名单活跃性清理：货位是复用资源——前框叫车送达、出库拉走后，同位进新框必须能再叫车。
+      // 旧版 _colCalled 只增不减（仅杀 App 才清空），11/3 现场 C-02-3F：17:51 叫车→18:07 该框出库→18:22 新框入同位，
+      // 自动叫车被"本会话已叫过车"挡死且不发请求无成功提示（用户作废重扫3次耗12分钟；同位 18:25 刘向轩设备正常）。
+      // 判据=服务器活跃队列（排队/下发中/已下发/到站；失败项需人工重叫，视同不活跃）中该货位已无本人任务→释放。
+      // 整托防重复不受影响：任务在途期间货位保留在名单；服务器按框码防重闸（carry）仍是最后兜底。
+      // 复核修正（11/4）：_colCalled 存的是入库【落位货位】，而队列项 station=AGV 站台（未下发时是空串）、
+      // stationManual=任务目标（入库=货架位、出库=站台）。旧写法 station ?? stationManual 有两重错：
+      // ①入库任务下发后取到的是站台码，与货架位永不相等 → 任务还在途就把货位释放，防重复被架空；
+      // ②Dart 的 ?? 只对 null 生效、空串不回退 → 排队未下发（station=''）同样立即释放。
+      // 正确口径：优先 stationManual（入库目标=货架位），空则退 station。
+      final _actLocs = mine
+          .where((q) => q["state"] != "失败")
+          .map((q) {
+            final sm = (q["stationManual"] ?? "").toString().trim().toUpperCase();
+            if (sm.isNotEmpty) return sm;
+            return (q["station"] ?? "").toString().trim().toUpperCase();
+          })
+          .where((s) => s.isNotEmpty)
+          .toSet();
+      _colCalled.removeWhere((loc) => !_actLocs.contains(loc));
       // ㉖v69 提示条存活校验：叫车成功提示对应的货物，其队列项已被删除/已完成 → 提示自动撤销（防"任务没了还显示叫车成功"）
       if (_autoCallTip.startsWith("🚗") && _autoCallCode.isNotEmpty) {
         final alive = mine.any((q) =>
@@ -328,6 +348,9 @@ extension CollectionLedgerExt on _MainPageState {
                         TextButton(
                             onPressed: () async {
                               await _loadMyQueue();
+                              // ㉖v103 崩溃修复（10/31+11/3 宋明明设备两次上报，堆栈=本行 setSt）：
+                              // 刷新请求在途时用户关掉弹层 → StatefulBuilder 已卸载，setSt 踩空引用
+                              if (!mctx2.mounted) return;
                               setSt(() {});
                             },
                             child: const Text("刷新")),
@@ -398,6 +421,7 @@ extension CollectionLedgerExt on _MainPageState {
                                                     ? "已取消排队 ${q["code"]}"
                                                     : "取消失败：${r["msg"]}")));
                                         await _loadMyQueue();
+                                        if (!mctx2.mounted) return; // ㉖v103 同上：二次 await 后弹层可能已关，setSt 前再守
                                         setSt(() {});
                                       },
                                       child: const Text("取消",
@@ -1082,7 +1106,10 @@ Future<Map> ledgerPushNow() async {
       final lot = (lotMap[up] ?? "").isNotEmpty
           ? lotMap[up]!
           : (_ok ? lotFromPrintDate(i.createTime, i.lotNo) : "");
-      final qty = _ok && i.qty > 0 ? i.qty : (qMap[up] ?? 0);
+      // ㉖v103 数量取值改为【本机最新有效扫码优先】（11/3 现场 8894153871 虚高 80 件：LabelInfo 缓存存的是
+      // 10/23 首扫 MES 值 300，本机 11/3 重扫实测 220 被旧缓存压住推上账本；档案页按流水算 920 反而对）。
+      // 缓存只作兜底（本机无有效扫码记录时，如别台扫的框/拉取合并来的行）。
+      final qty = (qMap[up] ?? 0) > 0 ? qMap[up]! : (_ok && i.qty > 0 ? i.qty : 0);
       return {
         "c": p.goodsCode,
         "l": p.loc,

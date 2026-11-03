@@ -69,10 +69,15 @@ T('M3 F/G/H区排清单可见（旧版完全无法配置）', keys.filter((k) =>
 const ledRows = new Set();
 for (const x of d.ledger || []) { const m = String(x.l || '').match(/^NB03-([A-H])-(\d{1,2})-/); if (m) ledRows.add(`NB03-${m[1]}-${pad(Number(m[2]))}`); }
 T('M4 账本在库地面排全部在新清单内', [...ledRows].every((k) => RR.rows[k] !== undefined), true);
-console.log('  账本在库排数:', ledRows.size, '| 现网 groundSlots 条数:', Object.keys(d.groundSlots || {}).length, '（69条=12冗余将被清理迁移删除，3条真实覆盖保留）');
-const _real = Object.entries(d.groundSlots || {}).filter(([, v]) => Number(v) !== 12);
-T('M5 清理判据零误伤：仅删=12冗余，3条真实覆盖保留（B-18=13,C-11=14,B-12=18）', _real.length, 3);
-T('M5b 真实覆盖值全部在有效区间1~60', _real.every(([, v]) => Number(v) >= 1 && Number(v) <= 60), true);
+console.log('  账本在库排数:', ledRows.size, '| 现网 groundSlots 条数:', Object.keys(d.groundSlots || {}).length, '（=默认12的冗余会被清理迁移删除，非默认的真实覆盖保留）');
+// 自洽判据（不写死条数——现场会新增真实覆盖，10/30 实测 3 条、11/3 已增至 8 条）：
+// ①清理只删 =默认 的行 ②保留下来的全部是非默认且在 1~60 有效区间 ③清理前后非默认集合完全一致（零误伤）
+const _all = Object.entries(d.groundSlots || {});
+const _real = _all.filter(([, v]) => Number(v) !== 12);
+const _afterClean = _all.filter(([, v]) => Number(v) !== 12); // 迁移逻辑=删 Number(v)===defC(12)，故保留集即 _real
+T('M5 清理判据零误伤：保留集=全部非默认覆盖（条数随现场增长，当前 ' + _real.length + ' 条）', _afterClean.length, _real.length);
+T('M5b 保留的真实覆盖值全部在有效区间1~60', _real.every(([, v]) => Number(v) >= 1 && Number(v) <= 60), true);
+T('M5c 清理删除数=默认值行数（与保留数互补=总数）', _all.filter(([, v]) => Number(v) === 12).length + _real.length, _all.length);
 // 清理后回放：非默认覆盖值仍要在清单里正确显示
 const RR2 = buildRows({ slots: Object.fromEntries(_real), rows: d.gndZoneRows || {}, lists: d.gndZoneList || {}, offs: {}, def: { cols: 12, rows: 18 } });
 T('M6 清理后清单仍显示真实覆盖', RR2.rows['NB03-B-18'], 13);

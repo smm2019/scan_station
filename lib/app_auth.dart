@@ -272,9 +272,10 @@ class AuthApi {
           ? "/api/requisitions/queue"
           : "/api/requisitions/queue?my=${Uri.encodeComponent(my)}",
       token: await AuthStore.token());
-  static Future<Map> reqAction(String id, String action, [Map? body]) async =>
+  static Future<Map> reqAction(String id, String action,
+      [Map? body, int timeoutSec = 10]) async =>
       _req("POST", "/api/requisitions/$id/$action",
-          body: body ?? {}, token: await AuthStore.token());
+          body: body ?? {}, token: await AuthStore.token(), timeoutSec: timeoutSec);
   // 设置转入货位（loc）；行级转单回写(transfer)/跳过(skip) 直接走 reqAction
   static Future<Map> reqSetLoc(String id, Map to) async =>
       reqAction(id, "loc", {

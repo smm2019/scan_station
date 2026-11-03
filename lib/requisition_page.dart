@@ -2497,6 +2497,16 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         .where((x) => sel[(x["c"]?.toString().toUpperCase() ?? "")] == true)
         .fold(0.0, (s, x) => s + ((x["q"] as num?)?.toDouble() ?? 0));
     if (!mounted) return;
+    // ㉖v103 撤扫改在【弹窗内】执行并显示进度（11/3 事故根因：旧版弹窗先关、撤扫在后台跑，
+    // 服务器撤扫响应慢（曾同步等返架叫车 8.6 秒）期间页面毫无反馈→用户以为没生效重扫/重复点转单→
+    // 撤扫与发料竞态，账面记 400 而 MES 实转 200。现撤扫未完成弹窗不关、按钮禁用、逐框显示进度；
+    // 超时放宽 30 秒；服务器侧物理联动已改异步，正常 1 秒内应答）。
+    bool unscanning = false;
+    String unscanMsg = "";
+    List<String> uncheckedNow() => issuedRows
+        .map((x) => (x["c"]?.toString().toUpperCase() ?? ""))
+        .where((c) => c.isNotEmpty && sel[c] != true)
+        .toList();
     final ok0 = await showDialog<bool>(
         context: context,
         builder: (dctx) => StatefulBuilder(
@@ -2529,54 +2539,91 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                               contentPadding: EdgeInsets.zero,
                               controlAffinity: ListTileControlAffinity.leading,
                               value: sel[c0] == true,
-                              onChanged: (v) => setSt(() => sel[c0] = v == true),
+                              onChanged: unscanning
+                                  ? null
+                                  : (v) => setSt(() => sel[c0] = v == true),
                               title: Text(
-                                  "$c0  ${_fmtInvNum((x["q"] as num?)?.toDouble() ?? 0)} 件",
-                                  style: const TextStyle(
-                                      fontSize: 13, fontFamily: "monospace")),
+                                  "$c0  ${_fmtInvNum((x["q"] as num?)?.toDouble() ?? 0)} 件${sel[c0] == true ? "" : "（将退回）"}",
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      fontFamily: "monospace",
+                                      decoration: sel[c0] == true ? null : TextDecoration.lineThrough,
+                                      color: sel[c0] == true ? null : Colors.grey)),
                               subtitle: Text(
                                   "原货位 ${(x["l"]?.toString().isNotEmpty ?? false) ? x["l"] : "—"}${x["e"] == 1 ? " · 应急发料" : ""}",
                                   style: const TextStyle(fontSize: 11)));
                         }),
                         const SizedBox(height: 4),
-                        Text(
-                            "将转 ${sel.values.where((v) => v).length} 框 ${_fmtInvNum(selQty())} 件 → ${_to["LOC_NAME"]}\n转单即 MES 移库，不可撤销（退回需反向再转）",
-                            style: const TextStyle(
-                                fontSize: 12,
-                                color: Color(0xFF3949AB),
-                                fontWeight: FontWeight.w600)),
+                        if (unscanMsg.isNotEmpty)
+                          Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Text(unscanMsg,
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                      color: unscanMsg.startsWith("❌")
+                                          ? const Color(0xFFC62828)
+                                          : const Color(0xFF2E7D32))))
+                        else
+                          Text(
+                              "将转 ${issuedRows.length - uncheckedNow().length} 框 ${_fmtInvNum(selQty())} 件 → ${_to["LOC_NAME"]}\n转单即 MES 移库，不可撤销（退回需反向再转）${uncheckedNow().isNotEmpty ? "\n\n🔙 确认后先退回 ${uncheckedNow().length} 框（${uncheckedNow().join(' / ')}），再转剩余勾选框" : ""}",
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFF3949AB),
+                                  fontWeight: FontWeight.w600)),
                       ])),
                   actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(dctx, false),
-                        child: const Text("取消")),
+                    if (!unscanning)
+                      TextButton(
+                          onPressed: () => Navigator.pop(dctx, false),
+                          child: const Text("取消")),
                     FilledButton(
-                        onPressed: () => Navigator.pop(dctx, true),
-                        child: const Text("确认发出并转单")),
+                        onPressed: unscanning
+                            ? null
+                            : () async {
+                                final un = uncheckedNow();
+                                if (un.isEmpty) { Navigator.pop(dctx, true); return; }
+                                setSt(() {
+                                  unscanning = true;
+                                  unscanMsg = "正在退回 ${un.length} 框，请稍候…";
+                                });
+                                for (int i = 0; i < un.length; i++) {
+                                  final c0 = un[i];
+                                  setSt(() => unscanMsg = "退回第 ${i + 1}/${un.length} 框 $c0 …");
+                                  final ur = await AuthApi.reqAction(
+                                      _r["id"].toString(), "unscan",
+                                      {"partNo": partNo, "barcode": c0}, 30);
+                                  if (!dctx.mounted) return;
+                                  if (ur["ok"] != true) {
+                                    setSt(() {
+                                      unscanning = false;
+                                      unscanMsg = "❌ 撤扫 $c0 失败：${ur["msg"]}\n可重试确认，或改回勾选后只转勾选框";
+                                    });
+                                    return;
+                                  }
+                                  if (ur["req"] is Map) {
+                                    final its = List<Map>.from((ur["req"] as Map)["items"] ?? []);
+                                    final t2 = its.where((e) => e["partNo"]?.toString() == partNo);
+                                    if (t2.isNotEmpty) {
+                                      _r = Map.from(ur["req"]);
+                                      item2 = Map.from(t2.first);
+                                    }
+                                  }
+                                  setSt(() => unscanMsg = "✓ $c0 已退回在架（${i + 1}/${un.length}）");
+                                }
+                                if (dctx.mounted) Navigator.pop(dctx, true);
+                              },
+                        child: unscanning
+                            ? const Row(mainAxisSize: MainAxisSize.min, children: [
+                                SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+                                SizedBox(width: 8),
+                                Text("退回中…", style: TextStyle(fontSize: 13)),
+                              ])
+                            : const Text("确认发出并转单")),
                   ],
                 )));
     if (ok0 != true || !mounted) return;
-    // 取消勾选的框 → 逐框撤扫退回在架（服务器 unscan：移除已发记录+账本复挂+清墓碑）
-    for (final x in issuedRows) {
-      final c0 = x["c"]?.toString().toUpperCase() ?? "";
-      if (c0.isEmpty || sel[c0] == true) continue;
-      final ur = await AuthApi.reqAction(_r["id"].toString(), "unscan",
-          {"partNo": partNo, "barcode": c0});
-      if (!mounted) return;
-      if (ur["ok"] != true) {
-        widget.toast("撤扫 $c0 失败：${ur["msg"]}");
-        return;
-      }
-      if (ur["req"] is Map) {
-        final its = List<Map>.from((ur["req"] as Map)["items"] ?? []);
-        final t2 = its.where((e) => e["partNo"]?.toString() == partNo);
-        if (t2.isNotEmpty) {
-          _r = Map.from(ur["req"]);
-          item2 = Map.from(t2.first);
-        }
-      }
-      widget.toast("↩️ $c0 已撤扫退回在架", err: false);
-    }
+    // ㉖v103 撤扫已在弹窗内逐框完成（含最新 item2/_r 回写），此处不再重复执行
     codes = _issuedCodesOf(item2);
     if (codes.isEmpty) {
       widget.toast("至少保留一框发出（已全部撤扫）");
@@ -2607,8 +2654,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       if (yes != true || !mounted) return;
       setState(() => _busy = true);
       try {
-        final res = await AuthApi.reqAction(
-            _r["id"].toString(), "transfer", {"partNo": partNo});
+        final res = await AuthApi.reqAction(_r["id"].toString(), "transfer",
+            {"partNo": partNo, "codes": codes}); // ㉖v103 实传框集合：服务器按此记账，竞态加回的框自动回滚
         if (res["ok"] != true)
           throw Exception("服务器回写失败：${res["msg"]}");
         final fromLocs = <String, String>{};
@@ -2719,8 +2766,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       await mesReq("POST", "/api/v1/rawtransfer/SaveTRBarcodes",
           body: {"details": details});
       // 3. 回写服务器行级 transferred（幂等），并落出库台账关联领料单号
-      final res = await AuthApi.reqAction(
-          _r["id"].toString(), "transfer", {"partNo": partNo});
+      // ㉖v103 带实传框集合（撤扫完成后 item["issued"]=勾选转出的框）：服务器按此记账，
+      // 竞态期间被加回但未实发的框自动回滚，防止"账面400/MES实转200"错位
+      final res = await AuthApi.reqAction(_r["id"].toString(), "transfer",
+          {"partNo": partNo, "codes": List.from(item["issued"] ?? [])});
       if (res["ok"] != true)
         throw Exception("MES已转单，但服务器回写失败：${res["msg"]}（请重开该单重试，MES侧勿重复转）");
       try {

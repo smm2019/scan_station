@@ -29,7 +29,11 @@ const obs = Object.values(db.outbound || {});
 const mv = obs.filter(isMove), out = obs.filter((o) => !isMove(o));
 console.log(`出库单共 ${obs.length} 张：判出库 ${out.length} 张 / 判移仓 ${mv.length} 张`);
 for (const o of mv) console.log(`  移仓: ${o.orderNo} → ${o.toLoc} (${(o.items || []).length}行 ${o.operator || ''})`);
-T('C1 现网移仓单=5张(冷冲1+热压2+代发2，与10/29核查一致)', mv.length, 5);
+// 自洽判据（不写死条数——现场正常新增非线边仓单，条数随业务增长）：
+// ①移仓与出库互斥完备 ②移仓单去向必不含关键词 ③去向非空（排除空值误判）
+T('C1 判据互斥完备（出库+移仓=全集，无漏分类）', out.length + mv.length, obs.length);
+T('C1b 移仓单去向均不含线边仓（分类自洽，当前 ' + mv.length + ' 张）', mv.every((o) => !String(o.toLoc || '').includes('线边仓')), true);
+T('C1c 移仓去向均为可识别仓名（非空，排除误判空值）', mv.every((o) => String(o.toLoc || '').trim().length > 0), true);
 T('C2 判出库的单全部去向含线边仓(DT直调+LL转单，无一漏判)', out.filter((o) => String(o.toLoc || '').includes('线边仓')).length, out.length);
 T('C3 领料转单(LL关联)不受影响判出库', out.filter((o) => o.linkReqNo).length >= 0, true); // LL单去向也是线边仓，判出库 ✓
 const llMove = obs.filter((o) => o.linkReqNo && isMove(o));

@@ -131,6 +131,13 @@ Future<_StockAgg> computeStock() async {
   // 领料单已发料标签（本地缓存，离线可用）：同样从在库中剔除
   final reqIssued = await RequisitionCache.loadIssued();
   outCodes.addAll(reqIssued);
+  // ㉖v103 在库权威=账本（与档案页 v98c 同口径）：码仍在账本者从"已出库"集合剔除。
+  // 11/3 现场 8889330048 框 N26J300090：上午发料→5 秒后退回→10:45 重新扫回上架，领料缓存仍记它"已发"，
+  // 汇总页据此判 0 框；而档案页按账本判在库 200、服务器也是 200——同一台设备两个页面口径打架。
+  // 缓存是历史事件流水，账本才是当前事实；退回/重扫后必须以账本为准。
+  // 数据源用本机 shelfPlacements（每轮 _reloadSilent 已先 ledgerPullMerge 与服务器对齐，零额外网络请求）。
+  final _placedUpper = placements.map((p) => p.goodsCode.toUpperCase()).toSet();
+  outCodes.removeWhere((c) => _placedUpper.contains(c.toUpperCase()));
 
   // 统一按"框"聚合后再算库存：MES 标签数量是整框数（同托每码都回整框值），
   // 框键=托号优先，其次"货位+零件号"（同位同件视为同框），都缺才一码一框。
@@ -613,15 +620,12 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
     if (_proj.isNotEmpty) {
       rows = rows.where((r) => projOfPn(r.partNo).contains(_proj)).toList();
     }
-    // ㉖v69 界面优化：零库存沉底成组（单次稳定排序：组间沉底、组内保持零件号/分散度次序，避免两轮sort打乱）
+    // ㉖v69 界面优化：零库存沉底成组（单次稳定排序：组间沉底、组内保持零件号次序，避免两轮sort打乱）
+    // ㉖v103 移除"按分散度"排序入口（用户拍板：使用率低且挤占布局；byLocDist 仍用于列表内分布展示）
     rows.sort((x, y) {
       final xz = (x.inBoxes == 0 && x.stock <= 0) ? 1 : 0;
       final yz = (y.inBoxes == 0 && y.stock <= 0) ? 1 : 0;
       if (xz != yz) return xz - yz;
-      if (_flt == "loc") {
-        final d = y.byLocDist.length.compareTo(x.byLocDist.length);
-        if (d != 0) return d;
-      }
       return x.partNo.compareTo(y.partNo);
     });
     final firstEmpty = rows
@@ -696,17 +700,15 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
           ])),
       Padding(
           padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
-          child: Row(children: [
+          // ㉖v103 布局修复（用户反馈：项目分类下拉与缺料分享按钮被挤出屏幕看不到）：
+          // 旧版单行 Row + Spacer，chip 一多（全部/滞留/零库存/项目下拉）就把右侧分享按钮顶出屏宽。
+          // 改 Wrap 自动换行 + 计数独立成行尾，任何屏宽都能看全所有控件。
+          child: Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
             chip("", '全部', Colors.blueGrey),
-            const SizedBox(width: 6),
             chip('stale', '🧊有滞留', const Color(0xFFE53935)),
-            const SizedBox(width: 6),
             chip('zero', '⛔零库存', const Color(0xFF757575)),
-            const SizedBox(width: 6),
-            chip('loc', '📍按分散度', const Color(0xFF00897B)),
             if (_projCodesCache.isNotEmpty || (_proj.isNotEmpty && !_projCodesCache.contains(_proj))) ...[
               // ㉖v101 项目筛选下拉：项目字典（网页「项目」页维护）非空才显示；当前值悬空（码被删）仍列入防assert
-              const SizedBox(width: 6),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 decoration: BoxDecoration(
@@ -723,7 +725,6 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
                 ),
               ),
             ],
-            const Spacer(),
             TextButton.icon(
                 style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6), visualDensity: VisualDensity.compact, foregroundColor: const Color(0xFF07C160)),
                 onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortageReportPage())),
@@ -1644,7 +1645,17 @@ Future<_PPData> loadPartProfile(String partNo) async {
   }
 
   final seen = <String>{};
+  // ㉖v103 同码去重（11/3 现场 8889330048 档案显示 400、服务器算 200：N26J300090 于 10/30、11/3 各有效扫一次，
+  // 旧版逐条建框→同一实物框双计，累计入库与当前库存同步虚高）。
+  // 规则：未作废记录按标签码只保留【最新一条】（recs 已按 scanTime 升序，后写覆盖即最新）；
+  // 作废记录逐条保留——每次作废是独立事件，档案"作废"筛选需要完整历史。
+  final latestValid = <String, dynamic>{};
   for (final r in recs) {
+    if (r.isCancel) continue;
+    latestValid[r.goodsCode.toUpperCase()] = r;
+  }
+  for (final r in recs) {
+    if (!r.isCancel && !identical(latestValid[r.goodsCode.toUpperCase()], r)) continue; // 同码非最新有效扫描→已去重跳过
     final b = _PPBox()
       ..barcode = r.goodsCode
       ..qty = r.mesQty ?? 0

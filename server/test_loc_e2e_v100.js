@@ -52,11 +52,15 @@ async function post(p, token, body) {
     const tk = lg.json.token, T = () => tk;
     const now = Date.now();
     const ep = db0.ledgerEpoch;
-    // 动态找两个确定空闲货位（避开真实账本占用位——货位互斥闸会正确拦占用位，非防线问题）
+    // 动态找确定空闲货位（避开真实账本占用位——货位互斥闸会正确拦占用位，非防线问题）
+    // 11/3 教训：硬编码 NB03-B-11-07 已被真实框占用，导致 C1b"恢复照常上账"被互斥闸拦下误报失败
     const occ = new Set(db0.ledger.map((x) => String(x.l).toUpperCase()));
-    const cands = ['NB02-A-16-4F', 'NB02-B-16-4F', 'NB02-C-16-3F', 'NB03-A-16-40', 'NB03-B-16-40', 'NB03-C-16-40'];
-    const freeLocs = cands.filter((l) => !occ.has(l)).slice(0, 2);
-    if (freeLocs.length < 2) { console.log('FAIL! 找不到两个空闲货位，样本池需扩充'); srv.kill(); process.exit(1); }
+    const _c2 = [], _c3 = [];
+    for (const z of ['A', 'B', 'C', 'D', 'E', 'F']) for (let r = 16; r >= 1; r--) { _c2.push(`NB02-${z}-${String(r).padStart(2, '0')}-4F`); _c3.push(`NB03-${z}-${String(r).padStart(2, '0')}-40`); }
+    const freeRack = _c2.filter((l) => !occ.has(l))[0];
+    const freeGnd = _c3.filter((l) => !occ.has(l)).slice(0, 2); // [0]=K2错配st/C1恢复上账，[1]=K6正常gl/C3对照
+    if (!freeRack || freeGnd.length < 2) { console.log('FAIL! 找不到空闲货位，样本池需扩充'); srv.kill(); process.exit(1); }
+    const freeLocs = [freeRack, freeGnd[0]];
 
     // ========== 防线① /api/ledger/sync ==========
     const it = (c, l) => ({ c, l, f: '1800*1200_2', t: now, q: 10, p: '6600000001', n: 'E2E取证件', b: '2026-10-29', pid: 'E2EPID', mv: '登记', src: 'E2E' });
@@ -105,16 +109,16 @@ async function post(p, token, body) {
     const f = (k, code, wt, st, gl, cx) => ({ k, code, wt, st, gl, ct: '1800*1200_2', rm: '', batch: 'B-E2E-V100', cx: !!cx, t: now, pn: '6600000002', q: 5, mk: '', op: 'E2E', nm: 'E2E流水件', lot: '2026-10-29', mc: '', pid: '' });
     const s1 = await post('/api/scanlog/sync', T(), { items: [
       f('K1', 'E2EFLOW001', 1, '', 'NB02-CK-05'),   // 反向病：地面模式 gl=站台 → 应命中
-      f('K2', 'E2EFLOW002', 0, 'NB03-B-11-07', 'NB02-A-05-1F'), // 错配：AGV st=地面格 → 应命中
+      f('K2', 'E2EFLOW002', 0, freeGnd[0], 'NB02-A-05-1F'), // 错配：AGV st=地面格 → 应命中
       f('K3', 'E2EFLOW003', 0, 'NB02-CK-05', 'NB02-A-05-1F'),  // 正常AGV（gl=目标货架位 222行合法语义）→ 不得命中
       f('K4', 'E2EFLOW004', 1, '', 'NB03-H-09'),    // 正常地面粗码（v85c待补录态）→ 不得命中
-      f('K6', 'E2EFLOW006', 1, '', freeLocs[1]),    // 正常地面完整格位 → 不得命中，且恢复时照常上账（C1对照）
+      f('K6', 'E2EFLOW006', 1, '', freeGnd[1]),    // 正常地面完整格位 → 不得命中，且恢复时照常上账（C1对照；与K2不同位防互斥闸撞位）
     ] });
     chk('S1 流水推送受理', s1.json.ok, true);
     await sleep(300);
     dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
     const slog = dd.scanlog || {};
-    chk('S2 体检只留痕不回改：错配条目原样入库', [slog['K1'] && slog['K1'].gl, slog['K2'] && slog['K2'].st], ['NB02-CK-05', 'NB03-B-11-07']);
+    chk('S2 体检只留痕不回改：错配条目原样入库', [slog['K1'] && slog['K1'].gl, slog['K2'] && slog['K2'].st], ['NB02-CK-05', freeGnd[0]]);
     chk('S3 正常条目未被误改', [slog['K3'] && slog['K3'].gl, slog['K4'] && slog['K4'].gl], ['NB02-A-05-1F', 'NB03-H-09']);
     const logTxt = srvLog.join('');
     chk('S4 服务日志有体检留痕', /\[flow-loc\].*2 条跨模式货位错配/.test(logTxt), true);
@@ -132,7 +136,7 @@ async function post(p, token, body) {
     await sleep(300);
     dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
     const k2row = (dd.ledger || []).find((x) => x.c === 'E2EFLOW002');
-    chk('C1b 格式合法的st恢复照常上账（边界演示）', [rs1.json.ok === true, !!k2row, String((k2row || {}).l || '').toUpperCase()], [true, true, 'NB03-B-11-07']);
+    chk('C1b 格式合法的st恢复照常上账（边界演示）', [rs1.json.ok === true, !!k2row, String((k2row || {}).l || '').toUpperCase()], [true, true, freeGnd[0].toUpperCase()]);
 
     // 场景2：地面模式 gl=站台码（K1）恢复 → 同样必须不上账（反向病的恢复路径）
     await post('/api/scanlog/cancel', T(), { k: 'K1', cx: true });
@@ -151,7 +155,7 @@ async function post(p, token, body) {
     await sleep(300);
     dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
     const k6row = (dd.ledger || []).find((x) => x.c === 'E2EFLOW006');
-    chk('C3b 地面完整格位流水恢复照常上账（防线③零误伤对照）', [rs3b.json.ok === true, !!k6row, String((k6row || {}).l || '').toUpperCase()], [true, true, freeLocs[1].toUpperCase()]);
+    chk('C3b 地面完整格位流水恢复照常上账（防线③零误伤对照）', [rs3b.json.ok === true, !!k6row, String((k6row || {}).l || '').toUpperCase()], [true, true, freeGnd[1].toUpperCase()]);
     chk('C3c 恢复上账来源标注网页恢复', String((k6row || {}).src || ''), '网页恢复');
 
     // 场景4：AGV 流水（wt=0，st=站台码，恢复取 st）→ 必拒（正是旧版把站台直接写进账本的漏网路径）

@@ -55,8 +55,14 @@ async function waitUp() { for (let i = 0; i < 40; i++) { await sleep(250); try {
     const logTxt = log.join('');
     const mFix = logTxt.match(/op-fix\] v101 迁移修复采集流水操作人乱码 (\d+) 条/);
     chk('M1 启动日志含迁移实证且条数=副本坏值数', mFix ? +mFix[1] === wantFix : wantFix === 0, true);
-    chk('M2 存量坏值N26J240116终值为真人', dd.scanlog['N26J240116|B2026-10-27-1744|1793095878508'] && dd.scanlog['N26J240116|B2026-10-27-1744|1793095878508'].op, '宋明明');
-    chk('M3 存量坏值N26J290012终值为真人', dd.scanlog['N26J290012|B2026-10-29-1008|1793241663121'] && dd.scanlog['N26J290012|B2026-10-29-1008|1793241663121'].op, '宋明明');
+    // M2/M3 断言迁移的真实保证：终值【无乱码且是用户表真人】——不锁"宋明明"：
+    // 主库该条可能已被现场改写为另一合法人名（11/3 实测 N26J290012 op=胡明锵），迁移对合法值一律不动=正确行为
+    const _names = new Set((dd.users || []).map((x) => String(x.name || '')));
+    const _bad = (s) => /[\uFFFD\u25C6\uFFFC]/.test(String(s || ''));
+    const _okName = (rec) => { const v = rec && rec.op; return !!v && !_bad(v) && _names.has(v); };
+    chk('M2 存量坏值N26J240116终值为真人（无乱码）', _okName(dd.scanlog['N26J240116|B2026-10-27-1744|1793095878508']), true);
+    chk('M3 存量坏值N26J290012终值为真人（无乱码）', _okName(dd.scanlog['N26J290012|B2026-10-29-1008|1793241663121']), true);
+    const _op12After1 = (dd.scanlog['N26J290012|B2026-10-29-1008|1793241663121'] || {}).op; // 首启终值基线，供 R3 比对漂移
     chk('M4 ◆类坏值同批次多数原则修复', dd.scanlog['PREFE2ECODE|B-PRE-OPFIX|1'] && dd.scanlog['PREFE2ECODE|B-PRE-OPFIX|1'].op, '卫革测试');
     chk('M5 正常名未被误动', dd.scanlog['PREFE2ECODE2|B-PRE-OPFIX|2'].op, '卫革测试');
     chk('M6 幂等开关已置1', dd.opFixedV101, 1);
@@ -104,7 +110,7 @@ async function waitUp() { for (let i = 0; i < 40; i++) { await sleep(250); try {
     await sleep(800);
     chk('R2 二次启动迁移静默(不再打修复日志)', /op-fix\] v101 迁移修复/.test(log.join('')), false);
     dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
-    chk('R3 修复值跨重启不漂移', dd.scanlog['N26J290012|B2026-10-29-1008|1793241663121'].op, '宋明明');
+    chk('R3 修复值跨重启不漂移（=首启终值且仍无乱码）', dd.scanlog['N26J290012|B2026-10-29-1008|1793241663121'].op === _op12After1 && _okName(dd.scanlog['N26J290012|B2026-10-29-1008|1793241663121']), true);
     chk('R4 开关持久', dd.opFixedV101, 1);
 
     console.log(`\n===== 端到端取证：${fail === 0 ? '全部 PASS' : fail + ' 项失败'}，合计 ${total} 项断言 =====`);

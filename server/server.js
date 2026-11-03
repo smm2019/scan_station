@@ -627,6 +627,20 @@ function projSuggest() { // 只读分析：itemDict 未入典零件按名称派�
 }
 function projCodeOk(c) { return /^[一-龥A-Z0-9\/-]{1,24}$/.test(c) && /\d/.test(c); } // 项目码：中文品牌/大写字母数字/斜杠连字符，须含数字（车型码特征），≤24；禁空格（与派生分组码口径一致）
 function projOf(pn) { try { return (db.projMap || {})[String(pn || '').toUpperCase()] || []; } catch (_) { return []; } } // 零件→项目码列表（未配=空，纯查询视图）
+// ---- ㉖v103 账本数量对账（11/3 现场 8894153871 虚高 80 件：PDA LabelInfo 缓存存 10/23 首扫 MES 值 300，
+// 本机 11/3 重扫实测 220 被旧缓存压住推上账本；档案页按流水算 920 反而对。全库审计 803 行仅此 1 行偏差）----
+// 口径：账本行件数的唯一真源=该标签最新有效扫码（未作废、t 最大且 q>0）；扫码是 MES 直读，登记/缓存只是搬运。
+// q=0（MES 未回数量/纯数字码）与无扫码（别台扫的、已归档）不参与对账=零误伤。
+function latestScanQty() {
+  const m = {};
+  for (const s of Object.values(db.scanlog || {})) {
+    if (s.cx) continue;
+    const c = String(s.code || '').toUpperCase(), q = Number(s.q) || 0, t = Number(s.t) || 0;
+    if (!c || q <= 0) continue;
+    if (!m[c] || t >= m[c].t) m[c] = { q, t };
+  }
+  return m;
+}
 
 // ---- ㉓导出中心：快照登记（谁/何时/数据集/条件/行数/SHA1），CSV带血缘注释头、XLS带口径sheet（SpreadsheetML零依赖） ----
 const EXP_LABELS = { D1: '库位表', D2: '库存汇总', D3: '入库流水', D4: '出库流水', D5: 'AGV任务', D6: 'AGV异常事件', D7: '工作量报表', D8: '领料台账', D9: '活动流审计', D10: '盘点结果', PACK: '月度对账包' };
@@ -1303,7 +1317,7 @@ const PARAMS = {
   rackTiers:      { grp: '存储配置', hide: 1, name: '每架层数', unit: '层', min: 1, max: 10, d: 4, tip: '每台货架纵向层数（现场 4 层：1F-4F）' },
   gndZones:       { grp: '存储配置', hide: 1, name: '地面区数', unit: '区', min: 1, max: 20, d: 6, tip: 'NB03 地面货区数量（现场 A/B/C/F/G/H 六区）；地面总格位=区数×每区排数×每排格数' },
   gndRows:        { grp: '存储配置', hide: 1, name: '每区排数', unit: '排', min: 1, max: 40, d: 18, tip: '每个地面区的默认排数（现场排号到 18）；可在「地面排配置」按区单独覆盖（如 B 区 15 排），并支持停用指定排（如 A-01 不用）' },
-  gndCols:        { grp: '存储配置', hide: 1, name: '每排格数', unit: '格', min: 1, max: 60, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数）' },
+  gndCols:        { grp: '存储配置', hide: 1, name: '每排格数', unit: '格', min: 1, max: 200, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数，上限200）' },
   abcWindow:      { grp: '调度策略', name: 'ABC周转统计窗', unit: '天', min: 7, max: 365, d: 30, tip: '出库单+采集流水的统计窗口，用于给零件打周转分' },
   abcTop:         { grp: '调度策略', name: 'A类件比例', unit: '%', min: 0, max: 80, d: 20, tip: '周转分前N%判为A类：入库自动分配时优先靠近CK站台的货架列（0=关闭该策略）' },
   aisleCap:       { grp: '调度策略', name: '巷道并发上限', unit: '任务', min: 0, max: 8, d: 2, tip: '同一货架巷道(区-排)在途搬运任务数上限，达到则新出库任务本轮不放行、入库分配避开（0=关闭节流）' },
@@ -1472,48 +1486,53 @@ async function unscanRollbackOne(r, target, code, u, hpush) {
     hpush(`↩️ 退回 ${target.partNo} 标签 ${code}（${_ij.q}件，账本已有该码不重复复挂，累计 ${issuedQtyG(target)}/${target.qty}）（${u.name}）`);
   }
   // 物理联动：①排队→撤销 ②下发未叉→撤WMAS ③到站/完成→自动返架叫车
-  try {
-    const bq = (db.agvQueue || []).filter((x) => String(x.code || '').toUpperCase() === code && ['排队', '下发中', '已下发', '到站', '完成'].includes(x.state)).sort((a, b2) => (b2.at || 0) - (a.at || 0))[0];
-    if (bq && bq.state === '排队') {
-      retireQueueItem(bq, '取消', '退回联动：未下发即撤销');
-      hpush(`🛑 退回联动：框 ${code} 叫车任务未下发，已同步撤销（货仍在架）`);
-      save();
-    } else if (bq && (bq.state === '下发中' || bq.state === '已下发')) {
-      let cancelled = false;
-      const tk2 = await wmasToken();
-      if (tk2) {
-        const tn2 = bq.wmsTask || await wmasTaskNoOf(bq, tk2);
-        if (!tn2) cancelled = true;
-        else {
-          const cr2 = await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk2, [tn2]);
-          cancelled = wmasOk(cr2) || String((cr2 && (cr2.message || cr2.msg)) || '').includes('不存在');
+  // ㉖v103 改为【后台异步】（11/3 现场事故：撤扫同步等 WMAS 返架叫车 8.6 秒才返回，PDA 弹窗已关、
+  // 页面无反馈，用户以为没生效重复扫码/重复点转单→撤扫与发料竞态，账面记 400 而 MES 实转 200）。
+  // 账面复位（上方同步部分）完成即可应答；AGV 撤车/返架结果异步追加 history，PDA 下次刷新可见。
+  setImmediate(async () => {
+    try {
+      const bq = (db.agvQueue || []).filter((x) => String(x.code || '').toUpperCase() === code && ['排队', '下发中', '已下发', '到站', '完成'].includes(x.state)).sort((a, b2) => (b2.at || 0) - (a.at || 0))[0];
+      if (bq && bq.state === '排队') {
+        retireQueueItem(bq, '取消', '退回联动：未下发即撤销');
+        hpush(`🛑 退回联动：框 ${code} 叫车任务未下发，已同步撤销（货仍在架）`);
+        save();
+      } else if (bq && (bq.state === '下发中' || bq.state === '已下发')) {
+        let cancelled = false;
+        const tk2 = await wmasToken();
+        if (tk2) {
+          const tn2 = bq.wmsTask || await wmasTaskNoOf(bq, tk2);
+          if (!tn2) cancelled = true;
+          else {
+            const cr2 = await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk2, [tn2]);
+            cancelled = wmasOk(cr2) || String((cr2 && (cr2.message || cr2.msg)) || '').includes('不存在');
+          }
         }
+        if (cancelled) {
+          retireQueueItem(bq, '取消', '退回联动：车未叉取，任务已撤销');
+          hpush(`🛑 退回联动：框 ${code} 在途叫车已撤销（车未叉取，货仍在架 ${_ul || '原货位'}）`);
+        } else {
+          (bq.trace = bq.trace || []).push('退回联动：叫车撤销被拒（车可能已叉取）');
+          hpush(`⚠️ 退回联动：框 ${code} 叫车撤销被拒——车可能已在搬运，到货后请人工返架（账面已复位 ${_ul || '原货位'}）`);
+          db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'req_arrive', `⚠️ 退回联动：框 ${code}（${target.partNo}）叫车撤销被拒，若已送到站台请人工送回货架`, ''));
+        }
+        save();
+      } else if (bq && (bq.state === '到站' || bq.state === '完成') && _ul && (bq.station || bq.stationManual)) {
+        const stn0 = String(bq.station || bq.stationManual || '');
+        const dupIn = (db.agvQueue || []).some((x) => x.type === 'inbound' && String(x.code || '').toUpperCase() === code && ['排队', '下发中', '已下发'].includes(x.state));
+        if (!dupIn) {
+          const itemB = { id: newId('cq'), code, fromLoc: stn0, stationManual: _ul, station: '', palletType: bq.palletType || palletTypeOf(code), type: 'inbound', manualOnly: true, ref: 'RK-' + code, reqNo: r.no, by: u.name, state: '排队', at: Date.now(), updAt: Date.now(), trace: [], unscanBack: r.no };
+          db.agvQueue = db.agvQueue || [];
+          await dispatchOne(itemB, Date.now(), [], [], (db.agvDispatchMode || 'dry') === 'live');
+          db.agvQueue.push(itemB); save();
+          const ph = itemB.state === '失败' ? `自动返架被拒(${String(itemB.err || '').slice(0, 40)})——请人工把框从 ${stn0} 送回货架（原货位 ${_ul} 若已占用请就近选空位），并用「位置登记」补账` : itemB.state === '已下发' ? `已自动发起返架叫车 ${stn0}→${_ul}，车到架边请确认` : `返架任务已排队 ${stn0}→${_ul}（切真实下发后自动发车）`;
+          hpush(`🔙 退回联动：框 ${code} 实物在站台 ${stn0}，${ph}`);
+          db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'req_arrive', `🔙 返架提醒：框 ${code}（${target.partNo}）${ph}`, ''));
+          notify(r.by, 'req_flow', `你的领料单 ${r.no}：框 ${code} 已退回，${ph}`, r.id);
+        } else hpush(`🔙 退回联动：框 ${code} 已有在途返架任务，不重复发起`);
       }
-      if (cancelled) {
-        retireQueueItem(bq, '取消', '退回联动：车未叉取，任务已撤销');
-        hpush(`🛑 退回联动：框 ${code} 在途叫车已撤销（车未叉取，货仍在架 ${_ul || '原货位'}）`);
-      } else {
-        (bq.trace = bq.trace || []).push('退回联动：叫车撤销被拒（车可能已叉取）');
-        hpush(`⚠️ 退回联动：框 ${code} 叫车撤销被拒——车可能已在搬运，到货后请人工返架（账面已复位 ${_ul || '原货位'}）`);
-        db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'req_arrive', `⚠️ 退回联动：框 ${code}（${target.partNo}）叫车撤销被拒，若已送到站台请人工送回货架`, ''));
-      }
-      save();
-    } else if (bq && (bq.state === '到站' || bq.state === '完成') && _ul && (bq.station || bq.stationManual)) {
-      const stn0 = String(bq.station || bq.stationManual || '');
-      const dupIn = (db.agvQueue || []).some((x) => x.type === 'inbound' && String(x.code || '').toUpperCase() === code && ['排队', '下发中', '已下发'].includes(x.state));
-      if (!dupIn) {
-        const itemB = { id: newId('cq'), code, fromLoc: stn0, stationManual: _ul, station: '', palletType: bq.palletType || palletTypeOf(code), type: 'inbound', manualOnly: true, ref: 'RK-' + code, reqNo: r.no, by: u.name, state: '排队', at: Date.now(), updAt: Date.now(), trace: [], unscanBack: r.no };
-        db.agvQueue = db.agvQueue || [];
-        await dispatchOne(itemB, Date.now(), [], [], (db.agvDispatchMode || 'dry') === 'live');
-        db.agvQueue.push(itemB); save();
-        const ph = itemB.state === '失败' ? `自动返架被拒(${String(itemB.err || '').slice(0, 40)})——请人工把框从 ${stn0} 送回货架（原货位 ${_ul} 若已占用请就近选空位），并用「位置登记」补账` : itemB.state === '已下发' ? `已自动发起返架叫车 ${stn0}→${_ul}，车到架边请确认` : `返架任务已排队 ${stn0}→${_ul}（切真实下发后自动发车）`;
-        hpush(`🔙 退回联动：框 ${code} 实物在站台 ${stn0}，${ph}`);
-        db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'req_arrive', `🔙 返架提醒：框 ${code}（${target.partNo}）${ph}`, ''));
-        notify(r.by, 'req_flow', `你的领料单 ${r.no}：框 ${code} 已退回，${ph}`, r.id);
-      } else hpush(`🔙 退回联动：框 ${code} 已有在途返架任务，不重复发起`);
-    }
-  } catch (e) { hpush(`⚠️ 退回物理联动异常：${e.message}`); }
-  return { ok: true };
+    } catch (e) { hpush(`⚠️ 退回物理联动异常：${e.message}`); }
+  });
+  return { ok: true, async: 1 }; // 账面已复位；AGV 联动后台进行中
 }
 // 指定超时清扫：pending 且超过 assignOpenAt → 解除指定锁定，广播给全部仓管可接单
 function sweepAssignOpen() {
@@ -1871,8 +1890,15 @@ function outboundLedgerFix() {
         if (it.transferred !== true) continue;
         const rows = issuedOf(it);
         if (!rows.length) continue;
-        if (rows.some((e) => obCodes.has(String(e.c || '').toUpperCase()))) continue; // 已有任一条台账记录，视为已落库
-        const items = rows.map((e) => {
+        // ㉖v103 改为【按标签逐码】判断缺失（旧版"任一条已有台账即整行跳过"）：
+        // 11/3 现场 LL2026110308231354 行 8889330048 发两框转MES 400 件，出库台账只有 290107 一框。
+        // 但补建必须排除【当前仍在账本(在库)】的框——竞态误记账的框（撤扫退回+重上架，实物没出库）
+        // 若被补建会坐实成错误出库（300090 正属此类：转单后 10:45 重扫回 A-04-1F，账本在架）。
+        // 正常出库框转单即消位（进墓碑），故"在账本"=未实际出库=不补建，对正常流程零误伤。
+        const ledOn = new Set((db.ledger || []).map((x) => String(x.c || '').toUpperCase()));
+        const missing = rows.filter((e) => { const c = String(e.c || '').toUpperCase(); return c && !obCodes.has(c) && !ledOn.has(c); });
+        if (!missing.length) continue;
+        const items = missing.map((e) => {
           const c = String(e.c || '').toUpperCase();
           let fl = String(e.l || '');
           if (!fl) { const led = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === c); fl = String((led && led.l) || ''); }
@@ -1884,7 +1910,9 @@ function outboundLedgerFix() {
         const d = new Date(Number(it.transferAt) || Date.now());
         const p2 = (n) => String(n).padStart(2, '0');
         const ts = '' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
-        const no = 'SRV-DT' + ts + '-' + String(it.partNo || '').slice(-4);
+        // 单号=SRV-DT+转单时刻+零件尾4位；同一行分批补建（部分码先落库、剩余码后补）时刻与尾4位相同→追加序号防撞
+        let no = 'SRV-DT' + ts + '-' + String(it.partNo || '').slice(-4);
+        for (let _sq2 = 2; db.outbound[no] && _sq2 <= 20; _sq2++) no = 'SRV-DT' + ts + '-' + String(it.partNo || '').slice(-4) + '-' + _sq2;
         if (db.outbound[no]) continue;
         const tl = r.toLoc || {};
         const _so = (db.seenOut || {})[String(items[0].barcode || '').toUpperCase()] || {};
@@ -2580,13 +2608,18 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         const rejectedLoc = []; let locBad = 0;
         // ㉖v80 拼接码防线：PDA 重启前缓存的 Excel 拼接行（"A; B"）会随推送复活，与服务器已拆单码行双计（实测 D-01-2F 双计315件）。
         // 到达即拆成单码行（q均分同迁移口径，t/内容一致→指纹闸自然判"未变"幂等跳过）；已出库码由墓碑闸拦截
+        // ㉖v103 件数对账闸（账本推送方向）：账本行 q 一律以【全厂最新有效扫码】（MES 直读）为准——
+        // PDA LabelInfo 缓存存旧值/拼接行均分值都不得覆盖实测（11/3 现场 8894153871 虚高 80 件根因）。
+        // 无扫码记录（别台扫的/已归档）或扫码 q=0 不动=零误伤；系统无人工改账本数量入口，q 唯一来源即扫码。
+        const _sq = latestScanQty(); let _qAlign = 0;
+        const _qa = (row) => { const L = _sq[row.c]; if (L && Number(row.q) !== L.q) { row.q = L.q; _qAlign++; } return row; };
         const _pushClean = (it) => {
           const c0 = String((it && it.c) || '').trim().toUpperCase();
-          if (!c0.includes(';') && !c0.includes('；')) { clean.push(it); return; }
+          if (!c0.includes(';') && !c0.includes('；')) { clean.push(_qa(it)); return; }
           const cs = c0.split(/[;；]/).map((s) => s.trim()).filter(Boolean);
-          if (cs.length < 2) { clean.push(Object.assign({}, it, { c: cs[0] || '' })); return; }
+          if (cs.length < 2) { clean.push(_qa(Object.assign({}, it, { c: cs[0] || '' }))); return; }
           const tot = Number(it && it.q) || 0; const per = Math.floor(tot / cs.length); let rem = tot - per * cs.length;
-          for (const cc of cs) { const one = Object.assign({}, it, { c: cc, q: per + (rem > 0 ? 1 : 0), _split: 1 }); if (rem > 0) rem--; clean.push(one); }
+          for (const cc of cs) { const one = Object.assign({}, it, { c: cc, q: per + (rem > 0 ? 1 : 0), _split: 1 }); if (rem > 0) rem--; clean.push(_qa(one)); }
         };
         for (const it0 of raw) {
           // ㉖v95b 乱码清洗补齐 f/p/b/src（旧版只洗 n/mv，容器类型"托<乱码>"混进账本与合并diff留痕）
@@ -2681,7 +2714,12 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
             if (!it.p && old.p) it.p = old.p; if (!it.n && old.n) it.n = old.n; if (!it.b && old.b) it.b = old.b; if (!it.q && old.q) it.q = old.q; if (!it.f && old.f) it.f = old.f;
           }
           if (old) { updated++; const fl = []; for (const k of ['l', 'p', 'q', 'b', 'f', 'mv']) { const av = String(old[k] == null ? '' : old[k]), bv = String(it[k] == null ? '' : it[k]); if (av !== bv) fl.push(k + ':' + (av || '∅') + '→' + (bv || '∅')); } if (fl.length) _diffs.push(it.c + ' ' + fl.join(' ')); if (String(old.l) !== String(it.l)) _diffs.length === 0 && _diffs.push(it.c + ' l:' + old.l + '→' + it.l); } else { added++; seenNew.add(key); _diffs.push(it.c + ' 入账@' + it.l + (it.p ? '(' + it.p + ')' : '')); }
-          ledgerPut(cur, key, { ...it, by: u.name, rec: rec0 }, old);
+          // ㉖v103 登记人语义修复（11/4 用户实锤：N26J270462 刘向轩扫入上架，链路却显示"登记 胡明锵"）：
+          // 旧版每次"内容新到达"都无条件 by=推送人——但 f/mv/src/pid 等非货位字段的修正合并也会触发，
+          // 于是任何设备重推一遍，全账本的"登记人"就被洗成最近一次推送者（全库 509/767 行被洗）。
+          // by 的正确语义=【把框登记到当前货位的人】：货位没变就保留原登记人，只有新行/改位才写推送人。
+          const _by = (old && String(old.l || '').toUpperCase() === String(it.l || '').toUpperCase()) ? (String(old.by || '') || u.name) : u.name;
+          ledgerPut(cur, key, { ...it, by: _by, rec: rec0 }, old);
           if (tombT) { tomb.delete(key); if (db.tombReject) delete db.tombReject[key]; } // 新到达=重新登记，复活（拒弹记录一并清：该框将来再次出库时还能提醒一次）
         }
         db.syncFp[u.id] = Object.assign({}, _fpOld, _fpNew); // 合并保留：部分推送不清掉未含行的指纹
@@ -2736,7 +2774,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           }
         } catch (e) { console.log('[urgent-in] 异常：', e.message); }
         // ㉖diff 汇总进活动流：单次合并一条（样例40条+计数，防刷爆滚窗）
-        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${locConflict ? ' 货位冲突' + locConflict : ''}${rejected.length ? ' 拒回' + rejected.length : ''}${locBad ? ' 格式拒' + locBad : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
+        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${locConflict ? ' 货位冲突' + locConflict : ''}${rejected.length ? ' 拒回' + rejected.length : ''}${locBad ? ' 格式拒' + locBad : ''}${_qAlign ? ' 件数对账' + _qAlign : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
         return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, locConflict, rejected: rejected.slice(0, 50), rejectedLoc: rejectedLoc.slice(0, 20) });
       }
 
@@ -2779,6 +2817,28 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         }
         if (_flowSick) { console.log(`[flow-loc] ⚠ ${u.name} 本批流水 ${_flowSick} 条跨模式货位错配：${_fsSamp.join(' ; ')}`); try { pushOps(u, '货位格式体检', _flowSick + ' 条错配', _fsSamp.join(' ; ')); } catch (_) {} }
         for (const s of Object.values(snap)) { feedDict(s.pn, s.nm, '采集流水'); feedMitem(s.pn, s.mc, '采集流水'); } // ㉒G7 字典沉淀；㉖v98c 物料号同步沉淀
+        // ㉖v103 数量对账防线：本批有效扫码若与账本行件数不符 → 按扫码（MES 直读）纠正账本。
+        // 根因场景：PDA LabelInfo 缓存存旧 MES 值，重扫后新值被缓存压住推上账本（11/3 现场虚高 80 件）。
+        // 只改未作废(cx=false)且 q>0 的扫码；账本无该码（别台扫的/未登记）不动。改账本必 bump ledgerRev（缓存与增量同步按 rev 失效）。
+        let _qtyFix = 0; const _qfSamp = [];
+        {
+          // 本批按码聚合取【最新有效扫码】（同码可能有多条：作废重扫/跨批次，Object.values 序不定，直接遍历会被旧条覆盖）
+          const _bq = {};
+          for (const v of Object.values(snap)) {
+            if (v.cx) continue;
+            const c = String(v.code || '').toUpperCase(), q = Number(v.q) || 0, t = Number(v.t) || 0;
+            if (!c || q <= 0) continue;
+            if (!_bq[c] || t >= _bq[c].t) _bq[c] = { q, t };
+          }
+          const _li = {}; for (const x of db.ledger || []) { const c = String(x.c || '').toUpperCase(); if (c) _li[c] = x; }
+          for (const [c, L] of Object.entries(_bq)) {
+            const row = _li[c]; if (!row) continue; // 账本无该码（别台扫的/未登记）不动
+            const _oq = Number(row.q) || 0;
+            if (_oq === L.q) continue;
+            if (_qtyFix < 200) { row.q = L.q; _qtyFix++; if (_qfSamp.length < 6) _qfSamp.push(c + ' ' + _oq + '→' + L.q); }
+          }
+          if (_qtyFix) { db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name; console.log(`[ledger-qty] ${u.name} 本批对账纠正账本件数 ${_qtyFix} 行：${_qfSamp.join(' ; ')}`); try { pushOps(u, '账本数量对账', _qtyFix + ' 行', _qfSamp.join(' ; ')); } catch (_) {} }
+        }
         db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
         save();
         console.log(`[scanlog] ${u.name} 同步流水 +${Object.keys(snap).length} → 共 ${db.scanlogCount} 条`);
@@ -4137,7 +4197,7 @@ return send(res, 200, {
           const k = String(e.prefix || '').trim().toUpperCase();
           const v = Number(e.count) || 0;
           if (!/^NB03-[A-Z]-\d{2}$/.test(k)) continue;
-          if (v < 1 || v > 60) { delete db.groundSlots[k]; continue; } // 1~60之外=恢复默认12
+          if (v < 1 || v > 200) { delete db.groundSlots[k]; continue; } // ㉖v103 1~200之外=恢复默认（旧上限60：现场E-11等四排已顶格，卡住真实排数）
           db.groundSlots[k] = v;
         }
         // ㉖v59 按区排数覆盖：{"A":15}=该区15排，{"B":0}=整区不用，{"C":null/删除}=恢复默认
@@ -5320,6 +5380,25 @@ return send(res, 200, {
             if (!target) return send(res, 400, { ok: false, msg: '该零件号不在本单内' });
             if (target.transferred) return send(res, 200, { ok: true, req: reqView(r) }); // 幂等：重复回写直接成功
             target.issued = normIssued(target);
+            // ㉖v103 按 PDA 实传框集合记账（11/3 事故：取消勾选撤扫后 8.6 秒无反馈，用户以为没生效重扫，
+            // 撤扫完成前框被加回 issued → MES 实转 200 件而回写记 400 + 误登记 seenOut，三方不一致）。
+            // PDA 传 codes=[{c,q}]（确认窗勾选集=真正转给 MES 的框）；旧版 PDA 不传 → 回退旧口径按 issued 全量记账。
+            const _sent = Array.isArray(b.codes) ? b.codes.map((x) => typeof x === 'string' ? { c: String(x).toUpperCase(), q: 0 } : { c: String((x && x.c) || '').toUpperCase(), q: Number(x && x.q) || 0 }).filter((e) => e.c) : null;
+            if (_sent && _sent.length) {
+              const _ss = new Set(_sent.map((e) => e.c));
+              // 竞态加回 issued 但未实际发出的框 → 自动回滚（复用撤扫：账本复挂+墓碑+AGV物理联动）
+              for (const e of target.issued.slice()) { const c1 = String(e.c || '').toUpperCase(); if (c1 && !_ss.has(c1)) await unscanRollbackOne(r, target, c1, u, hpush); }
+              target.issued = normIssued(target);
+              // 实际发出但服务器 issued 已无的框（撤扫应答丢失、PDA 照转了它）→ 补登记 + 账本再摘除
+              const _ns = new Set(target.issued.map((e) => String(e.c || '').toUpperCase()));
+              for (const s of _sent) {
+                if (_ns.has(s.c)) continue;
+                target.issued.push({ c: s.c, q: s.q || 0 });
+                const _li = (db.ledger || []).findIndex((x) => String(x.c || '').toUpperCase() === s.c);
+                if (_li >= 0) { db.ledger.splice(_li, 1); (db.ledgerTomb = db.ledgerTomb || []).push({ c: s.c, t: Date.now(), rec: Date.now() }); db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name; }
+                hpush(`⚠️ 转单补登记：框 ${s.c} 此前被撤扫退回但实际已转出发出，补记出库（${s.q || '?'}件）`);
+              }
+            }
             const got = issuedQty(target);
             if (got <= 0) return send(res, 400, { ok: false, msg: '该行还没有扫入任何标签，不能转单' });
             target.transferred = true;
@@ -5794,8 +5873,8 @@ function opFixV101() {
     if (n) console.log('[op-fix] v101 迁移修复采集流水操作人乱码 ' + n + ' 条');
   } catch (_) {}
 }
-// ㉖v101 存量清理：旧版 App 格数页每次保存全量提交 A~D×18=72 条（值=默认12），污染 groundSlots（实测现网 72 条全是冗余）。
-// 值等于当前默认格数的覆盖项与"无覆盖"语义完全等价（服务器格数回退=P().gndCols），删除之。
+// ㉖v101 存量清理：旧版 App 格数页每次保存全量提交 A~D×18=72 条（多为值=默认12的无意义覆盖，实测 69 条冗余+3 条真实覆盖）。
+// 值等于当前默认格数的覆盖项与"无覆盖"语义完全等价（服务器格数回退=P().gndCols），删除之；真实覆盖原样保留。
 // 若今后默认参数调整，这些排随新默认走——这正是"从未有意覆盖"的正确语义。幂等开关，一次性。
 function gsCleanV101() {
   try {
@@ -5805,6 +5884,92 @@ function gsCleanV101() {
     for (const [k, v] of Object.entries(gs)) { if (Number(v) === defC) { delete gs[k]; n++; } }
     db.gscCleanedV101 = 1; save();
     if (n) console.log('[gnd-slots] v101 清理冗余格数覆盖（=默认' + defC + '） ' + n + ' 条');
+  } catch (_) {}
+}
+// ㉖v103 存量对账：账本行件数 ≠ 该标签最新有效扫码件数 → 按扫码值纠正（11/3 现场 N26J230463 账本 300/实测 220，
+// 虚高 80 件致库存与零件档案两个口径打架）。判据=扫码是 MES 直读、登记只是搬运，账本必须服从最新实测；
+// 无有效扫码（别台扫的/已归档）或扫码 q=0（MES 未回数量）一律不动=零误伤（实测全库 803 行仅命中 1 行）。
+// 改账本必须 bump ledgerRev：账本视图缓存与 PDA 增量同步都按 rev 失效（v98 移库不 bump 的教训）。
+function ledgerQtyFixV103() {
+  try {
+    if (db.ledgerQtyFixedV103) return;
+    const lat = latestScanQty();
+    let n = 0;
+    const detail = [];
+    for (const x of db.ledger || []) {
+      const c = String(x.c || '').toUpperCase(), L = lat[c];
+      if (!L) continue;
+      const aq = Number(x.q) || 0;
+      if (aq === L.q) continue;
+      x.q = L.q; n++;
+      if (detail.length < 8) detail.push(c + ' ' + aq + '→' + L.q);
+    }
+    db.ledgerQtyFixedV103 = 1;
+    if (n) { db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = '数量对账'; }
+    save();
+    if (n) console.log('[ledger-qty] v103 按最新有效扫码纠正账本件数 ' + n + ' 行：' + detail.join(' ; ') + (n > detail.length ? ' …' : ''));
+  } catch (_) {}
+}
+// ㉖v103 存量修复：账本"登记人"被推送人洗掉（11/4 用户实锤 N26J270462：刘向轩扫入上架，链路显示"登记 胡明锵"）。
+// 合并端已改为"货位没变保留原 by"，但存量 503 行已被旧逻辑洗成最近推送人。
+// 恢复判据（全中才动，防误修）：①seenIn 出生登记存在且 by 是用户表真人（排除"系统管理员"回填署名）
+// ②出生货位=当前货位（框从未移过位，当前登记人必等于出生人；移过位的无法据此判定，不动）。
+// 改账本必 bump ledgerRev（缓存与增量同步按 rev 失效）。幂等开关。
+function ledgerByFixV103() {
+  try {
+    if (db.ledgerByFixedV103) return;
+    const names = new Set((db.users || []).map((x) => String(x.name || '')));
+    let n = 0; const detail = [];
+    for (const x of db.ledger || []) {
+      const c = String(x.c || '').toUpperCase(), si = (db.seenIn || {})[c];
+      if (!si || !si.by || !names.has(si.by) || si.by === '系统管理员') continue;
+      if (String(si.l || '').toUpperCase() !== String(x.l || '').toUpperCase()) continue;
+      if (String(x.by || '') === si.by) continue;
+      detail.push(c + ' ' + x.by + '→' + si.by);
+      x.by = si.by; n++;
+    }
+    db.ledgerByFixedV103 = 1;
+    if (n) { db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = '登记人修复'; }
+    save();
+    if (n) console.log('[ledger-by] v103 按出生登记恢复被洗掉的登记人 ' + n + ' 行：' + detail.slice(0, 8).join(' ; ') + (n > 8 ? ' …' : ''));
+  } catch (_) {}
+}
+// ㉖v103 存量修正：撤扫竞态误记账（11/3 现场 LL2026110308231354 行 8889330048：取消勾选撤扫期间用户重扫，
+// 框被加回 issued → 转单回写记实发 400，而 MES 实转仅 200、实物撤扫退回后 10:45 重新上架在库）。
+// 三重判据全中才动（防误伤正常"转单后返架余料"——那种框不在本行 issued 里）：
+// ①行已转单 ②issued 内该框【当前仍在账本】（=实物没出库，正常转单框必已消位）
+// ③该框有晚于转单时刻的有效扫码（=撤扫退回后重上架铁证）。
+// 修正：从 issued 剔除该框、实发件数扣减、撤销出库承诺（seenOut）、history 留痕说明。
+// 不可复用 unscanRollbackOne：行已 transferred 被其守卫拒绝，且框已在账本不需复挂。
+function reqRaceFixV103() {
+  try {
+    if (db.reqRaceFixedV103) return;
+    const ledOn = new Set((db.ledger || []).map((x) => String(x.c || '').toUpperCase()));
+    let n = 0; const detail = [];
+    for (const r of db.requisitions || []) {
+      for (const it of r.items || []) {
+        if (it.transferred !== true) continue;
+        const rows = normIssuedG(it);
+        const tAt = Number(it.transferAt) || 0;
+        const race = rows.filter((e) => {
+          const c = String(e.c || '').toUpperCase();
+          if (!c || !ledOn.has(c)) return false;
+          return Object.values(db.scanlog || {}).some((s) => String(s.code || '').toUpperCase() === c && !s.cx && (Number(s.t) || 0) > tAt);
+        });
+        if (!race.length) continue;
+        const rmCodes = new Set(race.map((e) => String(e.c).toUpperCase()));
+        it.issued = (it.issued || []).filter((x) => !rmCodes.has(String((typeof x === 'string' ? x : x.c) || '').toUpperCase()));
+        const cut = race.reduce((s, e) => s + (Number(e.q) || 0), 0);
+        it.transferQty = Math.max(0, (Number(it.transferQty) || 0) - cut);
+        for (const c of rmCodes) delete db.seenOut[c]; // 撤销出库承诺：该框实物在库，标签可正常复用
+        (r.history = r.history || []).push({ time: new Date().toISOString(), by: '系统', text: `⚠️ 竞态修正：框 ${[...rmCodes].join('/')} 撤扫退回后重上架在库（实物未出库），本行实发由 ${it.transferQty + cut} 更正为 ${it.transferQty} 件（转单时竞态误记，MES 实转与出库台账本就正确）` });
+        n++;
+        if (detail.length < 8) detail.push(`${r.no} ${it.partNo} 剔除${[...rmCodes].join('/')} 实发-${cut}件`);
+      }
+    }
+    db.reqRaceFixedV103 = 1;
+    if (n) { db.requisitionsAt = new Date().toISOString(); save(); }
+    if (n) console.log('[req-race] v103 修正撤扫竞态误记账 ' + n + ' 行：' + detail.join(' ; ') + (n > detail.length ? ' …' : ''));
   } catch (_) {}
 }
 // ㉖④ 检验工单状态机推进：toStation→atStation（站台快照出现本框标签）；returning→done（归位后该框回到原货位=账本命中）；waitReturn→returned（该框经出库通道出账）
@@ -6773,4 +6938,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目

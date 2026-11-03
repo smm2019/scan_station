@@ -39,11 +39,13 @@ class _LocationRegPageState extends State<LocationRegPage> {
   @override
   void dispose() { _labelCtrl.dispose(); _labelFocus.dispose(); _locCtrl.dispose(); super.dispose(); }
 
-  /// ⑮ 地面排格数设置：默认格数可改成任意数（1~60），存服务器全局共享
+  /// ⑮ 地面排格数设置：默认格数可改成任意数（1~200），存服务器全局共享
   /// ㉖v101 口径修复：旧版清单写死 A~D×18 排、默认 12 格——现场地面是 A/B/C/F/G/H 六区
   /// （网页版权威口径 ABCDEFGH），后四区在库 80+ 框却没有配置入口。
   /// 现在与网页版同口径：区=A~H；排清单三级取值=真实排号清单 lists > 按区排数覆盖 rows > 全局默认；
   /// 默认格数用服务器 def.cols；停用排 offs 行尾标注。
+  /// ㉖v103 上限 60→200：现场 E-11/E-12/E-16/F-16 四排已顶格 60（实算占用 61/59 格），
+  /// 60 是拍脑袋的软上限，卡住真实排数会导致地图少算格位、占用率虚高。
   Future<void> _openGroundSlots() async {
     final r = await AuthApi.groundSlotsGet();
     if (!mounted) return;
@@ -78,11 +80,11 @@ class _LocationRegPageState extends State<LocationRegPage> {
       final e = TextEditingController(text: "$init");
       final v = await showDialog<int>(context: c2, builder: (d2) => AlertDialog(
           title: Text(title, style: const TextStyle(fontSize: 15)),
-          content: SizedBox(width: 240, child: TextField(controller: e, autofocus: true, keyboardType: TextInputType.number, maxLength: 2, decoration: const InputDecoration(hintText: "1~60", counterText: "", border: OutlineInputBorder()))),
+          content: SizedBox(width: 240, child: TextField(controller: e, autofocus: true, keyboardType: TextInputType.number, maxLength: 3, decoration: const InputDecoration(hintText: "1~200", counterText: "", border: OutlineInputBorder()))),
           actions: [TextButton(onPressed: () => Navigator.pop(d2), child: const Text("取消")), FilledButton(onPressed: () => Navigator.pop(d2, int.tryParse(e.text.trim())), child: const Text("确定"))]));
       e.dispose();
       if (v == null) return null;
-      if (v < 1 || v > 60) { if (c2.mounted) ScaffoldMessenger.of(c2).showSnackBar(const SnackBar(content: Text("格数需 1~60"), backgroundColor: Colors.red)); return null; }
+      if (v < 1 || v > 200) { if (c2.mounted) ScaffoldMessenger.of(c2).showSnackBar(const SnackBar(content: Text("格数需 1~200"), backgroundColor: Colors.red)); return null; }
       return v;
     }
     await showDialog<void>(context: context, builder: (dctx) => StatefulBuilder(builder: (bctx, setSt) {
@@ -92,45 +94,49 @@ class _LocationRegPageState extends State<LocationRegPage> {
       }
       return AlertDialog(
         title: const Text("地面排格数设置"),
-        content: SizedBox(width: 360, height: 460, child: Column(children: [
+        // ㉖v103 布局重排（用户反馈排版问题）：旧版头部说明文字+输入框+批量应用+恢复全挤一行，
+        // 窄屏溢出（"批量应用"被切半、"恢复"按钮看不见）；行列表 34px 圆钮行距大，一屏只见 9 排。
+        // 现：头部拆两行（说明行 + 操作行），行高压到 30px 紧凑加减钮，一屏可见 13+ 排。
+        content: SizedBox(width: 372, height: 520, child: Column(children: [
           TextField(controller: ctrl, textCapitalization: TextCapitalization.characters, onChanged: (v) => setSt(() {}),
-              decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "筛选排号，如 A-11 / B13", border: OutlineInputBorder())),
-          const SizedBox(height: 6),
+              decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "筛选排号，如 A-11 / B13", counterText: "", border: OutlineInputBorder())),
+          const SizedBox(height: 4),
+          SizedBox(width: double.infinity, child: Text("默认每排 $defCols 格 · 点数字可直接输入 · 当前 ${visibleKeys().length} 排", style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey))),
           Row(children: [
-            Text("默认每排 $defCols 格；点数字可直接输入", style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
-            const Spacer(),
-            SizedBox(width: 52, child: TextField(controller: batchCtrl, keyboardType: TextInputType.number, maxLength: 2, style: const TextStyle(fontSize: 12.5), decoration: const InputDecoration(counterText: "", isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6), border: OutlineInputBorder()))),
+            SizedBox(width: 56, child: TextField(controller: batchCtrl, keyboardType: TextInputType.number, maxLength: 3, style: const TextStyle(fontSize: 12.5), decoration: const InputDecoration(counterText: "", isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6), border: OutlineInputBorder()))),
             TextButton(style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact),
                 onPressed: () async {
                   final v = int.tryParse(batchCtrl.text.trim());
-                  if (v == null || v < 1 || v > 60) { _toast("批量格数需 1~60"); return; }
+                  if (v == null || v < 1 || v > 200) { _toast("批量格数需 1~200"); return; }
                   final ks = visibleKeys();
                   if (ks.isEmpty) { _toast("当前筛选没有排"); return; }
                   final yes = await showDialog<bool>(context: bctx, builder: (d3) => AlertDialog(title: const Text("批量设置"), content: Text("把筛选出的 ${ks.length} 排全部设为 $v 格？"), actions: [TextButton(onPressed: () => Navigator.pop(d3, false), child: const Text("取消")), FilledButton(onPressed: () => Navigator.pop(d3, true), child: const Text("确定"))]));
                   if (yes != true) return;
+                  if (!bctx.mounted) return; // ㉖v103 确认框关闭瞬间外层弹层可能已卸载，setSt 前守门（同 10/31 AGV弹层崩溃族）
                   setSt(() { for (final k in ks) { rows[k] = v; } });
                 }, child: const Text("批量应用", style: TextStyle(fontSize: 12))),
             TextButton(style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6), visualDensity: VisualDensity.compact),
                 onPressed: () => setSt(() { for (final k in visibleKeys()) { rows[k] = defCols; } }),
-                child: Text("恢复$defCols", style: const TextStyle(fontSize: 12, color: Colors.blueGrey))),
+                child: Text("恢复默认$defCols", style: const TextStyle(fontSize: 12, color: Colors.blueGrey))),
           ]),
           const SizedBox(height: 2),
-          Expanded(child: ListView(children: visibleKeys().map((k) => Padding(padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 1), child: Row(children: [
-            SizedBox(width: 104, child: Text(k, style: const TextStyle(fontSize: 12.5, fontFamily: "monospace", fontWeight: FontWeight.w600))),
-            IconButton.filledTonal(visualDensity: VisualDensity.compact, constraints: const BoxConstraints(minWidth: 34, minHeight: 34), padding: EdgeInsets.zero, iconSize: 18, icon: const Icon(Icons.remove), onPressed: () => setSt(() { if (rows[k]! > 1) rows[k] = rows[k]! - 1; })),
-            const SizedBox(width: 6),
-            InkWell(onTap: () async { final v = await _askNum(bctx, "$k 格数", rows[k]!); if (v != null) setSt(() => rows[k] = v); },
-                child: Padding(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                    child: Text("${rows[k]}", style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF00897B))))),
-            const SizedBox(width: 6),
-            IconButton.filledTonal(visualDensity: VisualDensity.compact, constraints: const BoxConstraints(minWidth: 34, minHeight: 34), padding: EdgeInsets.zero, iconSize: 18, icon: const Icon(Icons.add), onPressed: () => setSt(() { if (rows[k]! < 60) rows[k] = rows[k]! + 1; })),
+          Expanded(child: ListView(children: visibleKeys().map((k) => Padding(padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 0), child: SizedBox(height: 30, child: Row(children: [
+            SizedBox(width: 96, child: Text(k, style: const TextStyle(fontSize: 12, fontFamily: "monospace", fontWeight: FontWeight.w600))),
+            InkWell(borderRadius: BorderRadius.circular(13), onTap: () => setSt(() { if (rows[k]! > 1) rows[k] = rows[k]! - 1; }),
+                child: Container(width: 26, height: 26, alignment: Alignment.center, decoration: BoxDecoration(color: const Color(0xFFE8EAF6), borderRadius: BorderRadius.circular(13)), child: const Icon(Icons.remove, size: 15, color: Color(0xFF3949AB)))),
+            const SizedBox(width: 8),
+            SizedBox(width: 40, child: InkWell(onTap: () async { final v = await _askNum(bctx, "$k 格数", rows[k]!); if (v != null && bctx.mounted) setSt(() => rows[k] = v); }, // ㉖v103 await 输入框后外层弹层可能已关，setSt 前守门
+                child: Text("${rows[k]}", textAlign: TextAlign.center, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF00897B))))),
+            const SizedBox(width: 8),
+            InkWell(borderRadius: BorderRadius.circular(13), onTap: () => setSt(() { if (rows[k]! < 200) rows[k] = rows[k]! + 1; }),
+                child: Container(width: 26, height: 26, alignment: Alignment.center, decoration: BoxDecoration(color: const Color(0xFFE8EAF6), borderRadius: BorderRadius.circular(13)), child: const Icon(Icons.add, size: 15, color: Color(0xFF3949AB)))),
             Expanded(child: Text(offs.containsKey(k) ? "⚠停用排" : (rows[k] == defCols ? "" : "已改（默认$defCols）"), textAlign: TextAlign.right, style: TextStyle(fontSize: 10.5, color: offs.containsKey(k) ? Colors.red : Colors.orange))),
-          ]))).toList())),
+          ])))).toList())),
         ])),
         actions: [
           TextButton(onPressed: () => Navigator.pop(dctx), child: const Text("取消")),
           FilledButton(onPressed: () async {
-            // ㉖v101 diff 提交：只发与初值不同的排；改回默认值发 count=0（服务器 1~60 外=删除该排配置恢复默认）。
+            // ㉖v101 diff 提交：只发与初值不同的排；改回默认值发 count=0（服务器 1~200 外=删除该排配置恢复默认）。
             // 旧版每次全量提交几十条（含无脑写默认值），污染 groundSlots 且会覆盖他机并发修改。
             final entries = <Map>[
               for (final e in rows.entries)
