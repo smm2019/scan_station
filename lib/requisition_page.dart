@@ -2711,7 +2711,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         await Future.wait(cs.sublist(s, (s + 5) > cs.length ? cs.length : s + 5).map((c) async {
           try {
             final d = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {"barcode": c});
-            if (d != null) onHand[c] = d;
+            if (d != null) onHand[c] = Map<String, dynamic>.from(d); // mesGetData 返回 Map<dynamic,dynamic>，转型后入 onHand（同直调页口径）
           } catch (_) {}
         }));
       }
