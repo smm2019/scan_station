@@ -1536,14 +1536,29 @@ class _PPBox {
   String agvChain = ""; // 领料出库时服务器AGV节点链路（A补充）
   Map? insp; // v55 检验历史 {v,at}（null=未检）
   String inspBusy = ""; // v55 进行中检验工单状态（非空=检验中）
-  bool get inStock => !cancelled && outTime == null;
+  // ㉖v107 逐框四态（诚实身份，消除"当前库存400/在库4框"同屏矛盾）：
+  // onLed=服务器账本命中（真在架）；pendingOut=已发未转（活跃单 issued 但行未 transferred，货已离架、单据在途）。
+  // 离线（账本拉取失败 ledOn=null）→ onLed 回退旧口径（无出库记录即当在架），不阻断档案页。
+  bool onLed = false;
+  bool pendingOut = false;
+  bool get inStock => !cancelled && outTime == null && onLed; // 真在库=未作废·无出库记录·账本命中
   bool get ledgerOnly => inTime == null;
+  String get ppState => cancelled
+      ? "作废"
+      : outTime != null
+          ? "已出库"
+          : inStock
+              ? (ledgerOnly ? "账本存量" : "在库")
+              : pendingOut
+                  ? "已发未转"
+                  : "账外";
 }
 
 class _PPData {
   String partNo = "", itemName = "";
   double opening = 0, inQty = 0, outQty = 0, stockQty = 0;
   int inBoxes = 0, outBoxes = 0, cancelBoxes = 0;
+  int pendingBoxes = 0, ghostBoxes = 0; // ㉖v107 已发未转框数 / 账外框数（均不计库存，仅诚实展示）
   bool serverOk = false; // 服务器数据合并成功（B）
   final List<_PPBox> boxes = [];
   final List<Map> demand = []; // ㉖v68 在途领料需求（pending/accepted 未满足行）
@@ -1758,6 +1773,8 @@ Future<_PPData> loadPartProfile(String partNo) async {
   for (final op in await isar.inventoryOpenings.where().findAll()) {
     if (op.partNo.toUpperCase() == key) d.opening += op.qty;
   }
+  // ㉖v107 已发未转集合（活跃领料单里 issued 但行未 transferred 的码）：卡单/在途框的诚实身份来源
+  final pendOut = await RequisitionCache.loadIssuedPending();
   for (final b in d.boxes) {
     if (b.cancelled) {
       d.cancelBoxes++;
@@ -1768,13 +1785,22 @@ Future<_PPData> loadPartProfile(String partNo) async {
     // 不在出库台账里，旧口径"无出库记录=在库"把它们算进库存 → 档案虚高（10/29 现场 2128 vs 1728）。
     // 账本无+出库台账无 = 漏登记/已消失框：不计当前库存（汇总同样不计），靠 v83 未登记标记提示补登。
     // 离线（ledOn=null）回退旧行为。
-    final onLed = ledOn == null ? b.outTime == null : ledOn.contains(b.barcode.toUpperCase());
+    // ㉖v107 四态化：v98c 只把头部"当前库存"数字收到账本口径，逐框标签仍按旧口径"无出库记录=在库"——
+    // 11/4 现场 6608225548 卡单（发料后转单死锁）两框不在账本、又无出库记录，被打成绿色"在库"，
+    // 同屏出现"库存400 · 在库4框"自相矛盾。现逐框统一：账本命中=在库；有出库记录=已出库；
+    // 不在账本但在已发未转集=已发未转（货已离架单据在途）；三者不沾=账外（漏登记/幽灵框）。
+    b.onLed = ledOn == null ? b.outTime == null : ledOn.contains(b.barcode.toUpperCase());
+    b.pendingOut = !b.onLed && b.outTime == null && pendOut.contains(b.barcode.toUpperCase());
     if (b.outTime != null) {
       d.outBoxes++;
       d.outQty += b.qty;
-    } else if (onLed) {
+    } else if (b.onLed) {
       d.inBoxes++;
       d.stockQty += b.qty;
+    } else if (b.pendingOut) {
+      d.pendingBoxes++;
+    } else {
+      d.ghostBoxes++;
     }
   }
   d.boxes.sort((a, b) {
@@ -1996,13 +2022,15 @@ class _PartProfilePageState extends State<PartProfilePage> {
   }
 
   Widget _boxCard(_PPBox b) {
-    final badge = b.cancelled
-        ? const _PpBadge("作废", Colors.grey)
-        : (b.outTime != null
-            ? const _PpBadge("已出库", Color(0xFFE65100))
-            : (b.ledgerOnly
-                ? const _PpBadge("账本存量", Color(0xFF0891B2))
-                : const _PpBadge("在库", Colors.green)));
+    // ㉖v107 四态徽章：在库(绿·账本命中)/已出库(橙)/已发未转(琥珀·货离架单在途)/账外(灰·漏登记或幽灵)/作废(灰)
+    final badge = switch (b.ppState) {
+      "作废" => const _PpBadge("作废", Colors.grey),
+      "已出库" => const _PpBadge("已出库", Color(0xFFE65100)),
+      "账本存量" => const _PpBadge("账本存量", Color(0xFF0891B2)),
+      "在库" => const _PpBadge("在库", Colors.green),
+      "已发未转" => const _PpBadge("已发未转", Color(0xFFB26A00)),
+      _ => const _PpBadge("账外", Color(0xFF9E9E9E)),
+    };
     // v55 检验态徽章 + 检验下架入口（在库·AGV货架位·无在途工单·有检验权限）
     final isShelf = b.inStock && RegExp(r'^NB02-').hasMatch(b.curLoc) && !b.curLoc.contains('-CK-');
     final canInsp = isShelf && b.inspBusy.isEmpty && Auth.can("inspect_mode");
@@ -2405,6 +2433,18 @@ class _PartProfilePageState extends State<PartProfilePage> {
                                                   style: const TextStyle(
                                                       fontSize: 12,
                                                       color: Colors.grey)),
+                                            // ㉖v107 卡单/幽灵框诚实展示：这些框不在账本、不计库存，
+                                            // 旧版逐框仍打"在库"标签致"库存400·在库4框"矛盾（11/4 现场 6608225548）
+                                            if (d.pendingBoxes > 0)
+                                              Text("已发未转 ${d.pendingBoxes} 框",
+                                                  style: const TextStyle(
+                                                      fontSize: 12,
+                                                      color: Color(0xFFB26A00))),
+                                            if (d.ghostBoxes > 0)
+                                              Text("账外 ${d.ghostBoxes} 框",
+                                                  style: const TextStyle(
+                                                      fontSize: 12,
+                                                      color: Color(0xFF9E9E9E))),
                                           ])),
                                       Text("当前库存 ",
                                           style: const TextStyle(

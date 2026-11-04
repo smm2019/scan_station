@@ -7,29 +7,47 @@ part of 'main.dart';
 /// 领料已发料标签本地缓存：每次拉取领料列表后刷新，库存计算据此剔除已发框（离线兜底）
 class RequisitionCache {
   static const String _kIssued = "req_issued_barcodes";
+  static const String _kIssuedPending = "req_issued_pending_barcodes"; // ㉖v107 已发未转（活跃单里 issued 但行未 transferred）
   static Future<void> saveIssued(List<Map> reqs) async {
     final set = <String>{};
+    final pending = <String>{};
     const active = {'accepted', 'ready', 'done'}; // 取消/拒单整单退回库存
     for (final r in reqs) {
       if (!active.contains(r["status"])) continue;
       final finished = r["status"] == 'ready' ||
           r["status"] == 'done'; // ready/done 时所有行必已 transfer/skip
       for (final it in List<Map>.from(r["items"] ?? [])) {
-        if (!finished && it["transferred"] != true)
-          continue; // 备料中：只扣已转MES的行（扫而未转不算出库）
-        for (final x in List.from(it["issued"] ?? [])) {
-          // 新格式 {c:标签,q:件数}；旧格式纯字符串标签
-          set.add(x is Map ? (x["c"]?.toString() ?? "") : x.toString());
+        final cs = List.from(it["issued"] ?? [])
+            .map((x) => x is Map ? (x["c"]?.toString() ?? "") : x.toString())
+            .where((s) => s.isNotEmpty)
+            .toList();
+        if (!finished && it["transferred"] != true) {
+          // 备料中且行未转：这些框"已发未转"——货已离架但尚无出库记录（卡单/在途），供档案页诚实标注
+          pending.addAll(cs);
+          continue;
         }
+        set.addAll(cs); // 已转MES/整单完成：计入已出库剔除集
       }
     }
     final sp = await SharedPreferences.getInstance();
     await sp.setString(_kIssued, jsonEncode(set.toList()));
+    await sp.setString(_kIssuedPending, jsonEncode(pending.toList()));
   }
 
   static Future<Set<String>> loadIssued() async {
     final sp = await SharedPreferences.getInstance();
     final s = sp.getString(_kIssued);
+    if (s == null || s.isEmpty) return {};
+    try {
+      return (jsonDecode(s) as List).map((e) => e.toString()).toSet();
+    } catch (_) {
+      return {};
+    }
+  }
+
+  static Future<Set<String>> loadIssuedPending() async {
+    final sp = await SharedPreferences.getInstance();
+    final s = sp.getString(_kIssuedPending);
     if (s == null || s.isEmpty) return {};
     try {
       return (jsonDecode(s) as List).map((e) => e.toString()).toSet();
@@ -2703,23 +2721,70 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     // 本地回写中断，重试永远撞"已在…不能重复调拨"，单据卡死备料中）。
     // 已在目标仓的框判定为此前已转，剔出实传集合、走对账入账；预检查询失败不阻塞（回退旧路径，A 兜底）。
     final toDisp = "${_to["WAREHOUSE_NAME"] ?? ""}/${_to["DISTRICT_NAME"] ?? ""}/${_to["LOC_NAME"] ?? ""}";
-    final onHand = <String, Map<String, dynamic>>{}; // 码→MES 当前仓位信息（仅 barcode 查询，兼作对账框台账行数据源）
+    final onHand = <String, Map<String, dynamic>>{}; // 码→MES 当前仓位信息（预检查询，兼作对账框台账行数据源）
+    int preErr = 0, preNull = 0; // 预检失败计数：兜底时区分"MES查询失败"与"查到但不在目标仓"，不再统一误导"未检测到"
     Future<void> mesPreCheck() async {
-      onHand.clear();
+      onHand.clear(); preErr = 0; preNull = 0;
       final cs = codes.take(60).toList(); // 上限60框防大单长尾拖慢（超出部分回退旧路径）
       for (var s = 0; s < cs.length; s += 5) {
         await Future.wait(cs.sublist(s, (s + 5) > cs.length ? cs.length : s + 5).map((c) async {
+          Map<String, dynamic>? got;
+          bool threw = false;
+          // 双形态查询（㉖v106b，11/4 现场实锤）：先仅 barcode（出库页"去向核对"同款），查不到再带目标仓参数
+          // （发料扫码同款）——单参形态在部分 MES 组织上下文下返回空，旧版只走单参致预检双双漏判
           try {
             final d = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {"barcode": c});
-            if (d != null) onHand[c] = Map<String, dynamic>.from(d); // mesGetData 返回 Map<dynamic,dynamic>，转型后入 onHand（同直调页口径）
+            if (d != null) got = Map<String, dynamic>.from(d);
           } catch (_) {}
+          if (got == null) {
+            try {
+              final d = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
+                "barcode": c,
+                "warehouseCode": _to["WAREHOUSE_CODE"] ?? "",
+                "districtCode": _to["DISTRICT_CODE"] ?? "",
+                "locCode": _to["LOC_CODE"] ?? "",
+              });
+              if (d != null) got = Map<String, dynamic>.from(d);
+            } catch (_) {
+              threw = true;
+            }
+          }
+          if (got != null) {
+            onHand[c] = got;
+          } else if (threw) {
+            preErr++;
+          }
         }));
       }
+      preNull = codes.take(60).length - onHand.length - preErr; // 未命中且未抛错=MES查无该标数据
+      if (preNull < 0) preNull = 0;
+    }
+    // 已在目标仓判定（㉖v106b 修正）：按【仓库级】比对——MES 拒绝语义"条码X已在焊·宁波-线边仓"
+    // 就是仓库级；框转入后落在目标仓内哪个区/位可能与本次转入位不同，旧版"仓/区/位"全串相等会漏判。
+    // MES 未回仓库名时回退全串比对；"·"与"-"写法归一。
+    bool atTarget(Map<String, dynamic> d) {
+      String norm(String s) => s.trim().replaceAll("·", "-");
+      final w = norm(d["WAREHOUSE_NAME"]?.toString() ?? ""), tw = norm(_to["WAREHOUSE_NAME"] ?? "");
+      if (w.isNotEmpty && tw.isNotEmpty) return w == tw;
+      return "${d["WAREHOUSE_NAME"] ?? ""}/${d["DISTRICT_NAME"] ?? ""}/${d["LOC_NAME"] ?? ""}" == toDisp;
     }
     List<String> inTargetNow() => codes.where((c) {
           final d = onHand[c];
-          return d != null && "${d["WAREHOUSE_NAME"] ?? ""}/${d["DISTRICT_NAME"] ?? ""}/${d["LOC_NAME"] ?? ""}" == toDisp;
+          return d != null && atTarget(d);
         }).toList();
+    // MES 拒绝文案即权威指令：解析"条码X已在<仓名>，不能重复调拨"的仓名与本次目标仓比对
+    bool mesSaysAtTarget(String msg) {
+      final m = RegExp(r'已在(.{1,40}?)，?不能重复调拨').firstMatch(msg.replaceAll("。", ""));
+      if (m == null) return false;
+      final norm = (String s) => s.trim().replaceAll("·", "-");
+      final claimed = norm(m.group(1) ?? ""), tw = norm(_to["WAREHOUSE_NAME"] ?? "");
+      return claimed.isNotEmpty && tw.isNotEmpty && (claimed == tw || tw.contains(claimed) || claimed.contains(tw));
+    }
+    String mesLocDesc(String c) {
+      final d = onHand[c];
+      if (d == null) return "$c：MES查询无果";
+      return "$c→${d["WAREHOUSE_NAME"] ?? "?"}/${d["DISTRICT_NAME"] ?? "?"}/${d["LOC_NAME"] ?? "?"}";
+    }
     setState(() => _busy = true);
     await mesPreCheck();
     if (!mounted) return;
@@ -2912,7 +2977,45 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             await runTransfer(codes.where((c) => !it2.contains(c)).toList(), it2);
             return;
           }
-          widget.toast("转单失败：不能重复调拨，且未检测到已在目标仓的框——请先在 MES 核对该框位置后重试");
+          // ㉖v106b 现场死局（11/4 LL2026110409555589 实锤）：预检双形态都拿不到仓位数据（MES 组织上下文
+          // 或接口口径差异），但 MES 拒绝文案本身已断言"条码X已在<目标仓>"——文案即权威证据。
+          // 此前只回"请先在 MES 核对"，用户重开再点仍撞同一堵墙、单据永久卡死。
+          // 现改为：文案确认在目标仓 → 人工确认窗（列每框 MES 查询实况）→ 确认后全部按已转单对账入账。
+          if (mesSaysAtTarget(msg)) {
+            final diag = codes.take(12).map(mesLocDesc).join('\n');
+            if (!mounted) return;
+            final yesRc = await showDialog<bool>(
+                context: context,
+                builder: (dctx) => AlertDialog(
+                      icon: const Icon(Icons.fact_check_outlined, color: Colors.deepOrange, size: 32),
+                      title: const Text("MES 称条码已在目标仓"),
+                      content: SingleChildScrollView(
+                          child: Text("MES 拒绝本次调拨，原话：\n$msg\n\n"
+                              "本系统预检未能取到这些框的 MES 仓位（查询无果），无法自动判定。\n"
+                              "逐框查询实况：\n$diag${codes.length > 12 ? "\n…共 ${codes.length} 框" : ""}\n\n"
+                              "若确认这些框此前已转入目标仓（实物已在线边仓、只是本地回写中断），"
+                              "点「按已转单入账」将直接记账出库并让单据转待签收，不再重复调拨 MES。\n"
+                              "若不确定，请点「取消」后到 MES 实物核对再处理。")),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.pop(dctx, false),
+                            child: const Text("取消（不入账）")),
+                        FilledButton(
+                            style: FilledButton.styleFrom(backgroundColor: Colors.deepOrange),
+                            onPressed: () => Navigator.pop(dctx, true),
+                            child: const Text("按已转单入账")),
+                      ],
+                    ));
+            if (yesRc == true && mounted) {
+              recon = codes;
+              await runTransfer([], codes);
+              return;
+            }
+            if (mounted) widget.toast("已取消：未入账，单据保持备料中（可稍后重试或走直调）");
+            return;
+          }
+          widget.toast("转单失败：不能重复调拨，且预检显示各框并不在目标仓——\n"
+              "${codes.take(6).map(mesLocDesc).join('\n')}\n请核对实物与 MES 仓位后重试");
           return;
         }
         widget.toast("转单失败：$msg");
