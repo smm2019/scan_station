@@ -5406,7 +5406,8 @@ return send(res, 200, {
             for (const e of target.issued) { const c1 = String((typeof e === 'string' ? e : e.c) || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Date.now(), no: r.no, by: u.name }; } // ㉖② 转MES=出库承诺，登记历史防标签复用
             target.mesNo = String(b.mesNo || '').trim(); // App 侧出库单号，便于对账
             target.transferAt = Date.now(); target.transferBy = u.name; // ㉖v94r 转单时刻/人：出库台账兜底补建需要（PDA推送是fire-and-forget，失败即永久缺失）
-            hpush(`转MES ${target.partNo} 实发${got}件${got < (Number(target.qty) || 0) ? '（短装' + ((Number(target.qty) || 0) - got) + '件）' : ''}（${u.name}）`);
+            hpush(`转MES ${target.partNo} 实发${got}件${got < (Number(target.qty) || 0) ? '（短装' + ((Number(target.qty) || 0) - got) + '件）' : ''}（${u.name}）`); // ㉖v105 对账框留痕：此前MES已转、本地回写中断的框按已转单入账，不再重复调拨
+            { const _rc = Array.isArray(b.recon) ? b.recon.map((x) => String(x).toUpperCase()).filter(Boolean) : []; if (_rc.length) hpush(`🔎 对账入账：框 ${_rc.join('/')} 经 MES 确认此前已在目标仓，本次仅补记账（未重复调拨）`); }
             finalize();
             setTimeout(() => { try { outboundLedgerFix(); } catch (_) {} }, 3 * 60000); // ㉖v94r 3分钟后自查该行台账是否落库（给PDA推送留足窗口），缺则补建
           } else if (act === 'skip') {

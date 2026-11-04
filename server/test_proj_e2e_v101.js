@@ -66,23 +66,21 @@ async function getText(p, tk) { const r = await fetch(BASE + p, { headers: tk ? 
     // —— set：多值 + 新建码 + 格式闸 + 清除 ——
     const st1 = await post('/api/proj/set', wh, { items: [{ pn: PN1, codes: ['吉利E281', '吉利EX11'] }, { pn: PN2, codes: ['吉利E281'] }] });
     chk('W1 set 受理 2 项', [st1.json.ok, st1.json.set, st1.json.newCodes], [true, 2, 2]);
-    await sleep(250);
-    let dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
-    chk('W2 多值归属落库', dd.projMap[PN1], ['吉利E281', '吉利EX11']);
-    chk('W3 新码自动入清单', dd.projDict && dd.projDict['吉利E281'] !== undefined, true);
+    // ㉖v105 取证加固：save() 是 120ms 防抖+全量原子写，读文件与落盘竞态（内存压力高时 fsync 变慢，
+    // 11/4 实锤偶发 FAIL/崩溃）——改读 /api/proj（内存权威态），断言对象本就是"服务视图"
+    let pj = (await get('/api/proj', wh)).json;
+    chk('W2 多值归属落库', pj.map[PN1], ['吉利E281', '吉利EX11']);
+    chk('W3 新码自动入清单', pj.list.some((x) => x.code === '吉利E281'), true);
     const st2 = await post('/api/proj/set', wh, { items: [{ pn: 'TESTPN01', codes: ['纯字母码'] }, { pn: 'TESTPN02', codes: ['E281'] }] });
-    chk('W4 非法码(无数字)计入无效且不落库', [st2.json.bad >= 1, (dd.projMap || {}).TESTPN01 === undefined], [true, true]);
-    await sleep(250);
-    dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
-    chk('W5 合法码照常入典', dd.projMap.TESTPN02, ['E281']);
+    pj = (await get('/api/proj', wh)).json;
+    chk('W4 非法码(无数字)计入无效且不落库', [st2.json.bad >= 1, pj.map.TESTPN01 === undefined], [true, true]);
+    chk('W5 合法码照常入典', pj.map.TESTPN02, ['E281']);
     const st3 = await post('/api/proj/set', wh, { text: PN2 + ',\n' }); // 只给零件号不给码 = 清除
     chk('W6 空码清除归属', [st3.json.ok, st3.json.cleared], [true, 1]);
-    await sleep(250);
-    dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
-    chk('W7 清除后 map 无该零件', dd.projMap[PN2] === undefined, true);
+    pj = (await get('/api/proj', wh)).json;
+    chk('W7 清除后 map 无该零件', pj.map[PN2] === undefined, true);
     const st4 = await post('/api/proj/set', wh, { text: 'TESTPN03，吉利V446K' }); // 中文逗号 + 新码
-    await sleep(300); // 等 save() 落盘后再读文件
-    chk('W8 text 中文逗号解析', (JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8')).projMap || {}).TESTPN03, ['吉利V446K']);
+    chk('W8 text 中文逗号解析', (await get('/api/proj', wh)).json.map.TESTPN03, ['吉利V446K']);
 
     // —— profile / stockRisk 带 projs ——
     const pf = await get('/api/part/profile?pn=' + PN1, wh);
@@ -106,10 +104,9 @@ async function getText(p, tk) { const r = await fetch(BASE + p, { headers: tk ? 
     // —— rm 解绑 ——
     const rm = await post('/api/proj/rm', wh, { code: '吉利EX11' });
     chk('R1 删码解绑 1 零件', [rm.json.ok, rm.json.unbind], [true, 1]);
-    await sleep(250);
-    dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
-    chk('R2 零件仅剩另一码', dd.projMap[PN1], ['吉利E281']);
-    chk('R3 码从清单移除', dd.projDict['吉利EX11'] === undefined, true);
+    const pj2 = (await get('/api/proj', wh)).json; // 内存权威态（同W系列，防防抖落盘竞态）
+    chk('R2 零件仅剩另一码', pj2.map[PN1], ['吉利E281']);
+    chk('R3 码从清单移除', pj2.list.some((x) => x.code === '吉利EX11'), false);
 
     // —— 幂等：同值重推不计改动 ——
     const st5 = await post('/api/proj/set', wh, { items: [{ pn: PN1, codes: ['吉利E281'] }] });

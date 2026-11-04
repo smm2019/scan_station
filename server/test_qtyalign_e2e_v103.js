@@ -12,6 +12,8 @@ const salt = crypto.randomBytes(16).toString('hex');
 const hashPw = (pw, s) => crypto.scryptSync(String(pw), s, 32).toString('hex');
 db0.users.push({ id: 'u_qa', username: 'e2e_qa_wh', name: 'E2E对账', role: 'warehouse', enabled: true, createdAt: Date.now(), mustChangePw: false, salt, passHash: hashPw('E2e#Qa!pw', salt) });
 delete db0.ledgerQtyFixedV103; // 副本清开关：主库若已被正式服务迁移过，继承开关会让隔离实例短路
+// ㉖v105 取证加固：主库现已是修正态（220）——副本必须【自注入迁移前虚高态】，隔离实例才会真实重跑迁移
+{ const q = (db0.ledger || []).find((x) => x.c === 'N26J230463'); if (q) q.q = 300; }
 fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
 let fail = 0, total = 0;
 const chk = (n, got, want) => { total++; const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fail++; console.log(`${ok ? 'PASS' : 'FAIL!'} [${n}] got=${JSON.stringify(got)} want=${JSON.stringify(want)}`); };

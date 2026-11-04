@@ -10,6 +10,21 @@ const salt = crypto.randomBytes(16).toString('hex');
 const hashPw = (pw, s) => crypto.scryptSync(String(pw), s, 32).toString('hex');
 db0.users.push({ id: 'u_byf', username: 'e2e_byf_wh', name: 'E2E登记', role: 'warehouse', enabled: true, createdAt: Date.now(), mustChangePw: false, salt, passHash: hashPw('E2e#Byf!pw', salt) });
 delete db0.ledgerByFixedV103; delete db0.gscCleanedV101; delete db0.opFixedV101; delete db0.ledgerQtyFixedV103; delete db0.reqRaceFixedV103; // 副本清全部开关，迁移真实重跑
+// ㉖v105 取证加固：主库现已是修正态（被洗行=0）——副本自注入【迁移前被洗态】：
+// 把"出生位=当前位、出生by=真人（非系统管理员）"的行 by 改成另一真人，模拟被推送人洗掉；
+// 事故标签 270462 改回胡明锵。迁移应命中全部注入行（出生by=金先发 的行跳过，制造"改成自己"的零命中对照）
+let _nWash = 0;
+{
+  const names = new Set((db0.users || []).map((x) => String(x.name || '')));
+  for (const x of db0.ledger || []) {
+    const si = (db0.seenIn || {})[String(x.c).toUpperCase()];
+    if (!si || !si.by || !names.has(si.by) || si.by === '系统管理员' || si.by === '金先发') continue;
+    if (String(si.l || '').toUpperCase() !== String(x.l || '').toUpperCase()) continue;
+    x.by = '金先发'; _nWash++;
+  }
+  const x90 = (db0.ledger || []).find((y) => y.c === 'N26J270462');
+  if (x90) x90.by = '胡明锵'; // 事故标签单独洗回（若上面已洗则覆盖，计数不重复加）
+}
 fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
 let fail = 0, total = 0;
 const chk = (n, got, want) => { total++; const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fail++; console.log(`${ok ? 'PASS' : 'FAIL!'} [${n}] got=${JSON.stringify(got)} want=${JSON.stringify(want)}`); };
@@ -27,7 +42,7 @@ const load = () => JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'
     let dd = load();
     console.log('\n=== A. 存量登记人修复迁移 ===');
     const m = (srv.__log().match(/恢复被洗掉的登记人 (\d+) 行/) || [])[1];
-    chk('A1 迁移日志实证命中497行', +m, 497);
+    chk('A1 迁移日志实证命中=副本注入被洗行数（' + _nWash + '）', +m, _nWash);
     chk('A2 270462 登记人=刘向轩（出生人，事故标签）', (dd.ledger.find((x) => x.c === 'N26J270462') || {}).by, '刘向轩');
     chk('A3 系统管理员署名行未被改成回填名', (() => { const x = dd.ledger.find((y) => ((dd.seenIn || {})[String(y.c).toUpperCase()] || {}).by === '系统管理员'); return !x || x.by !== '系统管理员'; })(), true);
     chk('A4 开关持久', dd.ledgerByFixedV103, 1);

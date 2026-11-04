@@ -2699,130 +2699,228 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       }
       return;
     }
-    final yes = await showDialog<bool>(
-        context: context,
-        builder: (dctx) => AlertDialog(
-              title: const Text("转 MES 出库"),
-              content: Text(
-                  "零件号 $partNo\n将把已扫的 ${codes.length} 箱（${_fmtInvNum(_issuedQtyOf(item))} 件）真实转单到：\n${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}\n\n转单即 MES 移库，不可撤销（退回需反向再转）。确认提交？"),
-              actions: [
-                TextButton(
-                    onPressed: () => Navigator.pop(dctx, false),
-                    child: const Text("取消")),
-                TextButton(
-                    onPressed: () => Navigator.pop(dctx, true),
-                    child: const Text("确认转单"))
-              ],
-            ));
-    if (yes != true || !mounted) return;
+    // ㉖v105 B：转单前 MES 仓位预检（11/4 现场 LL2026110409555589：上次转单 MES 侧实际已成功、
+    // 本地回写中断，重试永远撞"已在…不能重复调拨"，单据卡死备料中）。
+    // 已在目标仓的框判定为此前已转，剔出实传集合、走对账入账；预检查询失败不阻塞（回退旧路径，A 兜底）。
+    final toDisp = "${_to["WAREHOUSE_NAME"] ?? ""}/${_to["DISTRICT_NAME"] ?? ""}/${_to["LOC_NAME"] ?? ""}";
+    final onHand = <String, Map<String, dynamic>>{}; // 码→MES 当前仓位信息（仅 barcode 查询，兼作对账框台账行数据源）
+    Future<void> mesPreCheck() async {
+      onHand.clear();
+      final cs = codes.take(60).toList(); // 上限60框防大单长尾拖慢（超出部分回退旧路径）
+      for (var s = 0; s < cs.length; s += 5) {
+        await Future.wait(cs.sublist(s, (s + 5) > cs.length ? cs.length : s + 5).map((c) async {
+          try {
+            final d = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {"barcode": c});
+            if (d != null) onHand[c] = d;
+          } catch (_) {}
+        }));
+      }
+    }
+    List<String> inTargetNow() => codes.where((c) {
+          final d = onHand[c];
+          return d != null && "${d["WAREHOUSE_NAME"] ?? ""}/${d["DISTRICT_NAME"] ?? ""}/${d["LOC_NAME"] ?? ""}" == toDisp;
+        }).toList();
     setState(() => _busy = true);
-    try {
-      // 1. 组报文：逐箱补齐 MES 数据（缓存缺失的现场补查一次）
-      final boxes = <Map<String, dynamic>>[];
-      for (final c in codes) {
-        var d = _boxData[c];
-        if (d == null || (d["MITEM_ID"] ?? "").toString().isEmpty) {
-          final fresh =
-              await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
-            "barcode": c,
-            "warehouseCode": _to["WAREHOUSE_CODE"] ?? "",
-            "districtCode": _to["DISTRICT_CODE"] ?? "",
-            "locCode": _to["LOC_CODE"] ?? "",
-          });
-          if (fresh == null) throw Exception("标签 $c 查不到 MES 在库信息，无法转单");
-          d = Map<String, dynamic>.from(fresh);
-          _boxData[c] = d;
-        }
-        d["SCAN_BARCODE"] = d["SCAN_BARCODE"] ?? c; // 兜底：台账条码=扫入标签号
-        boxes.add(d);
-      }
-      // 2. 按零件号聚合成 SaveTRBarcodes 明细（与直调页同口径）
-      final rows = <Map<String, dynamic>>[];
-      for (final d in boxes) {
-        final idx = rows.indexWhere((r) => r["MITEM_CODE"] == d["MITEM_CODE"]);
-        final q = (d["QTY"] as num?)?.toDouble() ?? 0;
-        if (idx >= 0) {
-          rows[idx]["REQ_QTY"] = (rows[idx]["REQ_QTY"] as double) + q;
-          (rows[idx]["Barcodes"] as List).add(d);
-        } else {
-          rows.add({
-            "MITEM_ID": d["MITEM_ID"],
-            "MITEM_CODE": d["MITEM_CODE"],
-            "MITEM_NAME": d["MITEM_DESC"] ?? d["MITEM_NAME"] ?? "",
-            "UOM": d["UOM"] ?? "",
-            "REQ_QTY": q,
-            "Barcodes": [d],
-          });
-        }
-      }
-      final details = rows.map((r) {
-        final m = Map<String, dynamic>.from(r);
-        m["TO_WAREHOUSE_CODE"] = _to["WAREHOUSE_CODE"];
-        m["TO_DISTRICT_CODE"] = _to["DISTRICT_CODE"];
-        m["TO_LOC_CODE"] = _to["LOC_CODE"];
-        m["isCheckSap"] = _checkSap;
-        return m;
-      }).toList();
-      await mesReq("POST", "/api/v1/rawtransfer/SaveTRBarcodes",
-          body: {"details": details});
-      // 3. 回写服务器行级 transferred（幂等），并落出库台账关联领料单号
-      // ㉖v103 带实传框集合（撤扫完成后 item["issued"]=勾选转出的框）：服务器按此记账，
-      // 竞态期间被加回但未实发的框自动回滚，防止"账面400/MES实转200"错位
-      final res = await AuthApi.reqAction(_r["id"].toString(), "transfer",
-          {"partNo": partNo, "codes": List.from(item["issued"] ?? [])});
-      if (res["ok"] != true)
-        throw Exception("MES已转单，但服务器回写失败：${res["msg"]}（请重开该单重试，MES侧勿重复转）");
+    await mesPreCheck();
+    if (!mounted) return;
+    setState(() => _busy = false);
+    var recon = inTargetNow();
+    var tCodes = codes.where((c) => !recon.contains(c)).toList();
+    if (recon.isNotEmpty) {
+      if (!mounted) return;
+      final yes0 = await showDialog<bool>(
+          context: context,
+          builder: (dctx) => AlertDialog(
+                icon: const Icon(Icons.fact_check_outlined, color: Colors.teal, size: 32),
+                title: Text("检测到 ${recon.length} 框已在目标仓"),
+                content: SingleChildScrollView(
+                    child: Text("MES 显示这些框当前位于目标仓（$toDisp）：\n${recon.join('\n')}\n\n"
+                        "判定为「此前转单已成功、本地回写中断」——确认后将直接按已转单入账（不再重复调拨 MES）。\n\n"
+                        "${tCodes.isEmpty ? "全部框都已在目标仓，确认后仅需回写与落台账。" : "其余 ${tCodes.length} 框仍在源仓，将真实转 MES。"}")),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dctx, false),
+                      child: const Text("取消（不入账）")),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(dctx, true),
+                      child: const Text("确认对账并转单")),
+                ],
+              ));
+      if (yes0 != true || !mounted) return;
+    }
+    // ㉖v105 A：实转+回写+落台账共用通道；MES 拒"不能重复调拨"时自动重跑预检、
+    // 切对账口径重试一次，杜绝单据被永久卡死
+    var retriedRecon = false;
+    Future<void> runTransfer(List<String> tC, List<String> rc) async {
+      if (!mounted) return;
+      final yes = await showDialog<bool>(
+          context: context,
+          builder: (dctx) => AlertDialog(
+                title: const Text("转 MES 出库"),
+                content: Text(
+                    "零件号 $partNo\n将把已扫的 ${tC.length} 箱${rc.isEmpty ? "" : " + ${rc.length} 框对账入账（已在目标仓，不再重复调拨）"}（合计 ${_fmtInvNum(_issuedQtyOf(item))} 件）转到：\n${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}\n\n转单即 MES 移库，不可撤销（退回需反向再转）。确认提交？"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dctx, false),
+                      child: const Text("取消")),
+                  TextButton(
+                      onPressed: () => Navigator.pop(dctx, true),
+                      child: const Text("确认转单"))
+                ],
+              ));
+      if (yes != true || !mounted) return;
+      setState(() => _busy = true);
       try {
-        final fromLocs = <String, String>{};
-        for (final x in List.from(item["issued"] ?? [])) {
-          if (x is Map) {
-            final c0 = x["c"]?.toString().toUpperCase() ?? "";
-            final l0 = x["l"]?.toString() ?? "";
-            if (c0.isNotEmpty && l0.isNotEmpty) fromLocs[c0] = l0;
+        // 1. 组报文：逐箱补齐 MES 数据（缓存缺失的现场补查一次）；对账框不进 MES 报文
+        final boxes = <Map<String, dynamic>>[];
+        for (final c in tC) {
+          var d = _boxData[c];
+          if (d == null || (d["MITEM_ID"] ?? "").toString().isEmpty) {
+            final fresh =
+                await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
+              "barcode": c,
+              "warehouseCode": _to["WAREHOUSE_CODE"] ?? "",
+              "districtCode": _to["DISTRICT_CODE"] ?? "",
+              "locCode": _to["LOC_CODE"] ?? "",
+            });
+            if (fresh == null) throw Exception("标签 $c 查不到 MES 在库信息，无法转单");
+            d = Map<String, dynamic>.from(fresh);
+            _boxData[c] = d;
+          }
+          d["SCAN_BARCODE"] = d["SCAN_BARCODE"] ?? c; // 兜底：台账条码=扫入标签号
+          boxes.add(d);
+        }
+        // 2. 按零件号聚合成 SaveTRBarcodes 明细（与直调页同口径）；纯对账（无实传框）跳过 MES 调用
+        final rows = <Map<String, dynamic>>[];
+        for (final d in boxes) {
+          final idx = rows.indexWhere((r) => r["MITEM_CODE"] == d["MITEM_CODE"]);
+          final q = (d["QTY"] as num?)?.toDouble() ?? 0;
+          if (idx >= 0) {
+            rows[idx]["REQ_QTY"] = (rows[idx]["REQ_QTY"] as double) + q;
+            (rows[idx]["Barcodes"] as List).add(d);
+          } else {
+            rows.add({
+              "MITEM_ID": d["MITEM_ID"],
+              "MITEM_CODE": d["MITEM_CODE"],
+              "MITEM_NAME": d["MITEM_DESC"] ?? d["MITEM_NAME"] ?? "",
+              "UOM": d["UOM"] ?? "",
+              "REQ_QTY": q,
+              "Barcodes": [d],
+            });
           }
         }
-        // 叫过AGV的框→展开同托兄弟码：扫其中任一码该框都算"AGV叉来"
-        final agvCodes = <String>{};
-        for (final e in List<Map>.from(item["agvCalled"] ?? [])) {
-          final c1 = e["c"]?.toString().toUpperCase() ?? "";
-          if (c1.isEmpty) continue;
-          agvCodes.add(c1);
-          try {
-            final ex = await _globalIsar.recordExtras
-                .filter()
-                .goodsCodeEqualTo(c1)
-                .findFirst();
-            final pid = ex?.palletId ?? "";
-            if (pid.isNotEmpty) {
-              final mates = await _globalIsar.recordExtras
-                  .filter()
-                  .palletIdEqualTo(pid)
-                  .findAll();
-              agvCodes.addAll(mates.map((m) => m.goodsCode.toUpperCase()));
-            }
-          } catch (_) {}
+        if (boxes.isNotEmpty) {
+          final details = rows.map((r) {
+            final m = Map<String, dynamic>.from(r);
+            m["TO_WAREHOUSE_CODE"] = _to["WAREHOUSE_CODE"];
+            m["TO_DISTRICT_CODE"] = _to["DISTRICT_CODE"];
+            m["TO_LOC_CODE"] = _to["LOC_CODE"];
+            m["isCheckSap"] = _checkSap;
+            return m;
+          }).toList();
+          await mesReq("POST", "/api/v1/rawtransfer/SaveTRBarcodes",
+              body: {"details": details});
         }
-        final ob = await createOutboundOrder(
-            rows.map((r) => {...r, "PART_NO": partNo}).toList(), _to,
-            linkReqNo: _r["no"].toString(),
-            fromLocs: fromLocs,
-            agvCodes: agvCodes);
-        LocalLog.op('转MES', '${item["partNo"]} ${ob.orderNo}');
-        widget.toast(
-            "已转MES（${_fmtInvNum(_issuedQtyOf(item))}件），出库单 ${ob.orderNo}",
-            err: false);
-      } catch (_) {
-        widget.toast("已转MES，出库台账落库失败（不影响转单）", err: false);
+        // 3. 回写服务器行级 transferred（幂等），并落出库台账关联领料单号
+        // ㉖v103 带实传框集合；㉖v105 对账框一并入账（codes=全部勾选框=tC∪rc），recon 供服务器留痕
+        final res = await AuthApi.reqAction(_r["id"].toString(), "transfer",
+            {"partNo": partNo, "codes": List.from(item["issued"] ?? []), if (rc.isNotEmpty) "recon": rc});
+        if (res["ok"] != true)
+          throw Exception("MES已转单，但服务器回写失败：${res["msg"]}（请重开该单重试，MES侧勿重复转）");
+        try {
+          final fromLocs = <String, String>{};
+          for (final x in List.from(item["issued"] ?? [])) {
+            if (x is Map) {
+              final c0 = x["c"]?.toString().toUpperCase() ?? "";
+              final l0 = x["l"]?.toString() ?? "";
+              if (c0.isNotEmpty && l0.isNotEmpty) fromLocs[c0] = l0;
+            }
+          }
+          // 叫过AGV的框→展开同托兄弟码：扫其中任一码该框都算"AGV叉来"
+          final agvCodes = <String>{};
+          for (final e in List<Map>.from(item["agvCalled"] ?? [])) {
+            final c1 = e["c"]?.toString().toUpperCase() ?? "";
+            if (c1.isEmpty) continue;
+            agvCodes.add(c1);
+            try {
+              final ex = await _globalIsar.recordExtras
+                  .filter()
+                  .goodsCodeEqualTo(c1)
+                  .findFirst();
+              final pid = ex?.palletId ?? "";
+              if (pid.isNotEmpty) {
+                final mates = await _globalIsar.recordExtras
+                    .filter()
+                    .palletIdEqualTo(pid)
+                    .findAll();
+                agvCodes.addAll(mates.map((m) => m.goodsCode.toUpperCase()));
+              }
+            } catch (_) {}
+          }
+          // 台账行=实传框（MES 报文口径）+对账框（预检缓存口径；数据缺失的跳过不硬造）
+          final ledgerRows = rows.map((r) => {...r, "PART_NO": partNo}).toList();
+          for (final c in rc) {
+            final cached = _boxData[c];
+            final d = (cached != null && (cached["MITEM_ID"] ?? "").toString().isNotEmpty) ? cached : onHand[c];
+            if (d == null) continue;
+            final bd = Map<String, dynamic>.from(d)
+              ..["SCAN_BARCODE"] = d["SCAN_BARCODE"] ?? c;
+            final q = (d["QTY"] as num?)?.toDouble() ?? 0;
+            final idx = ledgerRows.indexWhere((r) => r["MITEM_CODE"] == d["MITEM_CODE"]);
+            if (idx >= 0) {
+              ledgerRows[idx]["REQ_QTY"] = (ledgerRows[idx]["REQ_QTY"] as double) + q;
+              (ledgerRows[idx]["Barcodes"] as List).add(bd);
+            } else {
+              ledgerRows.add({
+                "MITEM_ID": d["MITEM_ID"],
+                "MITEM_CODE": d["MITEM_CODE"],
+                "MITEM_NAME": d["MITEM_DESC"] ?? d["MITEM_NAME"] ?? "",
+                "UOM": d["UOM"] ?? "",
+                "REQ_QTY": q,
+                "Barcodes": [bd],
+                "PART_NO": partNo,
+              });
+            }
+          }
+          final ob = await createOutboundOrder(ledgerRows, _to,
+              linkReqNo: _r["no"].toString(),
+              fromLocs: fromLocs,
+              agvCodes: agvCodes);
+          LocalLog.op('转MES', '${item["partNo"]} ${ob.orderNo}${rc.isEmpty ? "" : "（含对账${rc.length}框）"}');
+          widget.toast(
+              "已转MES（${_fmtInvNum(_issuedQtyOf(item))}件${rc.isNotEmpty ? "，其中 ${rc.length} 框为对账入账" : ""}），出库单 ${ob.orderNo}",
+              err: false);
+        } catch (_) {
+          widget.toast("已转MES，出库台账落库失败（不影响转单）", err: false);
+        }
+        setState(() {
+          _r = Map.from(res["req"]);
+          _issuePart = null;
+        });
+      } catch (e) {
+        final msg = e.toString().replaceFirst("Exception: ", "");
+        // ㉖v105 A：MES 拒"不能重复调拨"兜底——重跑预检，发现已在目标仓的框即切对账口径重试一次
+        if (msg.contains("重复调拨") && !retriedRecon) {
+          retriedRecon = true;
+          // 保持 _busy=true：兜底重预检+递归重试全程禁按钮，防用户趁窗口再点出并行流程
+          await mesPreCheck();
+          if (!mounted) return;
+          final it2 = inTargetNow();
+          if (it2.isNotEmpty) {
+            recon = it2;
+            widget.toast("MES 显示 ${it2.length} 框此前已转过，自动转对账入账", err: false);
+            await runTransfer(codes.where((c) => !it2.contains(c)).toList(), it2);
+            return;
+          }
+          widget.toast("转单失败：不能重复调拨，且未检测到已在目标仓的框——请先在 MES 核对该框位置后重试");
+          return;
+        }
+        widget.toast("转单失败：$msg");
+      } finally {
+        if (mounted) setState(() => _busy = false);
       }
-      setState(() {
-        _r = Map.from(res["req"]);
-        _issuePart = null;
-      });
-    } catch (e) {
-      widget.toast("转单失败：${e.toString().replaceFirst("Exception: ", "")}");
-    } finally {
-      if (mounted) setState(() => _busy = false);
     }
+    await runTransfer(tCodes, recon);
   }
 
   /// 行级跳过：仓库无货，0件转单

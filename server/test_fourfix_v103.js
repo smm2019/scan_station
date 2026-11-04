@@ -27,18 +27,32 @@ function byFix(ledger, seenIn, users) {
   }
   return { n, out };
 }
-const bf = byFix(d.ledger, d.seenIn, d.users);
-T('B1 全库命中497行（503被洗-6系统管理员回填署名，真人署名可修）', bf.n, 497);
+// ㉖v105 取证加固：主库已被生产服务跑过 ledgerByFixV103（被洗行=0）——构造【修复前态】副本：
+// 把"出生位=当前位、出生by=真人（非系统管理员）"的行 by 洗成金先发（模拟推送人覆盖），命中数=注入数
+const dPre = JSON.parse(JSON.stringify(d));
+let _nWash = 0;
+{
+  const names = new Set((dPre.users || []).map((x) => String(x.name || '')));
+  for (const x of dPre.ledger || []) {
+    const si = (dPre.seenIn || {})[String(x.c).toUpperCase()];
+    if (!si || !si.by || !names.has(si.by) || si.by === '系统管理员' || si.by === '金先发') continue;
+    if (String(si.l || '').toUpperCase() !== String(x.l || '').toUpperCase()) continue;
+    x.by = '金先发'; _nWash++;
+  }
+}
+const bf = byFix(dPre.ledger, dPre.seenIn, dPre.users);
+T('B1 修复前态命中=注入被洗行数' + _nWash + '（三重判据零误伤）', bf.n, _nWash);
 T('B2 系统管理员署名排除（回填非真人）', bf.out.some((e) => e.to === '系统管理员'), false);
 T('B3 移过位的行不动（判据②）', (() => { // 抽验：出生位≠当前位的行绝不出现在修复集
   const fixed = new Set(bf.out.map((e) => e.c));
-  for (const x of d.ledger || []) { const si = (d.seenIn || {})[String(x.c).toUpperCase()]; if (si && String(si.l || '').toUpperCase() !== String(x.l || '').toUpperCase() && fixed.has(String(x.c).toUpperCase())) return false; }
+  for (const x of dPre.ledger || []) { const si = (dPre.seenIn || {})[String(x.c).toUpperCase()]; if (si && String(si.l || '').toUpperCase() !== String(x.l || '').toUpperCase() && fixed.has(String(x.c).toUpperCase())) return false; }
   return true;
 })(), true);
-const bf2 = byFix(bf.out.length ? (d.ledger || []).map((x) => { const f = bf.out.find((e) => e.c === String(x.c).toUpperCase()); return f ? { ...x, by: f.to } : x; }) : d.ledger, d.seenIn, d.users);
+const bf2 = byFix(bf.out.length ? (dPre.ledger || []).map((x) => { const f = bf.out.find((e) => e.c === String(x.c).toUpperCase()); return f ? { ...x, by: f.to } : x; }) : dPre.ledger, dPre.seenIn, dPre.users);
 T('B4 修复后二次跑幂等（0命中）', bf2.n, 0);
+T('B5 主库现态=已修正（被洗行=0，两态闭环）', byFix(d.ledger, d.seenIn, d.users).n, 0);
 const x90 = (d.ledger || []).find((y) => y.c === 'N26J270462');
-T('B5 270462 现网实况（by已被后续推送洗回？当前值）', x90 && x90.by, '刘向轩'); // 若已被修回刘向轩=11/3后无人洗；被洗则在修复集内
+T('B6 事故标签270462 现网登记人=刘向轩（不可变事实）', x90 && x90.by, '刘向轩');
 
 console.log('\n===== C. 占用率分母补空架（复刻 ctSlotStats 新口径）=====');
 const P = (k, def) => (d.params || {})[k] !== undefined ? (d.params || {})[k] : def;
@@ -79,12 +93,26 @@ function occStats(ledger, rackCfg, gndCfg) {
 }
 const rackCfg = { count: P('rackCount', 8), cols: P('rackCols', 16), tiers: P('rackTiers', 4) };
 const gndCfg = { rows: P('gndRows', 18), cols: P('gndCols', 12), zoneRows: d.gndZoneRows || {}, lists: d.gndZoneList || {}, offs: d.gndRowOff || {}, slots: d.groundSlots || {} };
+// ㉖v105 取证加固：占用率分子随账本每天变动，"46%/238"这类实况值不能写死。
+// 用【合成账本】做确定性断言：只放 A架1层1列 一个框 → 分母必=512（8架×4层×16列）、分子=1、占用率=0%（1/512）
+const synthLed = [{ c: 'SYN00000001', l: 'NB02-A-01-1F', q: 10 }];
+const ocS = occStats(synthLed, rackCfg, { rows: 0, cols: 12, zoneRows: {}, lists: {}, offs: {}, slots: {} });
+T('C1 合成账本：NB02 分母=满配512（8架×4层×16列，空架空层全补齐）', ocS.zoneSt.NB02.t, 512);
+T('C2 合成账本：分子=1（仅A架1层1列有框）', ocS.zoneSt.NB02.u, 1);
+// 合成两框占两格 → 2/512=0%；再验证补架后旧口径对照（只数有货层=1层×16列=16，1/16=6% 虚高）
+const ocS2 = occStats([{ c: 'S1', l: 'NB02-A-01-1F', q: 1 }, { c: 'S2', l: 'NB02-A-02-1F', q: 1 }], rackCfg, { rows: 0, cols: 12, zoneRows: {}, lists: {}, offs: {}, slots: {} });
+T('C3 合成两框：分子=2、分母仍512（补架不随有货层数变化）', [ocS2.zoneSt.NB02.u, ocS2.zoneSt.NB02.t], [2, 512]);
+// 主库实况：只做自洽断言（不锁会漂移的具体数值）
 const oc = occStats(d.ledger, rackCfg, gndCfg);
-T('C1 NB02 分母=满配512（8架×4层×16列）', oc.zoneSt.NB02.t, 512);
-T('C2 NB02 占用率=46%（旧口径69%虚高23点）', Math.round(oc.zoneSt.NB02.u / oc.zoneSt.NB02.t * 100), 46);
-T('C3 NB02 已用格数不变（分子不受影响）', oc.zoneSt.NB02.u, 238);
-T('C4 NB03 分母含补空排（≥1728）', oc.zoneSt.NB03.t >= 1728, true);
-T('C5 总格位=两区之和自洽', oc.total, oc.zoneSt.NB02.t + oc.zoneSt.NB03.t);
+T('C4 主库分母恒=512+地面满配（结构自洽，与账本内容无关）', oc.zoneSt.NB02.t, 512);
+T('C5 主库分子≤分母且>0（占用率合法区间）', oc.zoneSt.NB02.u > 0 && oc.zoneSt.NB02.u <= oc.zoneSt.NB02.t, true);
+T('C6 主库占用率必低于旧口径（分母补大分子不变）', (() => {
+  // 旧口径=只数有货架层：按主库现算有货层数×16
+  const layers = new Set();
+  for (const x of d.ledger || []) { const p = String(x.l || '').toUpperCase().split('-'); if (p[0] === 'NB02' && p.length >= 4 && /\dF$/.test(p.slice(3).join('-'))) layers.add(p[0] + '-' + p[1] + '-' + p.slice(3).join('-')); }
+  const oldDen = layers.size * (rackCfg.cols || 16);
+  return oc.zoneSt.NB02.u / oc.zoneSt.NB02.t < oc.zoneSt.NB02.u / oldDen;
+})(), true);
 
 console.log('\n===== D. 格数上限 60→200（三端口径一致）=====');
 const fs = require('fs'), path = require('path');

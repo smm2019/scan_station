@@ -12,6 +12,19 @@ const salt = crypto.randomBytes(16).toString('hex');
 const hashPw = (pw, s) => crypto.scryptSync(String(pw), s, 32).toString('hex');
 db0.users.push({ id: 'u_race', username: 'e2e_race_wh', name: 'E2E竞态', role: 'warehouse', enabled: true, createdAt: Date.now(), mustChangePw: false, salt, passHash: hashPw('E2e#Race!pw', salt) });
 delete db0.reqRaceFixedV103; // 副本清开关：主库若已迁移过，继承开关会让隔离实例短路
+// ㉖v105 取证加固：主库现已是修正态——副本自注入【迁移前误记账态】（事故行 transferQty=400、issued 含在库框、
+// 出库承诺在案、清生产迁移旧留痕），隔离实例才会真实重跑 reqRaceFixV103
+{
+  const acc = (db0.requisitions || []).find((x) => x.no === 'LL2026110308231354');
+  const it0 = acc && acc.items.find((i) => String(i.partNo).toUpperCase() === '8889330048');
+  if (acc && it0) {
+    it0.transferQty = 400;
+    if (!(it0.issued || []).some((e) => String(e.c || e).toUpperCase() === 'N26J300090')) (it0.issued = it0.issued || []).push({ c: 'N26J300090', q: 200, l: 'NB02-C-06-3F', b: '2026-10-30', f: '1800*1200_2', n: '03-吉利EX11右前地板上纵梁（国内版HSTD180168-1镭射' });
+    acc.history = (acc.history || []).filter((h) => !/竞态修正/.test(String(h.text || ''))); // 清生产迁移留痕，"留痕1条"断言才真实
+    db0.seenOut = db0.seenOut || {};
+    db0.seenOut['N26J300090'] = { at: Number(it0.transferAt) || Date.now(), no: acc.no, by: '宋明明' };
+  }
+}
 // 注入测试单（accepted 未转单，不受启动迁移影响）：
 // 行1 88E2ERACE1：issued=[X(100件,账本在架=竞态加回), Y(200件,已消位=真实发出)]，PDA 只转 Y
 // 行2 88E2ERACE2：issued=[Z(50件,已消位)]，测撤扫即时应答+账本复挂
