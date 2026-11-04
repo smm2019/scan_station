@@ -118,12 +118,19 @@ const svr = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
 T('A7n 服务器留痕对账框', /对账入账：框 \$\{_rc\.join\('\/'\)\}/.test(svr), true);
 T('A7o 服务器记账口径不受recon影响（codes唯一真源）', /const _sent = Array\.isArray\(b\.codes\)/.test(svr), true);
 
-console.log('\n===== A8 真实卡单数据基线（服务器实况，不可变事实源）=====');
+// ㉖v107 两态兼容：主库可能仍卡单（死局实况），也可能已被 v107 自愈（对账入账闭环）——
+// 断言对象是【两态各自与算法自洽】，不锁主库停在哪个时刻（取证资产禁用易变数据原则）
+console.log('\n===== A8 真实卡单数据基线（两态兼容：卡单中 或 v107已自愈）=====');
 const r = (d.requisitions || []).find((x) => x.no === 'LL2026110409555589');
 const it = r.items.find((i) => String(i.partNo) === '6608225548');
-T('A8a 实况：accepted 未转单、两框在issued', [r.status, it.transferred ? 1 : 0, (it.issued || []).length], ['accepted', 0, 2]);
+const _stuck = r.status === 'accepted' && it.transferred !== true;
+const _obHit = (() => { let n = 0; for (const o of Object.values(d.outbound || {})) for (const l of o.items || []) if (codes1104.includes(String(l.barcode || '').toUpperCase())) n++; return n; })();
+if (_stuck) {
+  T('A8a 卡单态：accepted 未转、两框在issued、无出库单（死局实况）', [r.status, it.transferred ? 1 : 0, (it.issued || []).length, _obHit], ['accepted', 0, 2, 0]);
+} else {
+  T('A8a 自愈态：行已转、两框出库记录在案（v107对账入账真实闭环实证）', [it.transferred === true, (it.issued || []).length, _obHit], [true, 2, 2]);
+}
 T('A8b 两框均已消位（实物离架，入账后端不复活）', (d.ledger || []).some((x) => codes1104.includes(x.c)), false);
-T('A8c 服务器无任何出库单含这两码（本地确无转单记录=MES侧外部完成）', (() => { for (const o of Object.values(d.outbound || {})) for (const l of o.items || []) if (codes1104.includes(String(l.barcode || '').toUpperCase())) return false; return true; })(), true);
 
 console.log(fail === 0 ? '\n===== 全部 PASS，合计 ' + total + ' 项 =====' : '\n===== ' + fail + '/' + total + ' 失败 =====');
 process.exit(fail === 0 ? 0 : 1);

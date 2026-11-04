@@ -6202,7 +6202,12 @@ async function _rcsPollInner() {
       db.rcsStations[ep] = { station: ep, state: '有货', dir: 'out', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn, pickAt: nt2.pickAt, startAt: nt2.startAt, buildAt: nt2.buildAt };
       // ㉖v79c RCS改派纠正：任务实际送达 ep ≠ 我们请求的站台（WMAS/RCS 会自行换台，实测 CK-03→CK-12、CK-02→CK-11）
       // → 队列项目的地改为实际台并留痕，PDA"到站"提示/催扫/领料详情全部跟着对，物料员不再按请求台跑空
-      if (codes.length) { const _qq = (db.agvQueue || []).find((x) => codes.includes(String(x.code || '').toUpperCase()) && ['已下发', '到站'].includes(x.state) && x.station && x.station !== ep); if (_qq) { (_qq.trace = _qq.trace || []).push('RCS实际送达 ' + ep + '（请求 ' + _qq.station + '，已自动纠正）'); _qq.station = ep; _qq.updAt = nowMs; } }
+      // ㉖v107 方向守卫（11/4 现场 N26J300181 实锤）：旧版只按标签码找在途项——同框的【入库归位腿】
+      // （station=货架目的地）也被抓进来"纠正"成起点站台 → 完成表出现 CK-12→CK-12 乱码行，
+      // 且 v102 自愈回退按 ep===station 比对被污染失效、到站判定抓错站台快照可能提前判完成。
+      // 本块语义=出库任务 RCS 换台，只应命中"货架→站台"方向且同趟（fromLoc=事件起点sp）的项；
+      // 入库/归位腿目的地本就是货架，RCS 不会换货架位，天然不该进此纠正。
+      if (codes.length) { const _qq = (db.agvQueue || []).find((x) => codes.includes(String(x.code || '').toUpperCase()) && ['已下发', '到站'].includes(x.state) && x.station && x.station !== ep && x.type !== 'inbound' && x.type !== 'inspback' && String(x.fromLoc || '').toUpperCase() === sp); if (_qq) { (_qq.trace = _qq.trace || []).push('RCS实际送达 ' + ep + '（请求 ' + _qq.station + '，已自动纠正）'); _qq.station = ep; _qq.updAt = nowMs; } } // eslint-disable-line max-len
     } else if (isCK(sp) && !isCK(ep)) { // 入库叉回货架 → 仅当入库完成时刻晚于站台现有"有货"到站时刻才清台（防乱序穿越删除）
       const cur = db.rcsStations[sp];
       if (!cur || (cur.ts || 0) <= finTs) delete db.rcsStations[sp];
