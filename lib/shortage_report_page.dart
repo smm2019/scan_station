@@ -78,8 +78,9 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
   int _mode = 0; // 0文字 1图片（多单合成一张长图）
   final GlobalKey _allKey = GlobalKey(); // 长图整体截取用
 
+  // ㉖v108 车型正则修复（用户反馈：EX1H 被截成 EX1）：EX/EF 系支持字母后缀（EX1H/EF2H）
   static final RegExp _carRe =
-      RegExp(r'(EX\d+|V\d{3}K|E\d{3}|L\d{3}K)'); // 车型：物料名自带（吉利EX11/沃尔沃V446K/E281…）
+      RegExp(r'(EX\d+[A-Z]?|EF\d+[A-Z]?|V\d{3}K|E\d{3}|L\d{3}K)'); // 车型：物料名自带（吉利EX11/EX1H/EF2H/沃尔沃V446K/E281…）
 
   @override
   void initState() {
@@ -198,6 +199,11 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         ..needFrom = (needFromMap[pn] ?? []).take(3).join("、")
         ..lot = zero ? "" : (lastLot[pn] ?? "")
         ..kind = zero ? "零库存" : (short ? "欠料" : "低水位");
+      // ㉖v108 车型两级推导（用户反馈：有的车型显示不全、有的不显示）：
+      // ①物料名自带车型码优先（吉利EX11/EX1H/EF2H/沃尔沃V446K/E281…）
+      // ②名称不含车型关键词的（"11-排气管后…"这类），回退用项目归属码预填——
+      //   项目 Tab 本身就是按车型分的，命中 EX11 组的零件车型即 EX11，可手改。
+      // 顺序调整：先算 proj（原在 carModel 之后），carModel 延后依赖 proj。
       it.carModel = _carRe.firstMatch(it.itemName)?.group(1) ?? "";
       // ㉖v101 项目归属两级：①项目字典（网页「项目」页维护、服务器权威）命中码优先，可多值
       // ②字典未覆盖的零件回退 ㉖v75 本机关键字表（名称包含即命中，先命中先归，单值）——离线/未配置不空转
@@ -210,6 +216,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
           if (p.trim().isNotEmpty && nmUp.contains(p.trim().toUpperCase())) { it.proj = [p.trim().toUpperCase()]; break; }
         }
       }
+      if (it.carModel.isEmpty && it.proj.isNotEmpty) it.carModel = it.proj.first;
       final tail = nd > 0 ? "，待领 ${_fmtInvNum(nd)} 件" : "";
       it.desc = zero
           ? "报缺，仓库无单件$tail"

@@ -665,21 +665,32 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
         onSelected: (_) => setState(() => _flt = _flt == key ? "" : key));
     return Column(children: [
       // ㉖v52 顶部 KPI 条（借鉴网页概览/容器管理：一眼看清家底与健康度）
+      // ㉖v108 布局优化：改每行 3 张等宽卡。旧 Wrap 自然换行在 PDA 上排成 4+2，
+      // 第二行右侧空出近半屏（用户截图反馈）；3+3 等宽铺满、数字更宽裕。
       Container(
           width: double.infinity,
           color: Colors.white,
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
-          child: Wrap(spacing: 8, runSpacing: 6, children: [
-            _kpiCard('零件种类', '${agg.parts.length}', const Color(0xFF515BD4)),
-            _kpiCard('在库框数', '$totalBoxes', const Color(0xFF00897B)),
-            _kpiCard('在库数量', _fmtInvNum(totalQty), const Color(0xFF3949AB)),
-            _kpiCard('今日入库', '${agg.todayIn}框', const Color(0xFF43A047)),
-            _kpiCard('今日出库', '${agg.todayOut}框', const Color(0xFFEF6C00)),
-            if (agg.staleBoxes > 0)
-              _kpiCard('滞留7天+', '${agg.staleBoxes}框', const Color(0xFFE53935)),
-          ])),
+          child: LayoutBuilder(builder: (ctx, c) {
+            final kw = (c.maxWidth - 8 * 2) / 3;
+            Widget k(String t, String v, Color col) =>
+                SizedBox(width: kw, child: _kpiCard(t, v, col));
+            return Wrap(spacing: 8, runSpacing: 6, children: [
+              k('零件种类', '${agg.parts.length}', const Color(0xFF515BD4)),
+              k('在库框数', '$totalBoxes', const Color(0xFF00897B)),
+              k('在库数量', _fmtInvNum(totalQty), const Color(0xFF3949AB)),
+              k('今日入库', '${agg.todayIn}框', const Color(0xFF43A047)),
+              k('今日出库', '${agg.todayOut}框', const Color(0xFFEF6C00)),
+              // ㉖v108 滞留卡常驻：旧版为 0 时整卡隐藏导致末行只剩 2 张、右侧空半屏；
+              // 改为 0 时用灰色显示"0框"（健康态同样一眼可见），保证 3+3 铺满。
+              k('滞留7天+', '${agg.staleBoxes}框',
+                  agg.staleBoxes > 0 ? const Color(0xFFE53935) : const Color(0xFF9E9E9E)),
+            ]);
+          })),
       Padding(
           padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+          // ㉖v108 布局优化：缺料分享按钮与"项数"从筛选 Wrap 上移到搜索行尾部，
+          // 筛选行只剩 chips+下拉一行，整屏少占一行高度；搜索框仍 Expanded 自适应。
           child: Row(children: [
             Expanded(
                 child: TextField(
@@ -693,10 +704,18 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
                   border: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8))),
             )),
-            const SizedBox(width: 8),
+            const SizedBox(width: 2),
+            Text('${rows.length} 项',
+                style: const TextStyle(fontSize: 11, color: Colors.grey)),
             IconButton(
                 onPressed: () => _export(context),
+                visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.download, color: Color(0xFF515BD4))),
+            TextButton.icon(
+                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), visualDensity: VisualDensity.compact, foregroundColor: const Color(0xFF07C160)),
+                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortageReportPage())),
+                icon: const Icon(Icons.share, size: 15),
+                label: const Text("缺料", style: TextStyle(fontSize: 11.5))),
           ])),
       Padding(
           padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
@@ -725,13 +744,6 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
                 ),
               ),
             ],
-            TextButton.icon(
-                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 6), visualDensity: VisualDensity.compact, foregroundColor: const Color(0xFF07C160)),
-                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortageReportPage())),
-                icon: const Icon(Icons.share, size: 15),
-                label: const Text("缺料分享", style: TextStyle(fontSize: 11.5))),
-            Text('${rows.length} 项',
-                style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
           ])),
       Expanded(
           child: rows.isEmpty

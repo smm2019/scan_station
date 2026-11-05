@@ -251,6 +251,25 @@ class _RequisitionPageState extends State<RequisitionPage>
       };
 
   Future<void> _create({Map<String, String>? prefill}) async {
+    // ㉖v108 领料时段预检（全角色）：时段外弹「系统维护中」，防填完整单才被拒返工；查询失败不拦（POST 兜底闸门仍在）
+    try {
+      final gj = await AuthApi.reqGate();
+      final h = gj["hours"];
+      if (h is Map && h["allow"] == false) {
+        if (!mounted) return;
+        showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+                icon: const Icon(Icons.construction, color: Colors.deepOrange, size: 32),
+                title: const Text("系统维护中"),
+                content: Text(h["msg"]?.toString() ?? "当前不在领料时段，请稍后再下单",
+                    style: const TextStyle(fontSize: 13)),
+                actions: [
+                  FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text("知道了"))
+                ]));
+        return;
+      }
+    } catch (_) {}
     // ㉖v98c 待签收预检：调服务器统一判定端点（reqGateOf），口径与 POST 兜底闸门永不漂移
     // 规则：只拦物料员；急料单豁免；模式1有待签收宽限期（默认30分钟）；参数在网页控制台「运营参数→领料闸门」可调
     // 链式引导：多张拦下→逐张签收，每轮重查，全部清零才放行建单
@@ -2783,7 +2802,11 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     String mesLocDesc(String c) {
       final d = onHand[c];
       if (d == null) return "$c：MES查询无果";
-      return "$c→${d["WAREHOUSE_NAME"] ?? "?"}/${d["DISTRICT_NAME"] ?? "?"}/${d["LOC_NAME"] ?? "?"}";
+      // ㉖v108 三态实况（11/4 截图 N26J250226→?/?/? 实锤）：查到条码但仓/区/位全空=框已调拨出原料仓
+      // 在库体系（线边仓等消耗仓不在 GetBarCodeInfoOnHand 覆盖内），属"此前已转"的正面佐证，不是查询失败。
+      final w = d["WAREHOUSE_NAME"]?.toString() ?? "", q = d["DISTRICT_NAME"]?.toString() ?? "", l = d["LOC_NAME"]?.toString() ?? "";
+      if (w.isEmpty && q.isEmpty && l.isEmpty) return "$c→已出原料仓在库体系（无在库仓位·与拒绝文案吻合）";
+      return "$c→$w/$q/$l";
     }
     setState(() => _busy = true);
     await mesPreCheck();
@@ -2991,8 +3014,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                       title: const Text("MES 称条码已在目标仓"),
                       content: SingleChildScrollView(
                           child: Text("MES 拒绝本次调拨，原话：\n$msg\n\n"
-                              "本系统预检未能取到这些框的 MES 仓位（查询无果），无法自动判定。\n"
-                              "逐框查询实况：\n$diag${codes.length > 12 ? "\n…共 ${codes.length} 框" : ""}\n\n"
+                              "本系统预检未能自动判定这些框的当前仓位，逐框查询实况：\n$diag${codes.length > 12 ? "\n…共 ${codes.length} 框" : ""}\n\n"
+                              "（实况说明：「已出原料仓在库体系」= MES 能查到条码但已无在库仓位——框此前已调拨进线边仓等消耗仓，"
+                              "与拒绝文案互相印证，属此前已转的正面证据；「查询无果」= MES 完全查不到该条码，需实物核对。）\n\n"
                               "若确认这些框此前已转入目标仓（实物已在线边仓、只是本地回写中断），"
                               "点「按已转单入账」将直接记账出库并让单据转待签收，不再重复调拨 MES。\n"
                               "若不确定，请点「取消」后到 MES 实物核对再处理。")),
