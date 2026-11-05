@@ -169,7 +169,9 @@ Future<_StockAgg> computeStock() async {
       ..container = r.containerType ?? ""
       ..operator = oper
       ..cancelled = cancelled);
-    if (cancelled || partNo.isEmpty) continue;
+    if (cancelled) continue;
+    // ㉖v109 缺件号框不再整体跳过（11/5 现场：采集漏 pn → 框在明细/搜索/货架全部隐身，名字都搜不到）。
+    // 框照常进集合可被搜到（零件号列标"缺件号"引导去物料号补录）；零件汇总处有守卫不产生空号幽灵行。
     if (!_boxSeen.add(r.goodsCode.toUpperCase())) continue; // 同码已计过框→跳过
     final p = placedMap[r.goodsCode];
     final pid = extraMap[r.goodsCode]?.palletId ?? "";
@@ -251,6 +253,16 @@ Future<_StockAgg> computeStock() async {
     }
   }
   for (final box in merged.values) {
+    // ㉖v109 空件号守卫：缺零件号的框（采集漏pn）不进零件汇总——否则产生空号幽灵行、点不开档案；
+    // 它们照常进下方货架分布/明细（可按条码/名字/货位搜到），补录零件号后自动回归汇总。
+    if (box.partNo.isEmpty) {
+      if (box.loc.isNotEmpty) {
+        agg.byLoc.putIfAbsent(box.loc, () => []).add(box);
+      } else {
+        agg.unplaced.add(box);
+      }
+      continue;
+    }
     final row = agg.parts
         .putIfAbsent(box.partNo, () => _StockPartRow()..partNo = box.partNo);
     if (row.itemName.isEmpty) row.itemName = box.itemName;

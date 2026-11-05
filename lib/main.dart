@@ -2443,6 +2443,16 @@ class _MainPageState extends State<MainPage>
           if (mesResult["relogin"] == true) {
             // ㉖v80 降噪：续期成功静默（查询已正常，无需打断扫码）
           }
+          // ㉖v109 防再发（11/5 现场：CK-05/07 采集入账 pn 空却全程无感，下游下单/发料/搜索三失明）：
+          // MES 查到标签但没给零件号=异常态，当场黄条警示，指引用「物料号补录」扫一下即回写。
+          if (pn.isEmpty) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text("⚠️ MES 未返回零件号，本框已存但零件号缺失——请到「物料号补录」扫此码自动补齐"),
+                  backgroundColor: Colors.orange,
+                  duration: Duration(seconds: 4)));
+            }
+          }
         } else if (mesResult["found"] == false) {
           // ㉖v69 查无此码（用户拍板）：弹窗并禁止录入，防错码/私码混入账本
           if (mounted) {

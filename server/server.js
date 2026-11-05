@@ -2951,9 +2951,37 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
             fixNew++;
           }
         }
+        // ㉖v109 物料号补录联动回写零件号：账本此码 p 为空且本次 MES 查到 pn → 直接补上
+        // （11/5 现场 N26J290067/68 采集入账漏 pn，下游"下单匹配/发料建议/搜索"三处按零件号为钥匙全失明；
+        //  图号 HSTD 同名对应 13 个件号不可猜，唯 MES 按条码反查的 pn 权威）。只补空号，已有件号一律不动。
+        const cur = new Map(db.ledger.map((x) => [String(x.c || '').toUpperCase(), x]));
+        let pnFix = 0;
+        for (const it of raw) {
+          const c = String((it && it.c) || '').toUpperCase().trim();
+          let pn = String((it && it.pn) || '').toUpperCase().trim();
+          const mc = String((it && it.mc) || '').trim();
+          if (!c) continue;
+          if (!pn && mc) { // MES本次没给零件号：按物料号在字典反查唯一件号兜底（多义=放弃，宁缺勿错发）
+            const cands = new Set(); for (const [k, v] of Object.entries(db.mitemDict || {})) { if (v && v.mc === mc) cands.add(k); }
+            if (cands.size === 1) pn = [...cands][0];
+          }
+          if (!pn || pn.length > 40) continue;
+          const old = cur.get(c);
+          if (old && !String(old.p || '').trim()) {
+            ledgerPut(cur, c, Object.assign({}, old, { p: pn }), old);
+            if (db.seenIn && db.seenIn[c]) db.seenIn[c].p = pn;
+            db.ledgerFixes = db.ledgerFixes || [];
+            db.ledgerFixes.push({ time: new Date().toISOString(), by: u.name, act: '补零件号', code: c, from: '', to: pn, reason: '物料号补录联动（MES按条码反查）' });
+            pnFix++;
+          }
+        }
+        if (pnFix) {
+          db.ledger = [...cur.values()]; db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
+          if (db.ledgerFixes.length > 500) db.ledgerFixes = db.ledgerFixes.slice(-500);
+        }
         save();
-        pushOps(u, '物料号补录', fixNew + ' 标签', '字典沉淀+修正表写入' + (conflict ? '，覆盖冲突 ' + conflict : ''));
-        return send(res, 200, { ok: true, fix: fixNew, dict: Object.keys(db.mitemDict || {}).length });
+        pushOps(u, '物料号补录', fixNew + ' 标签', '字典沉淀+修正表写入' + (conflict ? '，覆盖冲突 ' + conflict : '') + (pnFix ? '，回写零件号 ' + pnFix + ' 框' : ''));
+        return send(res, 200, { ok: true, fix: fixNew, pnFix, dict: Object.keys(db.mitemDict || {}).length });
       }
       // 删除某批次采集流水（PDA 删批同步电脑，防看板残留）
       if (req.method === 'POST' && p === '/api/scanlog/delete') {

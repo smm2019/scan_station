@@ -76,7 +76,7 @@ class _MitemBackfillPageState extends State<MitemBackfillPage> {
   Future<void> _upload() async {
     if (_pending.isEmpty || _uploading) return;
     setState(() => _uploading = true);
-    int sent = 0;
+    int sent = 0, pnFix = 0;
     String? err;
     try {
       for (var i = 0; i < _pending.length; i += 500) {
@@ -85,6 +85,7 @@ class _MitemBackfillPageState extends State<MitemBackfillPage> {
         if (!mounted) return; // ㉖v98b 防崩守卫
         if (res["ok"] == true) {
           sent += chunk.length;
+          pnFix += (res["pnFix"] as num?)?.toInt() ?? 0; // ㉖v109 跨分片累计服务器回写的零件号框数
         } else {
           err = res["msg"]?.toString() ?? "上传失败";
           break;
@@ -104,7 +105,7 @@ class _MitemBackfillPageState extends State<MitemBackfillPage> {
       }
     });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(err == null ? "已上收 $sent 条，字典已更新（同零件号老标签导出自动带物料号）" : "上传中断：$err（已保留未传数据，可重试）"),
+        content: Text(err == null ? "已上收 $sent 条，字典已更新${pnFix > 0 ? "，并回写 $pnFix 框缺失的零件号" : "（本次无缺零件号框）"}" : "上传中断：$err（已保留未传数据，可重试）"),
         backgroundColor: err == null ? Colors.green : Colors.red,
         duration: const Duration(seconds: 3)));
   }
@@ -146,7 +147,7 @@ class _MitemBackfillPageState extends State<MitemBackfillPage> {
             Text("本次已补 ${_pending.length} 条 · 查无 ${_notFound} · 失败 ${_mesFail}",
                 style: const TextStyle(fontSize: 13, color: Colors.grey)),
             const SizedBox(height: 4),
-            const Text("说明：同零件号的所有老标签，导出库位表/流水时物料号列自动回补；无需逐框重扫。",
+            const Text("说明：同零件号的所有老标签，导出库位表/流水时物料号列自动回补；无需逐框重扫。\n㉖v109 升级：账本缺零件号的框（采集时 MES 未返回），本工具扫一下会同步按 MES 反查回写零件号，补齐后即可正常下单匹配/发料建议。",
                 style: TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
             const SizedBox(height: 8),
             Expanded(
