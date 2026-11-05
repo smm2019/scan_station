@@ -1636,12 +1636,16 @@ Future<_PPData> loadPartProfile(String partNo) async {
   // 当前库存虚高。改为以服务器账本为在库权威：码在账本=在库（不标出库），不在账本且出库台有=已出库。
   // 账本拉取失败（离线）→ ledOn=null 回退旧逻辑，不阻断档案页。
   Set<String>? ledOn;
+  List<Map> ledRows = []; // ㉖v109 本零件账本行全字段（直收层补框数据源）
   try {
     final lg = await AuthApi.ledgerGet().timeout(const Duration(seconds: 8));
     if (lg["ok"] == true) {
       ledOn = <String>{};
       for (final x in List<Map>.from(lg["items"] ?? [])) {
-        if ((x["p"]?.toString() ?? "").toUpperCase() == key) ledOn.add((x["c"]?.toString() ?? "").toUpperCase());
+        if ((x["p"]?.toString() ?? "").toUpperCase() == key) {
+          ledOn.add((x["c"]?.toString() ?? "").toUpperCase());
+          ledRows.add(x);
+        }
       }
       ledOn.remove('');
     }
@@ -1793,6 +1797,29 @@ Future<_PPData> loadPartProfile(String partNo) async {
     if (d.itemName.isEmpty) d.itemName = b.itemName;
     fillOut(b);
     seen.add(p.goodsCode.toUpperCase());
+    d.boxes.add(b);
+  }
+  // ㉖v109 服务器账本直收层（11/5 现场 6608625843 实锤：网页档案 1框200件、APP 档案 0框）：
+  // 上面四层组框全部按"零件号"当钥匙——本机流水/服务器流水 pn 为空（补录只回写账本与seenIn，
+  // 历史流水按审计原则不改）、本机 LabelInfo 缓存未刷新时四层全漏。账本才是在架权威快照：
+  // 账本有此码而前三层未收到 → 按账本行补建在库框，与网页档案口径一致。
+  for (final x in ledRows) {
+    final code = (x["c"]?.toString() ?? "").toUpperCase();
+    if (code.isEmpty || seen.contains(code)) continue;
+    final _lt = (x["t"] as num?)?.toInt() ?? 0;
+    final b = _PPBox()
+      ..barcode = code
+      ..qty = (x["q"] as num?)?.toDouble() ?? 0
+      ..itemName = x["n"]?.toString() ?? ""
+      ..lot = x["b"]?.toString() ?? ""
+      ..container = x["f"]?.toString() ?? ""
+      ..pallet = x["pid"]?.toString() ?? ""
+      ..curLoc = x["l"]?.toString() ?? ""
+      ..inLoc = x["l"]?.toString() ?? ""
+      ..inOperator = x["by"]?.toString() ?? "";
+    if (_lt > 0) b.inTime = DateTime.fromMillisecondsSinceEpoch(_lt);
+    if (d.itemName.isEmpty) d.itemName = b.itemName;
+    seen.add(code);
     d.boxes.add(b);
   }
   // ㉖v68 修复：出库台账里有、但入库流水/账本里没有的框（入库在别台设备且超出流水限、或更早归档），

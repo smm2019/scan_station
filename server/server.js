@@ -589,6 +589,7 @@ function feedDict(pn, nm, src) {
   try {
     pn = String(pn || '').toUpperCase().trim(); nm = String(nm || '').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').replace(/\s+/g, ' ').trim(); // ㉖v61b 脏名不沉淀（字典是乱码回填的反查源）
     if (!pn || !nm || pn.length > 40 || nm.length > 80) return;
+    if (_mitemShape(pn)) return; // ㉖v109 物料号形态（16开头12位）绝不作零件号沉淀字典（11/5 直调 PartCode 缺失按物料编码记账的污染入口）
     db.itemDict = db.itemDict || {};
     const old = db.itemDict[pn];
     if (old && old.nm === nm) return;
@@ -1374,6 +1375,25 @@ function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { cons
 // 转冷冲件仓等其他仓是仓间移仓（实物离开本库但非生产领用）。按去向名含关键词判定（关键词=参数 outWhKeys，逗号分隔）。
 // 去向为空的旧单保守按出库（不改 LL 转单既有口径）；判据只用于【统计与展示】，消账/防重/链路等物理动作不受影响。
 function isMoveOrder(o) { const keys = String(P().outWhKeys || '').split(/[,，]/).map((s) => s.trim()).filter(Boolean); if (!keys.length) return false; const to = String((o && o.toLoc) || '').trim(); if (!to) return false; return !keys.some((k) => to.includes(k)); }
+// ㉖v109 物料号形态闸（11/5 现场 DT20261105162049 实锤：直调查不到 PartCode 时 PDA 按物料编码记账，
+// 出库明细 code=162010000787 物料号冒充零件号）。真实零件号=10位66/88开头，物料号=12位16开头——形态可分。
+const _mitemShape = (s) => /^16\d{10}$/.test(String(s || '').trim());
+function realPnOfMitem(mc) { // 物料号→真实零件号 唯一反查（字典排除假键；多义/查无=返回空，宁缺勿错改）
+  const cands = new Set();
+  for (const [pn, v] of Object.entries(db.mitemDict || {})) { if (_mitemShape(pn) || pn === mc) continue; if (String((v && v.mc) || '') === mc) cands.add(pn); }
+  return cands.size === 1 ? [...cands][0] : '';
+}
+function fixMitemAsPart(items) { // 出库明细纠正：code 是物料号形态且与 mitemCode 同值 → 字典唯一反查替换；返回纠正数
+  let n = 0;
+  for (const it of items || []) {
+    const code = String(it.code || '').trim();
+    if (!code || !it.mitemCode || code !== String(it.mitemCode).trim()) continue; // 只治"code被物料号顶替"形态；正常单 code≠mitemCode
+    if (!_mitemShape(code)) continue;
+    const rp = realPnOfMitem(code);
+    if (rp) { it.code = rp; n++; }
+  }
+  return n;
+}
 // ㉖v98c 领料闸门集中判定（服务器权威，两端预检与 POST 兜底共用同一函数，口径永不漂移）
 // gateMode：0=关 / 1=宽限后拦 / 2=严格有待即拦
 // 急料单豁免限时（v98c）：滞留超 gateRushMaxMin 不再豁免——急给足时间领，囤两天不领就是不急
@@ -2979,6 +2999,8 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           db.ledger = [...cur.values()]; db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
           if (db.ledgerFixes.length > 500) db.ledgerFixes = db.ledgerFixes.slice(-500);
         }
+        // ㉖v109 形态闸联动：PDA 传来的 pn 若呈物料号形态（PartCode缺失顶替的脏值）→ 不信任，改按 mc 字典唯一反查真件号
+        for (const it of raw) { if (it && _mitemShape(String(it.pn || '').trim())) it.pn = realPnOfMitem(String(it.mc || '').trim()) || ''; }
         save();
         pushOps(u, '物料号补录', fixNew + ' 标签', '字典沉淀+修正表写入' + (conflict ? '，覆盖冲突 ' + conflict : '') + (pnFix ? '，回写零件号 ' + pnFix + ' 框' : ''));
         return send(res, 200, { ok: true, fix: fixNew, pnFix, dict: Object.keys(db.mitemDict || {}).length });
@@ -4919,6 +4941,9 @@ return send(res, 200, {
         const _mv = isMoveOrder(b); // ㉖v108 移仓单（去向非线边仓关键词，如冷冲件仓/热压单件仓/代发仓）不盖"已出库"戳——标签随货移仓后可能回流，误盖会拦死合法再采集（11/5 现场 N26K040083/74 冷冲件仓移仓被盖戳致采集"历史上架并已出库"误拦）
         for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.barcode || '').toUpperCase(); if (!_mv && c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; } // ㉖② 历史出库登记（标签生命周期防复用）；㉖v68 修复：键只取标签号 barcode（旧版误取 code=零件号，按标签查曾出库永远落空）
         db.outbound[no] = { orderNo: no, createdAt: Number(b.createdAt) || 0, toLoc: String(b.toLoc || ''), operator: String(b.operator || ''), status: Number(b.status) || 0, linkReqNo: String(b.linkReqNo || ''), items: Array.isArray(b.items) ? b.items : [] };
+        // ㉖v109 服务器权威纠正：PDA 直调查不到 PartCode 会按物料编码记账（code=物料号）——落库前按字典反查真件号替换，
+        // 旧版 APK 推送同样被兜住；纠正发生在 feedDict 沉淀之前，防物料号污染零件号字典。
+        { const _fN = fixMitemAsPart(db.outbound[no].items); if (_fN) { console.log('[outbound] ' + no + ' 纠正物料号冒充零件号明细 ' + _fN + ' 行'); pushOps(u, '出库明细纠正', no, _fN + ' 行 code 由物料号回正为真实零件号'); } }
         // ㉖v61 写入清洗：剥离 U+FFFD 与控制字符（PDA/WMAS 推送编码丢失所致），与账本同步乱码清洗同口径；防止脏 name 再沉淀进字典
         { const _cb = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g; const _cl = (s0) => String(s0 == null ? '' : s0).replace(_cb, '').replace(/\s+/g, ' ').trim();
           const _o = db.outbound[no]; _o.toLoc = _cl(_o.toLoc); _o.operator = _cl(_o.operator); _o.linkReqNo = _cl(_o.linkReqNo);
@@ -6097,6 +6122,30 @@ function seenOutMoveFixV108() {
     if (n) { save(); console.log('[seenOut] v108 自愈：清理移仓误盖的"已出库"戳 ' + n + ' 个标签'); }
   } catch (_) {}
 }
+// ㉖v109 存量自愈：历史出库单里"物料号冒充零件号"的明细（PDA 直调 PartCode 缺失按物料编码记账，
+// 11/5 现场 DT20261105162049 实锤）——按物料号字典唯一反查真实零件号回正 code。
+// 保守口径：只改 code 形态=物料号 ∧ code===mitemCode ∧ 字典唯一命中三条件全中的行；多义/查不动，宁缺勿错改。
+// 只改零件号字段，数量/标签/去向等物理账一律不动；ledgerFixes 留审计（act=明细纠正）。幂等开关。
+function outboundMitemFixV109() {
+  try {
+    if (db.outboundMitemFixedV109) return;
+    let n = 0;
+    for (const o of Object.values(db.outbound || {})) {
+      const c = fixMitemAsPart(o.items);
+      if (c) {
+        n += c;
+        db.ledgerFixes = db.ledgerFixes || [];
+        db.ledgerFixes.push({ time: new Date().toISOString(), by: '系统自愈', act: '明细纠正', code: o.orderNo, from: '', to: '', reason: '出库明细 code 物料号回正为真实零件号 ' + c + ' 行（v109存量自愈）' });
+      }
+    }
+    // 字典假键清理：itemDict 键=物料号形态（旧版直调物料号经 feedDict 沉淀）或 pn===mc 自指键 → 删除。
+    // 假键危害：projOf(物料号) 误导项目归属、档案页出现"物料号零件"；真件号映射（6608625843→162010000787）不受影响。
+    let dn = 0;
+    for (const k of Object.keys(db.itemDict || {})) { if (_mitemShape(k) || String((db.itemDict[k] || {}).mc || '') === k) { delete db.itemDict[k]; dn++; } }
+    db.outboundMitemFixedV109 = 1;
+    if (n || dn) { db.outboundAt = new Date().toISOString(); save(); console.log('[outbound-fix] v109 存量自愈：纠正物料号冒充零件号明细 ' + n + ' 行，清除字典假键 ' + dn + ' 个'); }
+  } catch (_) {}
+}
 // ㉖v101 存量迁移：采集流水 op 字段字节错位乱码（10/29 现场：工作量报表"宋明明/◆◆明明/宋◆◆◆明"裂成三行）。
 // 判据①同批次多数原则：批次内其余记录同名=铁证（实测14:1），取【最长】多数名（14个"宋明明"胜过1个"◆明明"）；
 // 判据②兜底：批次无多数时按用户表子序列唯一匹配（与 wdName 同判据）。只改坏值，正常名一律不动；幂等开关。
@@ -7213,4 +7262,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目

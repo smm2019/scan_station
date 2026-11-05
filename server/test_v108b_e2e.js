@@ -53,10 +53,15 @@ const fakeRcs = http.createServer((rq, rs) => {
   if (db.rcsConfig) db.rcsConfig.host = RCS_HOST;
   if (db.wmasConfig) db.wmasConfig.host = '192.0.2.1:8081'; // WMAS 不可达：dry 模式不下发，仅影响 carry（本测试不测 carry 成功路径）
   db.agvDispatchMode = 'dry'; // 演算模式：dispatchOne 真实选台+trace，但不建 WMAS 任务
-  // 快照留存：记录注入前现场（僵尸单/队列），供对比断言
-  const snapZ = (db.inspects || []).filter((q) => ['N26J310080', 'N26J310085'].includes(String(q.code).toUpperCase()) && q.state === 'atStation').map((q) => q.code + '@' + q.station);
-  console.log('[准备] 副本注入前僵尸检验单: ' + JSON.stringify(snapZ) + ' admin=' + admin.name);
-  if (snapZ.length !== 2) { console.log('FATAL：生产库已无 atStation 僵尸单，E1 失去真实样本（请知悉后人工复核代码逻辑）'); }
+  // 自带合成僵尸单夹具（不依赖生产现状——N26J310080/85 已被 v108 消位闭环自愈成 returned）：
+  // TESTZM01/02：atStation 且账本无此码 → 消位闭环应转 returned；TESTZM03CODE：atStation 且账本有码 → 不误伤保持
+  db.inspects = db.inspects || []; db.ledger = db.ledger || [];
+  const _zn = Date.now();
+  db.ledger.push({ c: 'TESTZM03CODE', l: 'NB02-A-99-1F', p: '8899990099', n: '不误伤样本', q: 10, t: _zn, rec: _zn, by: admin.name });
+  db.inspects.push({ id: 'insp_zm01', code: 'TESTZM01', state: 'atStation', station: 'NB02-CK-10', from: 'NB02-A-90-1F', uid: admin.id, by: admin.name, part: '8899990097', nm: '僵尸单1', at: _zn, arriveAt: _zn });
+  db.inspects.push({ id: 'insp_zm02', code: 'TESTZM02', state: 'atStation', station: 'NB02-CK-11', from: 'NB02-A-91-1F', uid: admin.id, by: admin.name, part: '8899990098', nm: '僵尸单2', at: _zn, arriveAt: _zn });
+  db.inspects.push({ id: 'insp_zm03', code: 'TESTZM03CODE', state: 'atStation', station: 'NB02-CK-12', from: 'NB02-A-99-1F', uid: admin.id, by: admin.name, part: '8899990099', nm: '不误伤', at: _zn, arriveAt: _zn });
+  console.log('[准备] 合成僵尸检验单 TESTZM01/02(账本无码)+TESTZM03CODE(账本有码不误伤) admin=' + admin.name);
   db.agvQueue = []; // 清空历史队列防干扰（副本内操作，生产不动）
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(db));
 
@@ -73,25 +78,23 @@ const fakeRcs = http.createServer((rq, rs) => {
 
   // 读取服务器落盘的副本 db（save 防抖120ms+原子写；断言前留足落盘时间）
   const readDb = () => JSON.parse(fs.readFileSync(path.join(TMP, 'db.json'), 'utf8'));
-  // ================= E1/E2 消位闭环（真实僵尸单样本） =================
+  // ================= E1/E2 消位闭环（合成僵尸单夹具） =================
   // 基线=注入前副本状态（inspLoop 为启动即执行 IIFE，服务器就绪时闭环已发生，不能再断言"服务后仍 atStation"）
-  const z0 = (db.inspects || []).filter((q) => ['N26J310080', 'N26J310085'].includes(String(q.code).toUpperCase()) && q.state === 'atStation');
-  T('E1a 副本含真实僵尸单（注入前 atStation）', z0.length, 2);
+  const z0 = (db.inspects || []).filter((q) => ['TESTZM01', 'TESTZM02'].includes(String(q.code).toUpperCase()) && q.state === 'atStation');
+  T('E1a 副本含僵尸单夹具（注入前 atStation）', z0.length, 2);
   console.log('[E1] 等检验状态机推进（15秒循环，等 25 秒）…');
   await new Promise((r) => setTimeout(r, 25000));
   const d1 = readDb();
-  const z1 = (d1.inspects || []).filter((q) => ['N26J310080', 'N26J310085'].includes(String(q.code).toUpperCase()));
+  const z1 = (d1.inspects || []).filter((q) => ['TESTZM01', 'TESTZM02'].includes(String(q.code).toUpperCase()));
   T('E1b 消位后自动闭环 returned', z1.map((q) => q.state).sort(), ['returned', 'returned']);
   T('E1c 闭环带 doneAt', z1.length === 2 && z1.every((q) => q.doneAt > 0), true);
   // 占用解除：这两单不再处于"占用检验台"的活跃态集合（inspStationFree 判据口径）
   const busy = ['waitOut', 'toStation', 'atStation', 'waitBack', 'returning', 'waitReturn'];
   const stillHold = z1.filter((q) => busy.includes(q.state)).map((q) => q.station);
   T('E1d CK-10/11 检验占用解除', stillHold.length, 0);
-  // E2 不误伤：账本命中的活跃检验单保持原态
-  const ledCodes = new Set((d1.ledger || []).map((x) => String(x.c || '').toUpperCase()));
-  const live0 = (d1.inspects || []).find((q) => q.state === 'atStation' && ledCodes.has(String(q.code).toUpperCase()));
-  if (live0) T('E2 账本命中的 atStation 不误伤（真实样本 ' + live0.code + '）', live0.state, 'atStation');
-  else { console.log('[E2] 副本无账本命中的 atStation 样本，以闭环态不回跳佐证：'); T('E2 闭环态不回跳', z1.every((q) => q.state === 'returned'), true); }
+  // E2 不误伤：账本命中的 atStation 单保持原态（TESTZM03CODE 账本有码）
+  const zm3 = (d1.inspects || []).find((q) => String(q.code).toUpperCase() === 'TESTZM03CODE');
+  T('E2 账本命中的 atStation 不误伤', zm3 && zm3.state, 'atStation');
 
   // ================= E3 trace 判重（dry 模式真实调度链路） =================
   MODE = 'busy'; // 假 RCS：12 台全部在途占用 → 任何叫车必然"暂无可用台"

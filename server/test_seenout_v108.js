@@ -35,20 +35,20 @@ const req = (method, p, tok, body, timeoutMs = 15000) => new Promise((resolve, r
   if (db.rcsConfig) db.rcsConfig.host = '192.0.2.1:8080';
   if (db.wmasConfig) db.wmasConfig.host = '192.0.2.1:8081';
   db.seenOutMoveFixedV108 = 0; // 确保自愈在测试进程真跑一次
-  // 基线取证：注入前这两个码确实带着移仓误盖的戳
-  const pre083 = (db.seenOut || {})['N26K040083'], pre074 = (db.seenOut || {})['N26K040074'];
-  T('S0a 基线：N26K040083 注入前被盖戳(引用DT移仓单)', pre083 && /^DT/.test(String(pre083.no)), true);
-  T('S0b 基线：N26K040074 注入前被盖戳', pre074 && /^DT/.test(String(pre074.no)), true);
-  // 找一个"真实出库(线边仓)"戳与一个"领料转单(LL)"戳做保守对照
-  const obByNo = {}; for (const o of Object.values(db.outbound || {})) obByNo[o.orderNo] = o;
-  const keys = Object.keys(db.seenOut || {});
-  let realOutSample = null, llSample = null;
-  for (const c of keys) {
-    const e = db.seenOut[c]; const no = String(e.no || '');
-    if (llSample == null && /^LL\d/.test(no)) llSample = { c, no };
-    const o = obByNo[no];
-    if (realOutSample == null && o && !/冷冲件仓|热压|代发/.test(String(o.toLoc || '')) && /线边仓/.test(String(o.toLoc || ''))) realOutSample = { c, no, to: o.toLoc };
-  }
+  // 自带合成夹具（不依赖生产现状——生产 N26K040083/74 的移仓误盖戳已被 v108 自愈清除）：
+  // 造一张移仓单（去向冷冲件仓）+ 给合成标签盖引用它的"已出库"戳 → 自愈应清除
+  const _mkn = Date.now();
+  db.outbound = db.outbound || {}; db.seenOut = db.seenOut || {};
+  db.outbound['TESTMOVE' + _mkn] = { orderNo: 'TESTMOVE' + _mkn, createdAt: _mkn, toLoc: '焊-宁波-冷冲件仓/冷冲件仓/冷冲件仓', operator: 'T', status: 1, linkReqNo: '', items: [{ barcode: 'TESTSTMP01', code: '8899990010', name: '移仓误盖测试', qty: 1 }] };
+  db.seenOut['TESTSTMP01'] = { at: _mkn, no: 'TESTMOVE' + _mkn };
+  // 造一张真实出库单（线边仓）+ 戳 → 自愈应保留
+  db.outbound['TESTREAL' + _mkn] = { orderNo: 'TESTREAL' + _mkn, createdAt: _mkn, toLoc: '焊-宁波-线边仓/线边仓/线边仓', operator: 'T', status: 1, linkReqNo: '', items: [{ barcode: 'TESTSTMP02', code: '8899990011', name: '真实出库保留测试', qty: 1 }] };
+  db.seenOut['TESTSTMP02'] = { at: _mkn, no: 'TESTREAL' + _mkn };
+  // 领料转单(LL)承诺戳 → 引用的单不在 outbound 键里，自愈应保留
+  db.seenOut['TESTSTMP03'] = { at: _mkn, no: 'LL202699999999' };
+  T('S0a 夹具：移仓误盖戳已注入', !!db.seenOut['TESTSTMP01'], true);
+  T('S0b 夹具：真实出库戳已注入', !!db.seenOut['TESTSTMP02'], true);
+  const realOutSample = { c: 'TESTSTMP02' }, llSample = { c: 'TESTSTMP03' };
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(db));
 
   const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
@@ -66,10 +66,11 @@ const req = (method, p, tok, body, timeoutMs = 15000) => new Promise((resolve, r
 
   // ===== S1 存量自愈：移仓误盖戳被清理 =====
   const d1 = readDb();
-  T('S1a N26K040083 移仓误盖戳已清除', !((d1.seenOut || {})['N26K040083']), true);
-  T('S1b N26K040074 移仓误盖戳已清除', !((d1.seenOut || {})['N26K040074']), true);
+  T('S1a 移仓误盖戳已清除', !((d1.seenOut || {})['TESTSTMP01']), true);
+  T('S1b 真实出库戳保留', !!((d1.seenOut || {})['TESTSTMP02']), true);
   T('S1c 自愈开关已置位', d1.seenOutMoveFixedV108, 1);
   T('S1d 启动日志含清理计数', /v108 自愈：清理移仓误盖/.test(srvLog), true);
+  T('S1e LL承诺戳保留（引用单不在outbound不删）', !!((d1.seenOut || {})['TESTSTMP03']), true);
 
   // ===== S2 保守不误删 =====
   if (llSample) T('S2a 领料转单(LL)戳保留 ' + llSample.c, !!((d1.seenOut || {})[llSample.c]), true);
