@@ -1364,7 +1364,10 @@ const PARAMS = {
   // ㉖v108 领料时段管控（用户需求：自定义领料时间+开关，时段外下单拦截并提示系统维护中）
   reqHoursOn:     { grp: '领料闸门', name: '领料时段管控', unit: '开关', min: 0, max: 1, d: 0, tip: '1=启用领料时段闸门：时段外所有角色 POST 下单被服务器拒绝（提示"系统维护中"），已存在的单接单/发料/签收不受影响。0=全天可下单（默认，行为与旧版一致）。时段在「领料可用时段」配置' },
   reqHours:       { grp: '领料闸门', str: 1, name: '领料可用时段', unit: '文本', min: 0, max: 0, d: '07:00-18:00', tip: 'HH:MM-HH:MM，可逗号分隔多段（如 07:00-11:30,13:00-17:30）；起含、止不含；结束早于开始=跨天窗口（如 22:00-06:00）；留空或格式错误=闸门自动放行（防配错把全员锁死），修改后立即生效' },
-  outWhKeys:      { grp: '统计口径', str: 1, name: '出库去向关键词', unit: '文本', min: 0, max: 0, d: '线边仓', tip: '㉖v100 判定"真出库"的 MES 仓名关键词（多个用逗号分隔）。直调单去向含任一关键词=出库；全不含=移仓（如冷冲件仓/热压单件仓/代发仓）——移仓单照常可查可审计，但不计今日出库/工作量出库/周转分/呆滞判定，报表标注"移仓"。留空=全部按出库算（回退旧口径）' },
+  // ㉖v108 看门狗配置（用户要求：判活阈值进面板；经 /api/health-ping 下发给 watchdog.ps1，服务不通时脚本用本地默认兜底）
+  wdHbStaleSec:   { grp: '看门狗', name: '心跳假死阈值', unit: '秒', min: 60, max: 600, d: 180, tip: 'RCS轮询心跳停跳超此秒数判"进程假死"计一次异常。实际生效值=max(本值, RCS轮询间隔×2+60)——防轮询调大后误杀正常服务。连续异常达「重启触发阈值」次才重启服务' },
+  wdFailThreshold: { grp: '看门狗', name: '重启触发阈值', unit: '次', min: 2, max: 10, d: 3, tip: '看门狗连续判异常达此次数才重启 HSAuthServer（防单次网络抖动误杀）。下限2=禁止1次即重启。另有硬限速：1小时内最多重启2次，超限停止自动救援转人工。看门狗每5分钟检查一次（间隔由计划任务控制，改后需重注册）' },
+  outWhKeys:      { grp: '统计口径', str: 1, name: '出库去向关键词', unit: '文本', min: 0, max: 0, d: '线边仓,成品仓', tip: '㉖v100 判定"真出库"的 MES 仓名关键词（多个用逗号分隔）。直调单去向含任一关键词=出库；全不含=移仓（如冷冲件仓/热压单件仓/代发仓）——移仓单照常可查可审计，但不计今日出库/工作量出库/周转分/呆滞判定、不盖标签"已出库"防复用戳，报表标注"移仓"。㉖v108 默认补入成品仓（用户口径：线边仓与成品仓均为真实出库）。留空=全部按出库算（回退旧口径）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; if (d.str) { o[k] = (typeof v === 'string') ? v : d.d; } else { o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } } return o; }
 // ㉖v100 出库/移仓判定：直调/转单成功后系统都落"出库单"，但业务上只有转入线边仓才算出库；
@@ -2578,7 +2581,24 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
     // ---- ㉖v108 看门狗探测端点：无鉴权轻量应答，返回循环心跳年龄（外部计划任务据此判"进程活着但假死"并自动重启服务） ----
     if (req.method === 'GET' && p === '/api/health-ping') {
       const nowMs = Date.now();
-      return send(res, 200, { ok: true, at: new Date().toISOString(), uptime: Math.round(process.uptime()), hb: { rcsAgeS: _hb.rcs ? Math.round((nowMs - _hb.rcs) / 1000) : -1, inspAgeS: _hb.insp ? Math.round((nowMs - _hb.insp) / 1000) : -1 }, req1m: _reqAgg.n, pollSec: P().pollSec });
+      return send(res, 200, { ok: true, at: new Date().toISOString(), uptime: Math.round(process.uptime()), hb: { rcsAgeS: _hb.rcs ? Math.round((nowMs - _hb.rcs) / 1000) : -1, inspAgeS: _hb.insp ? Math.round((nowMs - _hb.insp) / 1000) : -1 }, req1m: _reqAgg.n, pollSec: P().pollSec, wd: { hbStaleSec: P().wdHbStaleSec, failThreshold: P().wdFailThreshold } }); // ㉖v108 捎带面板现值：看门狗动态阈值来源
+    }
+    // ---- ㉖v108 看门狗上报端点：仅限本机（clientIp 白名单），把"判死/重启/超限"事件写进系统错误与事件流 ----
+    // 动机（用户要求"日志在系统错误可见"）：看门狗救活服务后服务自己毫无记忆，运维面板看不到"被重启过"。
+    // 安全：放无鉴权区但 localhost-only + act 白名单 + 长度截断，外部伪造与脏写均拒；上报失败脚本侧静默不影响救援。
+    if (req.method === 'POST' && p === '/api/watchdog/report') {
+      const ip = clientIp(req);
+      if (ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') return send(res, 403, { ok: false, msg: '仅本机可上报' });
+      const b = await readBody(req);
+      const ACTS = { hb_stale: 1, restart_ok: 1, restart_fail: 1, restart_limit: 1, no_http: 1 };
+      const act = String(b.act || '');
+      if (!ACTS[act]) return send(res, 400, { ok: false, msg: 'act 需 hb_stale/restart_ok/restart_fail/restart_limit/no_http' });
+      const det = String(b.detail || '').replace(/[\uFFFD\u0000-\u0008]/g, '').slice(0, 300);
+      const line = '看门狗[' + act + ']' + (det ? '：' + det : '');
+      logErr('看门狗', { message: line });
+      pushEvent(act === 'restart_ok' ? '恢复' : '告警', '看门狗', line, Date.now());
+      save();
+      return send(res, 200, { ok: true, msg: '已记入系统错误' });
     }
 
     // ---- ㉔SSE实时流（EventSource无法带header：token走query，会话校验后长挂） ----
@@ -4868,7 +4888,8 @@ return send(res, 200, {
         const b = await readBody(req);
         const no = String(b.orderNo || '').trim();
         if (!no) return send(res, 400, { ok: false, msg: '缺少 orderNo' });
-        for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.barcode || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; } // ㉖② 历史出库登记（标签生命周期防复用）；㉖v68 修复：键只取标签号 barcode（旧版误取 code=零件号，按标签查曾出库永远落空）
+        const _mv = isMoveOrder(b); // ㉖v108 移仓单（去向非线边仓关键词，如冷冲件仓/热压单件仓/代发仓）不盖"已出库"戳——标签随货移仓后可能回流，误盖会拦死合法再采集（11/5 现场 N26K040083/74 冷冲件仓移仓被盖戳致采集"历史上架并已出库"误拦）
+        for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.barcode || '').toUpperCase(); if (!_mv && c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; } // ㉖② 历史出库登记（标签生命周期防复用）；㉖v68 修复：键只取标签号 barcode（旧版误取 code=零件号，按标签查曾出库永远落空）
         db.outbound[no] = { orderNo: no, createdAt: Number(b.createdAt) || 0, toLoc: String(b.toLoc || ''), operator: String(b.operator || ''), status: Number(b.status) || 0, linkReqNo: String(b.linkReqNo || ''), items: Array.isArray(b.items) ? b.items : [] };
         // ㉖v61 写入清洗：剥离 U+FFFD 与控制字符（PDA/WMAS 推送编码丢失所致），与账本同步乱码清洗同口径；防止脏 name 再沉淀进字典
         { const _cb = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g; const _cl = (s0) => String(s0 == null ? '' : s0).replace(_cb, '').replace(/\s+/g, ' ').trim();
@@ -6030,6 +6051,24 @@ function seenInPatchV100() {
     if (n) console.log('[seenIn] v100 补丁纠正/补齐 ' + n + ' 字段');
   } catch (_) {}
 }
+// ㉖v108 存量自愈：出库同步端点旧版不分成出库/移仓，把移仓单（去向冷冲件仓等）也盖了 seenOut"已出库"戳——
+// 标签随货移仓后可能回流本仓，误戳会拦死合法再采集（11/5 现场 N26K040083/74 实锤：09:42 移仓单盖戳，09:44 采集被"历史上架并已出库"拦截）。
+// 保守判据三条全中才删：①戳引用的单号能在 outbound 查到 ②该单按现行关键词口径判为移仓 ③该标签从未出现在任何非移仓出库单（真出库过的一律保留）。
+// 单已归档查不到=证据不足不删（宁保守勿误放）；领料转单承诺写的 LL 单号不在 outbound 键里，天然不删。幂等开关。
+function seenOutMoveFixV108() {
+  try {
+    if (db.seenOutMoveFixedV108) return;
+    const realOut = new Set();
+    for (const o of Object.values(db.outbound || {})) { if (isMoveOrder(o)) continue; for (const it of (o.items || [])) { const c = String(it.barcode || '').toUpperCase(); if (c) realOut.add(c); } }
+    let n = 0;
+    for (const [c, e] of Object.entries(db.seenOut || {})) {
+      const o = (db.outbound || {})[String(e.no || '')];
+      if (o && isMoveOrder(o) && !realOut.has(c)) { delete db.seenOut[c]; n++; }
+    }
+    db.seenOutMoveFixedV108 = 1;
+    if (n) { save(); console.log('[seenOut] v108 自愈：清理移仓误盖的"已出库"戳 ' + n + ' 个标签'); }
+  } catch (_) {}
+}
 // ㉖v101 存量迁移：采集流水 op 字段字节错位乱码（10/29 现场：工作量报表"宋明明/◆◆明明/宋◆◆◆明"裂成三行）。
 // 判据①同批次多数原则：批次内其余记录同名=铁证（实测14:1），取【最长】多数名（14个"宋明明"胜过1个"◆明明"）；
 // 判据②兜底：批次无多数时按用户表子序列唯一匹配（与 wdName 同判据）。只改坏值，正常名一律不动；幂等开关。
@@ -7146,4 +7185,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目
