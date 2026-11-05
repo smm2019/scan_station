@@ -597,7 +597,7 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
   // ㉖v101 项目下拉条目（DropdownMenuItem value 不可为空串重复，选中态由外层 value 控制）
   DropdownMenuItem<String> _pcItem(String v, String lbl, String cur) => DropdownMenuItem<String>(
       value: v,
-      child: Text(lbl, style: TextStyle(fontSize: 11.5, fontWeight: v == cur ? FontWeight.w700 : FontWeight.w400, color: v.isEmpty ? Colors.blueGrey : const Color(0xFF00897B))));
+      child: Text(lbl, overflow: TextOverflow.ellipsis, maxLines: 1, style: TextStyle(fontSize: 11.5, fontWeight: v == cur ? FontWeight.w700 : FontWeight.w400, color: v.isEmpty ? Colors.blueGrey : const Color(0xFF00897B))));
 
   @override
   Widget build(BuildContext context) {
@@ -673,8 +673,8 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
           child: LayoutBuilder(builder: (ctx, c) {
             final kw = (c.maxWidth - 8 * 2) / 3;
-            Widget k(String t, String v, Color col) =>
-                SizedBox(width: kw, child: _kpiCard(t, v, col));
+            Widget k(String t, String v, Color col, {VoidCallback? onTap, bool sel = false}) =>
+                SizedBox(width: kw, child: _kpiCard(t, v, col, onTap: onTap, selected: sel));
             return Wrap(spacing: 8, runSpacing: 6, children: [
               k('零件种类', '${agg.parts.length}', const Color(0xFF515BD4)),
               k('在库框数', '$totalBoxes', const Color(0xFF00897B)),
@@ -683,8 +683,12 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
               k('今日出库', '${agg.todayOut}框', const Color(0xFFEF6C00)),
               // ㉖v108 滞留卡常驻：旧版为 0 时整卡隐藏导致末行只剩 2 张、右侧空半屏；
               // 改为 0 时用灰色显示"0框"（健康态同样一眼可见），保证 3+3 铺满。
+              // ㉖v109 点卡筛选：原「🧊有滞留」chip 移除（用户要求），筛选入口挪到此卡——
+              // 点一下只看滞留7天+的零件（选中实底高亮），再点取消；顶部数字即滞留框数，所见即入口。
               k('滞留7天+', '${agg.staleBoxes}框',
-                  agg.staleBoxes > 0 ? const Color(0xFFE53935) : const Color(0xFF9E9E9E)),
+                  agg.staleBoxes > 0 ? const Color(0xFFE53935) : const Color(0xFF9E9E9E),
+                  onTap: agg.staleBoxes > 0 ? () => setState(() => _flt = _flt == 'stale' ? "" : 'stale') : null,
+                  sel: _flt == 'stale'),
             ]);
           })),
       Padding(
@@ -719,27 +723,42 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
           ])),
       Padding(
           padding: const EdgeInsets.fromLTRB(10, 6, 10, 0),
-          // ㉖v103 布局修复（用户反馈：项目分类下拉与缺料分享按钮被挤出屏幕看不到）：
-          // 旧版单行 Row + Spacer，chip 一多（全部/滞留/零库存/项目下拉）就把右侧分享按钮顶出屏宽。
-          // 改 Wrap 自动换行 + 计数独立成行尾，任何屏宽都能看全所有控件。
-          child: Wrap(spacing: 6, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
-            chip("", '全部', Colors.blueGrey),
-            chip('stale', '🧊有滞留', const Color(0xFFE53935)),
-            chip('zero', '⛔零库存', const Color(0xFF757575)),
+          // ㉖v109 布局修复（用户截图反馈：项目下拉单独掉到第二行、右侧大片留白）：
+          // v103 的 Wrap 在分享按钮上移后（v108）已无必要——3 枚 chip 就能吃掉一整行，
+          // 下拉只能换行成"孤儿行"。改回单行 Row：chip 组占 Expanded 且用 FittedBox
+          // 等比缩放（屏宽不够时整体略缩，绝不换行/溢出），项目下拉固定贴右、最长 160dp。
+          child: Row(children: [
+            Expanded(
+                child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                chip("", '全部', Colors.blueGrey),
+                const SizedBox(width: 6),
+                // ㉖v109 移除"有滞留"chip（用户要求）：滞留筛选入口挪到顶部「滞留7天+」KPI 卡（点卡切换），
+                // 行内只剩 全部/零库存 两枚，窄屏也放得下，项目下拉不再被挤。
+                chip('zero', '⛔零库存', const Color(0xFF757575)),
+              ]),
+            )),
             if (_projCodesCache.isNotEmpty || (_proj.isNotEmpty && !_projCodesCache.contains(_proj))) ...[
+              const SizedBox(width: 8),
               // ㉖v101 项目筛选下拉：项目字典（网页「项目」页维护）非空才显示；当前值悬空（码被删）仍列入防assert
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                decoration: BoxDecoration(
-                    border: Border.all(color: const Color(0xFF00897B)),
-                    borderRadius: BorderRadius.circular(14)),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _proj,
-                    isDense: true,
-                    style: const TextStyle(fontSize: 11.5, color: Color(0xFF00897B), fontWeight: FontWeight.w600),
-                    items: [_pcItem('', '📦全部项目', _proj), ..._projCodesCache.map((c) => _pcItem(c, c, _proj)), if (!_projCodesCache.contains(_proj) && _proj.isNotEmpty) _pcItem(_proj, '$_proj(已删)', _proj)],
-                    onChanged: (v) => setState(() => _proj = v ?? ""),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 160),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                      border: Border.all(color: const Color(0xFF00897B)),
+                      borderRadius: BorderRadius.circular(14)),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _proj,
+                      isDense: true,
+                      isExpanded: true,
+                      style: const TextStyle(fontSize: 11.5, color: Color(0xFF00897B), fontWeight: FontWeight.w600),
+                      items: [_pcItem('', '📦全部项目', _proj), ..._projCodesCache.map((c) => _pcItem(c, c, _proj)), if (!_projCodesCache.contains(_proj) && _proj.isNotEmpty) _pcItem(_proj, '$_proj(已删)', _proj)],
+                      onChanged: (v) => setState(() => _proj = v ?? ""),
+                    ),
                   ),
                 ),
               ),
@@ -875,18 +894,23 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
   }
 }
 
-Widget _kpiCard(String t, String v, Color c) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-    decoration: BoxDecoration(
-        color: c.withOpacity(.07),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: c.withOpacity(.25))),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(v,
-          style: TextStyle(
-              fontSize: 15, fontWeight: FontWeight.w800, color: c)),
-      Text(t, style: const TextStyle(fontSize: 10, color: Colors.black54)),
-    ]));
+Widget _kpiCard(String t, String v, Color c, {VoidCallback? onTap, bool selected = false}) {
+  final card = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+          color: (selected ? c : c.withOpacity(.07)), // 选中态：实底高亮
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: c.withOpacity(selected ? 1 : .25))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(v,
+            style: TextStyle(
+                fontSize: 15, fontWeight: FontWeight.w800, color: selected ? Colors.white : c)),
+        Text(t, style: TextStyle(fontSize: 10, color: selected ? Colors.white70 : Colors.black54)),
+      ]));
+  if (onTap == null) return card;
+  return InkWell(
+      onTap: onTap, borderRadius: BorderRadius.circular(8), child: Padding(padding: EdgeInsets.zero, child: card));
+}
 
 // ---------- Tab2 货架库位（㉖v69 对齐网页版货位账本：一框一行·同托多码归并·可搜索） ----------
 class _ShelfTab extends StatefulWidget {
