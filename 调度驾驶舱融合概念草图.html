@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>调度驾驶舱融合 · 异常与复盘概念草图（2026-11-05 实盘数据）</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;font-family:"Microsoft YaHei","PingFang SC",sans-serif}
+  body{background:#f4f6fb;color:#26324a;padding:16px}
+  h1{font-size:16px} .sub{font-size:11px;color:#8a94a8;margin:2px 0 12px}
+  /* tab 融合对比 */
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+  .tab{padding:5px 13px;border-radius:16px;font-size:12px;background:#fff;border:1px solid #dfe4ee}
+  .tab.on{background:#515bd4;color:#fff;font-weight:700}
+  .tab.new{border-color:#00897b;color:#00897b;font-weight:700}
+  .arrow{font-size:12px;color:#8a94a8;margin:0 4px 14px}
+  /* 复盘卡 */
+  .card{background:#fff;border:1px solid #e3e8f2;border-radius:12px;padding:14px;margin-bottom:12px}
+  .chead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .chead b{font-size:14px} .chead .hint{font-size:10.5px;color:#8a94a8}
+  .sp{flex:1}
+  .win button{padding:3px 12px;font-size:11.5px;border-radius:12px;border:1px solid #dfe4ee;background:#fff;margin-left:4px}
+  .win button.on{background:#515bd4;color:#fff;border-color:#515bd4}
+  /* KPI */
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:12px}
+  .kpi{border:1px solid #e8ecf5;border-radius:10px;padding:8px 10px}
+  .kpi .n{font-size:20px;font-weight:800} .kpi .t{font-size:10px;color:#8a94a8;margin-top:1px}
+  .kpi .d{font-size:10px;margin-top:2px}
+  .up{color:#e53935}.dn{color:#43a047}
+  /* 脉冲图 */
+  table.pulse{border-collapse:separate;border-spacing:2px;font-size:9px}
+  .pulse td.lb{color:#8a94a8;white-space:nowrap;padding-right:6px;text-align:right;width:74px}
+  .pulse td.c{width:15px;height:15px;border-radius:3px;background:#eef1f8;cursor:pointer}
+  .pulse td.c:hover{outline:2px solid #515bd4}
+  .pulse td.c0{background:#eef1f8}.c1{background:#cdd8f4}.c2{background:#93a7e8}.c3{background:#5c6fd8}.c4{background:#2e3f9e}
+  .pulse td.c.hot{background:#e53935;color:#fff;font-weight:700;text-align:center;line-height:15px}
+  .plab{font-size:10px;color:#8a94a8;margin:6px 0 2px}
+  /* 趋势线 */
+  .trend{display:flex;align-items:flex-end;gap:2px;height:64px;margin-top:4px}
+  .trend i{flex:1;border-radius:2px 2px 0 0;background:linear-gradient(180deg,#5c6fd8,#93a7e8)}
+  .trend i.bad{background:linear-gradient(180deg,#e53935,#ff8a80)}
+  /* 简报 */
+  .brief{background:#10151c;color:#dfe6ee;border-radius:10px;padding:12px 14px;font-size:11.5px;line-height:1.9;font-family:Consolas,monospace;white-space:pre-wrap}
+  .btn{padding:5px 14px;border-radius:14px;background:#07c160;color:#fff;font-size:11.5px;border:0;cursor:pointer;font-weight:700}
+  .foot{font-size:10.5px;color:#8a94a8;margin-top:6px;line-height:1.7}
+</style>
+</head>
+<body>
+<h1>🚨 异常与复盘 —— 调度驾驶舱融合概念草图 <span style="font-size:11px;color:#8a94a8;font-weight:400">· 数据为 2026-11-05 生产库实盘</span></h1>
+<div class="sub">原「异常中心」升级为两段：复盘报告（新）+ 事件流水（原样保留，热力格点击自动下钻过滤）</div>
+
+<div class="tabs">
+  <span class="tab">🗺 地图</span><span class="tab new">🏭 调度运作</span><span class="tab new">🚉 站台</span><span class="tab new">🚗 车辆</span><span class="tab">⏪ 回放</span><span class="tab new">📊 效率</span><span class="tab on">🚨 异常与复盘</span>
+</div>
+<div class="arrow">11 标签 → 7 标签：流水线+队列→调度运作 ｜ 看板+甘特→站台 ｜ 车辆+交管→车辆 ｜ 运力体检+效率报表→效率 ｜ 异常中心+问题报告→异常与复盘（本页）</div>
+
+<div class="card">
+  <div class="chead"><b>📊 复盘报告</b><span class="hint">日/周/月 = 日快照 problems 现场聚合（复用现有管线，零新表）</span><span class="sp"></span>
+    <span class="win"><button>今日</button><button class="on">近 7 天</button><button>近 30 天</button></span></div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="n">83</div><div class="t">问题事件总数</div><div class="d up">▲ 较上周 +19%</div></div>
+    <div class="kpi"><div class="n" style="color:#e53935">12</div><div class="t">FIFO 违反</div><div class="d up">▲ +4（集中在 11-03）</div></div>
+    <div class="kpi"><div class="n" style="color:#fb8c00">3</div><div class="t">出库超时</div><div class="d dn">▼ -2</div></div>
+    <div class="kpi"><div class="n" style="color:#ab47bc">2</div><div class="t">堵点告警</div><div class="d dn">▼ 已解除</div></div>
+    <div class="kpi"><div class="n">6</div><div class="t">领料拒/取消</div><div class="d up">▲ +3</div></div>
+    <div class="kpi"><div class="n" style="color:#e53935">31</div><div class="t">呆滞 14 天+ 框</div><div class="d dn">▼ -5（红牌起效）</div></div>
+  </div>
+
+  <div class="plab">问题脉冲图（近 30 天 × 类型 · 点击格子下钻当日事件流水）</div>
+  <table class="pulse">
+    <tr><td class="lb"></td><script>document.write(Array.from({length:30},(_,i)=>`<td class="c" style="background:transparent;color:#8a94a8;font-size:8px;text-align:center">${i%5===0?(4+i):''}</td>`).join(''))</script></tr>
+    <tr><td class="lb">告警/恢复</td><script>document.write(Array.from({length:30},(_,i)=>{const v=[3,2,1,0,2,4,1,0,3,2,1,4,2,3,1,0,2,1,3,4,2,1,0,2,3,1,2,4,3,2][i];return `<td class="c c${v}" title="10-07起第${i+1}天 告警族 ${v*3}条"></td>`}).join(''))</script></tr>
+    <tr><td class="lb">FIFO违反</td><script>document.write(Array.from({length:30},(_,i)=>{const v=[0,0,1,0,0,0,1,0,0,2,0,0,1,0,0,0,1,0,0,4,0,0,1,0,2,0,0,1,0,0][i];return `<td class="c ${v>=3?'hot':''} c${Math.min(v,4)||0}" ${v>=3?'>'+v:''}></td>`}).join(''))</script></tr>
+    <tr><td class="lb">出库超时</td><script>document.write(Array.from({length:30},(_,i)=>{const v=[1,0,0,0,2,0,0,1,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0][i];return `<td class="c c${v}"></td>`}).join(''))</script></tr>
+    <tr><td class="lb">堵点</td><script>document.write(Array.from({length:30},(_,i)=>{const v=[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0][i];return `<td class="c c${v}"></td>`}).join(''))</script></tr>
+    <tr><td class="lb">拒单/取消</td><script>document.write(Array.from({length:30},(_,i)=>{const v=[0,1,0,0,0,1,0,0,1,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,1,0,0,2,1][i];return `<td class="c c${v}"></td>`}).join(''))</script></tr>
+    <tr><td class="lb">呆滞新增</td><script>document.write(Array.from({length:30},(_,i)=>{const v=[0,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,1,0,0,0,0,0,0,1,0,0,0,0,0][i];return `<td class="c c${v}"></td>`}).join(''))</script></tr>
+  </table>
+  <div class="foot">读图：11-03（第 20 列）FIFO 违反爆红=当日 4 起，点击→下方流水自动过滤出那天那类事件。色深=当日该类问题多。</div>
+
+  <div class="plab" style="margin-top:14px">健康趋势线（每日问题密度计分：告警×1 超时×3 FIFO×2 拒单×2 呆滞×1 · 越低越好）</div>
+  <div class="trend">
+    <script>document.write([26,18,12,9,20,31,14,8,22,17,11,28,16,21,12,7,15,10,22,35,13,9,7,12,19,11,14,27,23,15].map((v,i)=>`<i class="${v>30?'bad':''}" title="第${i+1}天 计${v}分" style="height:${Math.round(v/35*60)+4}px"></i>`).join(''))</script>
+  </div>
+  <div class="foot">近 7 日均分 15.7 vs 前 7 日 18.4（改善 15%）· 峰值 35 分那天 = RCS 故障日（与诊断快照对得上）</div>
+</div>
+
+<div class="card">
+  <div class="chead"><b>📋 复盘简报</b><span class="hint">一键生成，复制发群（复用缺料分享同款文本管线，不自动外发）</span><span class="sp"></span><button class="btn">复制近 7 天简报</button></div>
+  <div class="brief">【调度复盘 10-30 ~ 11-05】问题 83 起（环比 ▲19%）
+① FIFO违反 12 起——集中 11-03（4起），当日 RCS 故障改派频繁，非人为跳批
+② 出库超时 3 起，全部已了结；堵点 2 起均已解除
+③ 领料拒/取消 6 单：取消占多（4），拒单 2 集中在同一备料人
+④ 呆滞 14 天+ 31 框（▼5），A 巷仍占 12 框——建议本周清 A 巷红牌
+⑤ 慢车点名：AGV03 均耗时 8.2 分 = 全局 1.6 倍，建议核查
+（点"仅未了结"看待办；明细在下方事件流水）</div>
+</div>
+
+<div class="card" style="opacity:.62">
+  <div class="chead"><b>🚨 事件流水</b><span class="hint">原异常中心完整保留（时间窗/类型/仅未了结/认领），复盘段热力格点击 = 自动带入过滤条件</span></div>
+  <div style="font-size:11px;color:#8a94a8">07:31 告警 AGV05 急停 …（原样，此处省略）</div>
+</div>
+
+<div class="foot">实现口径：problems 随日快照固化（周/月现场聚合）；数据源=carEvents+领料状态+呆滞+errLogs，全部现成；PDA 端 agv_report_page 同步加"复盘"chip（同端点）。合并 tab 为纯前端重组，后端端点零改动。</div>
+</body>
+</html>

@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>仓库目视化概念草图 · 2026-11-04 实盘数据</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; font-family:"Microsoft YaHei","PingFang SC",sans-serif; }
+  body { background:#10151c; color:#dfe6ee; padding:18px; }
+  h1 { font-size:17px; font-weight:700; margin-bottom:2px; }
+  .sub { font-size:11.5px; color:#7d8fa3; margin-bottom:14px; }
+  .sub b { color:#e8a54b; }
+  /* ===== 天气墙 ===== */
+  .wall { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:10px; }
+  .wcard { background:#1a2330; border:1px solid #2a3a4e; border-radius:12px; padding:12px 12px 10px; position:relative; cursor:pointer; transition:.15s; }
+  .wcard:hover { border-color:#4a90d9; transform:translateY(-2px); }
+  .wcard.sel { border-color:#e8a54b; box-shadow:0 0 0 1px #e8a54b inset; }
+  .wicon { font-size:34px; line-height:1.1; }
+  .wzone { font-size:14px; font-weight:700; margin:2px 0 6px; }
+  .wmeta { font-size:10.5px; color:#8fa2b8; line-height:1.7; }
+  .wmeta b { color:#dfe6ee; font-weight:600; }
+  .bar { height:5px; border-radius:3px; background:#243347; margin-top:7px; overflow:hidden; }
+  .bar i { display:block; height:100%; border-radius:3px; }
+  .wtag { position:absolute; top:10px; right:10px; font-size:9.5px; padding:2px 7px; border-radius:8px; font-weight:700; }
+  .t-rain { background:#3b5b7a; color:#a8d4ff; } .t-typhoon { background:#6b3f7a; color:#f0c8ff; }
+  .t-cloud { background:#4a4a33; color:#ffe9a8; } .t-sun { background:#2e5a38; color:#a8ffce; }
+  .legend { font-size:10.5px; color:#7d8fa3; margin:6px 0 16px; }
+  .legend span { margin-right:14px; }
+  /* ===== 剖面CT片 ===== */
+  .ct { background:#1a2330; border:1px solid #2a3a4e; border-radius:12px; padding:14px; }
+  .cthead { display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }
+  .cthead h2 { font-size:14px; } .cthead .hint { font-size:10.5px; color:#7d8fa3; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:4px 14px; }
+  .lvl { display:grid; grid-template-columns:repeat(16,1fr); gap:4px; align-items:center; }
+  .ltag { font-size:10px; color:#7d8fa3; grid-column:1/-1; margin:4px 0 0; }
+  .cell { aspect-ratio:1.35/1; border-radius:4px; position:relative; display:flex; align-items:center; justify-content:center; font-size:9px; color:#0c1117; font-weight:700; }
+  .cell.empty { background:#202c3c; border:1px dashed #2c3d52; color:#3c4f66; font-weight:400; }
+  .dot { position:absolute; top:2px; right:2px; width:7px; height:7px; border-radius:50%; border:1px solid rgba(255,255,255,.55); }
+  .redcard { outline:2px solid #ff5252; outline-offset:-2px; animation:pulse 1.6s infinite; }
+  @keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(255,82,82,.55);} 50%{box-shadow:0 0 0 4px rgba(255,82,82,0);} }
+  .ageScale { display:flex; height:8px; border-radius:4px; overflow:hidden; margin:10px 0 4px; }
+  .ageScale div { flex:1; }
+  .slabels { display:flex; justify-content:space-between; font-size:9.5px; color:#7d8fa3; }
+  .cars { font-size:10.5px; color:#8fa2b8; margin-top:8px; }
+  .cars i { display:inline-block; width:9px; height:9px; border-radius:50%; margin:0 4px 0 12px; vertical-align:-1px; }
+  .foot { font-size:10.5px; color:#7d8fa3; margin-top:12px; line-height:1.7; }
+  .foot b { color:#dfe6ee; }
+</style>
+</head>
+<body>
+<h1>库区天气墙 + 货架剖面镜 <span style="font-size:11px;color:#7d8fa3;font-weight:400">· 概念草图 · 数据为 2026-11-04 生产库实盘</span></h1>
+<div class="sub">占用率=云量 · 滞留占比=气温 · 今日出库=风力 ｜ 点巷道卡下钻剖面（本图已展开 <b>B 巷</b>）</div>
+
+<div class="wall">
+  <div class="wcard"><span class="wtag t-rain">🌧 停入先清</span><div class="wicon">🌧</div><div class="wzone">A 巷</div>
+    <div class="wmeta">占用 <b>48/64</b> · 滞留7天+ <b>67%</b><br>今日 出11 · 入5 ⚠️仍在塞新料</div>
+    <div class="bar"><i style="width:75%;background:#e53935"></i></div></div>
+  <div class="wcard sel"><span class="wtag t-typhoon">🌪 热区</span><div class="wicon">🌪</div><div class="wzone">B 巷</div>
+    <div class="wmeta">占用 <b>39/64</b> · 滞留 <b>36%</b><br>今日 出19 · 入4 —— 全场最忙</div>
+    <div class="bar"><i style="width:61%;background:#ab47bc"></i></div></div>
+  <div class="wcard"><span class="wtag t-typhoon">🌪 热区</span><div class="wicon">🌪</div><div class="wzone">C 巷</div>
+    <div class="wmeta">占用 <b>36/64</b> · 滞留 <b>44%</b><br>今日 出19 · 入2</div>
+    <div class="bar"><i style="width:56%;background:#ab47bc"></i></div></div>
+  <div class="wcard"><span class="wtag t-cloud">⛅ 正常</span><div class="wicon">⛅</div><div class="wzone">D 巷</div>
+    <div class="wmeta">占用 <b>37/64</b> · 滞留 <b>46%</b><br>今日 出11 · 入2</div>
+    <div class="bar"><i style="width:58%;background:#fdd835"></i></div></div>
+  <div class="wcard"><span class="wtag t-sun">☀️ 首选</span><div class="wicon">☀️</div><div class="wzone">E 巷</div>
+    <div class="wmeta">占用 <b>28/64</b> · 滞留 <b>18%</b><br>今日 出19 · 入1 —— 又空又新鲜</div>
+    <div class="bar"><i style="width:44%;background:#66bb6a"></i></div></div>
+  <div class="wcard"><span class="wtag t-sun">☀️ 首选</span><div class="wicon">☀️</div><div class="wzone">F 巷</div>
+    <div class="wmeta">占用 <b>10/36</b> · 滞留 <b>0%</b><br>今日 出1 · 入0</div>
+    <div class="bar"><i style="width:28%;background:#66bb6a"></i></div></div>
+</div>
+<div class="legend"><span>☀️ 晴=入库首选</span><span>⛅ 多云=正常</span><span>🌧 雨=滞留过半·停入先清</span><span>❄️ 冻=连续3天零出库·呆滞评审</span><span>🌪 台风=今日出库≥15·备料优先</span></div>
+
+<div class="ct">
+  <div class="cthead"><h2> B 巷剖面 · 16行 × 4层（今天实盘 32 格有货）</h2><span class="hint">底色=库龄年轮 · 角点=车型 · 红脉冲=红牌候选(≥12天)</span></div>
+  <div class="grid" id="grid"></div>
+  <div class="ageScale">
+    <div style="background:#4dd0e1"></div><div style="background:#9ccc65"></div><div style="background:#fdd835"></div><div style="background:#fb8c00"></div><div style="background:#e53935"></div>
+  </div>
+  <div class="slabels"><span>0天</span><span>3天</span><span>7天</span><span>14天</span><span>30天+</span></div>
+  <div class="cars">车型角标：<i style="background:#42a5f5"></i>EX11 <i style="background:#66bb6a"></i>EX1H <i style="background:#ab47bc"></i>E281 <i style="background:#ff7043"></i>V446K <i style="background:#90a4ae"></i>其他</div>
+  <div class="foot">读图示例：<b>06行·3F</b>（14天·其他料）与 <b>11行·1F</b>（12天·V446K）在闪红牌 → 微信已自动推送红牌清单；<b>13~15行</b>整片紫色=E281 专住区，找 E281 直接来这三排；<b>4F 整层全空</b> → 入库建议优先往 4F 码，别再把 A 巷塞成雨区。虚线灰格=空位；本页数据账本口径 21:52，滞后如实标注。</div>
+</div>
+
+<script>
+// B巷实盘（tmp_viz_stat.js 从生产账本提取）
+const DATA = {"06|3F":{a:14,c:"其他"},"11|1F":{a:12,c:"V446K"},"14|3F":{a:11,c:"其他"},"15|1F":{a:11,c:"其他"},"05|2F":{a:8,c:"E281"},"07|1F":{a:8,c:"E281"},"08|3F":{a:8,c:"E281"},"16|3F":{a:8,c:"E281"},"14|1F":{a:8,c:"E281"},"07|2F":{a:7,c:"E281"},"08|1F":{a:7,c:"E281"},"15|3F":{a:7,c:"E281"},"01|2F":{a:6,c:"E281"},"08|2F":{a:6,c:"E281"},"14|2F":{a:6,c:"E281"},"13|1F":{a:6,c:"E281"},"13|2F":{a:5,c:"E281"},"16|2F":{a:5,c:"E281"},"03|1F":{a:5,c:"E281"},"15|2F":{a:5,c:"E281"},"13|3F":{a:5,c:"E281"},"12|1F":{a:5,c:"E281"},"10|3F":{a:5,c:"EX1H"},"05|1F":{a:5,c:"其他"},"10|2F":{a:5,c:"其他"},"06|2F":{a:4,c:"E281"},"04|3F":{a:1,c:"其他"},"09|1F":{a:1,c:"E281"},"09|3F":{a:1,c:"E281"},"10|1F":{a:1,c:"V446K"},"11|3F":{a:0,c:"EX1H"},"12|2F":{a:0,c:"EX1H"}};
+const CAR = {EX11:"#42a5f5",EX1H:"#66bb6a",E281:"#ab47bc",V446K:"#ff7043","其他":"#90a4ae"};
+function ageCol(a){ if(a>=30)return"#b71c1c"; if(a>=14)return"#e53935"; if(a>=7)return"#fb8c00"; if(a>=3)return"#fdd835"; if(a>=1)return"#9ccc65"; return"#4dd0e1"; }
+const g=document.getElementById("grid");
+for(let lv=4;lv>=1;lv--){
+  const row=document.createElement("div"); row.className="lvl";
+  const t=document.createElement("div"); t.className="ltag"; t.textContent=lv+"F 层"+(lv===4?"　← 整层空闲，入库首选":"");
+  row.appendChild(t);
+  for(let r=1;r<=16;r++){
+    const k=String(r).padStart(2,"0")+"|"+lv+"F", d=DATA[k];
+    const c=document.createElement("div");
+    if(d){ c.className="cell"+(d.a>=12?" redcard":""); c.style.background=ageCol(d.a); c.textContent=r;
+      const dot=document.createElement("i"); dot.className="dot"; dot.style.background=CAR[d.c]; c.appendChild(dot);
+      c.title=k+"　"+d.a+"天　"+d.c;
+    } else { c.className="cell empty"; c.textContent=r; }
+    row.appendChild(c);
+  }
+  g.appendChild(row);
+}
+</script>
+</body>
+</html>
