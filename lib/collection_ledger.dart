@@ -457,6 +457,28 @@ extension CollectionLedgerExt on _MainPageState {
     return "${(s / 3600).round()}时";
   }
 
+  /// ㉖v120 来料区自动放格：服务器 locs?recv=1 权威（占用+预占避让+行列参数同源），
+  /// 按 R1-01→R1-12→R2-01… 顺序取第一个空格；满/离线回退 null 由调用方提示。
+  Future<String?> nb01AutoSlot() async {
+    await ledgerPullMerge(force: true); // 与地面同款：先对齐全厂占用再判空，防撞格
+    try {
+      final r = await AuthApi.ledgerLocs(recv: true).timeout(const Duration(seconds: 6));
+      if (r["ok"] != true) return null;
+      final rows = (r["recvRows"] as num?)?.toInt() ?? 15;
+      final cols = (r["recvCols"] as num?)?.toInt() ?? 12;
+      final byLoc = (r["byLoc"] as Map?)?.map((k, v) => MapEntry(k.toString().toUpperCase(), v)) ?? {};
+      for (var rr = 1; rr <= rows; rr++) {
+        for (var cc = 1; cc <= cols; cc++) {
+          final code = 'NB01-R$rr-${cc.toString().padLeft(2, '0')}';
+          if (!byLoc.containsKey(code)) return code;
+        }
+      }
+      return null; // 全满
+    } catch (_) {
+      return null; // 离线：来料登记强依赖服务器占用权威（防撞格），离线不放格
+    }
+  }
+
   /// 地面区内自动分配格位：zone 形如 "B13"；返回该排第一个空位编码，满则 null
   Future<String?> nb03AutoSlot(String zone) async {
     if (zone.isEmpty || zone.length < 2) return null;
@@ -1077,6 +1099,9 @@ Future<Map> ledgerPushNow() async {
       if (r.workType == 0) {
         mvMap[up] = "AGV";
         srcMap[up] = r.stationNo ?? "";
+      } else if (r.workType == 2) {
+        mvMap[up] = "登记"; // ㉖v120 来料区登记：搬运方式=登记，来源=来料区
+        srcMap[up] = "来料区";
       } else {
         mvMap[up] = "人工";
         srcMap[up] = r.groundLocation ?? "";
@@ -1619,7 +1644,8 @@ Future<void> scanRecordRestore(Isar isar, ScanRecord r) async {
     // 作废期间已消账：按采集记录原货位重建（AGV=站台 人工=地面格位）
     final loc = (r.workType == 0 ? r.stationNo : r.groundLocation) ?? "";
     if (loc.isNotEmpty &&
-        RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc)) {
+        (RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc) ||
+            RegExp(r'^NB01-R\d{1,2}-(0[1-9]|1\d|20)$').hasMatch(loc))) { // ㉖v118 来料区结构域（范围=服务器参数闸）
       final extra =
           await isar.recordExtras.filter().goodsCodeEqualTo(up).findFirst();
       await isar.writeTxn(() async {

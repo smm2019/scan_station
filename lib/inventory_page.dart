@@ -57,6 +57,11 @@ String invZoneOf(String locCode) {
     final seg = c.split('-');
     if (seg.length >= 3) return seg.sublist(0, 3).join('-');
   }
+  if (c.startsWith('NB01-')) {
+    // ㉖v120 来料区按行分组（NB01-R1-03 → NB01-R1）：盘点圈范围=整行
+    final seg = c.split('-');
+    if (seg.length >= 2) return seg.sublist(0, 2).join('-');
+  }
   return invShelfOf(c);
 }
 bool invLocInScope(String locCode, List<String> scope) {
@@ -705,7 +710,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                   builder: (ctx, sn) {
                     if (!sn.hasData) return const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()));
                     final allLocs = sn.data!.map((e) => e.locCode).toSet().toList();
-                    final zones = allLocs.where((c) => _scopeType.isEmpty ? true : (_scopeType == 'shelf' ? c.toUpperCase().startsWith('NB02') : c.toUpperCase().startsWith('NB03'))).map(invZoneOf).toSet().toList()..sort();
+                    final zones = allLocs.where((c) => _scopeType.isEmpty ? true : (c.toUpperCase().startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB01'))).map(invZoneOf).toSet().toList()..sort(); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
                     return Card(
                       child: Padding(
                         padding: const EdgeInsets.all(12),
@@ -715,13 +720,14 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                           Wrap(spacing: 8, children: [
                             ChoiceChip(label: const Text("AGV货架 NB02"), selected: _scopeType == 'shelf', onSelected: (_) => setState(() { _scopeType = 'shelf'; _scope.clear(); })),
                             ChoiceChip(label: const Text("地面库位 NB03"), selected: _scopeType == 'ground', onSelected: (_) => setState(() { _scopeType = 'ground'; _scope.clear(); })),
+                            ChoiceChip(label: const Text("来料区 NB01"), selected: _scopeType == 'recv', onSelected: (_) => setState(() { _scopeType = 'recv'; _scope.clear(); })), // ㉖v120 来料区班末对账=按行圈盘
                             ChoiceChip(label: const Text("混合/全盘"), selected: _scopeType.isEmpty, onSelected: (_) => setState(() { _scopeType = ''; _scope.clear(); })),
                           ]),
                           if (_scopeType.isEmpty)
                             const Padding(padding: EdgeInsets.only(top: 8), child: Text("未选类型：本次全盘（货架+地面全覆盖），无需勾区域。", style: TextStyle(fontSize: 12, color: Colors.grey)))
                           else ...[
                             const SizedBox(height: 10),
-                            Text("第二步：勾选要盘的${_scopeType == 'shelf' ? '货架（循环盘建议1~3个）' : '地面排（如 NB03-A-13）'}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                            Text("第二步：勾选要盘的${_scopeType == 'shelf' ? '货架（循环盘建议1~3个）' : _scopeType == 'recv' ? '来料区行（班末对账勾全部行）' : '地面排（如 NB03-A-13）'}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                             const SizedBox(height: 4),
                             if (zones.isEmpty)
                               const Text("货位基准中没有该类型的库位数据", style: TextStyle(fontSize: 12, color: Colors.grey))
@@ -756,7 +762,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                       const SizedBox(height: 6),
                       Text("货位基准：${_locName.isEmpty ? "未选择（不做串位/超量判定）" : "$_locName（$_locInfo）"}"),
                       const SizedBox(height: 6),
-                      Text("盘点类型：${_scopeType == 'shelf' ? "AGV货架" : _scopeType == 'ground' ? "地面库位" : "混合/全盘"}"),
+                      Text("盘点类型：${_scopeType == 'shelf' ? "AGV货架" : _scopeType == 'ground' ? "地面库位" : _scopeType == 'recv' ? "来料区" : "混合/全盘"}"),
                       const SizedBox(height: 6),
                       Text("盘点范围：${_scope.isEmpty ? "全盘" : "循环盘 · ${_scope.join("、")}"}"),
                       const SizedBox(height: 6),

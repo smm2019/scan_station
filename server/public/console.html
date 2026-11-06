@@ -902,6 +902,10 @@ function ctSlotStats(){
  const rows={};let miscN=0,miscB=0;
  Object.entries(CTN.byBox).forEach(([loc,boxes])=>{
   const p=String(loc).split('-');
+  // ㉖v118 来料区 NB01-R1-03（3段）：按"排×格"建行走地面渲染，不再进 misc 异常桶
+  if(p[0]==='NB01'&&p.length===3){const rowid=p[0]+'-'+p[1],col=Number(p[2])||0;const label=rowid+' 排';
+   const R=rows[label]=rows[label]||{zone:'NB01',rack:false,rowid,tier:String(p[2]),cells:{},max:0,recv:true};
+   R.cells[col]={loc:String(boxes[0]&&boxes[0].l).toUpperCase(),boxes};if(col>R.max)R.max=col;return;}
   if(p.length<4){miscN++;miscB+=boxes.length;return}
   const tier=p.slice(3).join('-'),rack=/\dF$/.test(tier);
   const rowid=rack?p[0]+'-'+p[1]:p.slice(0,3).join('-');
@@ -917,7 +921,7 @@ function ctSlotStats(){
  const rowsOfZone=(z)=>{const v=gZr[z];return v===undefined||v===null||!Number.isFinite(Number(v))?Math.max(1,Number(G.rows)||18):Math.max(0,Number(v));}; // 区覆盖>全局参数；0=整区不用
  const rowsArrOf=(z)=>{const l=gList[z];if(Array.isArray(l)&&l.length)return l.map((r)=>Number(r));return Array.from({length:rowsOfZone(z)},(_,i)=>i+1);}; // 清单优先；否则 1..排数
  Object.keys(rows).forEach(k=>{const R=rows[k];if(R.rack)return;const rn=Number(R.rowid.split('-').pop())||0;const z=zoneLetter(R.rowid);R.off=!!gOff[R.rowid];R.over=Array.isArray(gList[z])&&gList[z].length?!gList[z].includes(rn):rn>rowsOfZone(z);});
- const zn=new Set();Object.values(rows).forEach(R=>{if(!R.rack)zn.add(R.rowid.split('-').slice(0,2).join('-'))});
+ const zn=new Set();Object.values(rows).forEach(R=>{if(!R.rack&&!R.recv)zn.add(R.rowid.split('-').slice(0,2).join('-'))}); // ㉖v118 来料区排不补空排（48格物理有限，只画有货的排）
  Object.keys(gList).forEach((z)=>{if(Array.isArray(gList[z])&&gList[z].length)zn.add('NB03-'+z)}); // 配置了清单的区即使暂无货也上地图
  Object.keys(gZr).forEach((z)=>{if(Number(gZr[z])>0)zn.add('NB03-'+z)}); // 只设了排数覆盖、暂无货的区同样上地图（旧行为保留）
  if(Object.keys(gOff).length||Object.keys(gZr).length||Object.keys(gList).length||G.rows){ // 有地面配置才补空排（旧服务端无配置时行为不变）
@@ -1013,7 +1017,7 @@ async function ctMap(){
  const RC=CTN.rack||{};
  const mxCell=(R,c,pre,suf)=>{
    const hit=R&&R.cells[c];
-   const full=hit?String(hit.loc||'').toUpperCase():pre+'-'+String(c).padStart(2,'0')+(suf||'');
+   const full=hit?String(hit.loc||'').toUpperCase():pre+(suf||''); // ㉖v117b 空格位编码纠偏：调用方 pre 已含列号（高架 k+'-'+列 / 地面 rowid+'-'+位），旧版此处又拼一遍 pad(c) → NB02-B-11-11-4F 列号重复；有框格走服务端真 loc 不受影响
    if(!hit)return '<span class="mxc mxc-e" title="'+_esc(full)+' · 空货位（点击复制编号）" onclick="ctFreeSlot(\''+_esc(full)+'\')"></span>';
    const bs=hit.boxes,cls=cmode==='occ'?'mxc-x':(bs.some(b=>b._h>=168)?'mxc-r':(bs.some(b=>b._h>=72)?'mxc-o':'mxc-g'));
    const tip=full+'｜'+bs.length+'框 '+bs.map(b=>(cmode==='car'?(ctCarOf(b)+' '):'')+((b.p||b._fl)||'')+'×'+b.q).join('、').slice(0,110);

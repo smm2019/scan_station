@@ -1414,7 +1414,7 @@ class _MainPageState extends State<MainPage>
     with SingleTickerProviderStateMixin {
   late Isar _isar;
   String? _currentBatchId;
-  int _workType = 0; //0 AGV站台，1人工地面
+  int _workType = 0; //0 AGV站台，1人工地面，2来料区登记（㉖v120 需 receiving_reg 角色开关）
   String? _selectedStation; //【修改：存储编码 NB02-CK-05】
   String? _lastScanStation; // ㉖ 扫码保存后站台即清，留作手动「提交任务」回退
   String? _lastScanContainer; // ㉖ 容器类型同左
@@ -2094,8 +2094,9 @@ class _MainPageState extends State<MainPage>
   }
 
   /// ㉖① 全局标签查重：服务器 labelSeen 权威（任何批次录过即拦）；断网降级本机 Isar 全批次。命中默认拒绝，可填原因强制继续（留痕）。
-  Future<bool> _globalDupCheck(String code) async {
-    final r = await AuthApi.labelCheck(code);
+  /// ㉖v120 recv=1：来料区登记模式——命中在库 NB01 行不豁免（重复登记照拦）
+  Future<bool> _globalDupCheck(String code, {bool recv = false}) async {
+    final r = await AuthApi.labelCheck(code, recv: recv);
     if (r["net"] == true) {
       // 断网/服务不可达：降级查本机全部批次（未作废）
       final any = await _isar.scanRecords
@@ -2322,8 +2323,8 @@ class _MainPageState extends State<MainPage>
     _isSaving = true;
 // ==========【新增前置校验，从这里开始】==========
     try {
-      //校验1：容器类型不能为空
-      if (_containerType == null) {
+      //校验1：容器类型不能为空（㉖v120 来料区模式免选：容器默认筐，见保存段兜底）
+      if (_containerType == null && _workType != 2) {
         if (mounted)
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text("请先选择容器类型！")));
@@ -2335,6 +2336,8 @@ class _MainPageState extends State<MainPage>
       bool locationValid = false;
       if (_workType == 0) {
         locationValid = _selectedStation != null;
+      } else if (_workType == 2) {
+        locationValid = true; // ㉖v120 来料区模式：格位自动分配，无需选人
       } else {
         locationValid = _selectedGroundLoc != null;
       }
@@ -2359,7 +2362,7 @@ class _MainPageState extends State<MainPage>
               .showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
         return;
       }
-      if (await _globalDupCheck(code)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）
+      if (await _globalDupCheck(code, recv: _workType == 2)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）；来料模式带 recv
       if (await _isCodeDuplicate(code)) return;
       if (_workType == 0 && _selectedStation == null) {
         if (mounted) {
@@ -2510,11 +2513,24 @@ class _MainPageState extends State<MainPage>
           }
         }
       }
+      // ㉖v120 来料区登记模式：向服务器申请自动格位（占用+预占权威，防撞格）；申请不到=区满/离线，中止保存
+      String? recvSlotAuto;
+      if (_workType == 2) {
+        recvSlotAuto = await nb01AutoSlot();
+        if (recvSlotAuto == null) {
+          if (mounted)
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text("来料区暂无空格位（已满或服务器不通）——请搬运清位或联网后重试"),
+                backgroundColor: Colors.orange));
+          _isSaving = false;
+          return;
+        }
+      }
       final rec = ScanRecord(
         scanTime: DateTime.now(),
         workType: _workType,
         stationNo: _workType == 0 ? _selectedStation : null,
-        groundLocation: _workType == 1 ? _selectedGroundLoc : null,
+        groundLocation: _workType == 1 ? _selectedGroundLoc : (_workType == 2 ? recvSlotAuto : null), // ㉖v120 来料流水带自动格位（gl=NB01-*）
         goodsCode: code,
         remark: finalRemark,
         batchId: _currentBatchId!,
@@ -2579,7 +2595,8 @@ class _MainPageState extends State<MainPage>
       }
       await _ledgerRegisterOnSave(code,
           autoCallStation: autoCallSt,
-          groundZone: lastGroundZone); //顺手登记货位账本（选填，不影响采集主流程）
+          groundZone: lastGroundZone,
+          recvSlot: recvSlotAuto); //顺手登记货位账本（选填，不影响采集主流程）；㉖v120 来料模式带自动格位
       scheduleScanPush(); //采集流水定时同步电脑数据库
       await _refreshRecord();
       await _refreshBatchStat();
@@ -2610,8 +2627,13 @@ class _MainPageState extends State<MainPage>
   ///采集页顺手登记：保存成功时若填了「货位账本编码」，把本标签（整托含兄弟码）写入账本，并预约全量同步电脑。
   ///留空则不写账本，与改动前行为完全一致；编码格式不符或货位已被他人占用时只提示不写入。
   Future<void> _ledgerRegisterOnSave(String code,
-      {String autoCallStation = "", String groundZone = ""}) async {
+      {String autoCallStation = "", String groundZone = "", String? recvSlot}) async {
     try {
+      if (recvSlot != null && recvSlot.isNotEmpty) {
+        // ㉖v120 来料区登记模式：格位已由服务器 recv 权威分配，直接入账，不走手填/AUTO/picker 分支
+        await _writeRecvLedger(code, recvSlot);
+        return;
+      }
       if (_ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO') {
         //自动分配：先按零件号定货位并回填
         await _handleAutoLedger(code);
@@ -2657,11 +2679,14 @@ class _MainPageState extends State<MainPage>
           return;
         }
       }
-      if (!RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc)) {
+      // ㉖v118 认来料区格位 NB01-R{行}-{列}（结构域：行1-99、列01-20；行列上限=服务器参数 recvRows×recvCols，超限由服务器拒回）：一楼来料登记（地面模式+手填/选 NB01 位）直接入账=来料区库存
+      if (!RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$')
+              .hasMatch(loc) &&
+          !RegExp(r'^NB01-R\d{1,2}-(0[1-9]|1\d|20)$').hasMatch(loc)) {
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content:
-                  Text("货位编码「$loc」格式不符（例 NB02-A-08-2F / NB03-B-13-07），本筐未入账本"),
+                  Text("货位编码「$loc」格式不符（例 NB02-A-08-2F / NB03-B-13-07 / NB01-R1-03），本筐未入账本"),
               backgroundColor: Colors.orange));
         return; //保留输入内容，改正后可直接重扫标签再保存
       }
@@ -2778,6 +2803,30 @@ class _MainPageState extends State<MainPage>
             content: Text("账本登记异常：$e（采集记录已保存）"),
             backgroundColor: Colors.orange));
     }
+  }
+
+  /// ㉖v120 来料区登记模式专用入账：格位已由服务器 recv 权威分配（nb01AutoSlot），
+  /// 本机落 shelfPlacements（loc=NB01-*，容器默认筐）→ 走同款账本推送链（mv=登记/src=来料区 由 workType==2 派生）。
+  /// 两台 PDA 同刻抢同格由服务器货位互斥闸拒回点名，本机弹窗提示重扫即可。
+  Future<void> _writeRecvLedger(String code, String slot) async {
+    final oper = Auth.user?.name ?? Auth.user?.username ?? "来料登记";
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    await _isar.writeTxn(() async {
+      final olds = await _isar.shelfPlacements
+          .filter()
+          .goodsCodeEqualTo(code.toUpperCase())
+          .findAll();
+      await _isar.shelfPlacements.deleteAll(olds.map((e) => e.id).toList());
+      await _isar.shelfPlacements.put(ShelfPlacement()
+        ..goodsCode = code.toUpperCase()
+        ..loc = slot
+        ..container = "筐"
+        ..operator = oper
+        ..assignedAt = nowMs);
+    });
+    await ledgerUnmarkDeleted([code.toUpperCase()]);
+    _scheduleLedgerSync();
+    if (mounted) setState(() => _autoCallTip = "✅ 已入来料区 $slot（来料区库存+1）");
   }
 
   ///账本同步防抖（已升级为全局助手，支持发料/出库远程触发）
@@ -3824,10 +3873,21 @@ class _MainPageState extends State<MainPage>
                             child: _workModeCard(1, "人工地面摆放", "人工地堆托盘扫码"),
                           ),
                         ),
+                        // ㉖v120 来料区登记模式：仅开通 receiving_reg 角色可见（一楼仓管：只扫码+自动放格）
+                        if (Auth.can("receiving_reg")) ...[
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: InkWell(
+                              onTap: () {},
+                              child: _workModeCard(2, "来料区登记", "贴标后扫码·自动放格"),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
 
-// ===== 整托合并模式：开关 + 当前托汇总卡片 =====
+// ===== 整托合并模式：开关 + 当前托汇总卡片（㉖v120 来料区登记模式隐藏：逐筐登记无托概念） =====
+                    if (_workType != 2)
                     Container(
                       margin: const EdgeInsets.only(top: 12),
                       padding: const EdgeInsets.symmetric(
@@ -3905,7 +3965,12 @@ class _MainPageState extends State<MainPage>
                     const SizedBox(height: 12),
                     Container(
                       key: _keyContainerArea,
-                      child: Column(
+                      child: _workType == 2
+                          ? const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 8),
+                              child: Text("来料区登记：容器默认「筐」，格位自动分配，直接扫描或输入货物条码即可",
+                                  style: TextStyle(fontSize: 13, color: Color(0xFF2E7D32))))
+                          : Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text("容器类型",
@@ -3954,6 +4019,7 @@ class _MainPageState extends State<MainPage>
                     ),
                     const SizedBox(height: 12),
 
+                    if (_workType != 2) // ㉖v120 来料区登记模式：格位自动分配，无需选人货位
                     Container(
                       key: _keyLocationArea,
                       child: Column(
@@ -4040,7 +4106,7 @@ class _MainPageState extends State<MainPage>
                           isDense: true),
                     ),
                     const SizedBox(height: 4),
-                    _buildLedgerExtras(), // ㉖⑬ 账本登记挪表单底部：输入框整行不再被挤
+                    if (_workType != 2) _buildLedgerExtras(), // ㉖⑬ 账本登记挪表单底部：输入框整行不再被挤；㉖v120 来料模式隐藏（格位全自动）
                     const Divider(),
                     InkWell(
                       onTap: () {
@@ -4358,11 +4424,12 @@ class _MainPageState extends State<MainPage>
     }
   }
 
-  /// ②按登录账号记住/恢复工作模式（0=AGV站台 1=人工地面）
+  /// ②按登录账号记住/恢复工作模式（0=AGV站台 1=人工地面 2=来料区登记）
   Future<void> _restoreWorkMode() async {
     final sp = await SharedPreferences.getInstance();
     final v = sp.getInt('worktype_' + (Auth.user?.id ?? ''));
     if (v == 1 && mounted) setState(() => _workType = 1);
+    if (v == 2 && Auth.can("receiving_reg") && mounted) setState(() => _workType = 2); // ㉖v120 无来料权限不恢复
   }
 
   /// 第3档 按偏好预填默认框型（仅在尚未选择时；全机偏好）㉖ 合法值跟随服务器容器类型配置
@@ -4388,13 +4455,11 @@ class _MainPageState extends State<MainPage>
       final v = sp.getInt("worktype_" + (Auth.user?.id ?? ""));
       if (mounted && v != _workType)
         setState(() {
-          _workType = v == 1 ? 1 : 0;
+          _workType = (v == 1 || (v == 2 && Auth.can("receiving_reg"))) ? v! : 0; // ㉖v120 三档+权限降级
           _lastScanStation = null;
           _lastScanContainer = null;
-          if (_workType == 1)
-            _selectedStation = null;
-          else
-            _selectedGroundLoc = null;
+          if (_workType != 0) _selectedStation = null;
+          if (_workType != 1) _selectedGroundLoc = null;
         });
     });
   }
@@ -4412,6 +4477,9 @@ class _MainPageState extends State<MainPage>
           _ledgerLocCtrl.clear(); // ㉖v69c 切模式清空货位编码输入框：地面NB03残留会流进AGV模式致叫车"库位不在WMAS主档"
           if (type == 0) {
             _selectedGroundLoc = null;
+          } else if (type == 2) {
+            _selectedGroundLoc = null; // ㉖v120 来料模式不留地面残留（流水 gl 由自动格位接管）
+            _selectedStation = null;
           } else {
             _selectedStation = null;
           }

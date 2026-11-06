@@ -451,9 +451,10 @@ class AuthApi {
       _req("GET", "/api/tts/info", token: await AuthStore.token());
   static Future<Map> setPrefs(Map body) async => _req("POST", "/api/prefs",
       body: body, token: await AuthStore.token()); // ㉖B14 偏好上云
-  // ㉖① 标签全局查重（采集入库前调用）
-  static Future<Map> labelCheck(String c) async =>
-      _req("GET", "/api/label/check?c=" + Uri.encodeComponent(c),
+  // ㉖① 标签全局查重（采集入库前调用）；㉖v120 recv=1 来料登记模式（重复扫 NB01 在库码仍拦）
+  static Future<Map> labelCheck(String c, {bool recv = false, bool ret = false}) async =>
+      _req("GET", "/api/label/check?c=" + Uri.encodeComponent(c) +
+          (recv ? "&recv=1" : "") + (ret ? "&ret=1" : ""),
           token: await AuthStore.token());
   static Future<Map> labelForce(String c, String why) async =>
       _req("POST", "/api/label/force",
@@ -546,9 +547,9 @@ class AuthApi {
   static Future<Map> agvCarryState(String taskNo) async =>
       _req("GET", "/api/agv/carryState?t=" + Uri.encodeComponent(taskNo),
           token: await AuthStore.token());
-  // ㉖⑰ 服务器权威货架占用（入库自动分配货位用，多PDA统一）
-  static Future<Map> ledgerLocs({bool all = false}) async =>
-      _req("GET", "/api/ledger/locs${all ? '?all=1' : ''}",
+  // ㉖ 服务器权威货架占用（入库自动分配货位用，多PDA统一）；㉖v120 recv=1 仅来料区 NB01 占用+行列参数
+  static Future<Map> ledgerLocs({bool all = false, bool recv = false}) async =>
+      _req("GET", "/api/ledger/locs${recv ? '?recv=1' : (all ? '?all=1' : '')}",
           token: await AuthStore.token()); // ㉖v99 all=1 附地面格（选位弹层实时核对）
   // ㉖v54 原子预占分配：服务器算位+锁位一体（多PDA并发不撞位）
   static Future<Map> ledgerReserve(String code, String partNo) async =>

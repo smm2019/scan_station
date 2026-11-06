@@ -38,6 +38,9 @@ class _StockAgg {
   int todayIn = 0, todayOut = 0; // ㉖v52 今日入/出库框数（自然日）
   int staleBoxes = 0; // 滞留 7 天+ 在库框
   int freshBoxes = 0; // 3 天内新入在库框
+  // ㉖v119 服务器全厂口径四卡（账本权威，与网页看板同源）：非 null 时 KPI 优先取此值，
+  // 消除两台设备本机快照各算各的 588 vs 592 vs 网页 594；null=离线，回退下方本机聚合值
+  int? srvBoxes, srvQty, srvParts, srvStale7;
 }
 
 class _StockPartRow {
@@ -292,6 +295,11 @@ Future<_StockAgg> computeStock() async {
   final _srv = await _todayCountsCached();
   agg.todayIn = _srv?["todayIn"] as int? ?? _fbIn;
   agg.todayOut = _srv?["todayOut"] as int? ?? _fbOut;
+  // ㉖v119 四卡全厂口径：-1=旧版服务器未下发该字段，视同离线走本机兜底
+  if ((_srv?["stockBoxes"] ?? -1) >= 0) agg.srvBoxes = _srv!["stockBoxes"];
+  if ((_srv?["stockQty"] ?? -1) >= 0) agg.srvQty = _srv!["stockQty"];
+  if ((_srv?["stockParts"] ?? -1) >= 0) agg.srvParts = _srv!["stockParts"];
+  if ((_srv?["stockStale7"] ?? -1) >= 0) agg.srvStale7 = _srv!["stockStale7"];
 
   // 期初
   for (final op in openings) {
@@ -350,6 +358,8 @@ Future<void> projRefresh() async {
 List<String> projOfPn(String pn) => _projMapCache[pn.toUpperCase()] ?? const [];
 
 // ㉖v99 今日出入库全厂口径缓存（60 秒）：/api/counts todayIn/todayOut；失败返回 null 由调用方本机兜底
+// ㉖v119 扩在库四卡全厂口径（stockBoxes/stockQty/stockParts/stockStale7）：旧版四卡各算本机 Isar 快照→
+// 两台设备同屏 588 vs 592、与网页 594 三方互异（v99 只治了今日卡，"反复修反复现"根因）；改读服务器账本权威
 Map<String, int>? _todayCache;
 int _todayCacheAt = 0;
 int _todayFailAt = 0; // ㉖v99 复检加固：失败退避 120 秒——库存页45秒自动刷新，离线时不再每轮空等6秒超时
@@ -362,7 +372,9 @@ Future<Map<String, int>?> _todayCountsCached() async {
   try {
     final r = await AuthApi.counts().timeout(const Duration(seconds: 6));
     if (r["ok"] == true && r["todayIn"] is num) {
-      _todayCache = {"todayIn": (r["todayIn"] as num).toInt(), "todayOut": ((r["todayOut"] as num?) ?? 0).toInt()};
+      _todayCache = {"todayIn": (r["todayIn"] as num).toInt(), "todayOut": ((r["todayOut"] as num?) ?? 0).toInt(),
+        "stockBoxes": ((r["stockBoxes"] as num?) ?? -1).toInt(), "stockQty": ((r["stockQty"] as num?) ?? -1).toInt(),
+        "stockParts": ((r["stockParts"] as num?) ?? -1).toInt(), "stockStale7": ((r["stockStale7"] as num?) ?? -1).toInt()};
       _todayCacheAt = now;
       _todayFailAt = 0;
       return _todayCache;
@@ -688,18 +700,19 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
             Widget k(String t, String v, Color col, {VoidCallback? onTap, bool sel = false}) =>
                 SizedBox(width: kw, child: _kpiCard(t, v, col, onTap: onTap, selected: sel));
             return Wrap(spacing: 8, runSpacing: 6, children: [
-              k('零件种类', '${agg.parts.length}', const Color(0xFF515BD4)),
-              k('在库框数', '$totalBoxes', const Color(0xFF00897B)),
-              k('在库数量', _fmtInvNum(totalQty), const Color(0xFF3949AB)),
+              // ㉖v119 四卡优先服务器账本口径（与网页看板同源）；离线/旧版服务器回退本机聚合值
+              k('零件种类', '${agg.srvParts ?? agg.parts.length}', const Color(0xFF515BD4)),
+              k('在库框数', '${agg.srvBoxes ?? totalBoxes}', const Color(0xFF00897B)),
+              k('在库数量', _fmtInvNum(agg.srvQty ?? totalQty), const Color(0xFF3949AB)),
               k('今日入库', '${agg.todayIn}框', const Color(0xFF43A047)),
               k('今日出库', '${agg.todayOut}框', const Color(0xFFEF6C00)),
               // ㉖v108 滞留卡常驻：旧版为 0 时整卡隐藏导致末行只剩 2 张、右侧空半屏；
               // 改为 0 时用灰色显示"0框"（健康态同样一眼可见），保证 3+3 铺满。
               // ㉖v109 点卡筛选：原「🧊有滞留」chip 移除（用户要求），筛选入口挪到此卡——
               // 点一下只看滞留7天+的零件（选中实底高亮），再点取消；顶部数字即滞留框数，所见即入口。
-              k('滞留7天+', '${agg.staleBoxes}框',
-                  agg.staleBoxes > 0 ? const Color(0xFFE53935) : const Color(0xFF9E9E9E),
-                  onTap: agg.staleBoxes > 0 ? () => setState(() => _flt = _flt == 'stale' ? "" : 'stale') : null,
+              k('滞留7天+', '${agg.srvStale7 ?? agg.staleBoxes}框',
+                  (agg.srvStale7 ?? agg.staleBoxes) > 0 ? const Color(0xFFE53935) : const Color(0xFF9E9E9E),
+                  onTap: (agg.srvStale7 ?? agg.staleBoxes) > 0 ? () => setState(() => _flt = _flt == 'stale' ? "" : 'stale') : null,
                   sel: _flt == 'stale'),
             ]);
           })),
