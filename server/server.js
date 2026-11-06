@@ -160,6 +160,38 @@ function atomicWrite(target, data) {
   }
   throw lastErr;
 }
+// ㉖v111 异步原子写（小卡根治）：writeFileSync/fsyncSync/renameSync 全换 libuv 线程池异步版，
+// 主线程发出后立刻返回处理请求，磁盘 fsync 等待不再冻结 event loop。断电四步（写→数据块fsync→rename→目录fsync）一步不减。
+// 唯一临时名 + 失败换名重试语义与同步版逐字对齐；重试等待用 setTimeout 不阻塞。
+async function atomicWriteAsync(target, data) {
+  let lastErr = null;
+  for (let _try = 0; _try < 2; _try++) {
+    const tmp = target + '.tmp-' + process.pid + '-' + (++_tmpSeq);
+    try {
+      await fs.promises.writeFile(tmp, data, 'utf8');
+      let _h = null; try { _h = await fs.promises.open(tmp, 'r+'); await _h.sync(); } catch (_) {} finally { if (_h) try { await _h.close(); } catch (_) {} }
+      await fs.promises.rename(tmp, target);
+      let _dh = null; try { _dh = await fs.promises.open(path.dirname(target), 'r'); await _dh.sync(); } catch (_) {} finally { if (_dh) try { await _dh.close(); } catch (_) {} }
+      return;
+    } catch (e) {
+      try { await fs.promises.unlink(tmp); } catch (_) {}
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 60));
+    }
+  }
+  throw lastErr;
+}
+// 每目标写序队列：同一文件的上一次 rename 回执完成前不发下一次——防慢的旧快照后 rename 覆盖新快照。
+// 传"入队时刻的字符串快照"（非 db 引用），链式串行；失败吞进链尾防断链，调用方各自 catch。
+const _wq = {};
+function enqueueWrite(target, data) {
+  const prev = _wq[target] || Promise.resolve();
+  const next = prev.then(() => atomicWriteAsync(target, data));
+  const tail = next.catch(() => {});
+  _wq[target] = tail;
+  tail.then(() => { if (_wq[target] === tail) delete _wq[target]; }); // 完成且无后继→清理，防一次性文件名（备份）累积泄漏
+  return next;
+}
 function cleanOrphanTmp() { // ㉖v85 启动后清理历史孤儿临时文件：只匹配本服务命名模式且 mtime 超60分钟（正常写在途仅毫秒级，绝不误删在途文件）
   try {
     const cut = Date.now() - 60 * 60 * 1000;
@@ -196,6 +228,15 @@ function updateSafeCopy(d, force) { // 用内存态写一份不脱敏安全副�
     if (!force && now - _safeAt < 5000) return;
     atomicWrite(SAFE_FILE, JSON.stringify(d)); // ㉖v85 唯一临时名
     _safeAt = now; _dbHealth.safeAt = now;
+  } catch (_) {}
+}
+async function updateSafeCopyAsync(d, force) { // ㉖v111 异步版：序列化占主线程，磁盘等待走独立写序队列（与主文件错峰，消除双写叠加冻结）
+  try {
+    const now = Date.now();
+    if (!force && now - _safeAt < 5000) return;
+    const _s = JSON.stringify(d);
+    await enqueueWrite(SAFE_FILE, _s);
+    _safeAt = Date.now(); _dbHealth.safeAt = _safeAt;
   } catch (_) {}
 }
 function loadDb() {
@@ -462,7 +503,7 @@ function loadDb() {
   return d;
 }
 // ㉖G3 SQLite迁移触发线监控：落盘写耗时滚动统计（近50次 max/avg）
-const _saveStat = { ring: [], max: 0, avg: 0, n: 0 };
+const _saveStat = { ring: [], max: 0, avg: 0, n: 0, blockRing: [], blockMax: 0, blockAvg: 0 }; // block*=主线程实际被占时长（异步化后远小于总落盘耗时）
 // ㉖v98 性能探针（10/28 用户"服务器有时打开慢会卡，能在系统健康里找原因吗"）：
 // ①事件循环延迟：单线程被同步长任务（全表扫描/大JSON序列化）阻塞时定时器排队→lag 即"卡"的直接量化
 let _lag = { cur: 0, max: 0, over: 0 };
@@ -481,20 +522,35 @@ function apiStatMark(p, ms) {
 function apiStatTop() { // 近段最慢 TOP8（按 p95）
   return Object.entries(_apiStat).map(([k, s]) => { const r = s.ring.slice().sort((a, b) => a - b); return { p: k, n: s.n, max: s.max, p95: r.length ? r[Math.min(r.length - 1, Math.floor(r.length * 0.95))] : 0, avg: r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : 0 }; }).sort((a, b) => b.p95 - a.p95).slice(0, 8);
 }
-function saveDb(db) { // ㉖v85 原子写：唯一临时名 + rename（固定 .tmp 在并发写者下 rename 互相偷文件 → ENOENT，10/22 30次事故复盘）
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const _sv = []; // ㉕F6 落盘加密：同步暂换→序列化→还原（单线程无并发观察，免整库深拷贝）
+function _serializeDb(db) { // 加密暂换→序列化→还原（主线程同步，异步/同步两路共用；34ms 地板，不可省）
+  const _sv = [];
   try { walkSec(db, (o, k) => { const e = encSec(o[k]); if (e !== o[k]) { _sv.push([o, k, o[k]]); o[k] = e; } }); } catch (_) {}
+  let _data; try { _data = JSON.stringify(db); } finally { for (const it of _sv) it[0][it[1]] = it[2]; }
+  return _data;
+}
+function _statSave(totalMs, blockMs) { try { _saveStat.ring.push(totalMs); if (_saveStat.ring.length > 50) _saveStat.ring.shift(); _saveStat.blockRing.push(blockMs); if (_saveStat.blockRing.length > 50) _saveStat.blockRing.shift(); _saveStat.n++; _saveStat.max = Math.max.apply(null, _saveStat.ring); _saveStat.avg = Math.round(_saveStat.ring.reduce((a, b) => a + b, 0) / _saveStat.ring.length); _saveStat.blockMax = Math.max.apply(null, _saveStat.blockRing); _saveStat.blockAvg = Math.round(_saveStat.blockRing.reduce((a, b) => a + b, 0) / _saveStat.blockRing.length); } catch (_) {} }
+function saveDb(db) { // ㉖v111 同步落盘（退出/备份/启动路径专用）：主线程全程阻塞，断电四步完整
+  fs.mkdirSync(DATA_DIR, { recursive: true });
   const _t0 = Date.now();
-  let _data; try { _data = JSON.stringify(db); } finally { for (const it of _sv) it[0][it[1]] = it[2]; } // ㉖v56 紧凑序列化：省 40% 体积与近半耗时（读取端 parse 无感）
-  atomicWrite(DB_FILE, _data); // 内含数据块 fsync + rename + 目录 fsync（v56 断电加固语义不变）
-  updateSafeCopy(db); // ㉖v56 每次成功落盘后刷新不脱敏安全副本（db 此时已还原明文）
-  try { const ms = Date.now() - _t0; _saveStat.ring.push(ms); if (_saveStat.ring.length > 50) _saveStat.ring.shift(); _saveStat.n++; _saveStat.max = Math.max.apply(null, _saveStat.ring); _saveStat.avg = Math.round(_saveStat.ring.reduce((a, b) => a + b, 0) / _saveStat.ring.length); } catch (_) {}
+  const _data = _serializeDb(db);
+  atomicWrite(DB_FILE, _data);
+  updateSafeCopy(db);
+  _statSave(Date.now() - _t0, Date.now() - _t0); // 同步版：阻塞=总耗时
+}
+async function saveDbAsync(db) { // ㉖v111 异步落盘（常规 save 路径）：序列化占主线程 ~34ms，磁盘等待挪 libuv 线程池
+  const _tb = Date.now();
+  const _data = _serializeDb(db); // 主线程阻塞段（含加密暂换还原）
+  const _block = Date.now() - _tb;
+  const _t0 = Date.now();
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  await enqueueWrite(DB_FILE, _data); // 主文件写序队列（含数据块fsync+rename+目录fsync，断电语义不变）
+  await updateSafeCopyAsync(db); // 安全副本独立队列，与主文件错峰
+  _statSave(Date.now() - _t0, _block);
 }
 // ---- 数据自动备份：启动一次 + 每30分钟快照，保留最近72份（约36小时）；误删/损坏可从 data/backups 恢复 ----
-function backupDb() {
+async function backupDb() {
   try {
-    flushSave(); // ㉖v56 备份前把合并窗口脏数据落盘，防快照滞后
+    await flushSaveNow(); // ㉖v111 备份前排空合并窗口脏数据+在途异步写落定，防快照滞后（同步模式=直接同步写）
     if (!fs.existsSync(DB_FILE)) return;
     const dir = path.join(DATA_DIR, 'backups');
     fs.mkdirSync(dir, { recursive: true });
@@ -507,7 +563,7 @@ function backupDb() {
     if (_bk.rcsConfig) delete _bk.rcsConfig.pwd;
     if (_bk.wmasConfig) delete _bk.wmasConfig.pwd;
     delete _bk.rcsToken; delete _bk.rcsTokenExp; delete _bk.sessions;
-    atomicWrite(p, JSON.stringify(_bk)); // ㉖v85 唯一临时名
+    await enqueueWrite(p, JSON.stringify(_bk)); // ㉖v111 备份文件独立写序队列（断电四步不变，磁盘等待不占主线程）
     const all = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).sort();
     while (all.length > 144) { const old = all.shift(); try { fs.unlinkSync(path.join(dir, old)); } catch (_) {} } // ㉖v56 保留144份=10分钟间隔×24小时（断电事故后加密备份）
   } catch (e) { console.log('[backup] 失败：', e.message); logErr('backupDb', e); }
@@ -1073,13 +1129,30 @@ function buildDayReport(dayKey) {
     stnUse[k] = Math.round(busy / 864e5 * 100);
   }
   let errs = 0; for (const e of db.errLogs || []) if ((e.at || 0) >= F && e.at <= T) errs++;
+  // ---- ㉖v112 问题日快照：把"异常与复盘"要用的当日问题固化下来（carEvents 180天滚动、errLogs/sysErr 更短，不当天固化月报就缺数）。库存类(stale)是现值非历史，聚合端取期末快照，此处不重复存 ----
+  let errItems = 0; const errDevs = new Set();
+  for (const e of db.errLogs || []) { if ((e.at || 0) >= F && e.at <= T) { errItems += (e.items || []).length; errDevs.add(String(e.dev || '')); } }
+  let wdN = 0; for (const s of db.sysErr || []) if ((s.at || 0) >= F && s.at <= T && s.where === '看门狗') wdN++;
+  const probThr = Math.max(600, Number(P().pollSec || 30) * 20); // 出库超时判定阈值与调度轮询联动（同 pushEvent 处口径）
+  const probs = {
+    alarm: evs['告警'] || 0, redflag: evs['红牌'] || 0, jam: evs['堵点'] || 0,
+    timeoutOut: evs['出库超时'] || 0, timeoutIn: evs['入库超时'] || 0,
+    fifo: evs['FIFO违反'] || 0, overfire: evs['超发确认'] || 0, conflict: evs['改位冲突'] || 0,
+    slowApi: 0, slowMax: 0, slowP: '',
+    pdaErrBatches: errs, pdaErrItems: errItems, pdaErrDevs: errDevs.size,
+    watchdog: wdN, sysErr: 0,
+    throttle: 0, // 时段闸拒绝暂无持久计数（现算即丢），待有留痕端再接入；前端空窗口径按"未采集"处理
+    overdue: (() => { try { let c = 0; for (const r of db.requisitions || []) { const lastEv = (r.history || []).slice(-1)[0]; const uAt = lastEv ? (Date.parse(lastEv.time) || 0) : (Date.parse(r.createdAt) || 0); if (!['done', 'rejected', 'cancelled'].includes(r.status) && uAt && uAt < F - probThr) c++; } return c; } catch (_) { return 0; } })(),
+  };
+  try { for (const st of apiStatTop()) { if (st.p95 >= 1000) { probs.slowApi++; if (st.p95 > probs.slowMax) { probs.slowMax = st.p95; probs.slowP = st.p; } } } } catch (_) {}
+  try { probs.sysErr = (db.sysErr || []).filter((s) => (s.at || 0) >= F && s.at <= T).length; } catch (_) {}
   return {
     day: dayKey, work: dd, persons,
     reqs: { created, accepted, done: doneN, rejected, cancelled, lateAcc, shortN, testN, accS, accC, rdyS, rdyC, finS, finC },
     events: evs, eventsTotal: evTot,
     agv: { n: agvN, dur: agvDur, durN: agvDurN }, cars,
     stock: { boxes: boxSet.size, locs: locSet.size, stale7, staleTop: staleTop.slice(0, 5) },
-    stnUse, errs, params: P(),
+    stnUse, errs, problems: probs, params: P(),
   };
 }
 let _rptLast = '';
@@ -1117,6 +1190,20 @@ function rptAggregate(list) {
   }
   const last = list[list.length - 1];
   if (last) { agg.stock = last.stock; for (const k of Object.keys(agg.stnUse)) agg.stnUse[k] = Math.round(agg.stnUse[k].sum / agg.stnUse[k].n); }
+  // ---- ㉖v112 problems 聚合：计数类累加；slowP 取期内最慢；旧快照无 problems → null（前端按"未采集"渲染）----
+  if (list.some((r) => r.problems)) {
+    const pz = { alarm: 0, redflag: 0, jam: 0, timeoutOut: 0, timeoutIn: 0, fifo: 0, overfire: 0, conflict: 0, slowApi: 0, slowMax: 0, slowP: '', pdaErrBatches: 0, pdaErrItems: 0, pdaErrDevs: 0, watchdog: 0, sysErr: 0, throttle: 0, overdue: 0 };
+    let hasSlow = false;
+    for (const r of list) {
+      const q = r.problems; if (!q) continue;
+      for (const k of ['alarm', 'redflag', 'jam', 'timeoutOut', 'timeoutIn', 'fifo', 'overfire', 'conflict', 'pdaErrBatches', 'watchdog', 'sysErr', 'throttle', 'overdue']) pz[k] += q[k] || 0;
+      pz.pdaErrItems += q.pdaErrItems || 0;
+      if (q.slowApi) { hasSlow = true; pz.slowApi++; if ((q.slowMax || 0) > pz.slowMax) { pz.slowMax = q.slowMax; pz.slowP = q.slowP || ''; } }
+    }
+    agg.problems = pz;
+    { let mx = 0; for (const r of list) if (r.problems) mx = Math.max(mx, r.problems.pdaErrDevs || 0); pz.pdaErrDevs = mx; } // 设备数取期内单日最多，不累加防多日重复计数虚高
+    if (!hasSlow) { agg.problems.slowApi = null; } // 全期都没采到慢端点样本 → null 区分"0个慢"与"没数据"
+  } else agg.problems = null;
   return agg;
 }
 
@@ -1368,6 +1455,7 @@ const PARAMS = {
   // ㉖v108 看门狗配置（用户要求：判活阈值进面板；经 /api/health-ping 下发给 watchdog.ps1，服务不通时脚本用本地默认兜底）
   wdHbStaleSec:   { grp: '看门狗', name: '心跳假死阈值', unit: '秒', min: 60, max: 600, d: 180, tip: 'RCS轮询心跳停跳超此秒数判"进程假死"计一次异常。实际生效值=max(本值, RCS轮询间隔×2+60)——防轮询调大后误杀正常服务。连续异常达「重启触发阈值」次才重启服务' },
   wdFailThreshold: { grp: '看门狗', name: '重启触发阈值', unit: '次', min: 2, max: 10, d: 3, tip: '看门狗连续判异常达此次数才重启 HSAuthServer（防单次网络抖动误杀）。下限2=禁止1次即重启。另有硬限速：1小时内最多重启2次，超限停止自动救援转人工。看门狗每5分钟检查一次（间隔由计划任务控制，改后需重注册）' },
+  asyncSave:      { grp: '存储引擎', name: '异步落盘', unit: '开关', min: 0, max: 1, d: 0, tip: '㉖v111 小卡根治灰度阀。1=常规 save 走异步落盘（磁盘 fsync 等待挪 libuv 线程池，主线程只承担 ~34ms 序列化；断电 write→fsync→rename→目录fsync 四步一步不减；同文件写序队列防旧快照覆盖；退出/备份路径恒走同步写不受本开关影响）。0=现行同步落盘（默认，观察期后切1）。切换即时生效无需重启；切回0=秒级回退' },
   outWhKeys:      { grp: '统计口径', str: 1, name: '出库去向关键词', unit: '文本', min: 0, max: 0, d: '线边仓,成品仓', tip: '㉖v100 判定"真出库"的 MES 仓名关键词（多个用逗号分隔）。直调单去向含任一关键词=出库；全不含=移仓（如冷冲件仓/热压单件仓/代发仓）——移仓单照常可查可审计，但不计今日出库/工作量出库/周转分/呆滞判定、不盖标签"已出库"防复用戳，报表标注"移仓"。㉖v108 默认补入成品仓（用户口径：线边仓与成品仓均为真实出库）。留空=全部按出库算（回退旧口径）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; if (d.str) { o[k] = (typeof v === 'string') ? v : d.d; } else { o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } } return o; }
@@ -1852,6 +1940,27 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
     }
     return { boxes: [], flatBoxes: [], total: 0, over: 0, inStock: 0, noInfoQty: noInfoKeys.size, need: 0, done: true, calledPending, leftBoxes };
   }
+  // ===== ㉖v114·A 接单盖章全程锁定（11-06 拍板：接单建议的框从头到尾可扫，不随已发数漂移/反悔）=====
+  // 根因：贪心"够数即停"+末框最小化每扫一码重算，同批次小框把盖章框挤出白名单 →
+  //   扫接单建议过的框反被拦、没建议过的新框反被放行（单据 LL2026110609390449：盖章框 143/149/138 被拦，换上的 160/164/168 反发出去）。
+  // 解法（显示与可扫解耦）：传了 sugCodes（仅 reqView 显示 与 严格闸 会传）且盖章集仍有未扫框时——
+  //   · sugAll=「盖章集 ∩ 在架未扫」全部码 → 闸门白名单据此锁定：池内任意框全程可扫，不漂移、不反悔；
+  //   · 前台 boxes 仅在池内做「够数即停」(不跑末框最小化) → 显示紧凑、over/severeOver 口径真实；够数停后砍掉的池内靠后框仍留在 sugAll 可扫。
+  // 旧单无 sugCodes / 池已扫空 → 原样回落下方贪心（向后兼容 + 防建议区空卡死）。发齐态(needQty<=0)在上方已 return，不走这里。
+  if (Array.isArray(sugCodes) && sugCodes.length) {
+    const _sugSet = new Set(sugCodes.map((c) => String(c).toUpperCase()));
+    const _pool = boxes.filter((bx) => (bx.allCodes || bx.codes || []).some((c) => _sugSet.has(String(c).toUpperCase()))); // boxes 已剔除已扫码
+    if (_pool.length) {
+      const sugAll = [];
+      for (const bx of _pool) for (const c of (bx.codes || [])) sugAll.push(String(c).toUpperCase()); // 未扫码入可扫白名单（兄弟码随框一起）
+      const _pk = []; let _acc = 0;
+      for (const bx of _pool) { _pk.push(bx); _acc += bx.q; if (_acc >= needQty) break; if (_pk.length >= 24) break; } // 池内够数即停，批次序不乱
+      const _over = Math.max(0, Math.round((_acc - needQty) * 100) / 100);
+      const _severe = needQty > 0 && _pk.length > 0 && _over > needQty;
+      const _flat = _pk.flatMap((g0) => g0.items.map((it) => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv })));
+      return { boxes: _pk, flatBoxes: _flat, total: Math.round(_acc * 100) / 100, over: _over, severeOver: _severe, left: Math.max(0, Math.round(needQty * 100) / 100), need: Math.max(0, Math.round((needQty - _acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size, locked: true, sugAll };
+    }
+  }
   let acc = 0; const pick = [];
   for (const x of boxes) {
     pick.push(x);
@@ -1879,6 +1988,65 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
   const severeOver = needQty > 0 && pick.length > 0 && over > needQty;
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   return { boxes: pick, flatBoxes, total: acc, over, severeOver, left: Math.max(0, Math.round(needQty * 100) / 100), need: Math.max(0, Math.round((needQty - acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size }; // ㉖v82 left=本轮建议前还差多少（旧"还差"取need=建议后缺口，够数时显示0件易误导）
+}
+// ===== ㉖v116 按标签码定位 AGV 搬运任务（共享函数：/api/agv/taskOf 与 /api/trace 同口径）=====
+// taskOf 原内联匹配逻辑整体抽出——trace 旧版只按任务号(TASKS)关联，队列项出队 2 小时后按框查历史
+// AGV 节点必缺（11-06 核查 N26K050133：trace 仅 2 事件零 AGV）。抽成一处，两端永不分叉。
+// 匹配链：队列项盖章 wmsTask(带终点校验) → 起点+物理锚点时间窗回退（v115：锚点=流水t→账本t→rec兜底，
+// 窗口 [锚点-30min, 锚点+6h]，入库终点必须=账本货位） → RCS 在途。匹配不到置空：宁缺毋滥，错配比缺节点更伤信任。
+function agvTaskForCode(codeRaw) {
+  const code = String(codeRaw || '').toUpperCase(); if (!code) return { task: null, q: null };
+  const q = (db.agvQueue || []).filter((x) => String(x.code).toUpperCase() === code).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+  let spKey = q ? String(q.fromLoc).toUpperCase() : '';
+  let wantCk = q && q.type === 'inbound' ? 'in' : (q && q.type === 'outbound' ? 'out' : ''); // ㉖⑰ 按队列项方向匹配沉淀任务
+  if (!spKey) { // ㉖ 队列项已出队（失败项仅留30分钟/完成项2小时）→ 从流水/账本回退初始站台锚点，否则AGV节点全丢
+    const sl0 = Object.values(db.scanlog || {}).find((s) => String(s.code || '').toUpperCase() === code && !s.cx && Number(s.wt) === 0);
+    const led0 = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code && String(x.mv || '') === 'AGV');
+    spKey = String((sl0 && sl0.st) || (led0 && led0.src) || '').toUpperCase();
+    if (spKey && !wantCk) wantCk = /-CK-/.test(spKey) ? 'in' : 'out';
+  }
+  let obAt = 0; // ㉖v98c 出库单锚点：发料消账后队列/流水/账本三锚点全灭，出库明细 fromLoc 是最后的坐标
+  if (!spKey) {
+    for (const o of Object.values(db.outbound || {})) { const _oi = (o.items || []).find((i) => String(i.barcode || '').toUpperCase() === code); if (_oi && _oi.fromLoc) { const _ot = Number(o.createdAt) || 0; if (_ot >= obAt) { spKey = String(_oi.fromLoc).toUpperCase(); wantCk = 'out'; obAt = _ot; } } }
+  }
+  let task = null;
+  let epWant = '';
+  if (wantCk === 'in') { const led1 = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code); if (led1 && String(led1.mv || '') === 'AGV') epWant = String(led1.l || '').toUpperCase(); }
+  if (q && q.wmsTask && db.agvTasks && db.agvTasks[q.wmsTask]) { const _t0 = db.agvTasks[q.wmsTask]; if (!epWant || String(_t0.ep || '').toUpperCase() === epWant) task = { ..._t0, no: q.wmsTask }; else task = null; } // ㉖v94k wmsTask串单防御：入库带终点校验
+  // ㉖v117 已下发未沉淀（在途）：盖章号直查 RCS 在途表——精确匹配必须先于窗口回退。
+  //   旧版此场景落到"同站台最近完成"，抓到邻框已归档任务（11-06 13:51 现场 N26K060123：真单0048在途
+  //   13:50接令/14:00叉出，详情却显示邻框0041"已完成 接令13:33"，出现 入队13:43→接令13:33 时序倒挂）
+  if (!task && q && q.wmsTask) {
+    const _rn = String(q.wmsTask).toUpperCase();
+    const _rr = (db.rcsRun || []).find((r) => String(r.no || '').toUpperCase() === _rn || String(r.wms || '').toUpperCase() === _rn);
+    if (_rr) task = { no: _rr.no, sp: _rr.sp, ep: _rr.ep, ck: wantCk, car: _rr.car ?? 0, ex: _rr.startAt || 0, pick: _rr.pickAt || 0, fin: _rr.putAt || 0, buildAt: _rr.buildAt || 0 };
+  }
+  if (!task) { // 时间窗+起点匹配最近一条任务
+    const lo0 = q ? (q.at || 0) - 3600000 : (obAt ? obAt - 6 * 3600000 : Date.now() - 2 * 86400000);
+    const hi0 = obAt ? obAt + 600000 : Infinity; // ㉖v98c 出库锚点：任务完成在发料前~后10分钟内
+    // ㉖v115 入库回退锚点改用【真实作业时刻】（旧版误用账本 rec=服务器到达时刻）：
+    //   PDA 离线补传时 rec 可比现场作业晚几十分钟到十几天（实测 165 个 mv=AGV 在架框里 152 个 rec 落后>30分钟），
+    //   旧窗口 [rec-10min, ∞) 把任务整段筛掉 → 全链路 AGV 节点缺失（11-06 现场反馈 N26K050133）。
+    //   锚点优先级：采集流水 t(站台扫入，未作废) → 账本 t(=collectedAt 物理时刻) → rec(兜底，仅两者都缺时)。
+    //   入库时序=先扫入站台、AGV 后搬运上架，任务完成必在锚点之后；窗口 [锚点-30min, 锚点+6h]（实测时延4~21分、中位11分，6h含排队余量）。
+    let _anch = 0;
+    { const _s = Object.values(db.scanlog || {}).find((x) => String(x.code || '').toUpperCase() === code && !x.cx && Number(x.wt) === 0);
+      if (_s && Number(_s.t)) _anch = Number(_s.t);
+      else { const _l = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code); if (_l && Number(_l.t)) _anch = Number(_l.t); else if (_l && Number(_l.rec)) _anch = Number(_l.rec); } }
+    const ledR = epWant && _anch ? _anch : 0; // ㉖v117 终点校验扩至"队列项在但任务未沉淀"场景：旧版 !q 条件让已下发在途框跳过终点校验，抓到同站台邻框任务（N26K060123 错配 0041）
+    // 有物理锚点时窗口完全围绕锚点，不再套 lo0(今天-2天) 下限——否则 2 天前搬运的历史框又被筛掉
+    const lo = ledR ? (ledR - 1800000) : lo0;
+    const hi = (epWant && ledR) ? Math.min(hi0, ledR + 21600000) : hi0;
+    for (const [no, t] of Object.entries(db.agvTasks || {})) {
+      if (!((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey && t.fin >= lo && t.fin <= hi && (!task || t.fin > task.fin))) continue;
+      if (epWant && String(t.ep || '').toUpperCase() !== epWant) continue; // 入库且账本可信：终点必须=账本货位（错配比缺节点更伤信任）
+      task = { ...t, no };
+    }
+  }
+  if (!task && spKey) { // 在途任务（未沉淀）；㉖v94k 入库带终点过滤
+    for (const t of db.rcsRun || []) { if (t.sp === spKey && (!epWant || String(t.ep || '').toUpperCase() === epWant)) { task = { no: t.no, sp: t.sp, ep: t.ep, ck: wantCk, ex: t.startAt || 0, pick: t.pickAt || 0, fin: 0 }; break; } }
+  }
+  return { task, q, spKey, epWant };
 }
 function reqView(r, lite) {
   // ㉖v98 lite=列表模式：跳过逐行 pickSuggest（列表卡片只渲染零件号×数量，建议区在详情弹层才用；
@@ -2318,12 +2486,39 @@ loadAll();setInterval(loadAll,30000);
 let db = loadDb();
 // ㉖v56 落盘合并：save() 只标脏，120ms 窗口内的多次变更合并为一次全量写（89 个调用点高频触发，同步写 3MB 会卡事件循环）
 // 审计加固：_dirty 在写成功后才清（原实现先清后写，磁盘瞬时故障会静默丢掉重试触发）；失败 2 秒自动重试一次，仍败等下次 save 再试（全量快照写，成功一次即覆盖全部积压）
-let _dirty = false, _saveT = null;
-function flushSave() { if (_saveT) { clearTimeout(_saveT); _saveT = null; } if (!_dirty) return; saveDb(db); _dirty = false; }
+let _dirty = false, _saveT = null, _saving = false, _dirtySeq = 0, _writtenSeq = 0; // ㉖v111 seq 双计数：_dirtySeq=变更次数，_writtenSeq=最近成功写覆盖到的序号
+function flushSave() { if (_saveT) { clearTimeout(_saveT); _saveT = null; } if (!_dirty) return; saveDb(db); _dirty = false; _writtenSeq = _dirtySeq; } // 同步版：asyncSave=0 常规路径 + 启动补齐
+// ㉖v111 异步落盘双路：asyncSave=1 时常规 save 走此路。_saving 串行闸——在途未完成再有变更只标脏，
+// 由在途收尾后重排 timer（序列化读最新 db），杜绝并发写。
+// 丢帧修复（本轮自查实锤）：入口捕获 seq 快照，仅当本次写覆盖到"开始序列化时的最新变更"才清脏——
+// 若 await 期间又有新 save（seq 前进），保留 _dirty 交给收尾重排的下一轮，绝不误清未落盘变更。
+async function doSaveAsync() {
+  if (_saving) { _dirty = true; return; }
+  _saving = true;
+  const _seq = _dirtySeq;
+  try { await saveDbAsync(db); _writtenSeq = _seq; if (_dirtySeq === _seq) _dirty = false; }
+  catch (e) { logErr('saveDbAsync', e); }
+  _saving = false;
+  if (_dirty && !_saveT) _saveT = setTimeout(() => { _saveT = null; doSaveAsync(); }, 120);
+}
+// 退出/备份前统一落盘：同步模式直接同步写；异步模式等 _saving 排空 + 落最新 + 等写序队列 rename 落定。
+// while(_saving) 用 await setTimeout 让出 event loop（绝不死锁：异步写靠 event loop 推进）。
+async function flushSaveNow() {
+  if (_saveT) { clearTimeout(_saveT); _saveT = null; }
+  if (!P().asyncSave) { if (_dirty) { saveDb(db); _dirty = false; _writtenSeq = _dirtySeq; } return; }
+  while (_saving) await new Promise((r) => setTimeout(r, 20));
+  if (_dirtySeq !== _writtenSeq) { const _seq = _dirtySeq; try { await saveDbAsync(db); _writtenSeq = _seq; if (_dirtySeq === _seq) _dirty = false; } catch (e) { logErr('saveDbAsync', e); } }
+  await (_wq[DB_FILE] || Promise.resolve()).catch(() => {});
+  await (_wq[SAFE_FILE] || Promise.resolve()).catch(() => {});
+}
 function save() {
-  _dirty = true;
+  _dirty = true; _dirtySeq++;
   if (_saveT) return;
-  _saveT = setTimeout(() => { _saveT = null; try { flushSave(); } catch (e) { logErr('saveDb', e); _saveT = setTimeout(() => { _saveT = null; try { flushSave(); } catch (_) {} }, 2000); } }, 120);
+  _saveT = setTimeout(() => {
+    _saveT = null;
+    if (P().asyncSave) { doSaveAsync(); return; } // ㉖v111 异步路径
+    try { flushSave(); } catch (e) { logErr('saveDb', e); _saveT = setTimeout(() => { _saveT = null; try { flushSave(); } catch (_) {} }, 2000); }
+  }, 120);
 } // ---------------- 会话 ----------------
 // ---- ㉖v56 登录设备管理：注册表/审计/信任/拉黑/踢下线 ----
 function clientIp(req) { return String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, ''); }
@@ -3432,40 +3627,7 @@ return send(res, 200, {
       if (req.method === 'GET' && p === '/api/agv/taskOf') {
         const code = String(url.searchParams.get('c') || '').trim().toUpperCase();
         if (!code) return send(res, 400, { ok: false, msg: '缺少 c' });
-        const q = (db.agvQueue || []).filter((x) => String(x.code).toUpperCase() === code).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
-        let spKey = q ? String(q.fromLoc).toUpperCase() : '';
-        let wantCk = q && q.type === 'inbound' ? 'in' : (q && q.type === 'outbound' ? 'out' : ''); // ㉖⑰ 入库搬运链路：按队列项方向匹配沉淀任务（原来只匹配出库，入库详情永远查不到）
-        if (!spKey) { // ㉖ 队列项已出队（失败项仅留30分钟/完成项2小时）→ 从流水/账本回退初始站台锚点，否则AGV节点全丢
-          const sl0 = Object.values(db.scanlog || {}).find((s) => String(s.code || '').toUpperCase() === code && !s.cx && Number(s.wt) === 0);
-          const led0 = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code && String(x.mv || '') === 'AGV');
-          spKey = String((sl0 && sl0.st) || (led0 && led0.src) || '').toUpperCase();
-          if (spKey && !wantCk) wantCk = /-CK-/.test(spKey) ? 'in' : 'out'; // 起点是站台→入库回架任务；起点是货架→出库任务
-        }
-        let obAt = 0; // ㉖v98c 出库单锚点：发料消账后队列/流水/账本三锚点全灭，出库明细 fromLoc 是最后的坐标
-        if (!spKey) {
-          for (const o of Object.values(db.outbound || {})) { const _oi = (o.items || []).find((i) => String(i.barcode || '').toUpperCase() === code); if (_oi && _oi.fromLoc) { const _ot = Number(o.createdAt) || 0; if (_ot >= obAt) { spKey = String(_oi.fromLoc).toUpperCase(); wantCk = 'out'; obAt = _ot; } } } // 同码历史多张出库单→取最新一张锚定
-        }
-        let task = null;
-        // ㉖v94k 双坐标纠偏（10/24 17:52 N26J240104 现场：链路显示"叉出17:46"早于"采集17:52"，实为同站台上一框 AGV-0039 被错配）：
-        // 队列项已出队时只按"起点+最近完成"匹配，同站台连续多框必然张冠李戴。入库方向（起点=站台）改按
-        // 起点+终点=账本当前货位 双坐标匹配（仅 mv=AGV 的账本可信）；匹配不到就置空——宁缺毋滥，错配比缺节点更伤信任。
-        let epWant = '';
-        if (wantCk === 'in') { const led1 = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code); if (led1 && String(led1.mv || '') === 'AGV') epWant = String(led1.l || '').toUpperCase(); }
-        if (q && q.wmsTask && db.agvTasks && db.agvTasks[q.wmsTask]) { const _t0 = db.agvTasks[q.wmsTask]; if (!epWant || String(_t0.ep || '').toUpperCase() === epWant) task = { ..._t0, no: q.wmsTask }; else task = null; } // ㉖v94k 旧数据wmsTask本身可能串单记错(104记成0039,真单0047)：入库带终点校验，不符弃之走回退匹配
-        if (!task) { // 时间窗+起点匹配最近一条任务
-          const lo0 = q ? (q.at || 0) - 3600000 : (obAt ? obAt - 6 * 3600000 : Date.now() - 2 * 86400000);
-          const hi0 = obAt ? obAt + 600000 : Infinity; // ㉖v98c 出库锚点：任务完成在发料前~后10分钟内（AGV先送台后人扫），收紧防同货位历史任务错配
-          const ledR = !q && epWant ? (((db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code) || {}).rec || 0) : 0;
-          const lo = ledR ? Math.max(lo0, ledR - 600000) : lo0; // 入库回退：窗口收到采集时刻前10分钟，防抓更早的同站台他框任务
-          for (const [no, t] of Object.entries(db.agvTasks || {})) {
-            if (!((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey && t.fin >= lo && t.fin <= hi0 && (!task || t.fin > task.fin))) continue;
-            if (!q && epWant && String(t.ep || '').toUpperCase() !== epWant) continue; // 已出队+入库：终点必须=账本货位
-            task = { ...t, no };
-          }
-        }
-        if (!task && spKey) { // 在途任务（未沉淀）；㉖v94k 入库带终点过滤
-          for (const t of db.rcsRun || []) { if (t.sp === spKey && (!epWant || String(t.ep || '').toUpperCase() === epWant)) { task = { no: t.no, sp: t.sp, ep: t.ep, ex: t.startAt || 0, pick: t.pickAt || 0, fin: 0 }; break; } }
-        }
+        const { task, q } = agvTaskForCode(code); // ㉖v116 匹配逻辑抽共享函数（与 /api/trace 同口径共用，防两端分叉）
         const fmt2 = (ms) => ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
         const stText = task ? (task.fin ? '已完成' : (task.pick ? '已叉出送货中' : (task.ex ? '取货中' : '排队中'))) : '';
         const tl = task ? [task.buildAt ? `建单 ${fmt2(task.buildAt)}` : '', task.ex ? `接令 ${fmt2(task.ex)}` : '', task.pick ? `叉出 ${fmt2(task.pick)}` : '', task.fin ? `到站 ${fmt2(task.fin)}` : ''].filter(Boolean).join(' · ') : '';
@@ -3711,6 +3873,15 @@ return send(res, 200, {
           for (const tr of x.trace || []) push(x.updAt || x.at, 'trace', '🧭 ' + String(tr), '', '');
           if (x.state === '到站' || x.state === '完成') push(x.updAt || x.at, 'station', '🏁 到达站台 ' + String(x.station || ''), '框 ' + String(x.code || ''), '');
         }
+        // — ㉖v116 按框码反查搬运任务，任务号并入 TASKS（旧版⑥⑦只认队列带出的任务号：
+        //   队列项完成2小时即出队，按框/零件查历史 → AGV 节点必缺，11-06 核查 N26K050133 trace 仅2事件零AGV）。
+        //   与 taskOf 共用 agvTaskForCode——同一套锚点/终点/窗口判据，两端永不分叉；错配防护同源。
+        { let _assocN = 0;
+          for (const c of Array.from(CODES)) {
+            if (_assocN++ >= 60) break; // 零件查询可扩散大量框：封顶防逐框全表扫描拖慢追溯
+            const _tk = agvTaskForCode(c).task;
+            if (_tk && _tk.no) TASKS.add(codeOf(_tk.no));
+          } }
         // — ⑥ RCS 在途任务执行节点
         for (const r of db.rcsRun || []) {
           const no = codeOf(r.no), wms = codeOf(r.wms);
@@ -4174,7 +4345,11 @@ return send(res, 200, {
         const prev = prevDays.map(load).filter(Boolean);
         const cur = rptAggregate(snaps), pv = rptAggregate(prev);
         const rng = days[0] === days[days.length - 1] ? days[0] : days[0] + ' ~ ' + days[days.length - 1];
-        return send(res, 200, { ok: true, g, range: rng, days: days.length, loaded: snaps.length, missing, cur, prev: prev.length ? pv : null, prevDays: prev.length, trend: g === 'day' ? null : snaps.map((r) => ({ day: r.day, inB: r.work.inB, outB: r.work.outB, created: (r.reqs || {}).created || 0, agv: r.agv.n, ev: r.eventsTotal || 0 })) });
+        // ---- ㉖v112 复盘序列：pulse=每日问题数（告警+红牌+堵点+超时+FIFO+看门狗+系统错误），health=每日健康分（异常越少分越高）----
+        const pulseOf = (r) => { const q = r.problems || {}; return (q.alarm || 0) + (q.redflag || 0) + (q.jam || 0) + (q.timeoutOut || 0) + (q.timeoutIn || 0) + (q.fifo || 0) + (q.watchdog || 0) + (q.sysErr || 0); };
+        // ㉖v113 追加 prob：每日分类型问题数（复盘脉冲图用）。仅新增字段，series 原有键与口径不变，现有调用方不受影响
+        const series = snaps.map((r) => { const q = r.problems || {}; return { day: r.day, inB: r.work.inB, outB: r.work.outB, created: (r.reqs || {}).created || 0, agv: r.agv.n, ev: r.eventsTotal || 0, pulse: pulseOf(r), health: Math.max(0, 100 - pulseOf(r) * 2), prob: { alarm: q.alarm || 0, redflag: q.redflag || 0, jam: q.jam || 0, timeoutOut: q.timeoutOut || 0, timeoutIn: q.timeoutIn || 0, fifo: q.fifo || 0, conflict: q.conflict || 0, overfire: q.overfire || 0, overdue: q.overdue || 0, watchdog: q.watchdog || 0, sysErr: q.sysErr || 0 }, stale: (r.stock || {}).stale7 || 0, rej: (r.reqs || {}).rejected || 0, canc: (r.reqs || {}).cancelled || 0, slow: q.slowApi ? { max: q.slowMax || 0, p: q.slowP || '' } : null } });
+        return send(res, 200, { ok: true, g, range: rng, days: days.length, loaded: snaps.length, missing, cur, prev: prev.length ? pv : null, prevDays: prev.length, trend: g === 'day' ? null : series, series });
       }
       if (req.method === 'POST' && p === '/api/report/backfill') {
         if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可回填快照' });
@@ -4224,7 +4399,14 @@ return send(res, 200, {
       // ===== ㉖ 容器类型可配置：GET 登录即可读（采集页按钮数据源）；POST 仓管/管理员整表保存（留痕） =====
       if (req.method === 'GET' && p === '/api/containers') {
         const _gzr = db.gndZoneRows || {}, _goff = db.gndRowOff || {}, _glist = db.gndZoneList || {}; // ㉖v59 按区排数覆盖+停用排下发（zoneRows=各区有效排数，offs=停用排键集）；v90 lists=真实排号清单
-        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols, zoneRows: _gzr, lists: _glist, offs: _goff } }); // ㉖v56 高架+地面格位规格下发（参数可调）
+        // ㉖v111 库区天气墙数据：按巷道区聚合 在架框/滞留7天+/今日出库框/今日入库框（NB02 八区 + NB03 地面区）
+        const _nowMs = Date.now(), _today0 = new Date(new Date().setHours(0, 0, 0, 0)).getTime();
+        const zw = {};
+        const zKey = (l) => { l = String(l || '').toUpperCase(); let m = l.match(/^NB02-([A-H])-/); if (m) return 'NB02-' + m[1]; m = l.match(/^NB03-([A-H])-/); if (m) return 'NB03-' + m[1]; return ''; };
+        const zGet = (z) => zw[z] || (zw[z] = { boxes: 0, stale: 0, outT: 0, inT: 0 });
+        for (const x of db.ledger || []) { const z = zKey(x.l); if (!z) continue; const w = zGet(z); w.boxes++; const t = Number(x.t || 0); if (t && _nowMs - t > 7 * 864e5) w.stale++; }
+        for (const tk of Object.values(db.agvTasks || {})) { const fin = Number(tk.fin || 0); if (fin < _today0) continue; if (tk.ck === 'out') { const z = zKey(tk.sp); if (z) zGet(z).outT++; } else if (tk.ck === 'in') { const z = zKey(tk.ep); if (z) zGet(z).inT++; } }
+        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols, zoneRows: _gzr, lists: _glist, offs: _goff }, weather: { zones: zw, at: _nowMs } }); // ㉖v56 高架+地面格位规格下发（参数可调）
       }
       if (req.method === 'POST' && p === '/api/containers') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
@@ -5340,6 +5522,9 @@ return send(res, 200, {
               for (const f of (_sg.flatBoxes || [])) _allow.add(String(f.c || '').toUpperCase());
               for (const f of (_sg.calledPending || [])) _allow.add(String(f.c || '').toUpperCase());
               for (const e of (target.agvCalled || [])) _allow.add(String(e.c || '').toUpperCase()); // 本单已叫车的框：到站必须能扫
+              // ㉖v114·A：锁定态把「盖章集池内全部未扫码」并入白名单——池内任意框全程可扫，
+              // 不受前台"够数即停"只列靠前几天框的影响（否则 138/143 这类靠后的盖章框又会被拦=漂移没治本）
+              for (const c of (_sg.sugAll || [])) _allow.add(String(c).toUpperCase());
               _allow.delete('');
               // ㉖v98 发齐后剩余框超发通道（10/27 用户拍板：扫了大框代表可能两筐都发，旧框不隐藏、仓管决定）：
               // 行已发齐时，仍在架未扫的框（leftBoxes）带端上确认(overOk)可超发放行并留痕；不在清单的幽灵码仍拒。
@@ -5362,14 +5547,19 @@ return send(res, 200, {
                 const _scanLot = String((((db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code.toUpperCase())) || {}).b || '').trim();
                 const _isLater = !!(_oldestLot && _scanLot && _scanLot > _oldestLot); // 晚批次=黄窗场景；同批/未知批=幽灵码场景
                 if (_isLater && b.fifo && b.fifo.ok === 1) { // 客户端已人工确认+服务端复核批次成立 → 放行
-                  hpush(`🟡FIFO违反放行 ${target.partNo} 标签 ${code}（批${_scanLot}，最早${_oldestLot}，不在建议清单，人工确认继续）（${u.name}）`);
-                  pushEvent('FIFO违反', String(target.partNo || ''), `标签 ${code} 扫入批次${_scanLot}（最早${_oldestLot}）人工确认继续（${u.name}）`);
+                  hpush(`🟡FIFO违反放行 ${target.partNo} 标签 ${code}（批${_scanLot}，本单最早建议批${_oldestLot}，人工确认继续）（${u.name}）`);
+                  pushEvent('FIFO违反', String(target.partNo || ''), `标签 ${code} 扫入批次${_scanLot}（本单建议最早批${_oldestLot}）人工确认继续（${u.name}）`);
                 } else {
-                  // 同批次却不在清单（如建议"够数即停"没列到的框）→ 不能误导性地说"请先拣最早批次"，改为直接给可扫清单
-                  const _hint = _isLater ? `——请先拣最早批次 ${_oldestLot}${b.fifo && b.fifo.ok === 1 ? '' : '（确认继续可放行）'}` : `——本行可扫：${[..._allow].slice(0, 6).join('/')}${_allow.size > 6 ? ' 等' + _allow.size + '码' : ''}`;
-                  hpush(`⛔ 严格FIFO拦截：扫入 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 不在建议清单（建议 ${_allow.size} 码：${[..._allow].slice(0, 6).join('/')}）`);
+                  // ㉖v114·C 文案对齐 A 新语义：清单已在接单时锁定、不再漂移，被拦=这框确实不在本单接单建议范围。
+                  // 晚批次直说该拣哪批；同批/幽灵码给全可扫清单（A 后这份清单稳定，照扫即可，不再"刚才让扫现在又不让"）。
+                  const _allArr = [..._allow];
+                  const _scanHint = _allArr.length > 6 ? _allArr.slice(0, 6).join('/') + ' 等 ' + _allArr.length + ' 码' : _allArr.join('/');
+                  const _hint = _isLater
+                    ? `——这是 ${_scanLot} 批，本单建议先拣 ${_oldestLot} 批的框${b.fifo && b.fifo.ok === 1 ? '' : '（如确需发这批，点弹窗确认后放行并留痕）'}`
+                    : `——这框不在本单接单时锁定的建议框内${_allArr.length ? '；当前可扫：' + _scanHint : ''}`;
+                  hpush(`⛔ 严格FIFO拦截：扫入 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 不在本单建议清单（${_isLater ? '晚批次，应拣' + _oldestLot : '非本单建议框'}；可扫 ${_allArr.length} 码：${_scanHint}）`);
                   save(); // 留痕立即落盘：旧写法只改内存，靠无关周期存盘才落库，重启即丢审计痕迹
-                  return send(res, 400, { ok: false, msg: `标签 ${code} 不在本行取货建议清单内（严格FIFO：只能扫建议的框）${_hint}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
+                  return send(res, 400, { ok: false, msg: `标签 ${code} 不在本单建议框内（严格FIFO：只能扫接单时锁定的建议框）${_hint}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
                 }
               }
               if (!_allow.size) { // 建议为空（该行已发齐或账本无在架框）：不做拦截，交给既有"已发齐/转单锁定"等闸处理
@@ -5802,7 +5992,9 @@ return send(res, 200, {
         // ㉖G3：db.json 体积 + 落盘写耗时（SQLite 迁移触发线预警：>50MB 或 单次>500ms）
         let dbMB = 0; try { dbMB = Math.round(fs.statSync(DB_FILE).size / 104857.6) / 10; } catch (_) {}
         cut(15, '数据文件体积', dbMB + 'MB（触发线50）', dbMB < 45);
-        cut(15, '落盘写耗时', (_saveStat.n ? '近' + _saveStat.ring.length + '次 max' + _saveStat.max + '/avg' + _saveStat.avg + 'ms（触发线500）' : '尚无写入'), _saveStat.max <= 500, '单次落盘>500ms=主线程被磁盘拖住→①看「磁盘空间」是否满盘 ②Windows Defender 把 data 目录与 node.exe 加入排除项（扫描器实时读备份文件是头号元凶）③确认数据盘为 SSD 非 SMR 叠瓦盘；持续>1000ms 联系维护人（异步落盘改造）');
+        // ㉖v111 双口径：总耗时=落盘全程（含 libuv 线程池等盘），阻塞耗时=主线程实际被占（异步化后≈序列化34ms 地板）。
+        // 判定按阻塞口径——磁盘被抢只推高总耗时（正常，请求不受累），阻塞>500ms 才是真卡；同步模式阻塞=总耗时，行为与旧版一致。
+        cut(15, '落盘写耗时', (_saveStat.n ? '近' + _saveStat.ring.length + '次 总max' + _saveStat.max + '/avg' + _saveStat.avg + 'ms · 主线程阻塞max' + _saveStat.blockMax + '/avg' + _saveStat.blockAvg + 'ms' + (P().asyncSave ? '（异步）' : '（同步）') + '（阻塞触发线500）' : '尚无写入'), _saveStat.blockMax <= 500, '主线程阻塞>500ms=请求被落盘拖住→①确认「异步落盘」开关（存储引擎组，1=磁盘等待不占主线程）②Windows Defender 把 data 目录与 node.exe 加排除项 ③确认 SSD 非 SMR；总耗时高但阻塞低=异步正常工作，磁盘慢只影响落盘快慢不卡服务');
         // ㉖v98 卡顿量化两探针：事件循环延迟（>200ms=主线程被同步任务堵住，用户体感"卡"）+ 慢接口TOP
         cut(15, '事件循环延迟', '当前' + _lag.cur + 'ms/峰值' + _lag.max + 'ms/超时' + _lag.over + '次（>200ms算卡）', _lag.max <= 1000, '峰值>1秒=主线程曾被同步操作吊住（落盘/大扫描）→对照「落盘写耗时」与「慢接口TOP」时间点；偶发单次多为磁盘被抢，持续出现才需改造；超时次数为开机累计不清零');
         const _top = apiStatTop().filter((x) => x.p95 >= 300);
@@ -5886,7 +6078,7 @@ return send(res, 200, {
         L.push(_sl.length ? _sl.map((x) => x.p + ' p95=' + x.p95 + 'ms×' + x.n).join('\n') : '（无）');
         L.push('');
         L.push('── 落盘与数据 ──');
-        L.push('落盘：近50次 max' + _saveStat.max + '/avg' + _saveStat.avg + 'ms · 累计' + _saveStat.n + '次 · db.json ' + Math.round(fs.statSync(DB_FILE).size / 104857.6) / 10 + 'MB · 磁盘剩余 ' + diskFreeGB() + 'GB');
+        L.push('落盘：近50次 总max' + _saveStat.max + '/avg' + _saveStat.avg + 'ms · 阻塞max' + _saveStat.blockMax + '/avg' + _saveStat.blockAvg + 'ms（' + (P().asyncSave ? '异步' : '同步') + '） · 累计' + _saveStat.n + '次 · db.json ' + Math.round(fs.statSync(DB_FILE).size / 104857.6) / 10 + 'MB · 磁盘剩余 ' + diskFreeGB() + 'GB');
         L.push('事件循环：当前' + _lag.cur + 'ms/峰值' + _lag.max + 'ms/超时' + _lag.over + '次（开机以来累计）');
         L.push('断电自愈 ' + _dbHealth.recoverCount + ' 次 · 备份 ' + (fs.existsSync(path.join(DATA_DIR, 'backups')) ? fs.readdirSync(path.join(DATA_DIR, 'backups')).filter((f) => /^db-.*\.json$/.test(f)).length : 0) + ' 份');
         L.push('');
@@ -7251,12 +7443,23 @@ function buildFunnel(days) {
   return { call: stat('call'), queue: stat('queue'), dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
 }
 
-process.on('uncaughtException', (e) => { try { logErr('uncaughtException', e); flushSave(); } catch (_) {} console.error('[FATAL] 未捕获异常：', e); }); // ㉖ 崩溃前留痕（不退出：调度循环中断比报错更糟）；㉖v56 改 flushSave 同步落盘防合并窗口丢数据
+process.on('uncaughtException', (e) => { try { logErr('uncaughtException', e); if (P().asyncSave) save(); else flushSave(); } catch (_) {} console.error('[FATAL] 未捕获异常：', e); }); // ㉖ 崩溃前留痕（不退出：调度循环中断比报错更糟）；㉖v56 改 flushSave 同步落盘防合并窗口丢数据；㉖v111 异步模式改走 save() 排队——在途写收尾后自动带最新快照，禁同步写与异步写并发 rename
 process.on('unhandledRejection', (e) => { try { logErr('unhandledRejection', e instanceof Error ? e : { message: String(e) }); } catch (_) {} console.error('[REJECT] 未处理 Promise 拒绝：', e); });
 // ㉖v56 优雅退出：进程终止前把合并窗口脏数据同步落盘（防丢最后 120ms 变更）
 // Windows 无真实 SIGTERM（kill=TerminateProcess 强杀无 handler）：NSSM 停服/Ctrl+C 走 SIGINT，Ctrl+Break 走 SIGBREAK；flush 后必须主动 exit，否则监听器会抑制默认退出
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) { process.on(sig, () => { try { flushSave(); } catch (_) {} console.log('[exit] ' + sig + ' 优雅停止：脏数据已落盘'); process.exit(0); }); }
-process.on('beforeExit', () => { try { flushSave(); } catch (_) {} }); // 自然退出兜底（事件循环排空时）
+// ㉖v108 小卡异步化：异步模式退出=先排空在途异步写（_saving 轮询+写序队列 rename 落定）再退，杜绝"退出同步写与在途异步写并发 rename 旧盖新"；8 秒超时兜底防磁盘挂死卡停服（超时退出=等价崩溃，主文件仍是上一完整版，原子写保证）
+let _exiting = false;
+async function gracefulExit(sig) {
+  if (_exiting) return; _exiting = true;
+  try {
+    if (P().asyncSave) await Promise.race([flushSaveNow(), new Promise((r) => setTimeout(r, 8000))]);
+    else flushSave();
+  } catch (_) {}
+  console.log('[exit] ' + sig + ' 优雅停止：脏数据已落盘');
+  process.exit(0);
+}
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) { process.on(sig, () => { gracefulExit(sig); }); }
+process.on('beforeExit', () => { try { if (P().asyncSave) { if (!_exiting) { _exiting = true; flushSaveNow().catch(() => {}); } } else flushSave(); } catch (_) {} }); // 自然退出兜底（事件循环排空时）；㉖v111 异步模式自排空后再静
 
 server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认keep-alive 5s短于浏览器连接池复用窗口，POST落在服务端已关连接上被reset且不自动重试；抬到65s(长于常见代理60s)
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout

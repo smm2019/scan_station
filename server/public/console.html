@@ -155,7 +155,12 @@ function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u')
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
 const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['proj','📦 项目'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['rpt','📈 工作量'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['trace','🔗 追溯'],['fool','🛡 防呆'],['admin','⚙️ 控制后台']];
-function go(t){TAB=t||TAB;if((location.hash||'').slice(1)!=TAB)location.hash='#'+TAB;UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,me:pgMe,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,proj:pgProj,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,trace:pgTrace,fool:pgFool,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
+// ㉖v113 保险③深链：hash 支持 'agv/gantt' 形式，分享链接、浏览器前进/后退都能直达指挥舱二级页
+function agvCurHash(){return (TAB==='agv'&&AGVKEY[AGVTAB])?('agv/'+AGVTAB):TAB}
+function go(t){t=String(t||'');const _s=t.indexOf('/');const _base=_s<0?t:t.slice(0,_s);const _sub=_s<0?'':t.slice(_s+1);
+ TAB=_base||TAB||'dash';
+ if(TAB==='agv'&&_sub&&AGVKEY[_sub])AGVTAB=AGVKEY[_sub][1]; // 深链指定子页；无子页则沿用上次所在页（保险①）
+ if((location.hash||'').slice(1)!=agvCurHash())location.hash='#'+agvCurHash();UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,me:pgMe,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,proj:pgProj,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,trace:pgTrace,fool:pgFool,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
 function navBadge(n){const b=document.querySelector('#nav button');if(!b)return;let bd=b.querySelector('.navbd');if(n>0){if(!bd){bd=document.createElement('span');bd.className='navbd';b.appendChild(bd)}bd.textContent=n>9?'9+':n}else if(bd)bd.remove()}
 // ===== ㉖v52 静默刷新调度器：后台照常取数，前台不打扰 =====
 // 规则：①你正在输入/选中文字/弹窗开着/刚有过鼠标键盘动作(3秒内) → 本轮直接跳过，不取数也不改画面
@@ -179,7 +184,12 @@ function srRestore(a){if(!a||!a.length)return;const list=srScrollables();for(con
 function srMake(fn){return async function(){if(!srQuiet())return;SR.busy++;const sc=srScroll();
  try{await fn(1)}catch(_){}finally{SR.busy--;requestAnimationFrame(()=>srRestore(sc))}}}
 const srFlow=srMake((s)=>flowGo(s)),srLed=srMake((s)=>ledList(s)),srQueue=srMake((s)=>qLoad(s)),srCtn=srMake(()=>ctTick()),srPipe=srMake(()=>loadPipe()),srBoard=srMake(()=>loadBoard()),srQ=srMake(()=>loadQ()),srCars=srMake(()=>loadCars()),srTraf=srMake(()=>loadTraf()),srEv=srMake(()=>loadEv()),srInsp=srMake(()=>loadInsp()),srDash=srMake((s)=>pgDash(s));
-window.addEventListener('hashchange',()=>{const h=(location.hash||'').slice(1);if(U&&h&&h!=TAB)go(h)});
+// ㉖v113 深链与前进/后退：一级页变化走 go()；仅在指挥舱内换二级页时走 agvTab()，
+// 否则每点一个子标签都会整页重渲（工具栏、热力开关、大屏状态全被重置，还会重复取数）
+window.addEventListener('hashchange',()=>{const h=(location.hash||'').slice(1);if(!U||!h)return;
+ const s=h.indexOf('/');const base=s<0?h:h.slice(0,s);const sub=s<0?'':h.slice(s+1);
+ if(base==='agv'&&base===TAB){if(sub&&AGVKEY[sub]&&AGVKEY[sub][1]!==AGVTAB)agvTab(sub);return}
+ if(base!==TAB)go(h)});
 // ㉖v91 统一状态标签（前端）：QSTG 六段+终态配色（与流水线 cols 同源），qTag 兼容旧服务端无 stage 时按 state 推导
 const QSTG={1:['排队待派','#90a4ae'],2:['AGV已接单','#42a5f5'],3:['在架叉取中','#26c6da'],4:['载货在途','#66bb6a'],5:['到站待清台','#ffa726'],6:['压站滞留','#ef5350'],0:['完成','#2e7d32'],'-1':['失败','#e53935'],'-2':['取消','#78909c']};
 function qTag(q){let s=q.stage;if(s==null)s=q.state=='排队'?1:q.state=='到站'?5:q.state=='完成'?0:q.state=='失败'?-1:q.state=='取消'?-2:2;const g=QSTG[s]||[q.state||'?','#90a4ae'];return `<span class="tag" style="background:${g[1]}1a;color:${g[1]};border:1px solid ${g[1]}66">${g[0]}</span>`}
@@ -232,8 +242,8 @@ async function pgDash(silent){if(!silent)$('#main').innerHTML='<div class="card 
   const rush=reqs.filter(r=>r.rush&&r.status=='pending').length;
   const late=reqs.filter(r=>r.status=='ready'&&(Date.now()-(Number(r.readyAt)||Date.parse(((r.history||[]).slice(-1)[0]||{}).time||r.createdAt||0)))>30*60000).length; // ㉖⑫ 优先用精确备齐时刻，老数据回退历史尾条
   const _now=Date.now(),_dis=(kk,n)=>DIS[kk]&&DIS[kk].n>=n&&_now-DIS[kk].at<10*60000;
-  const reds=als.filter((a)=>a.red).length;window._lastRed=reds;navBadge(reds);
-  const items=[[reds,'红牌急停(30分未处理)',"EVK='';go('agv');agvTab('ev');EVUN=1",'redflag'],[als.length-reds,'未认领告警',"EVK='';go('agv');agvTab('ev');EVUN=1",'alarms'],[jam,'路网点堵',"EVK='堵点';EVW='a';EVLO=1;go('agv');agvTab('ev')",'jam'],[low,'搬运超时',"EVK='超时';EVW='a';EVLO=1;go('agv');agvTab('ev')",'overtime'],[rush,'急料待接',"reqJump('pending',{rush:1})",'rush'],[late,'待签收超30分',"reqJump('ready',{late:1})",'late'],[(k.inspWait||0),'检验待处理(协助/退货)',"go('insp')",'inspwait']];
+  const reds=als.filter((a)=>a.red).length;window._lastRed=reds;navBadge(reds);try{agvNavBadge()}catch(_){} // ㉖v113 保险④角标跟随「异常与复盘」标签
+  const items=[[reds,'红牌急停(30分未处理)',"EVK='';EVUN=1;EVDAY='';go('agv/rev')",'redflag'],[als.length-reds,'未认领告警',"EVK='';EVUN=1;EVDAY='';go('agv/rev')",'alarms'],[jam,'路网点堵',"EVK='堵点';EVW='a';EVLO=1;EVUN=0;EVDAY='';go('agv/rev')",'jam'],[low,'搬运超时',"EVK='超时';EVW='a';EVLO=1;EVUN=0;EVDAY='';go('agv/rev')",'overtime'],[rush,'急料待接',"reqJump('pending',{rush:1})",'rush'],[late,'待签收超30分',"reqJump('ready',{late:1})",'late'],[(k.inspWait||0),'检验待处理(协助/退货)',"go('insp')",'inspwait']];
   const live=items.filter((x)=>x[0]&&!_dis(x[3],x[0])),gone=items.filter((x)=>x[0]&&_dis(x[3],x[0]));
   if(live.length||gone.length)ex=`<div class="grid" style="margin-top:12px">${live.map(([n,t,act,key])=>{const rd=key=='redflag';return `<div class="card kpi${rd?' redpk':''}" style="cursor:pointer;position:relative;${rd?'border:2px solid var(--bad);background:rgba(211,47,47,.07)':'border:1px solid var(--warn)'}" onclick="${act}"><div class="n" data-r="${n}" style="color:${rd?'var(--bad)':'var(--warn)'}">${n}</div><div class="t">${rd?'🔴':'⚠'} ${t}</div><button class="pill q" style="position:absolute;top:4px;right:4px;padding:1px 7px;font-size:10.5px" title="处理一条划一条：10分钟内不复现；数量再增加会自动回来" onclick="event.stopPropagation();disEv('${key}',${n})">✓</button></div>`}).join('')}${gone.length?`<div class="card" style="grid-column:1/-1;font-size:12px;color:var(--sub);display:flex;align-items:center;gap:10px;padding:8px 14px">✓ 已划销 ${gone.length} 类（处理中）<button class="pill q" style="padding:2px 8px;font-size:11px" onclick="DIS={};try{localStorage.setItem('hst_dis','{}')}catch(_){}pgDash()">撤销</button></div>`:''}</div>`;rollNums();}catch(_){}
  let rc='';try{const q=await api('/api/reconcile');const g=q.ghosts||[],e=q.evap||[],m=q.moved||[],v=q.qtyCh||[];
@@ -243,7 +253,7 @@ async function pgDash(silent){if(!silent)$('#main').innerHTML='<div class="card 
   else if(q.ok&&q.msg)rc=`<div class="card" style="margin-top:10px;font-size:12px;color:var(--sub)">🧾 账本自对账：${q.msg}</div>`}catch(_){}
  let pa='';if(U.role=='admin'){try{const q=await api('/api/admin/pageauth');pa=`<div class="card" style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="font-size:13px">🔐 看板页门禁（/board 与打印页）</b><span class="tag ${q.on?'t-d':'t-x'}">${q.on?'开 · 需登录':'关 · 公开'}</span><span style="font-size:12px;color:var(--sub)">${q.on?'未登录设备打开看板/打印页会跳回登录页':'当前内网任何设备可直开看板页；旧版PDA门户内嵌领料页，请先出新版APK再开启'}</span><button class="pill ${q.on?'r':'g'}" onclick="togglePA(${!q.on})">${q.on?'关闭门禁':'开启门禁'}</button></div>`}catch(_){}}
  const cell=(n,t,c,fn)=>`<div class="card kpi" ${fn?`style="cursor:pointer" onclick="${fn}"`:''}><div class="n" ${/^\d+$/.test(String(n))?`data-r="${n}"`:''} style="color:${c||'var(--ink)'}">${n}</div><div class="t">${t}</div></div>`;
- const KARR=[['今日入库(标签)',k.inBoxes,'',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日入库件数',k.inQty,'var(--ok)',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日出库拣下',k.outToday,'var(--warn)',"go('flow');TF={k:'out',d:todayStr()};pgFlow()"],['今日AGV搬运',k.agvToday,'var(--pri)',"TMRPT={from:todayStr(),to:todayStr()};go('rpt')"],['队列中',k.agvQueue,'var(--pri)',"go('agv');agvTab('q')"],['在库框数',k.stockBoxes,'',"go('ledger')"],['占用货位',k.stockLocs,'',"go('ledger')"],['待接单',k.pending,k.pending?'var(--warn)':'var(--ok)',"reqJump('pending')"],['备料中',k.accepted,'',"reqJump('accepted')"],['待签收',k.ready,'',"reqJump('ready')"],['站台在用',k.stnBusy+'/'+k.stnTotal,'var(--pri)',"go('agv');agvTab('board')"],['检验待处理',k.inspWait||0,k.inspWait?'var(--warn)':'',"go('insp')"]];
+ const KARR=[['今日入库(标签)',k.inBoxes,'',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日入库件数',k.inQty,'var(--ok)',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日出库拣下',k.outToday,'var(--warn)',"go('flow');TF={k:'out',d:todayStr()};pgFlow()"],['今日AGV搬运',k.agvToday,'var(--pri)',"TMRPT={from:todayStr(),to:todayStr()};go('rpt')"],['队列中',k.agvQueue,'var(--pri)',"go('agv/q')"],['在库框数',k.stockBoxes,'',"go('ledger')"],['占用货位',k.stockLocs,'',"go('ledger')"],['待接单',k.pending,k.pending?'var(--warn)':'var(--ok)',"reqJump('pending')"],['备料中',k.accepted,'',"reqJump('accepted')"],['待签收',k.ready,'',"reqJump('ready')"],['站台在用',k.stnBusy+'/'+k.stnTotal,'var(--pri)',"go('agv/board')"],['检验待处理',k.inspWait||0,k.inspWait?'var(--warn)':'',"go('insp')"]];
  const _ord=(PF.kpi&&PF.kpi.length)?PF.kpi.filter((n)=>KARR.some((x)=>x[0]===n)):[];
  const kshow=_ord.length?_ord.map((n)=>KARR.find((x)=>x[0]===n)):KARR;
  $('#main').innerHTML=`<div class="row"><span style="color:var(--sub)">数据时刻 ${new Date(j.at).toLocaleTimeString('zh-CN')} · 30 秒自动刷新 · 点卡片可下钻 · <b style="color:var(--pri);cursor:pointer" onclick="kkOpen()">⌘K 快捷搜索</b></span><span class="sp"></span><button class="pill g" style="padding:3px 10px;font-size:12px" onclick="shiftDlg()">📋 交接日报</button></div>
@@ -361,7 +371,7 @@ function openReqById(id){(async()=>{try{if(!(window._reqs||[]).some(x=>x.id==id)
 function notifRoute(n){closeDrawer();const id=n.reqId||'',ty=n.type||'';
  if(id){go('reqs');openReqById(id);return}
  if(ty=='inspect'){go('insp');return}
- if(ty=='car_alarm'){go('agv');agvTab('ev');return}
+ if(ty=='car_alarm'){EVUN=1;EVK='';EVDAY='';go('agv/rev');return} // ㉖v113 深链直达；顺带预设「仅未认领」，点通知就是来看待处理的
  if(ty=='stock_out'){go('inv');return}
  if(ty=='watch_in'){go('parts');return}
  if(ty=='transfer_done'||ty=='req_arrive'||ty=='req_flow'){go('flow');return}
@@ -744,8 +754,12 @@ async function qAccept(id){const x=(window._qboard||[]).find((i)=>i.id==id)||{};
 // ===== ㉖v50 容器管理：让每只框"自我介绍"——类型健康度、滞留预警、区域热力，一屏看全 =====
 let CTN={types:{},timer:0};
 let _ctv='ov';        // 当前视图：ov=概览清单 / map=库位地图
-async function ctTypes(){try{const j=await api('/api/containers');if(j.ok)CTN.types={};if(j.ok&&j.rack)CTN.rack=j.rack;if(j.ok&&j.gnd)CTN.gnd=j.gnd;(j.types||[]).forEach(t=>{CTN.types[String(t.db).toUpperCase()]=t.show||t.db})}catch(_){}} // v56 高架格位规格
+async function ctTypes(){try{const j=await api('/api/containers');if(j.ok)CTN.types={};if(j.ok&&j.rack)CTN.rack=j.rack;if(j.ok&&j.gnd)CTN.gnd=j.gnd;if(j.ok&&j.weather)CTN.weather=j.weather;(j.types||[]).forEach(t=>{CTN.types[String(t.db).toUpperCase()]=t.show||t.db})}catch(_){}} // v56 高架格位规格 ㉖v111 库区天气数据
 function ctLabel(f){f=String(f||'').trim();if(!f)return '未标注类型';return CTN.types[f.toUpperCase()]||f}
+// ===== ㉖v111 车型归属（目视化：混居货架一眼可辨"彩虹墙"）：项目字典优先，物料名/零件号正则兜底 =====
+const CT_CARC={EX11:'#42a5f5',EX1H:'#66bb6a',E281:'#ab47bc',V446K:'#ff7043',EF2H:'#26c6da'};
+function ctCarOf(b){const p=String(b.p||'').toUpperCase();const pj=(window._pjMap||{})[p];if(pj&&pj.length){const hit=pj.find((c)=>CT_CARC[String(c).toUpperCase()]);if(hit)return String(hit).toUpperCase()}const s=(String(b.p||'')+' '+String(b.n||'')).toUpperCase();const m=s.match(/(EX11|EX1H|EF2H|E281|V446K)/);return m?m[1]:'其他'}
+function ctCarColor(b){return CT_CARC[ctCarOf(b)]||'#90a4ae'}
 function ctHour(x){const t=Number(x&&x.t)||0;return t?Math.max(0,Math.floor((Date.now()-t)/3600e3)):-1}
 function ctHourB(x){const bt=Number(x&&x.bt)||0;if(bt)return Math.max(0,Math.floor((Date.now()-bt)/3600e3));return ctHour(x)} // ㉖v56 滞留=按批次(MES打印日期)起算，缺批次回退入账时刻
 function ctAgeTxt(h){if(h<0)return '<span style="color:var(--sub)">时刻缺失</span>';if(h<1)return '刚刚入库';if(h<24)return h+' 小时';const d=Math.floor(h/24);return d+' 天'+(h%24?' '+(h%24)+' 小时':'')}
@@ -919,23 +933,52 @@ function ctSlotStats(){
   const rc=Math.max(0,Math.min(8,Number(RK.count)>0?Number(RK.count):8)); // 现场最多8架；配小按配置补（尊重"只用前N架"）
   for(let zi=0;zi<rc;zi++){const z=_AL[zi];for(let t=1;t<=rt;t++){const rowid='NB02-'+z,tier=t+'F',label=rowid+' · '+tier;
    if(!rows[label])rows[label]={zone:'NB02',rack:true,rowid,tier,cells:{},max:0};}}}
- const zoneSt={};let total=0,used=0;
+ const zoneSt={};const zoneL={};let total=0,used=0;
  // ㉖v52 货架巷道：同一货架各层物理列数相同→按巷道最大列对齐（立面成矩形，统计口径与渲染一致）
  const rackMax={};Object.values(rows).forEach(R=>{if(R.rack)rackMax[R.rowid]=Math.max(rackMax[R.rowid]||0,R.max)});
  Object.keys(rows).forEach(k=>{const R=rows[k];
   R.hi=R.rack?Math.max(CTN.rack&&CTN.rack.cols||0,rackMax[R.rowid]||R.max):Math.max(R.max,Number(CTN.gslots[R.rowid])||(CTN.gnd&&CTN.gnd.cols)||12); // v56 配置列数为准(16)，观测超配时兜底
   if(R.off){R.offCells=Object.keys(R.cells).length;return;} // ㉖v59 停用排不计格位统计（有货的排仍渲染提醒）
   const n=R.hi,o=Object.keys(R.cells).length;total+=n;used+=o;
-  const z=zoneSt[R.zone]=zoneSt[R.zone]||{t:0,u:0};z.t+=n;z.u+=o;});
- return {rows,zoneSt,total,used,miscN,miscB};
+  const z=zoneSt[R.zone]=zoneSt[R.zone]||{t:0,u:0};z.t+=n;z.u+=o;
+  // ㉖v111 天气墙：按巷道字母细分（NB02-A / NB03-A），占用率口径与地图完全一致（含补空架/空排的分母）
+  const zk=R.rack?R.rowid:R.rowid.split('-').slice(0,2).join('-');const zl=zoneL[zk]=zoneL[zk]||{t:0,u:0};zl.t+=n;zl.u+=o;});
+ return {rows,zoneSt,zoneL,total,used,miscN,miscB};
 }
 // ===== ㉖v50 库位地图：容器×货位融合视图——按"库区-巷道-格"的真实形状看每只框住哪一格、空位在哪 =====
+// ===== ㉖v111 库区天气墙（目视化融合：长在容器管理·库位地图里，不开新页）=====
+// 占用率=云量 · 滞留占比=气温 · 今日周转=风力：一眼判断"今天该往哪放、先清哪"
+function ctWeatherHtml(){
+ const W=(CTN.weather||{}).zones||{}; if(!Object.keys(W).length) return '';
+ const zc=(z)=>{const m=String(z).match(/-([A-H])$/);return m?m[1]:z};
+ const items=Object.entries(W).map(([z,w])=>{
+   const st=(CTN._zoneSt||{})[z]||{t:0,u:0}; const pct=st.t?Math.round(st.u/st.t*100):0; const sr=w.boxes?Math.round(w.stale/w.boxes*100):0;
+   let ic='☀️',lab='晴 · 入库首选',cls='wSun';
+   if(!w.boxes&&!st.u){ic='⬜';lab='空置 · 启用评审';cls='wEmpty'}
+   else if(w.outT>=15){ic='🌪';lab='台风 · 备料热区';cls='wStorm'}
+   else if(sr>70&&!w.outT){ic='❄️';lab='冻 · 呆滞评审';cls='wFrozen'}
+   else if(sr>50){ic='🌧';lab='雨 · 停入先清';cls='wRain'}
+   else if(pct>=50){ic='⛅';lab='多云 · 正常';cls='wCloud'}
+   return {z,w,pct,sr,ic,lab,cls};
+ }).sort((a,b)=>a.z<b.z?-1:1);
+ const zf=CTN.zf||'';
+ const _zoneKind=(z)=>String(z).startsWith('NB03')?'区':'架';
+ return `<div class="card" style="margin:8px 0"><div class="row" style="align-items:center"><b style="font-size:13px">🌤 库区天气墙</b><span style="font-size:11px;color:var(--sub);margin-left:8px">占用=云量 · 滞留7天+占比=气温 · 今日出库框=风力｜点卡片只看该货架/地面区</span><span class="sp"></span><span style="font-size:10.5px;color:var(--sub)">数据 ${(CTN.weather&&CTN.weather.at)?new Date(CTN.weather.at).toLocaleTimeString('zh-CN',{hour12:false}):''}</span></div>
+ <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:8px;margin-top:8px">${items.map(it=>`<div onclick="ctZone('${_esc(it.z)}')" style="cursor:pointer;border:1.5px solid ${zf===it.z?'var(--pri)':'var(--line)'};border-radius:10px;padding:8px 10px;background:${zf===it.z?'rgba(81,91,212,.06)':'#fff'}">
+   <div style="display:flex;align-items:center;gap:6px"><span style="font-size:26px;line-height:1">${it.ic}</span><div><div style="font-size:13px;font-weight:800">${_esc(zc(it.z))} ${_zoneKind(it.z)}</div><div style="font-size:10px;color:var(--sub)">${it.lab}</div></div></div>
+   <div style="font-size:10.5px;color:var(--sub);margin-top:5px;line-height:1.6">占用 <b style="color:${it.pct>=90?'var(--bad)':it.pct>=70?'var(--warn)':'var(--ink)'}">${it.pct}%</b> · 滞留 <b style="color:${it.sr>50?'var(--bad)':it.sr>20?'var(--warn)':'var(--ok)'}">${it.sr}%</b><br>今日 出${it.w.outT} · 入${it.w.inT} · 在架${it.w.boxes}框</div>
+   <div style="height:4px;background:#eef1f8;border-radius:2px;margin-top:5px;overflow:hidden"><div style="height:4px;width:${it.pct}%;background:${it.pct>=90?'#e53935':it.pct>=70?'#fb8c00':'#26a69a'}"></div></div>
+ </div>`).join('')}</div></div>`;
+}
 async function ctMap(){
  if(!CTN.gslots){try{const g=await api('/api/ground-slots');CTN.gslots=(g&&g.slots)||{}}catch(_){CTN.gslots={}}}
+ if(!window._pjCodes){try{await pjLoad()}catch(_){}} // ㉖v111 车型角标依赖项目字典（失败静默=全按名称正则/其他）
+ if(!CTN.weather||Date.now()-(CTN.weather.at||0)>60000){try{const j=await api('/api/containers');if(j&&j.weather)CTN.weather=j.weather}catch(_){}} // ㉖v111 天气数据 60 秒内复用
  const q=(TM.ctq||'').trim().toUpperCase();
- const {rows,zoneSt,total,used,miscN,miscB}=ctSlotStats();
- const zf=CTN.zf||'';const hunt=!!TM.ctmE;const cmode=CTN.cmode||'age'; // v89 配色口径：age=滞留热力 / occ=占用红青
- $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<button class="pill" style="padding:3px 10px;font-size:11.5px;margin-left:6px" title="切换配色口径：滞留热力(绿/橙/红) ↔ 占用总览(红=被占用/青=空货位，对齐现场看板)" onclick="CTN.cmode=(CTN.cmode==='occ')?'age':'occ';ctMap()">${cmode==='occ'?'🎨 占用(红/青)':'🎨 滞留(绿/橙/红)'}</button><span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':(cmode==='occ'?'■红 被占用 ■青 空货位 ｜ 货架/排=横条带，带间=AGV巷道':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+(按批次) ▢灰虚线 空位 ｜ 货架/排=横条带，带间=AGV巷道')}</span></div>`;
+ const {rows,zoneSt,zoneL,total,used,miscN,miscB}=ctSlotStats();CTN._zoneSt=zoneL; // ㉖v111 天气墙占用率按巷道字母细分
+ const zf=CTN.zf||'';const hunt=!!TM.ctmE;const cmode=CTN.cmode||'age'; // v89 配色口径：age=滞留热力 / occ=占用红青 / car=车型彩虹（㉖v111）
+ const _cmNext={age:'occ',occ:'car',car:'age'},_cmLab={occ:'🎨 占用(红/青)',car:'🎨 车型(彩虹)',age:'🎨 滞留(绿/橙/红)'};
+ $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<button class="pill" style="padding:3px 10px;font-size:11.5px;margin-left:6px" title="三档配色轮转：滞留热力(绿/橙/红) → 占用总览(红占青空) → 车型彩虹(按项目/车型上色，混居墙一眼可辨)" onclick="CTN.cmode='${_cmNext[cmode]}';ctMap()">${_cmLab[cmode]}</button><button class="pill" style="padding:3px 10px;font-size:11.5px;margin-left:6px" title="红牌作战：滞留≥14天框清单，一键复制发群" onclick="ctRedCard()">🟥 红牌清单</button><span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':(cmode==='occ'?'■红 被占用 ■青 空货位 ｜ 货架/排=横条带，带间=AGV巷道':cmode==='car'?'■格色=车型（EX11蓝/EX1H绿/E281紫/V446K橙/EF2H青/其他灰）▢灰虚线 空位 ｜ 同架多色=车型混居墙':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+(按批次) ▢灰虚线 空位 ｜ 货架/排=横条带，带间=AGV巷道')}</span></div>`;
  // 单格渲染（两区共用）：空格/占格、寻宝高亮、搜索命中
  const renderCells=(R,maxHi)=>{
    let s='';
@@ -948,7 +991,13 @@ async function ctMap(){
      if(!hit){s+=`<span class="ctg ${hunt?'ctg-em':'cte'}${(cmode==='occ'&&!hunt)?' occE':''}${locHit?' em':''}" title="${_esc(full)} · 空格位${hunt?'（可停放新框）':''}" onclick="ctFreeSlot('${_esc(full)}')">${(locHit||hunt)?'·':'&nbsp;'}</span>`;continue}
      const bs=hit.boxes,worst=cmode==='occ'?'x':(bs.some(b=>b._h>=168)?'r':(bs.some(b=>b._h>=72)?'o':'g'));
      const mk=rowHit||locHit;
-     const tip=_esc(full+'｜'+bs.length+'框 '+bs.reduce((a,b)=>a+b.lc,0)+'标签｜'+bs.map(b=>(b.p||b._fl)+'×'+b.q+' '+ctAgeTxt(b._h).replace(/<[^>]+>/g,'')).join('；').slice(0,120));
+     const tip=_esc(full+'｜'+bs.length+'框 '+bs.reduce((a,b)=>a+b.lc,0)+'标签｜'+bs.map(b=>(ctCarOf(b)+' ')+(b.p||b._fl)+'×'+b.q+' '+ctAgeTxt(b._h).replace(/<[^>]+>/g,'')).join('；').slice(0,140));
+     if(cmode==='car'){ // ㉖v111 车型彩虹：主导车型色；同格多车型=左色块占比拼接（混居一眼可辨）
+       const cnt={};bs.forEach(b=>{const k=ctCarOf(b);cnt[k]=(cnt[k]||0)+1});
+       const arr=Object.entries(cnt).sort((a,b)=>b[1]-a[1]);
+       const grad=arr.length>1?('linear-gradient(90deg,'+arr.map(([k,v],i)=>`${CT_CARC[k]||'#90a4ae'} ${Math.round((i===0?0:arr.slice(0,i).reduce((s,x)=>s+x[1],0))/bs.length*100)}%,${CT_CARC[k]||'#90a4ae'} ${Math.round(arr.slice(0,i+1).reduce((s,x)=>s+x[1],0)/bs.length*100)}%`).join(',')+')'):CT_CARC[arr[0][0]]||'#90a4ae';
+       s+=`<span class="ctg${mk?' cth':''}" style="background:${grad};${mk?'':'opacity:'+(hunt?'.22':'.9')+';'}" title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;continue;
+     }
      s+=`<span class="ctg ctg-${worst}${mk?' cth':''}${(hunt&&!mk)?' dimc':''}" ${mk?'':'style="opacity:'+(hunt?'.22':'.85')+'"'} title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;
    }
    return s;
@@ -956,9 +1005,10 @@ async function ctMap(){
  const rowLine=(lab,R,maxHi,used)=>`<div style="display:flex;align-items:center;gap:6px;margin:1px 0"><span class="mono" style="font-size:11px;width:66px;color:${used?'var(--ink)':'var(--sub)'};text-align:right;white-space:nowrap">${lab}</span><div style="display:flex;flex-wrap:wrap">${renderCells(R,maxHi)}</div></div>`;
  // 巷道带：货架/排条带之间的 AGV 通行巷道（横向通道+中线+双向箭头）
  const aisle=(lab,sub)=>`<div style="display:flex;align-items:center;gap:8px;margin:6px 0 6px 80px;height:24px;background:linear-gradient(90deg,rgba(120,140,170,.08),rgba(120,140,170,.17),rgba(120,140,170,.08));border-radius:6px;position:relative;overflow:hidden"><span style="position:absolute;left:6px;right:6px;top:50%;border-top:2px dashed rgba(120,140,170,.55)"></span><span style="position:relative;z-index:1;margin-left:12px;font-size:10.5px;font-weight:700;color:#54627a;background:rgba(255,255,255,.8);padding:1px 10px;border-radius:10px">⇄ ${lab}</span>${sub?`<span style="position:relative;z-index:1;font-size:10px;color:var(--sub);background:rgba(255,255,255,.8);padding:1px 10px;border-radius:10px">${sub}</span>`:''}</div>`;
- const zrows=Object.keys(rows).filter(k=>!zf||rows[k].zone===zf).map(k=>rows[k]);
+ const _rz=(R)=>R.rack?R.rowid:R.rowid.split('-').slice(0,2).join('-'); // ㉖v111 巷道键：货架=NB02-A，地面=NB03-A
+ const zrows=Object.keys(rows).filter(k=>!zf||rows[k].zone===zf||_rz(rows[k])===zf).map(k=>rows[k]);
  const rack=zrows.filter(R=>R.rack), gnd=zrows.filter(R=>!R.rack);
- let h='';
+ let h=ctWeatherHtml(); // ㉖v111 库区天气墙置顶
  // ===== ㉖v89 占用总览矩阵：高架=立面(行:列号01→16,格:层1F→4F) · 地面=平面(行:排,格:位)；红占青空对齐现场看板，每架/区带占用率条 =====
  const RC=CTN.rack||{};
  const mxCell=(R,c,pre,suf)=>{
@@ -966,7 +1016,13 @@ async function ctMap(){
    const full=hit?String(hit.loc||'').toUpperCase():pre+'-'+String(c).padStart(2,'0')+(suf||'');
    if(!hit)return '<span class="mxc mxc-e" title="'+_esc(full)+' · 空货位（点击复制编号）" onclick="ctFreeSlot(\''+_esc(full)+'\')"></span>';
    const bs=hit.boxes,cls=cmode==='occ'?'mxc-x':(bs.some(b=>b._h>=168)?'mxc-r':(bs.some(b=>b._h>=72)?'mxc-o':'mxc-g'));
-   const tip=full+'｜'+bs.length+'框 '+bs.map(b=>((b.p||b._fl)||'')+'×'+b.q).join('、').slice(0,90);
+   const tip=full+'｜'+bs.length+'框 '+bs.map(b=>(cmode==='car'?(ctCarOf(b)+' '):'')+((b.p||b._fl)||'')+'×'+b.q).join('、').slice(0,110);
+   if(cmode==='car'){ // ㉖v111 车型彩虹（矩阵版）：主导车型色；同格多车型=横向色块占比拼接
+     const cnt={};bs.forEach(b=>{const k=ctCarOf(b);cnt[k]=(cnt[k]||0)+1});
+     const arr=Object.entries(cnt).sort((a,b)=>b[1]-a[1]);
+     const grad=arr.length>1?('linear-gradient(90deg,'+arr.map(([k,v],i)=>`${CT_CARC[k]||'#90a4ae'} ${Math.round(arr.slice(0,i).reduce((s,x)=>s+x[1],0)/bs.length*100)}%,${CT_CARC[k]||'#90a4ae'} ${Math.round(arr.slice(0,i+1).reduce((s,x)=>s+x[1],0)/bs.length*100)}%`).join(',')+')'):(CT_CARC[arr[0][0]]||'#90a4ae');
+     return '<span class="mxc" style="background:'+grad+'" title="'+_esc(tip)+'" onclick="ctCell(\''+_esc(full)+'\')"></span>';
+   }
    return '<span class="mxc '+cls+'" title="'+_esc(tip)+'" onclick="ctCell(\''+_esc(full)+'\')"></span>';
  };
  const occBar=(pct)=>'<div style="height:4px;background:#eef1f8;border-radius:2px;margin:2px 0 4px;overflow:hidden"><div style="height:4px;width:'+pct+'%;background:'+(pct>=90?'#e53935':pct>=70?'#fb8c00':'#26a69a')+'"></div></div>';
@@ -1044,6 +1100,22 @@ async function ctMap(){
  $('#ctmap').innerHTML=h||'<div style="color:var(--sub);padding:20px">账本为空——地图无格可画</div>';
 }
 function ctZone(z){CTN.zf=(CTN.zf===z)?'':z;ctMap()}
+// ===== ㉖v111 红牌作战（目视化行动层）：滞留≥14天的框清单，看到即处置，一键复制发群 =====
+function ctRedCard(minD){
+ minD=minD||14;
+ const red=CTN.boxes.filter(b=>b._d>=minD).sort((a,b)=>b._d-a._d);
+ if(!red.length){T('当前无滞留≥'+minD+'天的框，库区很健康 👍',1);return}
+ const zoneOf=(l)=>{const m=String(l||'').toUpperCase().match(/^NB0[23]-([A-H])/);return m?m[1]:'?'};
+ const line=(b)=>`${b._d}天｜${b.c}｜${b.p||'—'}｜${String(b.n||'').slice(0,20)}｜${b.l}｜${b.q}件`;
+ const txt=`【呆滞红牌清单 ${new Date().toLocaleDateString('zh-CN')}】滞留≥${minD}天 共${red.length}框\n`+red.map(line).join('\n')+`\n（请对应巷道负责人核实：可出库的先出库，需移地面的走"移地面"，长期呆滞的报需求方评审）`;
+ window._ctRedTxt=txt; // 存全局，onclick 只引用变量名——绝不在内联事件里嵌反引号/引号（会提前闭合外层模板串）
+ dlg(`<h3>🟥 呆滞红牌 · ${red.length} 框滞留≥${minD}天</h3>
+ <div style="font-size:11.5px;color:var(--sub);margin:2px 0 8px">借丰田 5S 红牌作战——住太久的框挂红牌，看到即处置。按滞留天数降序，点框号看全链路。</div>
+ <div style="max-height:52vh;overflow:auto"><table><thead><tr><th>滞留</th><th>框号</th><th>零件号</th><th>物料</th><th>货位</th><th>件数</th></tr></thead><tbody>
+ ${red.map(b=>`<tr style="border-top:1px solid var(--line)"><td style="color:${b._d>=30?'var(--bad)':'var(--warn)'};font-weight:700">${b._d}天</td><td class="mono"><a href="javascript:void(0)" style="color:var(--pri)" onclick="$('#mask').classList.add('hide');traceBox('${_esc(b.c)}')">${_esc(b.c)}</a></td><td class="mono">${_esc(b.p||'—')}</td><td style="font-size:11px">${_esc(String(b.n||'').slice(0,18))}</td><td class="mono" style="font-size:11px">${_esc(zoneOf(b.l))}·${_esc(b.l)}</td><td>${b.q}</td></tr>`).join('')}
+ </tbody></table></div>
+ <div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">关闭</button><button class="pill" onclick="ctCopy(window._ctRedTxt)">📋 复制清单发群（${red.length}框）</button></div>`);
+}
 // 高架列弹窗：一列货架纵向各层明细（层号+占用+标签），点层进格弹窗
 function ctCol(key){const C=(CTN._cols||{})[key];if(!C){T('该列暂无数据');return}
  const tn=Math.max(1,...Object.keys(C.tiers).map((t)=>parseInt(t)||1));
@@ -1305,7 +1377,24 @@ async function reDl(id){try{const r=await fetch('/api/export/get?id='+encodeURIC
  const cd=r.headers.get('Content-Disposition')||'';let nm=id;const m=/filename\*=UTF-8''([^;]+)/i.exec(cd);if(m)nm=decodeURIComponent(m[1]);
  const u=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=u;a.download=nm;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);T('⬇ 重下 '+id+'（同一份快照）',1)}catch(e){T('重下失败：'+e)}}
 // ===== ㉔AGV指挥舱：实时地图(SSE)/站台甘特/异常中心/轨迹回放/大屏 =====
-let NET=null,SSE=null,AGVTAB='map',MAP=null,PLAY=null;
+// ===== ㉖v113 指挥舱两级导航（融合方案修正版）：11 个平铺标签 → 7 个一级 + 二级子页 =====
+// 合并规则（草图 2026-11-05）：流水线+队列→调度运作 ｜ 看板+甘特→站台 ｜ 车辆+交管→车辆 ｜ 运力体检+效率报表→效率 ｜ 异常中心+复盘报告→异常与复盘
+// 旧键全部保留可用：agvTab('gantt') / #agv/gantt / ⌘K「站台甘特」照常直达；AGVTAB 仍存二级键 → 各子页刷新守卫零改动
+let NET=null,SSE=null,AGV1='map',MAP=null,PLAY=null;
+const AGVNAV=[['map','🗺 地图',[]],['ops','🏭 调度运作',['pipe','q']],['stn','🚉 站台',['board','gantt']],['veh','🚗 车辆',['car','traf']],['play','⏪ 回放',[]],['eff','📊 效率',['cap','rep']],['rev','🚨 异常与复盘',[]]];
+const AGVSUB={pipe:'🏭 流水线',q:'🚚 队列控制台',board:'🚉 站台看板',gantt:'📊 站台甘特',car:'🚗 车辆',traf:'🚦 交管',cap:'📈 运力体检',rep:'🏁 效率报表'};
+const AGVKEY={map:['map','map'],ops:['ops','pipe'],pipe:['ops','pipe'],q:['ops','q'],stn:['stn','board'],board:['stn','board'],gantt:['stn','gantt'],veh:['veh','car'],car:['veh','car'],traf:['veh','traf'],play:['play','play'],eff:['eff','cap'],cap:['eff','cap'],rep:['eff','rep'],rev:['rev','rev'],review:['rev','rev'],ev:['rev','rev']};
+const AGVKIDS=(k)=>(AGVNAV.find((x)=>x[0]===k)||[,,[]])[2]||[];
+// 保险①记住上次所在子页：刷新或切走再回来停在你原来看的那页，不弹回地图首页
+let AGVTAB=(()=>{try{const k=localStorage.getItem('ck_agvtab');return AGVKEY[k]?k:'map'}catch(_){return 'map'}})();
+function renderAgvNav(){const bar=$('#agvnav');if(!bar)return;
+ bar.innerHTML=AGVNAV.map(([k,n])=>{const on=k===AGV1; // 保险④红牌角标跟着合并后的「异常与复盘」标签走：收进二级也不能看不见
+  const bd=(k==='rev'&&(window._lastRed||0)>0)?`<span class="navbd" title="${window._lastRed} 张红牌急停未处理">${window._lastRed>9?'9+':window._lastRed}</span>`:'';
+  return `<button class="pill${on?'':' q'}" data-g="${k}" style="position:relative">${n}${bd}</button>`}).join('');
+ const sub=$('#agvsub');if(!sub)return;const kids=AGVKIDS(AGV1);
+ sub.style.display=kids.length?'flex':'none';
+ sub.innerHTML=kids.map((k)=>`<button class="pill${k===AGVTAB?'':' q'}" data-k="${k}">${AGVSUB[k]||k}</button>`).join('')}
+function agvNavBadge(){if(TAB==='agv')renderAgvNav()} // 红牌数变化时刷新角标（仅当前正看着指挥舱时）
 function esSSE(){if(SSE)return;try{SSE=new EventSource('/api/sse?token='+encodeURIComponent(TK));SSE.onmessage=e=>{try{_sseOk=Date.now();const d=JSON.parse(e.data);if(d.t==='snap'){LAMP=d;if(TAB==='dash'&&!document.hidden){const lb=$('#lamp');if(lb)lb.innerHTML=lampHtml();}if(AGVTAB==='map'&&!document.hidden)loadMap();}if(d.t==='notif'&&d.to==U.id){notifPoll();if(window._msgOpen)openMsgs();if(!document.hidden&&d.text)T('🔔 '+(d.text||'').slice(0,28),1)}}catch(_){}};}catch(_){}}
 let LAMP={},_sseOk=0,SYSST=null,_wmProbe=false;
 async function probeSys(){_wmProbe=true;try{SYSST=await api("/api/sysstatus")}catch(_){} _wmProbe=false;if(TAB=="dash"){const lb=document.getElementById("lamp");if(lb)lb.innerHTML=lampHtml()}}
@@ -1337,7 +1426,94 @@ async function loadPipe(){let j;try{j=await api('/api/agv/pipeline')}catch(_){$(
 function fit(pts,W,H,pad,bx0,by0,bx1,by1){let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;for(const p of pts){if(!Number.isFinite(p.x)||!Number.isFinite(p.y))continue;mnx=Math.min(mnx,p.x);mxx=Math.max(mxx,p.x);mny=Math.min(mny,p.y);mxy=Math.max(mxy,p.y);}if(bx0!==undefined){mnx=Math.max(mnx,bx0);mxx=Math.min(mxx,bx1);mny=Math.max(mny,by0);mxy=Math.min(mxy,by1);}const sc=Math.min((W-2*pad)/Math.max(1,mxx-mnx),(H-2*pad)/Math.max(1,mxy-mny));return(x,y)=>{if(bx0!==undefined){x=Math.max(bx0,Math.min(bx1,x));y=Math.max(by0,Math.min(by1,y));}return[pad+(x-mnx)*sc,H-pad-(y-mny)*sc];};}
 function bg(g,W,H){g.fillStyle=getComputedStyle(document.body).getPropertyValue('--card')||'#fff';g.fillRect(0,0,W,H);}
 function net(g,w2c){const L=(NET&&NET.lands)||{};g.strokeStyle='rgba(120,140,170,.28)';g.lineWidth=1;for(const e of((NET&&NET.edges)||[])){const a=L[e[0]],b=L[e[1]];if(FLOOR(a)&&FLOOR(b)){const p=w2c(a.x,a.y),q=w2c(b.x,b.y);g.beginPath();g.moveTo(p[0],p[1]);g.lineTo(q[0],q[1]);g.stroke();}}}
-async function pgAgv(){$('#main').innerHTML='<div class="row" style="margin-bottom:8px"><button class="pill" id="t_map">🗺 实时地图</button><button class="pill q" id="t_pipe">🏭 流水线</button><button class="pill q" id="t_board">🚉 站台看板</button><button class="pill q" id="t_gantt">📊 站台甘特</button><button class="pill q" id="t_q">🚚 队列控制台</button><button class="pill q" id="t_car">🚗 车辆</button><button class="pill q" id="t_traf">🚦 交管</button><button class="pill q" id="t_ev">🚨 异常中心</button><button class="pill q" id="t_play">⏪ 轨迹回放</button><button class="pill q" id="t_cap">📈 运力体检</button><button class="pill q" id="t_rep">🏁 效率报表</button><span class="sp"></span><button class="pill q" id="t_heat" title="货架占用热力叠加">🔥 热力</button><button class="pill" style="background:#37474f" id="bs">🖥 大屏</button></div><div id="agvbody"></div>';['map','pipe','board','gantt','q','car','traf','ev','play','cap','rep'].forEach(k=>{$('#t_'+k).onclick=()=>agvTab(k);});$('#t_heat').onclick=()=>{HEAT=!HEAT;$('#t_heat').className='pill'+(HEAT?'':' q');if(AGVTAB==='map')drawMap();else agvTab('map');};$('#bs').onclick=bigScreen;if(!NET){try{NET=await api('/api/rcs/net');}catch(_){NET={lands:{},edges:[]};}}agvTab(AGVTAB);}
+// ㉖v113 指挥舱两级导航：一级 7 标签 + 二级子页；热力/大屏按钮保留在工具栏
+async function pgAgv(){$('#main').innerHTML='<div class="row" style="margin-bottom:6px;align-items:center"><div id="agvnav" style="display:flex;gap:5px;flex-wrap:wrap"></div><span class="sp"></span><button class="pill q" id="t_heat" title="货架占用热力叠加（仅地图）">🔥 热力</button><button class="pill" style="background:#37474f" id="bs" title="进入全屏深色投屏（v111：不再自动轮播，停在当前页）">🖥 大屏</button></div><div id="agvsub" style="display:none;gap:5px;flex-wrap:wrap;margin-bottom:8px"></div><div id="agvbody"></div>';
+ $('#agvnav').addEventListener('click',(e)=>{const b=e.target.closest('button[data-g]');if(b)agvTab(b.dataset.g)});
+ $('#agvsub').addEventListener('click',(e)=>{const b=e.target.closest('button[data-k]');if(b)agvTab(b.dataset.k)});
+ $('#t_heat').onclick=()=>{HEAT=!HEAT;$('#t_heat').className='pill'+(HEAT?'':' q');if(AGVTAB==='map')drawMap();else agvTab('map');};$('#bs').onclick=bigScreen;if(!NET){try{NET=await api('/api/rcs/net');}catch(_){NET={lands:{},edges:[]};}}agvTab(AGVTAB);}
+// ===== ㉖v113「异常与复盘」：上半=复盘报告（新），下半=事件流水（原异常中心完整保留）=====
+// 数据源复用 /api/report/analytics 的 v112 problems 日快照与聚合，零新表、零新端点。
+// 三态齐全：加载中/未采集(null)/失败可重试；接口挂了也不影响下半段处理告警（先渲事件流水再拉复盘）。
+let RV={g:'week',end:''};
+const rvEnd=()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')};
+// 脉冲图行定义：k=快照字段，n=中文行名，kind=事件流水里对应的类型名（有则格子可点下钻，无则不假装能点）
+const RVROWS=[['alarm','告警','告警'],['redflag','红牌急停','红牌'],['jam','堵点','堵点'],['timeoutOut','出库超时','出库超时'],['timeoutIn','入库超时','入库超时'],['fifo','FIFO违反','FIFO违反'],['conflict','改位冲突','改位冲突'],['overfire','超发确认','超发确认'],['overdue','超期未动单',''],['watchdog','看门狗掉线',''],['sysErr','系统错误','']];
+function loadReview(){const B=$('#agvbody');if(!B)return;RV.end=RV.end||rvEnd();
+ B.innerHTML=`<div class="card" id="rvcard"><div class="row" style="align-items:center;flex-wrap:wrap;gap:6px"><b style="font-size:13px">📊 复盘报告</b><span style="font-size:11px;color:var(--sub)">日快照现场聚合 · 历史不随数据滚动丢失</span><span class="sp"></span><span id="rvwin"></span></div><div id="rvbody" style="margin-top:8px;color:var(--sub);font-size:12.5px">加载中…</div></div><div id="evbody" style="margin-top:10px"></div>`;
+ rvWin();loadEv();rvGo()} // 下半段先出：复盘接口慢或挂，也照样能认领告警
+function rvWin(){const W=$('#rvwin');if(!W)return; // 周期选择器：单一渲染入口，切换只重画这一小块（不动下方已加载的数据）
+ W.innerHTML=['day','week','month'].map((g)=>`<button class="pill ${RV.g==g?'':'q'}" style="margin-left:4px;padding:3px 10px;font-size:12px" onclick="rvSet('${g}')">${g=='day'?'日报':g=='week'?'周报':'月报'}</button>`).join('')+`<input type="date" value="${RV.end}" style="margin-left:6px;padding:2px 6px;font-size:12px" onchange="RV.end=this.value;rvGo()">`}
+function rvSet(g){RV.g=g;rvWin();rvGo()}
+async function rvGo(){const box=$('#rvbody');if(!box)return;
+ if(U.role!=='admin'&&U.role!=='warehouse'){box.innerHTML='<div style="color:var(--sub);font-size:12.5px">复盘报告仅管理员/仓管员可见（下方事件流水照常可用）。</div>';return}
+ box.innerHTML='加载中…';let j;
+ try{j=await api('/api/report/analytics?g='+RV.g+'&end='+RV.end)}catch(e){box.innerHTML='<div style="color:var(--warn);font-size:12.5px">复盘数据加载失败：'+_esc(e&&e.message?String(e.message):'服务需重启加载新版')+'　<button class="pill" style="padding:2px 10px;font-size:12px" onclick="rvGo()">重试</button></div>';return}
+ if(!j||!j.ok){box.innerHTML='<div style="color:var(--warn);font-size:12.5px">'+_esc((j&&j.msg)||'无数据')+'</div>';return}
+ rvRender(j)}
+function rvRender(j){const box=$('#rvbody');if(!box)return;const c=j.cur||{},pv=j.prev,P=c.problems,PP=pv&&pv.problems,S=c.stock||{};
+ const d=(k)=>{if(!P||!PP)return '';const a=P[k],b=PP[k];if(a==null||b==null)return '';const v=a-b;return v?`<span style="font-size:10px;color:${v>0?'var(--bad)':'var(--ok)'};margin-left:3px">${v>0?'▲+':'▼'}${v}</span>`:'<span style="font-size:10px;color:var(--sub);margin-left:3px">＝持平</span>'};
+ const tot=(o)=>o?['alarm','redflag','jam','timeoutOut','timeoutIn','fifo','conflict','overfire','overdue','watchdog','sysErr'].reduce((s,k)=>s+(o[k]||0),0):0;
+ if(!P){box.innerHTML='<div style="font-size:12.5px;color:var(--sub)">本期快照未采集问题数据——problems 从 v112（2026-11）起随日快照固化，更早的历史无法追溯。可切到有快照的周期，或到「分析报告」页做快照回填。</div><div id="rvtrend"></div>';rvTrend(j);return}
+ const kpi=(v,t,h,chg,col)=>`<div class="card kpi" ${h?`title="${h}"`:''} style="min-width:104px"><div class="n" style="font-size:19px${col?';color:'+col:''}">${v}${chg||''}</div><div class="t">${t}</div></div>`;
+ const rejC=(c.rejected||0)+(c.cancelled||0),rejP=pv?(pv.rejected||0)+(pv.cancelled||0):null;
+ const rejD=(rejP==null)?'':(rejC-rejP?`<span style="font-size:10px;color:${rejC-rejP>0?'var(--bad)':'var(--ok)'};margin-left:3px">${rejC-rejP>0?'▲+':'▼'}${Math.abs(rejC-rejP)}</span>`:'<span style="font-size:10px;color:var(--sub);margin-left:3px">＝持平</span>');
+ box.innerHTML=`<div style="font-size:11.5px;color:var(--sub);margin-bottom:6px">统计区间 ${_esc(j.range||'')} · 覆盖 ${j.loaded||0}/${j.days||0} 天${(j.missing||[]).length?` · <span style="color:var(--warn)" title="${_esc((j.missing||[]).join(', '))}">缺 ${(j.missing||[]).length} 天快照（管理员可在「分析报告」页回填）</span>`:''}${pv?' · 环比上一期':''}</div>
+<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+ ${kpi(tot(P),'问题事件总数','告警+红牌+堵点+超时+FIFO+改位冲突+超发+超期+看门狗+系统错误',pv&&PP?(()=>{const v=tot(P)-tot(PP);return v?`<span style="font-size:10px;color:${v>0?'var(--bad)':'var(--ok)'};margin-left:3px">${v>0?'▲+':'▼'}${Math.abs(v)}</span>`:''})():'')}
+ ${kpi(P.alarm,'告警','未认领请在下方事件流水处理',d('alarm'))}
+ ${kpi(P.redflag,'红牌急停','30分钟未处理升级',d('redflag'),'var(--bad)')}
+ ${kpi(P.fifo,'FIFO违反','跳批发料',d('fifo'),P.fifo?'var(--bad)':'')}
+ ${kpi((P.timeoutOut||0)+(P.timeoutIn||0),'搬运超时','出库+入库',(()=>{const a=(P.timeoutOut||0)+(P.timeoutIn||0);if(!PP)return '';const b=(PP.timeoutOut||0)+(PP.timeoutIn||0);const v=a-b;return v?`<span style="font-size:10px;color:${v>0?'var(--bad)':'var(--ok)'};margin-left:3px">${v>0?'▲+':'▼'}${Math.abs(v)}</span>`:''})(),P.timeoutOut?'var(--warn)':'')}
+ ${kpi(P.jam,'堵点',null,d('jam'),P.jam?'var(--warn)':'')}
+ ${kpi(rejC,'领料拒/取消','拒 '+c.rejected+' / 取消 '+c.cancelled,rejD)}
+ ${kpi(S.stale7!=null?S.stale7:'-','呆滞7天+框','取期末快照现值（非历史累计）',null,(S.stale7||0)>0?'var(--warn)':'')}
+ ${kpi(P.slowApi==null?'未采集':P.slowApi,'慢接口天数','P95≥1秒即计一天'+(P.slowMax?` · 最慢 ${P.slowMax}ms ${_esc(P.slowP||'')}`:''),null,P.slowApi?'var(--warn)':'')}
+ ${kpi(P.watchdog+P.sysErr,'看门狗/系统错误','服务自身健康',d('watchdog'),(P.watchdog+P.sysErr)?'var(--bad)':'')}
+</div>
+<div id="rvpulse"></div><div id="rvtrend" style="margin-top:12px"></div><div id="rvbrief" style="margin-top:12px"></div>`;
+ rvPulse(j);rvTrend(j);rvBrief(j)}
+// 脉冲图：每日×每类问题数，点格子 → 事件流水自动按「那天+那类」过滤（无对应事件类型的行不可点，不给假按钮）
+function rvPulse(j){const box=$('#rvpulse');if(!box)return;const se=j.series||[];
+ if(se.length<2){box.innerHTML='<div style="font-size:12px;color:var(--sub)">脉冲图需≥2天数据——切「周报」或「月报」即可看到每日分布。</div>';return}
+ const mx=Math.max(1,...se.flatMap((s)=>RVROWS.map(([k])=>(s.prob||{})[k]||0)));
+ const cc=(v)=>v?`background:rgba(211,47,47,${(0.14+0.86*v/mx).toFixed(2)})`:'background:var(--line)';
+ const lbl=(s)=>String(s.day||'').slice(5);
+ box.innerHTML=`<div style="font-size:12.5px;font-weight:600;margin-bottom:5px">问题脉冲图（${_esc(j.range||'')} · 每日 × 类型）</div>
+<div style="overflow-x:auto"><table style="width:auto;border-collapse:separate;border-spacing:2px;font-size:10px"><tr><td style="padding:0;border:0"></td>${se.map((s)=>`<td style="padding:0 1px;border:0;width:15px;text-align:center;color:var(--sub);font-size:8.5px;white-space:nowrap">${lbl(s)}</td>`).join('')}</tr>
+${RVROWS.map(([k,n,kd])=>{const row=se.map((s)=>(s.prob||{})[k]||0);if(!row.some(Boolean))return ''; // 全期零发生的类型不占行，省得眼花
+ return `<tr><td style="padding:0 5px 0 0;border:0;color:var(--sub);white-space:nowrap;font-size:10px">${n}${kd?'':' <span style="opacity:.5" title="此类不进事件流水，仅供计数">·</span>'}</td>${se.map((s,i)=>{const v=row[i];const day=String(s.day||'');return kd?`<td title="${_esc(day)} · ${n} ${v} 起 —— 点击看当天明细" onclick="rvDrill('${_esc(day)}','${kd}')" style="padding:0;border:0;width:15px;height:14px;border-radius:3px;cursor:pointer;${cc(v)}">${v>=3?'<span style="color:#fff;font-weight:700;font-size:8.5px;display:block;text-align:center;line-height:14px">'+v+'</span>':''}</td>`:`<td title="${_esc(day)} · ${n} ${v} 起" style="padding:0;border:0;width:15px;height:14px;border-radius:3px;${cc(v)}"></td>`}).join('')}</tr>`}).join('')}</table>
+<div style="font-size:10.5px;color:var(--sub);margin-top:3px">色越深=当日该类问题越多；红底白字=当日≥3起。点格子→下方事件流水自动带入「那天+那类」过滤。</div></div>`}
+function rvDrill(day,kind){EVDAY=day||'';EVK=kind||'';EVW='a';EVLO=0;EVUN=0;EVS&&(EVS.pg=1);loadEv(); // EVW 放开到「全部」：否则叠加时间窗会把历史日期筛成空白，点了像没反应
+ const b=$('#evbody');if(b&&b.scrollIntoView)b.scrollIntoView({behavior:'smooth',block:'start'});
+ T('已过滤：'+day+(kind?' · '+kind:'')+'　点流水上方「📅 只看」标签可取消',2)}
+function rvTrend(j){const box=$('#rvtrend');if(!box)return;const se=j.series||[];if(se.length<2){box.innerHTML='';return}
+ const mx=Math.max(1,...se.map((s)=>s.pulse||0));const avg=(se.reduce((s,x)=>s+(x.health||0),0)/se.length).toFixed(1);
+ box.innerHTML=`<div style="font-size:12.5px;font-weight:600">健康趋势（每日健康分 ${_esc(avg)} · 100=零问题，问题越多分越低）</div>
+<div style="display:flex;align-items:flex-end;gap:2px;height:62px;margin-top:5px">${se.map((s)=>{const h=s.health||0;return `<i title="${_esc(s.day)} · 健康分 ${h} · 问题 ${s.pulse||0} 起" style="flex:1;border-radius:2px 2px 0 0;height:${Math.max(3,Math.round(h/100*58)+2)}px;background:${h<60?'linear-gradient(180deg,var(--bad),#ff8a80)':h<85?'linear-gradient(180deg,var(--warn),#ffcc80)':'linear-gradient(180deg,#5c6fd8,#93a7e8)'}"></i>`}).join('')}</div>
+<div style="font-size:10.5px;color:var(--sub);margin-top:3px">绿→蓝=平稳，橙=有异常，红=问题密集日；悬停看当日明细。</div>`}
+// 复盘简报：一键生成纯文本复制发群（复用缺料分享同款管线，绝不自动外发）
+function rvBrief(j){const box=$('#rvbrief');if(!box)return;window._rvLast=j;const c=j.cur||{},P=c.problems,S=c.stock||{};
+ if(!P){box.innerHTML='';return}
+ const tot=['alarm','redflag','jam','timeoutOut','timeoutIn','fifo','conflict','overfire','overdue','watchdog','sysErr'].reduce((s,k)=>s+(P[k]||0),0);
+ const se=j.series||[];
+ const worst=(k)=>{let b=null;for(const s of se){const v=(s.prob||{})[k]||0;if(!b||v>b.v)b={v,day:s.day}}return b&&b.v?b:null};
+ const cars=Object.entries(c.cars||{}).map(([id,v])=>({id,n:v.n||0,dn:v.dn||0,avg:v.dn?v.dur/v.dn:0})).filter((x)=>x.dn>=10);
+ const gAvg=(()=>{let du=0,dn=0;for(const v of Object.values(c.cars||{})){du+=v.dur||0;dn+=v.dn||0}return dn?du/dn:0})();
+ const slow=cars.filter((x)=>gAvg&&x.avg>gAvg*1.5).sort((a,b)=>b.avg-a.avg)[0];
+ const wF=worst('fifo'),wA=worst('alarm');
+ const L=[];L.push(`【调度复盘 ${j.range||''}】问题 ${tot} 起`);
+ L.push(`① 告警 ${P.alarm} 起、红牌急停 ${P.redflag} 起${wA?`（最多 ${String(wA.day).slice(5)} ${wA.v} 起）`:''}`);
+ L.push(`② FIFO违反 ${P.fifo} 起${wF?`，集中 ${String(wF.day).slice(5)}（${wF.v} 起）`:''}；改位冲突 ${P.conflict} 起、超发确认 ${P.overfire} 起`);
+ L.push(`③ 搬运超时 ${P.timeoutOut+P.timeoutIn} 起（出 ${P.timeoutOut}/入 ${P.timeoutIn}）；堵点 ${P.jam} 起`);
+ L.push(`④ 领料拒/取消 ${c.rejected+c.cancelled} 单（拒 ${c.rejected}/取消 ${c.cancelled}）；超期未动 ${P.overdue} 单`);
+ L.push(`⑤ 呆滞7天+ ${S.stale7!=null?S.stale7:'-'} 框`);
+ if(slow)L.push(`⑥ 慢车点名：AGV${String(slow.id).padStart(2,'0')} 均耗时 ${(slow.avg/60).toFixed(1)} 分 = 全局 ${(slow.avg/gAvg).toFixed(1)} 倍（${slow.dn} 趟样本），建议核查`);
+ if(P.watchdog||P.sysErr)L.push(`⑦ 服务自身：看门狗 ${P.watchdog} 次、系统错误 ${P.sysErr} 条——需查服务器日志`);
+ if(P.slowApi)L.push(`⑧ 慢接口 ${P.slowApi} 天，最慢 ${P.slowMax}ms（${P.slowP||'?'}）`);
+ const txt=L.join('\n');
+ box.innerHTML=`<div class="row" style="align-items:center;flex-wrap:wrap;gap:6px"><b style="font-size:12.5px">📋 复盘简报</b><span style="font-size:10.5px;color:var(--sub)">纯文本，复制后可直接发群（不自动外发）</span><span class="sp"></span><button class="pill" style="padding:3px 12px;font-size:12px" onclick="ctCopy(window._rvTxt)">复制简报</button></div>
+<pre style="margin-top:6px;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:11.5px;line-height:1.85;white-space:pre-wrap;font-family:Consolas,monospace">${_esc(txt)}</pre>`;
+ window._rvTxt=txt}
 var _capD=7;
 async function loadCap(){const B=$('#agvbody');try{const d=await api('/api/agv/capacity?days='+_capD);
  const mx=Math.max(1,...(d.hours||[1]));
@@ -1368,7 +1544,27 @@ ${slow?`<div style="margin:0 0 10px;padding:7px 10px;border:1px solid var(--bad)
 ${cars.length?'<div style="font-size:10.5px;color:var(--sub);margin-top:4px">点击车辆行 → 实时地图闪烁定位；红条=慢车预警车辆</div>':''}</div>
 ${(d.heat||[]).length?`<b style="font-size:13px;display:block;margin-top:14px">搬运热力（近7日 × 时段）</b><div style="overflow-x:auto;margin-top:6px"><table style="width:auto;border-collapse:separate;border-spacing:2px;font-size:10px"><tr><td style="padding:0;border:0"></td>${Array.from({length:24},(_,h)=>`<td style="padding:0 2px;border:0;width:16px;text-align:center;color:var(--sub)">${h%6===0?h:''}</td>`).join('')}</tr>${d.heat.map((row,i)=>`<tr><td style="padding:0 4px 0 0;border:0;color:var(--sub);white-space:nowrap;width:auto">${(d.heatDays||[])[i]||''}</td>${row.map((v,h)=>`<td title="${(d.heatDays||[])[i]||''} ${h}:00 · ${v} 趟" style="padding:0;border:0;width:16px;height:14px;border-radius:3px;${hc(v)}"></td>`).join('')}</tr>`).join('')}</table><div style="font-size:10.5px;color:var(--sub);margin-top:2px">颜色越深搬运越密集；空白=该时段无任务（今日行右半为空属正常——还没过完）</div></div>`:''}
 <div style="font-size:11px;color:var(--sub);margin-top:10px">口径：任务=AGV完成趟次（底仓保留30天）；平均耗时=下发→完成；今日窗口=0点起。</div></div>`}
-function agvTab(t){AGVTAB=t;['map','pipe','board','gantt','q','car','traf','ev','play','cap','rep'].forEach(k=>{const b=$('#t_'+k);if(b)b.className='pill'+(k==t?'':' q');});const B=$('#agvbody');if(t=='map'){B.innerHTML='<canvas id="cv" style="width:100%;height:70vh;background:var(--card);border:1px solid var(--line);border-radius:10px"></canvas><div id="maplg" style="font-size:11px;color:var(--sub);margin-top:6px">加载中…</div>';loadMap();}else if(t=='pipe'){B.innerHTML='<div class="card">加载中…</div>';loadPipe();}else if(t=='board'){B.innerHTML='<div class="card">加载中…</div>';loadBoard();}else if(t=='gantt'){B.innerHTML='<div class="card">加载中…</div>';loadGantt();}else if(t=='q'){B.innerHTML='<div class="card">加载中…</div>';loadQ();}else if(t=='car'){B.innerHTML='<div class="card">加载中…</div>';loadCars();}else if(t=='traf'){B.innerHTML='<div class="card">加载中…</div>';loadTraf();}else if(t=='ev'){B.innerHTML='<div class="card">加载中…</div>';loadEv();}else if(t=='cap'){B.innerHTML='<div class="card">加载中…</div>';loadCap();}else if(t=='rep'){B.innerHTML='<div class="card">加载中…</div>';loadRep();}else{B.innerHTML='<div class="card"><div class="row" style="align-items:center"><span style="font-size:12px;color:var(--sub)">时间窗</span><input id="plmin" type="range" min="10" max="1440" value="120" style="flex:1"><span id="plv" style="width:120px;font-size:12px">120分钟</span></div><div class="row" style="align-items:center"><span style="font-size:12px;color:var(--sub)">回放车辆</span><select id="plyid" style="padding:3px 6px;font-size:12px" onchange="plyPick(this.value)"><option value="">— 选一台车 —</option></select><button class="pill" id="plybtn" style="padding:3px 12px;font-size:12px" onclick="plyToggle()">▶ 播放</button><button class="pill q" id="plyrst" style="padding:3px 12px;font-size:12px" title="回到起点" onclick="plyReset()">⏮ 重置</button><select title="播放倍速" style="padding:3px 6px;font-size:12px" onchange="_ply.spd=+this.value"><option value="1">1×</option><option value="4">4×</option><option value="16" selected>16×</option><option value="60">60×</option><option value="240">240×</option></select><span id="plyt" style="font-size:11.5px;color:var(--sub);min-width:120px">—</span><span class="sp"></span><span style="font-size:11px;color:var(--sub)">选中车辆后点播放：小车沿轨迹移动，已走过路段加粗高亮</span></div><canvas id="cvp" style="width:100%;height:60vh;background:var(--card);border-radius:10px"></canvas></div>';loadPlay();}}
+// ㉖v113 两级导航调度器：t 可传一级键(map/ops/stn/veh/play/eff/rev)、二级键(pipe/q/board/gantt/car/traf/cap/rep)
+// 或任意旧键(ev/review)——AGVKEY 统一解析，老代码/老书签/命令面板全都不用改。
+// AGVTAB 始终存「叶子键」→ 各子页原有的静默刷新守卫（AGVTAB==='pipe' 等）零改动即继续生效。
+function agvTab(t){const m=AGVKEY[t];if(!m){t='map'} // 未知键一律回落到地图，绝不白屏
+ const g=(m||AGVKEY.map)[0],leaf=(m||AGVKEY.map)[1];AGV1=g;AGVTAB=leaf;
+ try{localStorage.setItem('ck_agvtab',leaf)}catch(_){} // 保险①记住上次所在子页，刷新/切走再回来停在原页
+ if(TAB==='agv'){const h='#agv/'+leaf;if((location.hash||'')!==h)location.hash=h} // 保险③深链可分享/可回退
+ renderAgvNav();
+ const B=$('#agvbody');if(!B)return;
+ const LD='<div class="card">加载中…</div>';
+ if(leaf=='map'){B.innerHTML='<canvas id="cv" style="width:100%;height:70vh;background:var(--card);border:1px solid var(--line);border-radius:10px"></canvas><div id="maplg" style="font-size:11px;color:var(--sub);margin-top:6px">加载中…</div>';loadMap();}
+ else if(leaf=='pipe'){B.innerHTML=LD;loadPipe();}
+ else if(leaf=='board'){B.innerHTML=LD;loadBoard();}
+ else if(leaf=='gantt'){B.innerHTML=LD;loadGantt();}
+ else if(leaf=='q'){B.innerHTML=LD;loadQ();}
+ else if(leaf=='car'){B.innerHTML=LD;loadCars();}
+ else if(leaf=='traf'){B.innerHTML=LD;loadTraf();}
+ else if(leaf=='cap'){B.innerHTML=LD;loadCap();}
+ else if(leaf=='rep'){B.innerHTML=LD;loadRep();}
+ else if(leaf=='rev'){loadReview();} // 复盘报告 + 事件流水（原异常中心完整保留）
+ else{B.innerHTML='<div class="card"><div class="row" style="align-items:center"><span style="font-size:12px;color:var(--sub)">时间窗</span><input id="plmin" type="range" min="10" max="1440" value="120" style="flex:1"><span id="plv" style="width:120px;font-size:12px">120分钟</span></div><div class="row" style="align-items:center"><span style="font-size:12px;color:var(--sub)">回放车辆</span><select id="plyid" style="padding:3px 6px;font-size:12px" onchange="plyPick(this.value)"><option value="">— 选一台车 —</option></select><button class="pill" id="plybtn" style="padding:3px 12px;font-size:12px" onclick="plyToggle()">▶ 播放</button><button class="pill q" id="plyrst" style="padding:3px 12px;font-size:12px" title="回到起点" onclick="plyReset()">⏮ 重置</button><select title="播放倍速" style="padding:3px 6px;font-size:12px" onchange="_ply.spd=+this.value"><option value="1">1×</option><option value="4">4×</option><option value="16" selected>16×</option><option value="60">60×</option><option value="240">240×</option></select><span id="plyt" style="font-size:11.5px;color:var(--sub);min-width:120px">—</span><span class="sp"></span><span style="font-size:11px;color:var(--sub)">选中车辆后点播放：小车沿轨迹移动，已走过路段加粗高亮</span></div><canvas id="cvp" style="width:100%;height:60vh;background:var(--card);border-radius:10px"></canvas></div>';loadPlay();}}
 // ===== ㉖⑫ 站台看板：每台一卡（别名/用途/停用可自定义，全端生效），状态灯+今日吞吐+平均清台+占用明细 =====
 async function loadBoard(){let j;try{j=await api('/api/agv/stboard')}catch(_){$('#agvbody').innerHTML='<div class="card" style="color:var(--warn)">站台看板加载失败（服务需重启）　<button class="pill" onclick="loadBoard()">重试</button></div>';return}
  window._sboard=j.list||[];const canCtl=U.role=='admin'||U.role=='warehouse'||(U.features||{}).agv_control===true;
@@ -1489,15 +1685,19 @@ const stepH=span<=2*3600e3?0.5:1,stepMs=stepH*3600e3;let ticks='';const d=new Da
 const winTxt=(span/3600e3).toFixed(span%3600e3?1:0)+'小时';let h=`<div class="card"><b style="font-size:13px">站台状态时间线（近${winTxt} · ${tick(t0)} — 现在）</b><div style="font-size:11px;color:var(--sub);margin:2px 0 4px">每行一个站台，色块=该时段状态：<span style="color:#66bb6a">■空闲</span> <span style="color:#29b6f6">■占用（AGV正在送/取）</span> <span style="color:#ff6d00">■有货（框到台待清）</span>；悬停色块看明细，窗口内无记录按空闲显示</div><div style="position:relative;height:28px;margin:0 0 2px 150px">${ticks}</div>`;for(const k of keys){const seg=tl[k]||[{s:'空闲',t:t0}];const nm=AL[k]?AL[k]+'（'+k.split('-').pop()+'号台）':k;h+=`<div style="display:flex;align-items:center;margin:4px 0"><div style="width:150px;font:11px monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${k}">${nm}</div><div style="flex:1;position:relative;height:16px;background:var(--bg);border-radius:3px;overflow:hidden">`;for(let i=0;i<seg.length;i++){const sT=Math.max(t0,seg[i].t),eT=i+1<seg.length?Math.max(t0,seg[i+1].t):now;const l=(sT-t0)/span*100,w=Math.max(0,(eT-sT)/span*100),col=seg[i].s=='有货'?'#ff6d00':seg[i].s=='占用'?'#29b6f6':'#66bb6a';h+=`<div title="${seg[i].s} ${new Date(sT).toLocaleString('zh-CN',{hour12:false}).slice(5,16)}起" style="position:absolute;left:${l}%;width:${w}%;top:0;bottom:0;background:${col}"></div>`;}h+='</div></div>';}$('#agvbody').innerHTML=h+'</div>';}
 let EVW='a',EVUN=0,EVK='',EVLO=0; // 异常中心时间窗：d今天 w近7天 a全部（默认全部，防误判"没有异常"）；EVK=按类型筛（概览点堵/超时卡下钻用）
 let EVS=null; // ㉖v52 异常中心：排序+分页状态（时间列可点排，默认新→旧，每页50）
+let EVDAY=''; // ㉖v113 按日过滤（YYYY-MM-DD）：复盘脉冲图点某格 → 事件流水自动只看那天；空=不限
+function evDay(k){EVDAY=(EVDAY===k?'':k);EVS&&(EVS.pg=1);loadEv()} // 再点同一格=取消过滤（保险③可撤销，不怕点错出不来）
 function evT(k,num){if(!EVS)EVS={k:'ts',d:-1,sz:50,pg:1};if(EVS.k==k)EVS.d*=-1;else{EVS.k=k;EVS.d=num?-1:1}EVS.pg=1;loadEv()}
 function evPg(d){if(EVS)EVS.pg+=d;loadEv()}
 function evSz(v){if(!EVS)EVS={k:'ts',d:-1,sz:50,pg:1};EVS.sz=+v||1e9;EVS.pg=1;loadEv()}
 async function loadEv(){clearInterval(window._evT);if(!EVS)EVS={k:'ts',d:-1,sz:50,pg:1};let als=[];try{als=(await api('/api/agv/alarms')).list||[]}catch(_){}const byCar={};for(const a of als)if(!a.ackBy)byCar['AGV'+String(a.id).padStart(2,'0')]=(byCar['AGV'+String(a.id).padStart(2,'0')]||[]).concat(a.id); // ㉖修：此前拿fp尾2字拼车号永不命中，认领按钮从不显示
-const j=await api('/api/agv/events').catch((e)=>({ok:false,msg:'接口请求失败'}));if(j.ok===false){$('#agvbody').innerHTML='<div class="card"><b style="font-size:13px">🚨 AGV异常事件中心</b><div style="margin-top:8px;color:var(--bad);font-size:13px">事件接口异常：'+(j.msg||'未知错误')+'　<button class="pill" style="padding:2px 10px;font-size:12px" onclick="loadEv()">重试</button></div></div>';return}const all0=j.list||[];const un=als.filter((a)=>!a.ackBy).length;const all=EVUN?all0.filter((e)=>e.kind=='告警'||e.kind=='红牌'||e.kind=='升级'):all0;
+const j=await api('/api/agv/events').catch((e)=>({ok:false,msg:'接口请求失败'}));const EB0=($('#evbody')||$('#agvbody')); // ㉖v113 错误分支与正常渲染同容器：在「异常与复盘」页时只替换下半段，不连带清掉上方复盘报告
+if(j.ok===false){EB0.innerHTML='<div class="card"><b style="font-size:13px">🚨 事件流水</b><div style="margin-top:8px;color:var(--bad);font-size:13px">事件接口异常：'+(j.msg||'未知错误')+'　<button class="pill" style="padding:2px 10px;font-size:12px" onclick="loadEv()">重试</button></div></div>';return}const all0=j.list||[];const un=als.filter((a)=>!a.ackBy).length;const all=EVUN?all0.filter((e)=>e.kind=='告警'||e.kind=='红牌'||e.kind=='升级'):all0;
  const win=EVW||'a';const t0=win=='d'?new Date().setHours(0,0,0,0):win=='w'?Date.now()-7*864e5:0;let l=win=='a'?all:all.filter((e)=>e.ts>=t0);if(EVK)l=l.filter((e)=>EVK=='超时'?String(e.kind).includes('超时'):e.kind==EVK);if(EVLO)l=l.filter((e)=>e.resolved!==1); // ㉖⑫ 概览卡下钻带类型过滤；'超时'为族匹配（出库超时+入库超时），其余精确
+ if(EVDAY){const _d0=Date.parse(EVDAY+'T00:00:00');if(Number.isFinite(_d0))l=l.filter((e)=>e.ts>=_d0&&e.ts<_d0+864e5)} // ㉖v113 复盘脉冲图点格子带入的按日过滤（与时间窗叠加，取消即恢复）
  l=sortArr(l,EVS);const _a=(EVS.pg-1)*(EVS.sz||50),_pg=l.slice(_a,_a+(EVS.sz||50));
  let r=_pg.map(e=>{const hot=e.kind=='告警'||e.kind=='红牌'||e.kind=='升级';const good=e.kind=='恢复'||e.kind=='已认领';const aid=(e.kind=='告警'&&byCar[e.who]||[])[0];return '<tr><td style="font-size:11px;color:var(--sub);white-space:nowrap">'+new Date(e.ts).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+'</td><td><span class="tag '+(hot?'t-p':good?'t-d':'t-x')+'">'+e.kind+'</span>'+(e.resolved===1?'<span style="font-size:10px;color:var(--ok)" title="'+(e.resMsg||'')+'"> ✓已了结</span>':(e.resMsg&&e.resMsg!=='未了结'&&e.resMsg!=='仍未放行'?'<span style="font-size:10px;color:var(--warn)" title="'+(e.resMsg||'')+'"> '+e.resMsg+'</span>':''))+'</td><td class="mono">'+(e.who||'')+'</td><td style="font-size:12px">'+(e.msg||'')+'</td><td>'+(aid?`<button class="pill" style="padding:2px 8px;font-size:11px" onclick="ackAlarm(${aid})">认领</button>`:'')+'</td></tr>';}).join('')||'<tr><td colspan=5 style="color:var(--sub)">该时间窗内无异常事件（切"全部"看历史）</td></tr>';
- $('#agvbody').innerHTML=`<div class="card"><div class="row" style="align-items:center;flex-wrap:wrap;gap:6px"><b style="font-size:13px">🚨 AGV异常事件中心</b><span class="tag ${un?'t-p':'t-d'}" style="font-size:11.5px">${un?un+' 条活动告警待认领':'无活动告警'}</span><button class="pill ${EVLO?'':'q'}" style="padding:3px 10px;font-size:12px" title="隐藏已实际了结的超时/堵点（服务器按业务实况标注）；红牌/告警请用左侧仅未认领" onclick="EVLO=EVLO?0:1;EVS.pg=1;loadEv()">${EVLO?'✓ 仅未了结':'仅未了结'}</button><button class="pill ${EVUN?'':'q'}" style="padding:3px 10px;font-size:12px" title="只看未认领的告警/红牌/升级" onclick="EVUN=EVUN?0:1;EVS.pg=1;loadEv()">${EVUN?'✓ 仅未认领':'仅未认领'}</button><select title="按类型筛（概览卡下钻自动带入）" style="padding:3px 6px;font-size:12px" onchange="EVK=this.value;EVS.pg=1;loadEv()"><option value="">全部类型</option>${[...new Set(all0.map((e)=>e.kind))].sort().map((kk)=>`<option value="${kk}" ${EVK==kk?'selected':''}>${kk}</option>`).join('')}</select><span class="sp"></span>${[['d','今天'],['w','近7天'],['a','全部']].map(([k,n])=>`<button class="pill ${win==k?'':'q'}" style="padding:3px 10px;font-size:12px" onclick="EVW='${k}';EVS.pg=1;loadEv()">${n}</button>`).join('')}<span style="font-size:11.5px;color:var(--sub)">命中 ${l.length} / 共 ${all.length} 条</span></div><div style="margin-top:8px;overflow:auto;max-height:60vh"><table><thead><tr>${sTh(EVS,'ts','时间',1,'evT')}<th>类型</th><th>对象</th><th>内容</th><th></th></tr></thead><tbody>${r}</tbody></table></div>${pgBar(EVS,l.length,'ev')}</div>`;clearInterval(window._evT);window._evT=setInterval(()=>{if(AGVTAB==='ev')srEv()},RFT());}
+ (($('#evbody')||$('#agvbody'))).innerHTML=`<div class="card"><div class="row" style="align-items:center;flex-wrap:wrap;gap:6px"><b style="font-size:13px">🚨 事件流水</b><span class="tag ${un?'t-p':'t-d'}" style="font-size:11.5px">${un?un+' 条活动告警待认领':'无活动告警'}</span>${EVDAY?`<button class="pill" style="padding:3px 10px;font-size:12px;border-color:var(--pri);color:var(--pri)" title="点掉即恢复看全部日期" onclick="evDay('')">📅 只看 ${EVDAY} ✕</button>`:''}<button class="pill ${EVLO?'':'q'}" style="padding:3px 10px;font-size:12px" title="隐藏已实际了结的超时/堵点（服务器按业务实况标注）；红牌/告警请用左侧仅未认领" onclick="EVLO=EVLO?0:1;EVS.pg=1;loadEv()">${EVLO?'✓ 仅未了结':'仅未了结'}</button><button class="pill ${EVUN?'':'q'}" style="padding:3px 10px;font-size:12px" title="只看未认领的告警/红牌/升级" onclick="EVUN=EVUN?0:1;EVS.pg=1;loadEv()">${EVUN?'✓ 仅未认领':'仅未认领'}</button><select title="按类型筛（概览卡下钻自动带入）" style="padding:3px 6px;font-size:12px" onchange="EVK=this.value;EVS.pg=1;loadEv()"><option value="">全部类型</option>${[...new Set(all0.map((e)=>e.kind))].sort().map((kk)=>`<option value="${kk}" ${EVK==kk?'selected':''}>${kk}</option>`).join('')}</select><span class="sp"></span>${[['d','今天'],['w','近7天'],['a','全部']].map(([k,n])=>`<button class="pill ${win==k?'':'q'}" style="padding:3px 10px;font-size:12px" onclick="EVW='${k}';EVS.pg=1;loadEv()">${n}</button>`).join('')}<span style="font-size:11.5px;color:var(--sub)">命中 ${l.length} / 共 ${all.length} 条</span></div><div style="margin-top:8px;overflow:auto;max-height:60vh"><table><thead><tr>${sTh(EVS,'ts','时间',1,'evT')}<th>类型</th><th>对象</th><th>内容</th><th></th></tr></thead><tbody>${r}</tbody></table></div>${pgBar(EVS,l.length,'ev')}</div>`;clearInterval(window._evT);window._evT=setInterval(()=>{if(AGVTAB==='rev'||AGVTAB==='ev')srEv()},RFT());} // ㉖v113 守卫兼容：事件流水收进「异常与复盘」后 AGVTAB='rev'，旧值'ev'一并保留，否则静默刷新永不触发
 ﻿function inspTl(id){const q=(window._ispAll||[]).find((x)=>x.id===id);if(!q){T('工单不在当前列表');return}
  const _t=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}).slice(5,16):'';
  const N=[];const P=(ms,lb,ex,col)=>{if(ms)N.push([ms,lb,ex||'',col||''])};
@@ -1570,8 +1770,9 @@ g.globalAlpha=1;
  if(px==null&&arr.length){px=arr[arr.length-1].x;py=arr[arr.length-1].y;pyaw=arr[arr.length-1].yaw||0}
  if(px!=null){const c=w2c(px,py);g.save();g.translate(c[0],c[1]);g.rotate(-(pyaw||0)*Math.PI/180);g.beginPath();g.moveTo(11,0);g.lineTo(-7,7);g.lineTo(-7,-7);g.closePath();g.fillStyle='#1e88e5';g.fill();g.strokeStyle='#fff';g.lineWidth=1.5;g.stroke();g.restore();g.strokeStyle='rgba(30,136,229,.5)';g.lineWidth=2;g.beginPath();g.arc(c[0],c[1],15,0,7);g.stroke();g.fillStyle='#1c2430';g.font='bold 10px sans-serif';g.fillText('AGV'+String(_ply.id).padStart(2,'0'),c[0]+17,c[1]+3);}
  const tt=$('#plyt');if(tt)tt.textContent=new Date(_ply.t||Date.now()).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+' / '+new Date(arr.length?arr[arr.length-1].ts:Date.now()).toLocaleString('zh-CN',{hour12:false}).slice(5,16);}}}}
-function bigScreen(){const el=document.documentElement;if(document.fullscreenElement){document.exitFullscreen&&document.exitFullscreen();clearInterval(window._bsT);window._bsT=null;return}if(el.requestFullscreen)el.requestFullscreen().catch(()=>{});document.documentElement.dataset.theme="dark";agvTab("map");clearInterval(window._bsT);const seq=(U.features||{}).inspect_mode!==false?["map","gantt","ev","insp"]:["map","gantt","ev"];let n=0;window._bsT=setInterval(()=>{if(document.hidden||!document.fullscreenElement){clearInterval(window._bsT);window._bsT=null;return}n=(n+1)%seq.length;agvTab(seq[n]);},20000);}
-if(!window._fsc){window._fsc=1;document.addEventListener("fullscreenchange",()=>{if(!document.fullscreenElement){clearInterval(window._bsT);window._bsT=null}})}
+// ㉖v111 大屏简化（用户拍板去掉 20 秒自动轮播：挂墙投屏不停跳页反而谁都看不清）——进入全屏=停在当前画面+深色；退出自动恢复进入前的主题（旧版退出后深色残留，一并修）；想换画面手动点标签
+function bigScreen(){const el=document.documentElement;if(document.fullscreenElement){document.exitFullscreen&&document.exitFullscreen();return}window._bsPrevTheme=document.documentElement.dataset.theme||"";if(el.requestFullscreen)el.requestFullscreen().catch(()=>{document.documentElement.dataset.theme=window._bsPrevTheme});document.documentElement.dataset.theme="dark";}
+if(!window._fsc){window._fsc=1;document.addEventListener("fullscreenchange",()=>{if(!document.fullscreenElement&&window._bsPrevTheme!==undefined&&document.documentElement.dataset.theme==="dark")document.documentElement.dataset.theme=window._bsPrevTheme})}
 async function pgDict(){
  $('#main').innerHTML=`<div class="card"><div class="row"><input id="dq" placeholder="零件号/物料名/物料号" value="${TM.dq||''}" style="flex:1;min-width:200px"><select id="dqp" onchange="dictGo()" title="按项目筛选（项目归属在「项目」页维护）" style="padding:4px 8px"><option value="">全部项目</option></select><button class="pill" onclick="TM.dq=$('#dq').value;dictGo()">查询</button><button class="pill q" title="清空关键字，看全部字典" onclick="TM.dq='';pgDict()">↺ 重置</button><button class="pill" onclick="dictMiss()">🔍名称缺口</button><button class="pill" onclick="dictMissMc()" title="扫描在用零件号中缺物料号(MITEM_CODE)的">🔍物料号缺口</button><button class="pill g" onclick="dictBatch()">✍批量补录</button><button class="pill q" onclick="dictHeal()">⚡交叉自愈</button></div><div id="dl" style="color:var(--sub);font-size:12.5px">字典由采集流水/出库单自动沉淀：零件号→物料名/物料号。物料号补录后，全厂同零件号标签的导出表自动回补。</div></div>`;
  dictGo()}
@@ -1761,8 +1962,10 @@ window.addEventListener('beforeunload', () => { try { UiTune.flush() } catch (_)
 function kkCmds(){const A=[];const okTab=(k)=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material');
  const P=[['dash','📊','概览','gl'],['reqs','📋','领料单','lld'],['queue','🚦','备料看板','blkb'],['ledger','📦','货位账本','hwzb'],['ctn','🗃','容器管理','rqgl'],['parts','🧩','零件档案','ljda'],['flow','🌊','流水在线','lszx'],['inv','🧮','盘点','pd'],['fix','🛠','修正与返架','xzyfj'],['insp','🔎','检验工单','jygd'],['agv','🤖','指挥舱','zhc'],['rpt','📈','工作量报表','gzlb'],['ana','','分析报告','fxbg'],['exp','📤','导出中心','dc'],['dict','🔤','字典','zd'],['admin','⚙️','控制后台','kzht']];
  for(const t of P)if(okTab(t[0]))A.push({id:'go:'+t[0],ic:t[1],tx:t[2],hint:'页面',py:t[3],run:((k)=>()=>go(k))(t[0])});
- const G=[['map','🗺','实时地图','dt'],['pipe','🏭','流水线','lsx'],['board','🚉','站台看板','ztb'],['gantt','📊','站台甘特','gt'],['q','🚚','队列控制台','dlkz'],['car','🚗','车辆','cl'],['traf','🚦','交管','jg'],['ev','🚨','异常中心','yc'],['play','⏪','轨迹回放','gj'],['cap','📈','运力体检','ytlj'],['rep','🏁','效率报表','xlb']];
- for(const g of G)A.push({id:'agv:'+g[0],ic:g[1],tx:'指挥舱 · '+g[2],hint:'子页',py:g[3],run:((k)=>()=>{go('agv');agvTab(k)})(g[0])});
+ // ㉖v113 保险②：⌘K 保留全部 11 个旧子页名（含「异常中心」等已合并叫法）+ 7 个新一级标签，
+ // 任一叫法都能直达对应位置——老用户凭记忆搜旧名字照样能到，不用重新学新结构。
+ const G=[['map','🗺','实时地图','dt dtss'],['pipe','🏭','流水线','lsx'],['board','🚉','站台看板','ztb'],['gantt','📊','站台甘特','gt'],['q','🚚','队列控制台','dlkz'],['car','🚗','车辆','cl'],['traf','🚦','交管','jg'],['ev','🚨','异常中心（原）→ 异常与复盘','yc ycfx zx'],['review','🚨','异常与复盘','ycfx fp bg'],['play','⏪','轨迹回放','gj'],['cap','📈','运力体检','ytlj'],['rep','🏁','效率报表','xlb'],['ops','🏭','调度运作','ddyy'],['stn','🚉','站台','zt'],['veh','🚗','车辆（一级）','clyj'],['eff','📊','效率','xl']];
+ for(const g of G)A.push({id:'agv:'+g[0],ic:g[1],tx:'指挥舱 · '+g[2],hint:'子页',py:g[3],run:((k)=>()=>go('agv/'+k))(g[0])});
  A.push({id:'act:ui',ic:'🎨',tx:'界面个性化设置（主题色/深色/密度/页签）',hint:'操作',py:'jiemian jg yanguan',run:()=>prefDlg()});
  A.push({id:'act:dkon',ic:'🌙',tx:'切换深色主题',hint:'操作',py:'shense dark',run:()=>UiTune.set('dark',UiTune.isDark()?'off':'on')});
  A.push({id:'act:dka',ic:'🌓',tx:'深色随时间自动（18-6点暗）',hint:'操作',py:'zidong dongdong',run:()=>UiTune.set('dark','auto')});
