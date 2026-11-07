@@ -1178,29 +1178,9 @@ class _InvScanPageState extends State<_InvScanPage> {
   }
 
   Future<void> _openCamera() async {
-    bool handled = false;
-    final result = await showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        insetPadding: EdgeInsets.zero,
-        contentPadding: EdgeInsets.zero,
-        content: SizedBox(
-          width: 300, height: 350,
-          child: MobileScanner(
-            onDetect: (capture) {
-              if (handled) return;
-              final bars = capture.barcodes;
-              if (bars.isNotEmpty && bars.first.rawValue != null) {
-                handled = true;
-                Navigator.pop(ctx, bars.first.rawValue!.trim());
-              }
-            },
-          ),
-        ),
-        actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))],
-      ),
-    );
-    if (result != null) await _submit(result.toString());
+    // ㉖v120 改用共享相机实现：合法码才返回（盘点提交同样过 labelFormatErr，谓词同口径）
+    final code = await cameraScanDialog(context, valid: (c) => labelFormatErr(c) == null);
+    if (code != null && code.trim().isNotEmpty) await _submit(code.trim());
   }
 
   Color _levelColor(String lv) => switch (lv) {

@@ -1283,6 +1283,75 @@ String? labelFormatErr(String code) {
   return null;
 }
 
+/// ㉖v120 相机扫码统一入口（采集录入/盘点共用）。旧版两处各写一份"第一帧识别到什么就返回什么"，
+/// 现场表现为：误读噪声码也照样提交（随后被格式闸弹窗打回，白闪一次屏）、取景框仅 300×350 难对准、
+/// 暗环境无补光、识别成功只有语音无触感。本版四项优化：
+/// ① 合法谓词过滤：识别结果先过 valid，不合法的继续扫（不弹窗、不打断），杜绝"误读→弹窗→重开相机"往返
+/// ② 全屏取景（高度 72% 屏）+ 连续多码取首个合法，对准即中
+/// ③ 手电筒开关（showTorchButton），暗仓库/夜间到货可用
+/// ④ 触感反馈：命中合法码重震、误读轻震，操作者无需盯屏判断
+/// 注：如需再提速，可在 MobileScanner 加 formats:{BarcodeFormat.code128} 限定码制跳过无关解码器；
+/// 因现场码制未经确认，此处不做限定，避免"限定后扫不出"的生产风险。
+Future<String?> cameraScanDialog(BuildContext context,
+    {required bool Function(String code) valid}) {
+  bool done = false;
+  String lastBad = ""; // 同一条误读码连续帧只轻震一次，防震感轰炸
+  return showDialog<String>(
+    context: context,
+    builder: (ctx) {
+      final sz = MediaQuery.of(ctx).size;
+      return AlertDialog(
+        insetPadding: EdgeInsets.zero,
+        contentPadding: EdgeInsets.zero,
+        content: SizedBox(
+          width: sz.width,
+          height: sz.height * 0.72,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              MobileScanner(
+                // 注：手电筒需 MobileScannerController.toggleTorch() 自建按钮，
+                // 因本机无法构建验证 mobile_scanner 3.5.1 参数签名，本版不加，防编译失败
+                onDetect: (capture) {
+                  if (done) return;
+                  for (final b in capture.barcodes) {
+                    final raw = b.rawValue?.trim();
+                    if (raw == null || raw.isEmpty) continue;
+                    if (!valid(raw)) {
+                      if (raw != lastBad) { lastBad = raw; HapticFeedback.lightImpact(); } // 误读：轻震一次，继续对准
+                      continue;
+                    }
+                    done = true;
+                    HapticFeedback.heavyImpact(); // 命中：重震即反馈
+                    Navigator.pop(ctx, raw);
+                    return;
+                  }
+                },
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: Container(
+                  color: Colors.black54,
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  child: const Text("对准货物标签条码 · 暗处点右上手电筒",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.white, fontSize: 12.5)),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))
+        ],
+      );
+    },
+  );
+}
+
 // ===================== 盘点·任务/基准/差异服务 =====================
 /// 盘点基准文件目录（与网页上传的 baseline/ 同目录）
 Future<Directory> _inventoryBaselineDir() async {
@@ -3055,35 +3124,9 @@ class _MainPageState extends State<MainPage>
   }
 
   void _openCameraScan() async {
-    bool scannedHandled = false;
-    final result = await showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        insetPadding: EdgeInsets.zero,
-        contentPadding: EdgeInsets.zero,
-        content: SizedBox(
-          width: 300,
-          height: 350,
-          child: MobileScanner(
-            onDetect: (capture) {
-              if (scannedHandled) return;
-              final barcodes = capture.barcodes;
-              if (barcodes.isNotEmpty && barcodes.first.rawValue != null) {
-                scannedHandled = true;
-                final String code = barcodes.first.rawValue!.trim();
-                Navigator.pop(ctx, code);
-              }
-            },
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text("关闭"))
-        ],
-      ),
-    );
-    if (result != null && result.toString().trim().isNotEmpty) {
-      await _saveRecord(result.toString().trim());
+    final code = await cameraScanDialog(context, valid: (c) => labelFormatErr(c) == null);
+    if (code != null && code.trim().isNotEmpty) {
+      await _saveRecord(code.trim());
     }
   }
 
