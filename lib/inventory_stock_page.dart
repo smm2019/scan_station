@@ -703,7 +703,7 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
               // ㉖v119 四卡优先服务器账本口径（与网页看板同源）；离线/旧版服务器回退本机聚合值
               k('零件种类', '${agg.srvParts ?? agg.parts.length}', const Color(0xFF515BD4)),
               k('在库框数', '${agg.srvBoxes ?? totalBoxes}', const Color(0xFF00897B)),
-              k('在库数量', _fmtInvNum(agg.srvQty ?? totalQty), const Color(0xFF3949AB)),
+              k('在库数量', _fmtInvNum((agg.srvQty ?? totalQty).toDouble()), const Color(0xFF3949AB)), // ㉖CI闸修：srvQty为int与本机double兜底混型退化num，统一toDouble
               k('今日入库', '${agg.todayIn}框', const Color(0xFF43A047)),
               k('今日出库', '${agg.todayOut}框', const Color(0xFFEF6C00)),
               // ㉖v108 滞留卡常驻：旧版为 0 时整卡隐藏导致末行只剩 2 张、右侧空半屏；
