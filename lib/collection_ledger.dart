@@ -459,13 +459,23 @@ extension CollectionLedgerExt on _MainPageState {
 
   /// ㉖v120d 来料区自动放格：服务器 locs?recv=1 权威（占用+预占避让+排格参数同源），
   /// 编码 NB04-A-{排}-{格}，默认 1 排 × 720 格：按 A-01-001→A-01-002→…→A-01-720→（扩排时 A-02-001…）顺序取第一个空格；满/离线回退 null 由调用方提示。
-  Future<String?> nb01AutoSlot() async {
+  /// ㉖v122 服务器声明 recvReserve=1 时改走 /api/ledger/reserve(recv=1) 原子占位：
+  /// 分配即锁格（预占10分钟），同一条未推送批次连扫多框必得不同格——
+  /// 旧版"每次现算第一个空格"在 094 未落账时给 097/084 仍返回 A-01-001，合并才被互斥闸拒回（11-07 18:43 三框同格实锤）。
+  Future<String?> nb01AutoSlot(String label) async {
     await ledgerPullMerge(force: true); // 与地面同款：先对齐全厂占用再判空，防撞格
     try {
       final r = await AuthApi.ledgerLocs(recv: true).timeout(const Duration(seconds: 6));
       if (r["ok"] != true) return null;
       _recvOn = (r["receivingOn"] as num?)?.toInt(); // ㉖v120b 顺带同步启用开关（旧版服务器无此字段=null 不改行为）
       if (_recvOn == 0) { _recvOffFlag = true; return null; } // ㉖v120b 服务器已关闭来料区：不放格，保存链据此中止（幽灵流水从源头不发生）
+      // ㉖v122 新服务器：原子占位分配（锁格防连扫撞位）；403=未启用（竞态窗口）按开关关处理，ok=false=满格
+      if ((r["recvReserve"] as num?)?.toInt() == 1) {
+        final rv = await AuthApi.ledgerReserve(label, "", recv: true).timeout(const Duration(seconds: 6));
+        if (rv["_status"] == 403 || rv["receivingOn"] == 0) { _recvOn = 0; _recvOffFlag = true; return null; }
+        if (rv["ok"] == true && rv["loc"].toString().isNotEmpty) return rv["loc"].toString().toUpperCase();
+        return null; // 满格/异常：调用方提示
+      }
       final rows = (r["recvRows"] as num?)?.toInt() ?? 1;
       final cols = (r["recvCols"] as num?)?.toInt() ?? 720;
       final byLoc = (r["byLoc"] as Map?)?.map((k, v) => MapEntry(k.toString().toUpperCase(), v)) ?? {};
@@ -488,6 +498,7 @@ extension CollectionLedgerExt on _MainPageState {
     // 本机账本 20 秒节流+45 秒周期，别台 PDA 刚填满的排本机还显示有空→把满位分出去；
     // 此处 force 拉一次（内部含失败容错），保证空位判定基于最新全厂占用
     await ledgerPullMerge(force: true);
+    await pullGroundSlots(); // ㉖v122 分配前确保格数覆盖最新（同 picker：unawaited 顺带刷新有竞态空窗，会少分格）
     final g = zone.substring(0, 1);
     final nn = zone.substring(1).padLeft(2, '0');
     final prefix = 'NB03-$g-$nn';
@@ -617,6 +628,7 @@ extension CollectionLedgerExt on _MainPageState {
       _toastGroundPickFirst();
       return;
     }
+    await pullGroundSlots(); // ㉖v122 打开弹层前同步刷新格数覆盖（旧版仅靠账本拉取里 unawaited 顺带刷新，竞态窗口读到缺省 12）
     final g = gl.substring(0, 1);
     final num = gl.substring(1).padLeft(2, '0');
     final prefix = 'NB03-$g-$num';
@@ -1294,6 +1306,9 @@ Future<String> ledgerLocOfCode(String code) async {
 /// 从电脑服务器拉取账本并**增量合并**进本机（物料员/新PDA看库存的关键：本机没采集也能有数据）。
 /// 规则与服务器一致：标签级"登记时间新者胜"；服务器墓碑比本机新→本机消位并落墓碑。
 /// ⑮拉取地面排格数配置（随账本拉取顺带刷新，改动低频）
+/// ㉖v122 落 SP 持久化：旧版纯内存 Map，重启即空、唯一填充点是 ledgerPullMerge 里 unawaited 的顺带刷新——
+/// 竞态窗口内开选格位弹层读缺省 12（11-07 实锤：B-13 配置 18 格、实占 13 格，截图"空 -1/12"只画 12 格，
+/// 13 号在账框在弹层不可见，自动分配也只在 1~12 找位）。
 Future<void> pullGroundSlots() async {
   try {
     final r = await AuthApi.groundSlotsGet();
@@ -1302,10 +1317,23 @@ Future<void> pullGroundSlots() async {
           .map((k, v) => MapEntry(k.toString(), (v as num).toInt())));
       final lt = r["lowTier"]; // ㉖v80 常用层上限随配置同步
       if (lt is num && lt >= 1 && lt <= 4) CollectionLedgerExt._lowTier = lt.toInt();
+      final sp = await SharedPreferences.getInstance(); // ㉖v122 持久化：下次启动先恢复再等网络
+      await sp.setString("gnd_slots_v122", jsonEncode(CollectionLedgerExt._gSlots));
     }
   } catch (e) {
     LocalLog.err('拉取地面排格数', e); // ㉖ 静默失败留痕
   }
+}
+
+/// ㉖v122 启动恢复持久格数覆盖（进采集页调用；网络刷新到点会覆盖为最新）
+Future<void> gSlotsRestore() async {
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final s = sp.getString("gnd_slots_v122");
+    if (s == null || s.isEmpty || CollectionLedgerExt._gSlots.isNotEmpty) return;
+    final m = Map<String, dynamic>.from(jsonDecode(s) as Map);
+    CollectionLedgerExt._gSlots = m.map((k, v) => MapEntry(k, (v as num).toInt()));
+  } catch (_) {}
 }
 
 int _ledgerPullAtMs = 0; // ㉖ 上次【成功】拉取合并的毫秒时刻（跨页面共享，防多页重复打服务器）
@@ -1558,8 +1586,9 @@ Future<void> scanPushNow() async {
     };
     final items = all.map((r) {
       final x = extras[r.goodsCode.toUpperCase()];
+      final _sk = "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}";
       return {
-        "k": "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}",
+        "k": _sk,
         "code": r.goodsCode,
         "wt": r.workType,
         "st": r.stationNo ?? "",
@@ -1568,6 +1597,7 @@ Future<void> scanPushNow() async {
         "rm": r.remark,
         "batch": r.batchId,
         "cx": r.isCancel,
+        "cxAt": _cxLocalOpAt[_sk] ?? 0, // ㉖v122 本机主动作废/恢复时刻（0=非主动），服务器新者胜仲裁
         "t": r.scanTime.millisecondsSinceEpoch,
         "pn": r.mesPartNo ?? "",
         "q": r.mesQty ?? 0,
@@ -1584,6 +1614,36 @@ Future<void> scanPushNow() async {
     if (res["ok"] == true) {
       _scanPushPending = false;
       kScanSync.value = 0; // ㉖⑭ 推送成功：状态归零，网页30秒内可见
+      _cxLocalOpAt.removeWhere((k, _) => items.any((e) => e["k"] == k)); // v122 已上报的主动操作时刻清登记（防下次推送带旧时刻误压服务器更新状态）
+      // ㉖v122 服务器权威回写：网页/别端对本机该条流水做过作废或恢复（cxKept=[k,服务器cx]），
+      // 本机 Isar 旧状态必须跟服务器对齐——否则 app 列表永远显示"正常"、网页显示"作废"（11-07 18:43 实锤）。
+      final kept = res["cxKept"];
+      if (kept is List && kept.isNotEmpty) {
+        for (final e in kept) {
+          if (e is! List || e.length < 2) continue;
+          final k = e[0].toString();
+          final cx = e[1] == true;
+          final seg = k.split('|'); // 键格式：标签|批次|扫码毫秒
+          if (seg.length < 3) continue;
+          final ms = int.tryParse(seg[2]);
+          if (ms == null) continue;
+          final recs = await _globalIsar.scanRecords
+              .filter()
+              .batchIdEqualTo(seg[1])
+              .findAll();
+          for (final rr in recs) {
+            if (rr.goodsCode.toUpperCase() != seg[0].toUpperCase()) continue;
+            if (rr.scanTime.millisecondsSinceEpoch != ms) continue;
+            if (rr.isCancel == cx) continue;
+            await _globalIsar.writeTxn(() async {
+              rr.isCancel = cx;
+              await _globalIsar.scanRecords.put(rr);
+            });
+            break;
+          }
+        }
+        // 历史批次聚合缓存随下次进页重建刷新（本函数为顶层函数，够不到 State 的 _histInvalidate；与账本静默合并同行为）
+      }
     } else {
       debugPrint("[scanlog] 同步失败：${res["msg"]}");
       kScanSync.value = 2;
@@ -1597,8 +1657,14 @@ Future<void> scanPushNow() async {
 }
 
 // ===== ㉖⑭ 采集记录作废/恢复（替代物理删除：留痕可逆，网页流水同步显示）=====
+/// ㉖v122 本机主动作废/恢复时刻登记表（键=流水 k=标签|批次|扫码毫秒）：
+/// 随流水推送上报 cxAt，服务器按"新者胜"仲裁——主动操作能生效，旧缓存回灌会被压回（两者不再互相打架）。
+final Map<String, int> _cxLocalOpAt = {};
+String scanlogKeyOf(ScanRecord r) => "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}";
+
 /// 作废一条采集记录：标记 isCancel + 释放站台 + 联动整框消账 + 撤回全局防重 + 立即推流水
 Future<void> scanRecordCancel(Isar isar, ScanRecord r) async {
+  _cxLocalOpAt[scanlogKeyOf(r)] = DateTime.now().millisecondsSinceEpoch; // ㉖v122 登记主动操作时刻
   await isar.writeTxn(() async {
     r.isCancel = true;
     await isar.scanRecords
@@ -1631,6 +1697,7 @@ Future<void> scanRecordCancel(Isar isar, ScanRecord r) async {
 
 /// 恢复一条已作废记录：清标记 + 若账本无此码则按原货位重建登记 + 立即推流水
 Future<void> scanRecordRestore(Isar isar, ScanRecord r) async {
+  _cxLocalOpAt[scanlogKeyOf(r)] = DateTime.now().millisecondsSinceEpoch; // v122 登记主动操作时刻
   await isar.writeTxn(() async {
     r.isCancel = false;
     await isar.scanRecords.put(r); // ㉖ 同作废：Isar3.x 用 put 更新

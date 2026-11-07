@@ -14,7 +14,7 @@ const salt = crypto.randomBytes(16).toString('hex'); const hashPw = (pw, s) => c
 const now = Date.now();
 db0.users.push({ id: 'u_tw', username: 'tw_wh', name: 'TW仓管', role: 'warehouse', enabled: true, createdAt: now, mustChangePw: false, salt, passHash: hashPw('E2e#Tw!120c', salt) });
 // 注入两条已转单行：A 超宽限(6分钟前转) 应补建；B 宽限内(10秒前转) 应跳过——标签均不在台账不在账本
-const mkReq = (id, no, pn, tag, tAt) => ({ id, no, by: 'u_tw', byName: 'TW仓管', status: 'done', createdAt: tAt, history: [], items: [{ partNo: pn, qty: 100, name: 'TW取证件', issued: [{ c: tag, q: 100, l: 'NB02-A-02-2F' }], transferred: true, transferAt: tAt, transferBy: 'TW仓管', transferQty: 100 }] });
+const mkReq = (id, no, pn, tag, tAt) => ({ id, no, by: 'u_tw', byName: 'TW仓管', status: 'done', createdAt: new Date(tAt).toISOString(), history: [], items: [{ partNo: pn, qty: 100, name: 'TW取证件', issued: [{ c: tag, q: 100, l: 'NB02-A-02-2F' }], transferred: true, transferAt: tAt, transferBy: 'TW仓管', transferQty: 100 }] }); // ㉖v122 createdAt 必须 ISO 字符串（与生产同型）：归档判据 Date.parse(数字毫秒)=NaN→0 会被当超期单在补建扫描前归档删除，致 T5 夜间假失败
 db0.requisitions.push(mkReq('q_fix_a', 'LLFIX20261107A', '66FIXPNA0001', 'FIXTAGA0001', now - 6 * 60000));
 db0.requisitions.push(mkReq('q_fix_b', 'LLFIX20261107B', '66FIXPNB0001', 'FIXTAGB0001', now - 10000));
 fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));

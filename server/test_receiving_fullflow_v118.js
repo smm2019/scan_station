@@ -132,7 +132,7 @@ async function inv(wh) {
 
     // ================= S4 意外：跳楼新码 / 一楼旧缓存回推逆流 =================
     const ck4 = (await get('/api/label/check?c=' + CNEW, wh)).json;
-    chk('S4a 全新码判据：seen=false 无转入位无出库史（PDA据此拦并提示先一楼登记）', [ck4.seen, ck4.recvLoc, ck4.seenOut], [false, '', false]);
+    chkT('S4a 全新码二楼默认模式被源头闸拦（路线A：提示先一楼登记）', ck4.blockIn === true && String(ck4.reason).includes('先在一楼扫入登记') && ck4.recvLoc === '' && ck4.seenOut === false);
     const s4 = await post('/api/ledger/sync', wh, { items: [{ c: C2, l: 'NB04-A-01-002', p: P2, n: 'FF剧本件B', q: 20, b: 'B261102', t: nt(), mv: '人工', src: '来料区转入', f: '2.4米铁框' }] });
     chkT('S4b 一楼旧缓存回推已入库框→逆流闸拒（"不允许回流来料区"）', String(JSON.stringify(s4.json.rejected || [])).includes('不允许回流来料区'));
     const i4 = await inv(wh); chk('S4c 逆流被拒后恒等式不变 4=来料2+库位2', [i4.recv, i4.loc], [2, 2]);

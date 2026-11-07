@@ -552,9 +552,10 @@ class AuthApi {
       _req("GET", "/api/ledger/locs${recv ? '?recv=1' : (all ? '?all=1' : '')}",
           token: await AuthStore.token()); // ㉖v99 all=1 附地面格（选位弹层实时核对）
   // ㉖v54 原子预占分配：服务器算位+锁位一体（多PDA并发不撞位）
-  static Future<Map> ledgerReserve(String code, String partNo) async =>
+  // ㉖v122 recv=1：来料区登记模式——服务器原子放 NB04 格（连扫多框必得不同格，根治 11-07 三框同扫 A-01-001）
+  static Future<Map> ledgerReserve(String code, String partNo, {bool recv = false}) async =>
       _req("POST", "/api/ledger/reserve",
-          body: {"code": code, "partNo": partNo},
+          body: {"code": code, "partNo": partNo, if (recv) "recv": 1},
           token: await AuthStore.token());
   // ㉖ 容器类型配置：读（采集页按钮数据源）/ 整表保存（仓管·管理员）
   static Future<Map> containersGet() async =>

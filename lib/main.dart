@@ -1486,6 +1486,7 @@ class _MainPageState extends State<MainPage>
   int _workType = 0; //0 AGV站台，1人工地面，2来料区登记（㉖v120 需 receiving_reg 角色开关）
   int? _recvOn; // ㉖v120b 服务器来料区启用开关探测（locs?recv=1 顺带下发；null=未探到/旧版服务器，不改变行为）
   bool _recvOffFlag = false; // ㉖v120b nb01AutoSlot 判定"未启用"置位，保存链据此中止并提示（与"区满/离线"区分）
+  bool _retMode = false; // ㉖v122 生产退库勾选：保存链查重带 ret=1（豁免 everOut 复用拦+来料区源头闸）；仅单次生效，保存成功即自动清除——防忘关把普通新料当退料放行
   String? _selectedStation; //【修改：存储编码 NB02-CK-05】
   String? _lastScanStation; // ㉖ 扫码保存后站台即清，留作手动「提交任务」回退
   String? _lastScanContainer; // ㉖ 容器类型同左
@@ -1612,6 +1613,7 @@ class _MainPageState extends State<MainPage>
     kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
     _startNotifPolling();
     _probeReceivingOn().then((_) => _restoreWorkMode()); // ②先探来料区启用开关再恢复工作模式（㉖v120b 时序保证：关闭态不恢复来料档）
+    gSlotsRestore(); // ㉖v122 启动即恢复持久化的地面格数覆盖（旧版纯内存，重启后 picker 读到缺省 12 格）
     _loadContainers(); // ㉖ 容器类型从服务器拉取（新增框型免发版）
     _applyDefaultPallet(); // 第3档 按偏好预填默认框型（减少每托重复点选）
     // ㉖ 我的AGV任务：进页拉一次 + 叫车成功广播即时刷 + 30秒轮询跟进排队→在途→到站
@@ -2166,8 +2168,9 @@ class _MainPageState extends State<MainPage>
 
   /// ㉖① 全局标签查重：服务器 labelSeen 权威（任何批次录过即拦）；断网降级本机 Isar 全批次。命中默认拒绝，可填原因强制继续（留痕）。
   /// ㉖v120 recv=1：来料区登记模式——命中在库 NB04 行不豁免（重复登记照拦）
-  Future<bool> _globalDupCheck(String code, {bool recv = false}) async {
-    final r = await AuthApi.labelCheck(code, recv: recv);
+  /// ㉖v122 ret=1：生产退库模式——豁免"标签不可回收复用"拦与来料区源头闸（退料不经一楼）
+  Future<bool> _globalDupCheck(String code, {bool recv = false, bool ret = false}) async {
+    final r = await AuthApi.labelCheck(code, recv: recv, ret: ret);
     if (r["net"] == true) {
       // 断网/服务不可达：降级查本机全部批次（未作废）
       final any = await _isar.scanRecords
@@ -2450,7 +2453,7 @@ class _MainPageState extends State<MainPage>
               .showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
         return;
       }
-      if (await _globalDupCheck(code, recv: _workType == 2)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）；来料模式带 recv
+      if (await _globalDupCheck(code, recv: _workType == 2, ret: _retMode && _workType != 2)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）；来料模式带 recv；㉖v122 退库勾选带 ret（来料模式不适用）
       if (await _isCodeDuplicate(code)) return;
       if (_workType == 0 && _selectedStation == null) {
         if (mounted) {
@@ -2605,7 +2608,7 @@ class _MainPageState extends State<MainPage>
       String? recvSlotAuto;
       if (_workType == 2) {
         _recvOffFlag = false;
-        recvSlotAuto = await nb01AutoSlot();
+        recvSlotAuto = await nb01AutoSlot(code); // ㉖v122 带标签号：服务器原子占位锁格，连扫多框必得不同格
         if (recvSlotAuto == null) {
           // ㉖v120b 中止在放格这一步=流水/账本都不落库，杜绝"开关关了还扫上"的幽灵流水（11/07 现场 N26K030105 根因）
           if (mounted)
@@ -2668,6 +2671,7 @@ class _MainPageState extends State<MainPage>
       final lastGroundZone = _selectedGroundLoc ?? "";
       setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
+        _retMode = false; // ㉖v122 退库勾选单次生效：本筐已按退料入账，自动关闭防下一筐普通新料被误豁免
         _remarkInputCtrl.clear();
         if (!_palletMode) {
           _containerType = null; // 新增：保存成功，容器类型取消选中
@@ -3951,6 +3955,39 @@ class _MainPageState extends State<MainPage>
                         ],
                       ],
                     ),
+
+                    // ㉖v122 生产退库勾选：选中后本筐按"退库"登记（查重带 ret=1，豁免"标签不可回收复用"拦与来料区源头闸——退料不经一楼）；单次生效，保存成功自动清除，防忘关把普通新料当退料放行
+                    if (_workType != 2)
+                      Container(
+                        margin: const EdgeInsets.only(top: 10),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: _retMode ? const Color(0xFFFFF3E0) : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                              color: _retMode
+                                  ? Colors.orange.shade300
+                                  : Colors.grey.shade300),
+                        ),
+                        child: Row(children: [
+                          Checkbox(
+                              value: _retMode,
+                              activeColor: const Color(0xFFEF6C00),
+                              visualDensity: VisualDensity.compact,
+                              onChanged: (v) =>
+                                  setState(() => _retMode = v == true)),
+                          Expanded(
+                              child: Text(
+                                  _retMode
+                                      ? "生产退库已开启：本筐将按退料登记，入账成功后自动关闭"
+                                      : "生产退库：退料筐扫码前勾选（豁免'标签不可复用'与一楼登记要求）",
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: _retMode
+                                          ? const Color(0xFFE65100)
+                                          : Colors.grey.shade700))),
+                        ]),
+                      ),
 
 // ===== 整托合并模式：开关 + 当前托汇总卡片（㉖v120 来料区登记模式隐藏：逐筐登记无托概念） =====
                     if (_workType != 2)
