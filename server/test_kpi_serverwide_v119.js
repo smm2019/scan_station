@@ -62,11 +62,11 @@ const boxKeyOf = (x) => { const pid = String(x.pid || '').toUpperCase(); if (pid
     // 注入：同托两码(1框) + 单码框 + 空零件号框 + 8天前滞留框
     const tNew = now - 60000, tOld = now - 8 * 86400e3;
     const items = [
-      { c: 'K119BOX00001', l: 'NB01-R1-01', p: P1, n: 'K119件一', q: 100, b: 'B261101', t: tNew, mv: '登记', src: '来料区', pid: 'K119PAL1' },
-      { c: 'K119BOX00002', l: 'NB01-R1-02', p: P1, n: 'K119件一', q: 200, b: 'B261101', t: tNew, mv: '登记', src: '来料区', pid: 'K119PAL1' }, // 同托→并1框
-      { c: 'K119BOX00003', l: 'NB01-R1-03', p: P2, n: 'K119件二', q: 50, b: 'B261102', t: tNew, mv: '登记', src: '来料区' },
-      { c: 'K119BOX00004', l: 'NB01-R1-04', p: '', n: '', q: 30, b: '', t: tNew, mv: '登记', src: '来料区' }, // 空零件号：计框计件不增种类
-      { c: 'K119BOX00005', l: 'NB01-R1-05', p: P3, n: 'K119件三', q: 10, b: 'B261020', t: tOld, mv: '登记', src: '来料区' }, // 8天滞留
+      { c: 'K119BOX00001', l: 'NB04-A-01-001', p: P1, n: 'K119件一', q: 100, b: 'B261101', t: tNew, mv: '登记', src: '来料区', pid: 'K119PAL1' },
+      { c: 'K119BOX00002', l: 'NB04-A-01-002', p: P1, n: 'K119件一', q: 200, b: 'B261101', t: tNew, mv: '登记', src: '来料区', pid: 'K119PAL1' }, // 同托→并1框
+      { c: 'K119BOX00003', l: 'NB04-A-01-003', p: P2, n: 'K119件二', q: 50, b: 'B261102', t: tNew, mv: '登记', src: '来料区' },
+      { c: 'K119BOX00004', l: 'NB04-A-01-004', p: '', n: '', q: 30, b: '', t: tNew, mv: '登记', src: '来料区' }, // 空零件号：计框计件不增种类
+      { c: 'K119BOX00005', l: 'NB04-A-01-005', p: P3, n: 'K119件三', q: 10, b: 'B261020', t: tOld, mv: '登记', src: '来料区' }, // 8天滞留
     ];
     const sp = await post('/api/ledger/sync', wh, { items });
     chkT('K1a 注入 5 行上账', sp.json.ok === true && sp.json.added >= 5);

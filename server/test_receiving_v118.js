@@ -1,12 +1,12 @@
-// ㉖v118 来料区（NB01）登记/转入/退库/排除拣选 · 端到端取证（真实 HTTP 打隔离实例）
+// ㉖v118 来料区（NB04）登记/转入/退库/排除拣选 · 端到端取证（真实 HTTP 打隔离实例）
 // 覆盖设计逻辑全链路：
-//   1) 一楼登记：NB01 行合法上账；越界格位（R5-01）被 locStrict 拒回
-//   2) 转入查重：普通模式对 NB01 在库码放行（recvLoc 回显）；recv=1 登记模式重复扫仍拦
+//   1) 一楼登记：NB04 行合法上账；越界格位（R5-01）被 locStrict 拒回
+//   2) 转入查重：普通模式对 NB04 在库码放行（recvLoc 回显）；recv=1 登记模式重复扫仍拦
 //   3) 退库豁免：有 seenOut 历史码 blockIn=true；&ret=1 生产退库模式豁免
-//   4) 预占修正：NB01 在库码 reserve 分配 NB02 新位（不回吐旧位）
-//   5) 发料建议：默认排除 NB01（同零件有 NB02 货时）；库存全在来料区时兜底放回
-//   6) 严格FIFO扫码：NB01 框不在建议清单→拦；兜底放行框→可扫
-//   7) 迁移方向：正向 NB01→NB02 成功；逆流 NB02→NB01 合并拒回
+//   4) 预占修正：NB04 在库码 reserve 分配 NB02 新位（不回吐旧位）
+//   5) 发料建议：默认排除 NB04（同零件有 NB02 货时）；库存全在来料区时兜底放回
+//   6) 严格FIFO扫码：NB04 框不在建议清单→拦；兜底放行框→可扫
+//   7) 迁移方向：正向 NB04→NB02 成功；逆流 NB02→NB04 合并拒回
 //   8) 项目地面区映射：读写/校验/清除
 //   9) locs?recv=1 来料区占用口径
 const fs = require('fs');
@@ -73,24 +73,24 @@ async function get(p2, token) {
     if (free.length < 2) throw new Error('测试环境无两个连续空货架位');
     const LOC_X = free[0], LOC_Y = free[1];
 
-    // ===== 1. 一楼登记：NB01 合法上账 + 超参数范围拒回（默认15行×12列=180格）=====
+    // ===== 1. 一楼登记：NB04 合法上账 + 超参数范围拒回（默认1排×720格=720格）=====
     const p1 = await post('/api/ledger/sync', wh, { items: [
-      { c: TAG_R1, l: 'NB01-R1-03', p: PN1, n: 'E118来料取证件A', q: 10, b: 'B261101', t: now, mv: '登记', src: '来料区', f: '2.4米铁框' },
-      { c: TAG_R2, l: 'NB01-R2-07', p: PN2, n: 'E118来料取证件B', q: 20, b: 'B261102', t: now, mv: '登记', src: '来料区', f: '2.4米铁框' },
-      { c: TAG_R4, l: 'NB01-R15-12', p: PN1, n: 'E118来料取证件A', q: 4, b: 'B261104', t: now, mv: '登记', src: '来料区', f: '2.4米铁框' }, // 180格边界内
-      { c: TAG_BAD, l: 'NB01-R16-01', p: PN2, q: 5, t: now, mv: '登记', src: '来料区' }, // 行超 recvRows
-      { c: TAG_BAD2, l: 'NB01-R1-13', p: PN2, q: 5, t: now, mv: '登记', src: '来料区' }, // 列超 recvCols
+      { c: TAG_R1, l: 'NB04-A-01-003', p: PN1, n: 'E118来料取证件A', q: 10, b: 'B261101', t: now, mv: '登记', src: '来料区', f: '2.4米铁框' },
+      { c: TAG_R2, l: 'NB04-A-01-007', p: PN2, n: 'E118来料取证件B', q: 20, b: 'B261102', t: now, mv: '登记', src: '来料区', f: '2.4米铁框' },
+      { c: TAG_R4, l: 'NB04-A-01-012', p: PN1, n: 'E118来料取证件A', q: 4, b: 'B261104', t: now, mv: '登记', src: '来料区', f: '2.4米铁框' }, // 720格边界内
+      { c: TAG_BAD, l: 'NB04-A-02-001', p: PN2, q: 5, t: now, mv: '登记', src: '来料区' }, // 排02超 recvRows=1
+      { c: TAG_BAD2, l: 'NB04-A-01-721', p: PN2, q: 5, t: now, mv: '登记', src: '来料区' }, // 格721超 recvCols=720
     ] });
     chkT('R1a 登记推送受理', p1.json.ok === true);
-    chkT('R1b 行超限(R16)被参数范围闸拒回', String(JSON.stringify(p1.json.rejectedLoc || [])).includes('NB01-R16-01'));
-    chkT('R1b2 列超限(R1-13)被拒回且提示当前参数', String(JSON.stringify(p1.json.rejectedLoc || [])).includes('NB01-R1-13') && String(JSON.stringify(p1.json.rejectedLoc || [])).includes('15 行 × 12 列'));
-    const led1 = (await get('/api/ledger?l=NB01', wh)).json;
-    chk('R1c 来料区在账 3 行(含180格边界)', led1.count, 3);
+    chkT('R1b 排超限(A-02)被参数范围闸拒回', String(JSON.stringify(p1.json.rejectedLoc || [])).includes('NB04-A-02-001'));
+    chkT('R1b2 格超限(721)被拒回且提示当前参数', String(JSON.stringify(p1.json.rejectedLoc || [])).includes('NB04-A-01-721') && String(JSON.stringify(p1.json.rejectedLoc || [])).includes('1 排 × 720 格'));
+    const led1 = (await get('/api/ledger?l=NB04', wh)).json;
+    chk('R1c 来料区在账 3 行(含720格边界)', led1.count, 3);
 
     // ===== 2. 转入查重：普通放行 / 登记模式仍拦 =====
     const ck1 = (await get('/api/label/check?c=' + TAG_R1, wh)).json;
     chk('R2a 普通模式转入放行', ck1.blockIn, false);
-    chk('R2b 回显来料区转入位 recvLoc', ck1.recvLoc, 'NB01-R1-03');
+    chk('R2b 回显来料区转入位 recvLoc', ck1.recvLoc, 'NB04-A-01-003');
     const ck2 = (await get('/api/label/check?c=' + TAG_R1 + '&recv=1', wh)).json;
     chk('R2c 一楼登记模式重复扫仍拦', ck2.blockIn, true);
 
@@ -101,11 +101,11 @@ async function get(p2, token) {
     chk('R3b 退库模式豁免放行', ck4.blockIn, false);
 
     // ===== 5. 发料建议：兜底放回 / 默认排除 =====
-    const qa = ((await get('/api/requisitions/q_e118a', wh)).json || {}).req; // PN1 只在 NB01 → 兜底放回
+    const qa = ((await get('/api/requisitions/q_e118a', wh)).json || {}).req; // PN1 只在 NB04 → 兜底放回
     const sugA = ((qa && qa.items ? qa.items[0] : {}) || {}).suggest || {};
     const flatA = (sugA.flatBoxes || []).map((x) => String(x.c).toUpperCase());
-    chkT('R5a 库存全在来料区→兜底建议放回 NB01 框', flatA.includes(TAG_R1));
-    // PN2 二楼补基准框（批次 B261103 晚于来料框 B261102——未过滤时 FIFO 必选 NB01 框）
+    chkT('R5a 库存全在来料区→兜底建议放回 NB04 框', flatA.includes(TAG_R1));
+    // PN2 二楼补基准框（批次 B261103 晚于来料框 B261102——未过滤时 FIFO 必选 NB04 框）
     const p4 = await post('/api/ledger/sync', wh, { items: [
       { c: TAG_N2B, l: LOC_X, p: PN2, n: 'E118来料取证件B', q: 30, b: 'B261103', t: now, mv: 'AGV', f: '2.4米铁框' },
     ] });
@@ -117,10 +117,10 @@ async function get(p2, token) {
     chkT('R5c 来料区框完全不出现在建议清单', !flatB.includes(TAG_R2));
     const rv = await post('/api/ledger/reserve', wh, { code: TAG_R1, partNo: PN1 });
     chkT('R4b reserve 受理', rv.json.ok === true);
-    chkT('R4c 分配位为 NB02 非回吐 NB01', /^NB02-[A-H]-/.test(String(rv.json.loc || '')) && String(rv.json.loc).indexOf('NB01') !== 0);
+    chkT('R4c 分配位为 NB02 非回吐 NB04', /^NB02-[A-H]-/.test(String(rv.json.loc || '')) && String(rv.json.loc).indexOf('NB04') !== 0);
     const LOC_MV = String(rv.json.loc);
 
-    // ===== 6. 严格FIFO扫码：NB01 框不在白名单→拦；兜底框→可扫 =====
+    // ===== 6. 严格FIFO扫码：NB04 框不在白名单→拦；兜底框→可扫 =====
     const acc1 = await post('/api/requisitions/q_e118b/accept', wh, {});
     chkT('R6a 领料单B接单', acc1.json.ok === true);
     const sc1 = await post('/api/requisitions/q_e118b/scan', wh, { barcode: TAG_R2, partNo: PN2, qty: 20 });
@@ -131,7 +131,7 @@ async function get(p2, token) {
     const sc2 = await post('/api/requisitions/q_e118a/scan', wh, { barcode: TAG_R1, partNo: PN1, qty: 10 });
     chk('R6d 兜底放行框可扫码发料', sc2.json.ok, true);
 
-    // ===== 7. 迁移方向：正向 NB01→NB02 成功；逆流被闸 =====
+    // ===== 7. 迁移方向：正向 NB04→NB02 成功；逆流被闸 =====
     // TAG_R1 已被 R6d 发料消账 → 换新码走迁移：把 TAG_R2 二楼入库（模拟转入提交）
     const mv1 = await post('/api/ledger/sync', wh, { items: [
       { c: TAG_R2, l: LOC_MV, p: PN2, n: 'E118来料取证件B', q: 20, b: 'B261102', t: now + 5000, mv: '人工', src: '来料区转入', f: '2.4米铁框' },
@@ -140,9 +140,9 @@ async function get(p2, token) {
     const led7 = (await get('/api/ledger?c=' + TAG_R2, wh)).json.items || [];
     chk('R7b 迁移后货位为新货架位', led7.length === 1 ? led7[0].l : '', LOC_MV);
     const mv2 = await post('/api/ledger/sync', wh, { items: [
-      { c: TAG_R2, l: 'NB01-R3-01', p: PN2, n: 'E118来料取证件B', q: 20, b: 'B261102', t: now + 9000, mv: '人工', src: '来料区转入', f: '2.4米铁框' },
+      { c: TAG_R2, l: 'NB04-A-01-001', p: PN2, n: 'E118来料取证件B', q: 20, b: 'B261102', t: now + 9000, mv: '人工', src: '来料区转入', f: '2.4米铁框' },
     ] });
-    chkT('R7c 逆流(NB02→NB01)被方向闸拒回', String(JSON.stringify(mv2.json)).includes('不允许回流来料区'));
+    chkT('R7c 逆流(NB02→NB04)被方向闸拒回', String(JSON.stringify(mv2.json)).includes('不允许回流来料区'));
     const led7b = (await get('/api/ledger?c=' + TAG_R2, wh)).json.items || [];
     chk('R7d 逆流后仍在货架位', led7b.length === 1 ? led7b[0].l : '', LOC_MV);
 
@@ -159,29 +159,29 @@ async function get(p2, token) {
     chk('R8e 清除后不再返回该区', gg2.map['吉利E2E118'], undefined);
 
     // ===== 9. locs?recv=1 来料区占用口径 =====
-    // TAG_R1 已在 R6d 发料消账（NB01 行随之删除）→ 补登记一筐专用占用框
+    // TAG_R1 已在 R6d 发料消账（NB04 行随之删除）→ 补登记一筐专用占用框
     await post('/api/ledger/sync', wh, { items: [
-      { c: 'E118RECVOCC', l: 'NB01-R1-03', p: PN2, q: 7, b: 'B261109', t: Date.now(), mv: '登记', src: '来料区' },
+      { c: 'E118RECVOCC', l: 'NB04-A-01-003', p: PN2, q: 7, b: 'B261109', t: Date.now(), mv: '登记', src: '来料区' },
     ] });
     const lr = (await get('/api/ledger/locs?recv=1', wh)).json.byLoc || {};
-    chkT('R9a 来料区占用含 R1-03(新登记框)', (lr['NB01-R1-03'] || []).includes('E118RECVOCC'));
-    chkT('R9b 已迁移行不再占来料格', !(lr['NB01-R2-07'] || []).includes(TAG_R2));
+    chkT('R9a 来料区占用含 R1-03(新登记框)', (lr['NB04-A-01-003'] || []).includes('E118RECVOCC'));
+    chkT('R9b 已迁移行不再占来料格', !(lr['NB04-A-01-007'] || []).includes(TAG_R2));
     chkT('R9c 不含货架位键', !Object.keys(lr).some((k) => k.indexOf('NB02-') === 0));
 
     // ===== 10. 来料区总开关：关闭后拒新建、但残留筐仍可二楼搬走 =====
     const off = await post('/api/admin/params', ad, { values: { receivingOn: 0 }, baseRev: ((await get('/api/admin/params', ad)).json.cfgRev) });
     chkT('R10a 管理员关闭来料区开关', off.json.ok === true);
     const pOff = await post('/api/ledger/sync', wh, { items: [
-      { c: 'E118OFFNEW', l: 'NB01-R1-05', p: PN1, q: 3, b: 'B261110', t: Date.now(), mv: '登记', src: '来料区' },
+      { c: 'E118OFFNEW', l: 'NB04-A-01-005', p: PN1, q: 3, b: 'B261110', t: Date.now(), mv: '登记', src: '来料区' },
     ] });
-    chkT('R10b 关闭后新建 NB01 被拒', String(JSON.stringify(pOff.json.rejectedLoc || [])).includes('E118OFFNEW'));
+    chkT('R10b 关闭后新建 NB04 被拒', String(JSON.stringify(pOff.json.rejectedLoc || [])).includes('E118OFFNEW'));
     chkT('R10c 拒因提示来料区未启用', String(JSON.stringify(pOff.json.rejectedLoc || [])).includes('来料区未启用'));
     const ckOff = await get('/api/label/check?c=E118OFFNEW&recv=1', wh);
     chk('R10d 关闭后一楼登记模式查重 403', ckOff.status, 403);
-    // 残留筐 E118RECVOCC 仍在 NB01-R1-03：二楼普通查重仍走转入豁免（不受开关影响，防 stranded）
+    // 残留筐 E118RECVOCC 仍在 NB04-A-01-003：二楼普通查重仍走转入豁免（不受开关影响，防 stranded）
     const ckRes = (await get('/api/label/check?c=E118RECVOCC', wh)).json;
     chk('R10e 关闭后残留来料筐转入仍放行', ckRes.blockIn, false);
-    chk('R10f 关闭后仍回显转入判据 recvLoc', ckRes.recvLoc, 'NB01-R1-03');
+    chk('R10f 关闭后仍回显转入判据 recvLoc', ckRes.recvLoc, 'NB04-A-01-003');
     const mvOff = await post('/api/ledger/sync', wh, { items: [
       { c: 'E118RECVOCC', l: LOC_Y, p: PN2, n: 'E118来料取证件B', q: 7, b: 'B261109', t: Date.now() + 20000, mv: '人工', src: '来料区转入', f: '2.4米铁框' },
     ] });

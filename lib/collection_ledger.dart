@@ -457,19 +457,21 @@ extension CollectionLedgerExt on _MainPageState {
     return "${(s / 3600).round()}时";
   }
 
-  /// ㉖v120 来料区自动放格：服务器 locs?recv=1 权威（占用+预占避让+行列参数同源），
-  /// 按 R1-01→R1-12→R2-01… 顺序取第一个空格；满/离线回退 null 由调用方提示。
+  /// ㉖v120d 来料区自动放格：服务器 locs?recv=1 权威（占用+预占避让+排格参数同源），
+  /// 编码 NB04-A-{排}-{格}，默认 1 排 × 720 格：按 A-01-001→A-01-002→…→A-01-720→（扩排时 A-02-001…）顺序取第一个空格；满/离线回退 null 由调用方提示。
   Future<String?> nb01AutoSlot() async {
     await ledgerPullMerge(force: true); // 与地面同款：先对齐全厂占用再判空，防撞格
     try {
       final r = await AuthApi.ledgerLocs(recv: true).timeout(const Duration(seconds: 6));
       if (r["ok"] != true) return null;
-      final rows = (r["recvRows"] as num?)?.toInt() ?? 15;
-      final cols = (r["recvCols"] as num?)?.toInt() ?? 12;
+      _recvOn = (r["receivingOn"] as num?)?.toInt(); // ㉖v120b 顺带同步启用开关（旧版服务器无此字段=null 不改行为）
+      if (_recvOn == 0) { _recvOffFlag = true; return null; } // ㉖v120b 服务器已关闭来料区：不放格，保存链据此中止（幽灵流水从源头不发生）
+      final rows = (r["recvRows"] as num?)?.toInt() ?? 1;
+      final cols = (r["recvCols"] as num?)?.toInt() ?? 720;
       final byLoc = (r["byLoc"] as Map?)?.map((k, v) => MapEntry(k.toString().toUpperCase(), v)) ?? {};
       for (var rr = 1; rr <= rows; rr++) {
         for (var cc = 1; cc <= cols; cc++) {
-          final code = 'NB01-R$rr-${cc.toString().padLeft(2, '0')}';
+          final code = 'NB04-A-${rr.toString().padLeft(2, '0')}-${cc.toString().padLeft(3, '0')}';
           if (!byLoc.containsKey(code)) return code;
         }
       }
@@ -655,7 +657,11 @@ extension CollectionLedgerExt on _MainPageState {
         builder: (dctx) => AlertDialog(
               title: Text(
                   "选格位：$prefix（空 ${maxSlot - byLoc.keys.where((k) => k.startsWith('$prefix-')).length}/$maxSlot）"),
-              content: SizedBox(width: 300, child: Wrap(children: cells)),
+              content: SizedBox(
+                  width: 300,
+                  height: 420, // ㉖v120d 定高+滚动：旧版裸 Wrap 无界，逐排格数覆盖到 60 格时（15 行×~70px≈1050px）
+                  child: SingleChildScrollView(
+                      child: Wrap(children: cells))), // 底部格位被屏截断点不到（11/07 现场 E-07 排实锤）；同 NB02 picker 420 高度口径
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(dctx),
@@ -1645,7 +1651,7 @@ Future<void> scanRecordRestore(Isar isar, ScanRecord r) async {
     final loc = (r.workType == 0 ? r.stationNo : r.groundLocation) ?? "";
     if (loc.isNotEmpty &&
         (RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc) ||
-            RegExp(r'^NB01-R\d{1,2}-(0[1-9]|1\d|20)$').hasMatch(loc))) { // ㉖v118 来料区结构域（范围=服务器参数闸）
+            RegExp(r'^NB04-[A-H]-\d{2}-\d{3}$').hasMatch(loc))) { // ㉖v120d 来料区结构域（排2位格3位；范围=服务器参数闸）
       final extra =
           await isar.recordExtras.filter().goodsCodeEqualTo(up).findFirst();
       await isar.writeTxn(() async {

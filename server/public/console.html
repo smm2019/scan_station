@@ -902,9 +902,9 @@ function ctSlotStats(){
  const rows={};let miscN=0,miscB=0;
  Object.entries(CTN.byBox).forEach(([loc,boxes])=>{
   const p=String(loc).split('-');
-  // ㉖v118 来料区 NB01-R1-03（3段）：按"排×格"建行走地面渲染，不再进 misc 异常桶
-  if(p[0]==='NB01'&&p.length===3){const rowid=p[0]+'-'+p[1],col=Number(p[2])||0;const label=rowid+' 排';
-   const R=rows[label]=rows[label]||{zone:'NB01',rack:false,rowid,tier:String(p[2]),cells:{},max:0,recv:true};
+  // ㉖v120d 来料区 NB04-A-01-003（4段）：按"区-排×格"建行走地面渲染，不再进 misc 异常桶
+  if(p[0]==='NB04'&&p.length===4){const rowid=p.slice(0,3).join('-'),col=Number(p[3])||0;const label=rowid+' 排';
+   const R=rows[label]=rows[label]||{zone:p.slice(0,2).join('-'),rack:false,rowid,tier:p[2],cells:{},max:0,recv:true};
    R.cells[col]={loc:String(boxes[0]&&boxes[0].l).toUpperCase(),boxes};if(col>R.max)R.max=col;return;}
   if(p.length<4){miscN++;miscB+=boxes.length;return}
   const tier=p.slice(3).join('-'),rack=/\dF$/.test(tier);

@@ -57,10 +57,10 @@ String invZoneOf(String locCode) {
     final seg = c.split('-');
     if (seg.length >= 3) return seg.sublist(0, 3).join('-');
   }
-  if (c.startsWith('NB01-')) {
-    // ㉖v120 来料区按行分组（NB01-R1-03 → NB01-R1）：盘点圈范围=整行
+  if (c.startsWith('NB04-')) {
+    // ㉖v120d 来料区按"区-排"分组（NB04-A-01-003 → NB04-A-01）：盘点圈范围=整排
     final seg = c.split('-');
-    if (seg.length >= 2) return seg.sublist(0, 2).join('-');
+    if (seg.length >= 3) return seg.sublist(0, 3).join('-');
   }
   return invShelfOf(c);
 }
@@ -710,7 +710,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                   builder: (ctx, sn) {
                     if (!sn.hasData) return const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()));
                     final allLocs = sn.data!.map((e) => e.locCode).toSet().toList();
-                    final zones = allLocs.where((c) => _scopeType.isEmpty ? true : (c.toUpperCase().startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB01'))).map(invZoneOf).toSet().toList()..sort(); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
+                    final zones = allLocs.where((c) => _scopeType.isEmpty ? true : (c.toUpperCase().startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04'))).map(invZoneOf).toSet().toList()..sort(); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
                     return Card(
                       child: Padding(
                         padding: const EdgeInsets.all(12),
@@ -720,7 +720,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                           Wrap(spacing: 8, children: [
                             ChoiceChip(label: const Text("AGV货架 NB02"), selected: _scopeType == 'shelf', onSelected: (_) => setState(() { _scopeType = 'shelf'; _scope.clear(); })),
                             ChoiceChip(label: const Text("地面库位 NB03"), selected: _scopeType == 'ground', onSelected: (_) => setState(() { _scopeType = 'ground'; _scope.clear(); })),
-                            ChoiceChip(label: const Text("来料区 NB01"), selected: _scopeType == 'recv', onSelected: (_) => setState(() { _scopeType = 'recv'; _scope.clear(); })), // ㉖v120 来料区班末对账=按行圈盘
+                            ChoiceChip(label: const Text("来料区 NB04"), selected: _scopeType == 'recv', onSelected: (_) => setState(() { _scopeType = 'recv'; _scope.clear(); })), // ㉖v120 来料区班末对账=按行圈盘
                             ChoiceChip(label: const Text("混合/全盘"), selected: _scopeType.isEmpty, onSelected: (_) => setState(() { _scopeType = ''; _scope.clear(); })),
                           ]),
                           if (_scopeType.isEmpty)

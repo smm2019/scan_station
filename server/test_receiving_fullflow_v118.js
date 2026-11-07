@@ -4,7 +4,7 @@
 //  S2 二楼转入·人工地面路线：判据→迁移→恒等式
 //  S3 二楼转入·AGV货架路线：reserve分新位→迁移→恒等式
 //  S4 意外：跳楼新码判据、一楼旧缓存回推逆流被闸
-//  S5 发料：建议排除NB01/兜底可拣/消账/发料后码不可复用
+//  S5 发料：建议排除NB04/兜底可拣/消账/发料后码不可复用
 //  S6 生产退料：原码两条判据+入库、重打新码入库、退库码防双计
 //  S7 并发：双PDA同格防撞、迁移撞位拒回、已迁框reserve回现位
 //  S8 开关：关→拒新建/二楼原生不受累/存量筐仍可转入+仍可发料兜底；重开→恢复
@@ -30,7 +30,7 @@ const hashPw = (pw, s) => crypto.scryptSync(String(pw), s, 32).toString('hex');
 const now = Date.now();
 db0.users.push({ id: 'u_ff_wh', username: 'ff_wh', name: 'FF仓管', role: 'warehouse', enabled: true, createdAt: now, mustChangePw: false, salt, passHash: hashPw('E2e#Ff!wh', salt) });
 db0.users.push({ id: 'u_ff_ad', username: 'ff_ad', name: 'FF管理', role: 'admin', enabled: true, createdAt: now, mustChangePw: false, salt, passHash: hashPw('E2e#Ff!ad', salt) });
-// 四张领料单：A缺PN1(急货提醒+发料) B缺PN2(建议含二楼框) C缺PN4(NB01兜底直拣) D缺PN6(开关关时存量可发)
+// 四张领料单：A缺PN1(急货提醒+发料) B缺PN2(建议含二楼框) C缺PN4(NB04兜底直拣) D缺PN6(开关关时存量可发)
 db0.requisitions = (db0.requisitions || []).concat([
   { id: 'q_ff_a', no: 'LJFF0000A', by: 'u_ff_wh', byName: 'FF仓管', status: 'pending', createdAt: now, history: [], items: [{ partNo: '66FFPN0001', qty: 5, name: 'FF剧本件A', issued: [] }] },
   { id: 'q_ff_b', no: 'LJFF0000B', by: 'u_ff_wh', byName: 'FF仓管', status: 'pending', createdAt: now, history: [], items: [{ partNo: '66FFPN0002', qty: 5, name: 'FF剧本件B', issued: [] }] },
@@ -67,7 +67,7 @@ async function inv(wh) {
   }
   const items = Object.values(rows);
   let recv = 0, loc = 0;
-  for (const x of items) { if (/^NB01-/.test(String(x.l))) recv++; else loc++; }
+  for (const x of items) { if (/^NB04-/.test(String(x.l))) recv++; else loc++; }
   return { total: items.length, recv, loc };
 }
 
@@ -92,10 +92,10 @@ async function inv(wh) {
 
     // ================= S1 一楼登记（贴标+扫码，只扫一下） =================
     const s1 = await post('/api/ledger/sync', wh, { items: [
-      { c: C1, l: 'NB01-R1-01', p: P1, n: 'FF剧本件A', q: 10, b: 'B261101', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' },
-      { c: C2, l: 'NB01-R1-02', p: P2, n: 'FF剧本件B', q: 20, b: 'B261102', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' },
-      { c: C4, l: 'NB01-R1-03', p: P4, n: 'FF剧本件D', q: 30, b: 'B261103', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' },
-      { c: CFOCC, l: 'NB01-R2-01', p: P7, n: 'FF并发件', q: 5, b: 'B261107', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' },
+      { c: C1, l: 'NB04-A-01-001', p: P1, n: 'FF剧本件A', q: 10, b: 'B261101', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' },
+      { c: C2, l: 'NB04-A-01-002', p: P2, n: 'FF剧本件B', q: 20, b: 'B261102', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' },
+      { c: C4, l: 'NB04-A-01-003', p: P4, n: 'FF剧本件D', q: 30, b: 'B261103', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' },
+      { c: CFOCC, l: 'NB04-A-01-010', p: P7, n: 'FF并发件', q: 5, b: 'B261107', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' },
     ] });
     chkT('S1a 一楼四筐登记上账', s1.json.ok === true && s1.json.added >= 4);
     const i1 = await inv(wh); chk('S1b 恒等式：4=来料4+库位0', [i1.total, i1.recv, i1.loc], [4, 4, 0]);
@@ -103,8 +103,8 @@ async function inv(wh) {
     const ck1 = (await get('/api/label/check?c=' + C1 + '&recv=1', wh)).json;
     chk('S1c 同码重复登记被拦', ck1.blockIn, true);
     // 越界格位
-    const s1b = await post('/api/ledger/sync', wh, { items: [{ c: 'FFOORANGE1', l: 'NB01-R16-01', p: P8, q: 1, t: nt(), mv: '登记', src: '来料区' }] });
-    chkT('S1d 超参数范围格位拒回', String(JSON.stringify(s1b.json.rejectedLoc || [])).includes('NB01-R16-01'));
+    const s1b = await post('/api/ledger/sync', wh, { items: [{ c: 'FFOORANGE1', l: 'NB04-A-01-1000', p: P8, q: 1, t: nt(), mv: '登记', src: '来料区' }] }); // 格4位超固定位数结构域(排2格3)
+    chkT('S1d 超范围格位拒回', String(JSON.stringify(s1b.json.rejectedLoc || [])).includes('NB04-A-01-1000'));
     // 预约回填：到货可视提前到卸货点
     const wl = (await get('/api/watchlist', wh)).json.list || [];
     const w1 = wl.find((x) => String(x.partNo).toUpperCase() === P1) || {};
@@ -115,14 +115,14 @@ async function inv(wh) {
 
     // ================= S2 二楼转入·人工地面路线 =================
     const ck2 = (await get('/api/label/check?c=' + C2, wh)).json;
-    chk('S2a 转入判据：放行+回显来料格', [ck2.blockIn, ck2.recvLoc], [false, 'NB01-R1-02']);
+    chk('S2a 转入判据：放行+回显来料格', [ck2.blockIn, ck2.recvLoc], [false, 'NB04-A-01-002']);
     const s2 = await post('/api/ledger/sync', wh, { items: [{ c: C2, l: GND1, p: P2, n: 'FF剧本件B', q: 20, b: 'B261102', t: nt(), mv: '人工', src: '来料区转入', f: '2.4米铁框' }] });
     chkT('S2b 人工直送迁移成功（同一行改位）', s2.json.ok === true && s2.json.updated >= 1);
     const i2 = await inv(wh); chk('S2c 恒等式：4=来料3+库位1', [i2.total, i2.recv, i2.loc], [4, 3, 1]);
 
     // ================= S3 二楼转入·AGV货架路线 =================
     const rv = await post('/api/ledger/reserve', wh, { code: C1, partNo: P1 });
-    chkT('S3a reserve 对来料筐分配 NB02 新位（不回吐NB01）', rv.json.ok === true && /^NB02-/.test(String(rv.json.loc)) && rv.json.loc !== 'NB01-R1-01');
+    chkT('S3a reserve 对来料筐分配 NB02 新位（不回吐NB04）', rv.json.ok === true && /^NB02-/.test(String(rv.json.loc)) && rv.json.loc !== 'NB04-A-01-001');
     const RACK_A = String(rv.json.loc);
     const s3 = await post('/api/ledger/sync', wh, { items: [{ c: C1, l: RACK_A, p: P1, n: 'FF剧本件A', q: 10, b: 'B261101', t: nt(), mv: 'AGV', src: '来料区转入', f: '2.4米铁框' }] });
     chkT('S3b AGV 上架迁移成功', s3.json.ok === true && s3.json.updated >= 1);
@@ -133,7 +133,7 @@ async function inv(wh) {
     // ================= S4 意外：跳楼新码 / 一楼旧缓存回推逆流 =================
     const ck4 = (await get('/api/label/check?c=' + CNEW, wh)).json;
     chk('S4a 全新码判据：seen=false 无转入位无出库史（PDA据此拦并提示先一楼登记）', [ck4.seen, ck4.recvLoc, ck4.seenOut], [false, '', false]);
-    const s4 = await post('/api/ledger/sync', wh, { items: [{ c: C2, l: 'NB01-R1-02', p: P2, n: 'FF剧本件B', q: 20, b: 'B261102', t: nt(), mv: '人工', src: '来料区转入', f: '2.4米铁框' }] });
+    const s4 = await post('/api/ledger/sync', wh, { items: [{ c: C2, l: 'NB04-A-01-002', p: P2, n: 'FF剧本件B', q: 20, b: 'B261102', t: nt(), mv: '人工', src: '来料区转入', f: '2.4米铁框' }] });
     chkT('S4b 一楼旧缓存回推已入库框→逆流闸拒（"不允许回流来料区"）', String(JSON.stringify(s4.json.rejected || [])).includes('不允许回流来料区'));
     const i4 = await inv(wh); chk('S4c 逆流被拒后恒等式不变 4=来料2+库位2', [i4.recv, i4.loc], [2, 2]);
 
@@ -172,7 +172,7 @@ async function inv(wh) {
     const i6 = await inv(wh); chk('S6g 恒等式：5=来料1+库位4', [i6.total, i6.recv, i6.loc], [5, 1, 4]);
 
     // ================= S7 并发与撞位 =================
-    const s7 = await post('/api/ledger/sync', wh, { items: [{ c: CFOCC2, l: 'NB01-R2-01', p: P8, n: 'FF并发件2', q: 5, b: 'B261108', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' }] });
+    const s7 = await post('/api/ledger/sync', wh, { items: [{ c: CFOCC2, l: 'NB04-A-01-010', p: P8, n: 'FF并发件2', q: 5, b: 'B261108', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' }] });
     chkT('S7a 双PDA同格登记→第二框货位互斥拒回', String(JSON.stringify(s7.json.rejected || [])).includes('已被框 ' + CFOCC + ' 占用'));
     const s7b = await post('/api/ledger/sync', wh, { items: [{ c: C1, l: RACK2, p: P1, n: 'FF剧本件A', q: 10, b: 'B261101', t: nt(), mv: 'AGV', src: '来料区转入', f: '2.4米铁框' }] });
     chkT('S7c 迁移目标位被占→拒回', String(JSON.stringify(s7b.json.rejected || [])).includes('占用'));
@@ -180,12 +180,12 @@ async function inv(wh) {
     chk('S7d 撞位被拒后原货架位不动', led7.length === 1 ? led7[0].l : '', RACK_A);
 
     // ================= S8 开关：关→存量不死、二楼不受累；重开→恢复 =================
-    const s8pre = await post('/api/ledger/sync', wh, { items: [{ c: C6, l: 'NB01-R1-05', p: P6, n: 'FF剧本件F', q: 12, b: 'B261106', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' }] });
+    const s8pre = await post('/api/ledger/sync', wh, { items: [{ c: C6, l: 'NB04-A-01-005', p: P6, n: 'FF剧本件F', q: 12, b: 'B261106', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' }] });
     chkT('S8a 开关开时登记存量筐 C6', s8pre.json.ok === true);
     const revCfg = (await get('/api/admin/params', ad)).json.cfgRev || 0;
     const off = await post('/api/admin/params', ad, { values: { receivingOn: 0 }, baseRev: revCfg });
     chkT('S8b 管理员关闭来料区', off.json.ok === true);
-    const s8c = await post('/api/ledger/sync', wh, { items: [{ c: C7, l: 'NB01-R1-06', p: P7, q: 1, t: nt(), mv: '登记', src: '来料区' }] });
+    const s8c = await post('/api/ledger/sync', wh, { items: [{ c: C7, l: 'NB04-A-01-006', p: P7, q: 1, t: nt(), mv: '登记', src: '来料区' }] });
     chkT('S8d 关闭后一楼新登记被拒（提示未启用）', String(JSON.stringify(s8c.json.rejectedLoc || [])).includes('来料区未启用'));
     const ck8e = (await get('/api/label/check?c=' + C7 + '&recv=1', wh));
     chk('S8e 关闭后登记模式查重 403', ck8e.status, 403);
@@ -194,7 +194,7 @@ async function inv(wh) {
     chkT('S8g 关闭期间二楼原生采集入库正常（不依赖一楼）', s8f.json.ok === true && s8f.json.added >= 1);
     // 存量筐不被 stranded：转入判据仍在、可迁移、可发料兜底
     const ck8h = (await get('/api/label/check?c=' + C6, wh)).json;
-    chk('S8h 存量来料筐转入判据不受开关影响', [ck8h.blockIn, ck8h.recvLoc], [false, 'NB01-R1-05']);
+    chk('S8h 存量来料筐转入判据不受开关影响', [ck8h.blockIn, ck8h.recvLoc], [false, 'NB04-A-01-005']);
     const accD = await post('/api/requisitions/q_ff_d/accept', wh, {});
     chkT('S8i 领料单D接单', accD.json.ok === true);
     const qD = ((await get('/api/requisitions/q_ff_d', wh)).json || {}).req;
@@ -206,14 +206,14 @@ async function inv(wh) {
     const revCfg2 = (await get('/api/admin/params', ad)).json.cfgRev || 0;
     const on2 = await post('/api/admin/params', ad, { values: { receivingOn: 1 }, baseRev: revCfg2 });
     chkT('S8l 管理员重新开启来料区', on2.json.ok === true);
-    const s8m = await post('/api/ledger/sync', wh, { items: [{ c: C7, l: 'NB01-R1-06', p: P7, n: 'FF剧本件G', q: 4, b: 'B261113', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' }] });
+    const s8m = await post('/api/ledger/sync', wh, { items: [{ c: C7, l: 'NB04-A-01-006', p: P7, n: 'FF剧本件G', q: 4, b: 'B261113', t: nt(), mv: '登记', src: '来料区', f: '2.4米铁框' }] });
     chkT('S8m 重开后一楼登记恢复', s8m.json.ok === true && s8m.json.added >= 1);
 
     // ================= S9 撤扫返架（发错料） =================
     const un = await post('/api/requisitions/q_ff_d/unscan', wh, { barcode: C6, partNo: P6 });
     chkT('S9a 撤扫受理', un.json.ok === true);
     const led9 = (await get('/api/ledger?c=' + C6, wh)).json.items || [];
-    chkT('S9b 撤扫后框复活可再入库（不断链）', led9.length === 1 && /^NB0[123]-/.test(String(led9[0].l)));
+    chkT('S9b 撤扫后框复活可再入库（不断链）', led9.length === 1 && /^NB0[234]-/.test(String(led9[0].l)));
 
     // ================= 终检：恒等式 =================
     const iF = await inv(wh);

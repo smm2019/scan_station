@@ -912,7 +912,7 @@ function opNameOf(s) { return String(s == null ? '' : s).replace(/\s*\((?:[^()]*
 function buildExport(ds, fRaw) {
   const f = { from: String((fRaw && fRaw.from) || '').slice(0, 10), to: String((fRaw && fRaw.to) || '').slice(0, 10) };
   if (fRaw && fRaw.arch) f.arch = '1'; if (fRaw && fRaw.zero) f.zero = '1'; // 快照条件登记补全：含归档/零库存开关可追溯
-  const _locF = String((fRaw && fRaw.loc) || '').trim().toUpperCase(); // ㉖v120 货位前缀过滤：NB01=来料区、NB02-A=某架、NB03-D=某地面区；空=全部
+  const _locF = String((fRaw && fRaw.loc) || '').trim().toUpperCase(); // ㉖v120 货位前缀过滤：NB04=来料区、NB02-A=某架、NB03-D=某地面区；空=全部
   const _locHit = (l) => !_locF || String(l || '').toUpperCase().startsWith(_locF);
   if (_locF) f.loc = _locF; // 快照条件登记：本次导出限定的货位前缀可追溯
   const _arch = !!(fRaw && (fRaw.arch === '1' || fRaw.arch === true)); // ㉕F9 含归档：主库∪data/archive
@@ -1060,10 +1060,10 @@ function bookingDueSweep() {
   } catch (e) { console.log('[booking-due] 失败：', e.message); logErr('bookingDue', e); }
 }
 setInterval(bookingDueSweep, 30 * 60 * 1000).unref();
-// ---- ㉖v118 来料区滞留清扫：NB01 框登记超阈值（参数 nb01StaleH，默认4小时）未二楼入库 → 站内通知全体仓管；每标签只提醒一次（出库重登记满7天后重置）----
+// ---- ㉖v118 来料区滞留清扫：NB04 框登记超阈值（参数 nb01StaleH，默认4小时）未二楼入库 → 站内通知全体仓管；每标签只提醒一次（出库重登记满7天后重置）----
 function nb01StaleSweep() {
   try {
-    if (!receivingOn()) return; // ㉖v118 来料区未启用：无 NB01 库存概念，不扫描不提醒
+    if (!receivingOn()) return; // ㉖v118 来料区未启用：无 NB04 库存概念，不扫描不提醒
     const hrs = Number(P().nb01StaleH) || 4;
     const cut = Date.now() - hrs * 3600 * 1000;
     const alerted = (db.nb01Alert = db.nb01Alert || {});
@@ -1404,7 +1404,7 @@ function labelBlockReason(st, purpose, opts) { // purpose: in(采集入库)|out(
   if (!st) return '';
   if (purpose === 'in' && (st.inLedger.length || st.inScanlog.length || st.everIn || st.everOut)) {
     if (st.inLedger.length) {
-      if (!opts || !opts.recv) { if (st.inLedger.every((x) => locRecv(x.l))) return ''; } // ㉖v118 来料区筐：转入是合法迁移不拦（只看是否 NB01 行，与开关无关——开关关时已有来料区货仍可被二楼搬走，不 stranded）；一楼登记模式(recv=1)不豁免——重复登记照常拦
+      if (!opts || !opts.recv) { if (st.inLedger.every((x) => locRecv(x.l))) return ''; } // ㉖v118 来料区筐：转入是合法迁移不拦（只看是否 NB04 行，与开关无关——开关关时已有来料区货仍可被二楼搬走，不 stranded）；一楼登记模式(recv=1)不豁免——重复登记照常拦
       return '该标签已在库（货位 ' + String(st.inLedger[0].l || '') + '），禁止重复录入';
     }
     if (st.inScanlog.length) return '该标签已有采集记录（批次 ' + String(st.inScanlog[0].gl || st.inScanlog[0].st || '') + '），禁止重复录入';
@@ -1454,7 +1454,7 @@ const PARAMS = {
   jamMin:         { grp: '告警阈值', name: '交管堵点告警', unit: '分钟', min: 1, max: 60, d: 3, tip: '车辆被交管卡住超此时长→通知在线仓管' },
   lowBatPct:      { grp: '告警阈值', name: '低电阈值', unit: '%', min: 5, max: 80, d: 25, tip: '电量低于此值计入低电观察' },
   lowBatMin:      { grp: '告警阈值', name: '低电未回充告警', unit: '分钟', min: 5, max: 240, d: 20, tip: '低电且空闲超此时长未回充→提醒安排充电' },
-  nb01StaleH:     { grp: '告警阈值', name: '来料区滞留告警', unit: '小时', min: 1, max: 72, d: 4, tip: '㉖v118 来料区(NB01)框登记后超此小时数仍未二楼入库→站内通知全体仓管核对搬运上楼（每标签7天内只提醒一次）' },
+  nb01StaleH:     { grp: '告警阈值', name: '来料区滞留告警', unit: '小时', min: 1, max: 72, d: 4, tip: '㉖v118 来料区(NB04)框登记后超此小时数仍未二楼入库→站内通知全体仓管核对搬运上楼（每标签7天内只提醒一次）' },
   batch:          { grp: '调度节奏', name: '单轮最多下发', unit: '单', min: 1, max: 8, d: 4, tip: '排队调度器每轮最多真实下发几单（保守节奏）' },
   agingMin:       { grp: '调度节奏', name: '排队防饿死升级', unit: '分钟', min: 2, max: 120, d: 10, tip: '普通队列项等待超此时长自动按急料优先级调度' },
   sendTimeoutMin: { grp: '调度节奏', name: '下发无回执判失败', unit: '分钟', min: 1, max: 30, d: 5, tip: '下发中超此时长无回执→判失败可重试，防站台封死' },
@@ -1477,9 +1477,9 @@ const PARAMS = {
   gndZones:       { grp: '存储配置', hide: 1, name: '地面区数', unit: '区', min: 1, max: 20, d: 6, tip: 'NB03 地面货区数量（现场 A/B/C/F/G/H 六区）；地面总格位=区数×每区排数×每排格数' },
   gndRows:        { grp: '存储配置', hide: 1, name: '每区排数', unit: '排', min: 1, max: 40, d: 18, tip: '每个地面区的默认排数（现场排号到 18）；可在「地面排配置」按区单独覆盖（如 B 区 15 排），并支持停用指定排（如 A-01 不用）' },
   gndCols:        { grp: '存储配置', hide: 1, name: '每排格数', unit: '格', min: 1, max: 200, d: 12, tip: '每排默认格数（逐排覆盖配置优先：位置登记页可对单排改格数，上限200）' },
-  receivingOn:    { grp: '存储配置', name: '来料区启用', unit: '开关', min: 0, max: 1, d: 0, tip: '㉖v118 来料区(NB01)总开关。0=关闭：整套两楼流转惰性、NB01 格位禁止登记，二楼回到原生采集录入直接上 NB02/NB03（一楼没扫码条件时不影响二楼作业）。1=启用：一楼登记进来料区库存、二楼转入迁移、滞留提醒全部生效。一楼硬件/流程就绪后由管理员开启' },
-  recvRows:       { grp: '存储配置', hide: 1, name: '来料区行数', unit: '行', min: 1, max: 40, d: 15, tip: '㉖v118 NB01 来料区（楼下缓冲）排行数；总格位=行数×列数，默认 15×12=180 格。一楼登记自动分配超出即拒（提示来料区已满）' },
-  recvCols:       { grp: '存储配置', hide: 1, name: '来料区列数', unit: '列', min: 1, max: 20, d: 12, tip: '㉖v118 来料区每行格数（编码尾段 01~NN，上限20）；现场划线改动只调此二参数，无需改代码' },
+  receivingOn:    { grp: '存储配置', name: '来料区启用', unit: '开关', min: 0, max: 1, d: 0, tip: '㉖v118 来料区(NB04)总开关。0=关闭：整套两楼流转惰性、NB04 格位禁止登记，二楼回到原生采集录入直接上 NB02/NB03（一楼没扫码条件时不影响二楼作业）。1=启用：一楼登记进来料区库存、二楼转入迁移、滞留提醒全部生效。一楼硬件/流程就绪后由管理员开启' },
+  recvRows:       { grp: '存储配置', hide: 1, name: '来料区排数', unit: '排', min: 1, max: 40, d: 1, tip: '㉖v120d NB04 来料区（楼下缓冲）排数；总格位=排数×每排格数，默认 1×720=720 格（NB04-A-01-001 ~ NB04-A-01-720）。一楼登记自动分配超出即拒（提示来料区已满）' },
+  recvCols:       { grp: '存储配置', hide: 1, name: '每排格数', unit: '格', min: 1, max: 999, d: 720, tip: '㉖v120d 来料区每排格数（编码尾段 001~999，上限999）；现场划线改动只调此二参数，无需改代码' },
   abcWindow:      { grp: '调度策略', name: 'ABC周转统计窗', unit: '天', min: 7, max: 365, d: 30, tip: '出库单+采集流水的统计窗口，用于给零件打周转分' },
   abcTop:         { grp: '调度策略', name: 'A类件比例', unit: '%', min: 0, max: 80, d: 20, tip: '周转分前N%判为A类：入库自动分配时优先靠近CK站台的货架列（0=关闭该策略）' },
   aisleCap:       { grp: '调度策略', name: '巷道并发上限', unit: '任务', min: 0, max: 8, d: 2, tip: '同一货架巷道(区-排)在途搬运任务数上限，达到则新出库任务本轮不放行、入库分配避开（0=关闭节流）' },
@@ -1878,12 +1878,12 @@ function boxKeyOf(x) {
 // 注意与 seenIn 补丁（㉖v100）判据【有意不同】：seenIn.l 记"入账时初始位"，AGV 框合法值本就是站台码，
 //   故补丁按 NB02/NB03 前缀特征判病、不能用 locStrict——两者作用对象与语义不同，不是口径漂移。
 // 前缀-尾段配对（实测真实数据 0 行混用 → 收紧零误伤）：NB02 高架尾段必为层号[1-4]F、NB03 地面尾段必为两位数字格位
-// ㉖v118 来料区（楼下缓冲，真实库存层）：NB01-R{行}-{列}；行列上限为在线参数 recvRows×recvCols（默认15×12=180格）
-//   本函数只做结构域（行1-99、列01-20=参数上限），范围超限由 recvSlotOk 在写入源头拒回——参数改动无需动正则
-const locStrict = (l) => { const s = String(l || '').trim().toUpperCase(); return /^NB02-[A-H]-\d{1,2}-[1-4]F$/.test(s) || /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(s) || /^NB01-R\d{1,2}-(0[1-9]|1\d|20)$/.test(s); }; // 完整货架位/地面格位/来料区格位（混用即病值）
-const locRecv = (l) => /^NB01-/.test(String(l || '').trim().toUpperCase()); // ㉖v118 来料区前缀判定（拣选排除/转入豁免/预占跳过共用）
+// ㉖v120d 来料区（楼下缓冲，真实库存层）编码定版：NB04-{区}-{排}-{格}，一个货区默认 1 排 × 720 格（NB04-A-01-001 ~ NB04-A-01-720；排固定2位、格固定3位）
+//   旧 NB01-R{行}-{列} 方案废弃（生产账本零存量，无迁移）；区字母格式域 A~H（当前仅 A 有物理区，留给扩区），排≤recvRows、格≤recvCols 由 recvSlotOk 写入源头拒回——参数改动无需动正则
+const locStrict = (l) => { const s = String(l || '').trim().toUpperCase(); return /^NB02-[A-H]-\d{1,2}-[1-4]F$/.test(s) || /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(s) || /^NB04-[A-H]-\d{2}-\d{3}$/.test(s); }; // 完整货架位/地面格位/来料区格位（混用即病值）
+const locRecv = (l) => /^NB04-/.test(String(l || '').trim().toUpperCase()); // ㉖v118 来料区前缀判定（拣选排除/转入豁免/预占跳过共用）
 function receivingOn() { return Number((db.params || {}).receivingOn) === 1; } // ㉖v118 来料区总开关（默认关：一楼没准备好时整套两楼流转惰性，二楼原生采集直接上 NB02/NB03）
-function recvSlotOk(l, pr) { if (!receivingOn()) return false; const m = String(l || '').trim().toUpperCase().match(/^NB01-R(\d{1,2})-(\d{2})$/); if (!m) return false; pr = pr || P(); const r = Number(m[1]), c = Number(m[2]); return r >= 1 && r <= pr.recvRows && c >= 1 && c <= pr.recvCols; } // ㉖v118 来料区格位范围闸（开关关=一律拒；开=参数权威 recvRows×recvCols）
+function recvSlotOk(l, pr) { if (!receivingOn()) return false; const m = String(l || '').trim().toUpperCase().match(/^NB04-[A-H]-(\d{2})-(\d{3})$/); if (!m) return false; pr = pr || P(); const r = Number(m[1]), c = Number(m[2]); return r >= 1 && r <= pr.recvRows && c >= 1 && c <= pr.recvCols; } // ㉖v120d 来料区格位范围闸（开关关=一律拒；开=参数权威 recvRows×recvCols）
 const locStation = (l) => /^NB02-CK-\d{1,2}$/.test(String(l || '').trim().toUpperCase()); // 出库/检验站台码（实测无字母区段）
 // 跨模式错配：AGV 模式却把地面格位(NB03)填进初始位 st / 地面模式却把站台码填进 gl —— 二者物理互斥
 const flowModeBad = (wt, st, gl) => { const s = String(st || '').trim().toUpperCase(), g = String(gl || '').trim().toUpperCase(); return Number(wt) === 0 ? /^NB03-/.test(s) : locStation(g); };
@@ -1949,8 +1949,8 @@ function agvMapOf(i) {
 function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
   const agv = agvMap || {};
   const ex = excludeCodes || new Set();
-  let match = ledgerView().filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase() && !locRecv(x.l)); // ㉖ 用派生批次视图：FIFO 按 MES 打印日期先后（YYYY-MM-DD 字典序=时间序）；㉖v118 来料区(NB01)筐未入二楼库位，默认不进发料建议（防跳楼直拣）
-  if (!match.length) match = ledgerView().filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase() && locRecv(x.l)); // ㉖v118 兜底：库存全在来料区时放回 NB01 框——货现场可见却建议为零会逼应急旁路死循环，急料允许从楼下拣（出库消账不区分前缀，账自动平）
+  let match = ledgerView().filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase() && !locRecv(x.l)); // ㉖ 用派生批次视图：FIFO 按 MES 打印日期先后（YYYY-MM-DD 字典序=时间序）；㉖v118 来料区(NB04)筐未入二楼库位，默认不进发料建议（防跳楼直拣）
+  if (!match.length) match = ledgerView().filter(x => String(x.p || '').toUpperCase() === String(partNo || '').toUpperCase() && locRecv(x.l)); // ㉖v118 兜底：库存全在来料区时放回 NB04 框——货现场可见却建议为零会逼应急旁路死循环，急料允许从楼下拣（出库消账不区分前缀，账自动平）
   const boxes = [];
   for (const bx of groupLedgerBoxes(match)) { // ㉖v59 方案B：框内已发码剔除、剩余码保留（逐码发料，半发框继续出现在建议里）；全发完才整框消失
     const left = bx.codes.filter(c => !ex.has(String(c).toUpperCase()));
@@ -2176,8 +2176,37 @@ function uniqCodes(arr) { return [...new Set(arr.map(s => String(s).toUpperCase(
 // 根因=DT 出库单只由 PDA 客户端转单成功后推送，而 outboundPushNow 是 fire-and-forget（无重试、失败仅 debugPrint），
 // 服务端 transfer 分支只写 seenOut 不建台账 → 推送一旦失败，该行出库记录永久缺失，且无人察觉（实测 75 行中缺 1 行）。
 // 兜底：扫描所有 transferred 行，其已发标签若在整个出库台账中查无 → 服务器按行信息补建一条 SRV-DT 台账（幂等：补建后即查到，不再重建）。
-function outboundLedgerFix() {
+function outboundLedgerFix(opts) {
   try {
+    const nowMs2 = Date.now();
+    const grace = opts && opts.grace === 0 ? 0 : 5 * 60000; // ㉖v120c 转单宽限期：刚转 5 分钟内的行不补建（PDA 推送窗口），堵"周期扫描与转单同秒竞态误补镜像"（11/07 实锤）
+    // ㉖v120c 镜像去重（标签级·保守匹配"同关联领料单号"）：SRV 补建单与非SRV真单并存、其标签已由同单号真单落台账
+    // → 从 SRV 单剔除重复标签（真单为准），items 清空则整单删除。
+    // 根因：11/07 LL2026110709091377 转单与 10 分钟周期扫描同秒竞态，PDA 推送未达即误补镜像，D4 出库台账 2 框记成 4 行。
+    // 安全边界：①只动 SRV 单，真单/账本/领料单零触碰 ②仅"同 linkReqNo+同标签"判重——
+    // 跨单同标签（退货重发场景，真单本就该多张）不误删 ③无 linkReqNo 的 SRV 单原样保留。
+    {
+      const realByReq = {};
+      for (const [no2, o2] of Object.entries(db.outbound || {})) {
+        if (String(no2).startsWith('SRV-')) continue;
+        const rq = String(o2.linkReqNo || '').toUpperCase(); if (!rq) continue;
+        const s = (realByReq[rq] = realByReq[rq] || new Set());
+        for (const i of o2.items || []) { const c = String(i.barcode || '').toUpperCase(); if (c) s.add(c); }
+      }
+      let twin = 0;
+      for (const [no2, o2] of Object.entries(db.outbound || {})) {
+        if (!String(no2).startsWith('SRV-') || !Array.isArray(o2.items) || !o2.items.length) continue;
+        const rq = String(o2.linkReqNo || '').toUpperCase(); if (!rq || !realByReq[rq]) continue;
+        const keep = o2.items.filter((i) => !realByReq[rq].has(String(i.barcode || '').toUpperCase()));
+        if (keep.length === o2.items.length) continue;
+        const cut = o2.items.length - keep.length;
+        if (keep.length) o2.items = keep; else delete db.outbound[no2];
+        twin++;
+        try { pushEvent('出库台账镜像去重', String(no2), `SRV 镜像剔除与同单号真单重复标签 ${cut} 个，${keep.length ? '保留 ' + keep.length + ' 个缺失框' : '整单删除'}`, Date.now()); } catch (_) {}
+        console.log('[ob-fix] 镜像去重 ' + no2 + ' 剔除' + cut + '标签' + (keep.length ? '保留' + keep.length : '整单删除'));
+      }
+      if (twin) { db.outboundAt = new Date().toISOString(); db.outboundCount = Object.keys(db.outbound).length; save(); }
+    }
     const obCodes = new Set();
     for (const o of Object.values(db.outbound || {})) for (const i of o.items || []) { const c = String(i.barcode || '').toUpperCase(); if (c) obCodes.add(c); }
     const dict = db.itemDict || {};
@@ -2185,6 +2214,7 @@ function outboundLedgerFix() {
     for (const r of db.requisitions || []) {
       for (const it of r.items || []) {
         if (it.transferred !== true) continue;
+        if (grace && Number(it.transferAt) && nowMs2 - Number(it.transferAt) < grace) continue; // ㉖v120c 转单宽限期（周期扫描 5 分钟；3 分钟自查传 grace=0 豁免）
         const rows = issuedOf(it);
         if (!rows.length) continue;
         // ㉖v103 改为【按标签逐码】判断缺失（旧版"任一条已有台账即整行跳过"）：
@@ -2516,7 +2546,7 @@ function ri(){
     var r=m[k]||(m[k]={part:k,name:'',boxes:0,qty:0,rack:0,floor:0,recv:0});
     if(x.n&&!r.name)r.name=x.n;
     r.boxes++;r.qty+=Number(x.q)||0;
-    if(String(x.l||'').indexOf('NB02-')===0)r.rack++;else if(String(x.l||'').indexOf('NB01-')===0)r.recv++;else r.floor++; // ㉖v118 来料区独立桶，不再混计地面
+    if(String(x.l||'').indexOf('NB02-')===0)r.rack++;else if(String(x.l||'').indexOf('NB04-')===0)r.recv++;else r.floor++; // ㉖v118 来料区独立桶，不再混计地面
   });
   var arr=Object.values(m).sort(function(a,b){return b.qty-a.qty||b.boxes-a.boxes});
   if(q)arr=arr.filter(function(r){return r.part.indexOf(q)>=0||(r.name||'').toUpperCase().indexOf(q)>=0});
@@ -2982,7 +3012,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
               const _lr = (db.locReject = db.locReject || {});
               if (_lr[it.c] !== it.l) {
                 _lr[it.c] = it.l;
-                rejectedLoc.push(it.c + '（货位「' + it.l + '」' + (locStrict(it.l) ? (receivingOn() ? '超出来料区范围——当前参数 ' + _rp.recvRows + ' 行 × ' + _rp.recvCols + ' 列，请核对现场划线或在设置页调整「来料区行数/列数」' : '来料区未启用——设置页开启「来料区启用」后方可登记 NB01 格位') : '格式不符——应选 NB02-A-08-2F 这类货架位、NB03-B-13-07 这类地面格位或 NB01-R1-03 这类来料格位，请到「位置登记」重新选择') + '）');
+                rejectedLoc.push(it.c + '（货位「' + it.l + '」' + (locStrict(it.l) ? (receivingOn() ? '超出来料区范围——当前参数 ' + _rp.recvRows + ' 排 × ' + _rp.recvCols + ' 格，请核对现场划线或在设置页调整「来料区排数/每排格数」' : '来料区未启用——设置页开启「来料区启用」后方可登记 NB04 格位') : '格式不符——应选 NB02-A-08-2F 这类货架位、NB03-B-13-07 这类地面格位或 NB04-A-01-003 这类来料格位，请到「位置登记」重新选择') + '）');
               }
             } else { if (db.locReject) delete db.locReject[it.c]; _pushClean(it); }
           }
@@ -3038,7 +3068,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
             if (!_sr[_sk]) { _sr[_sk] = tombT || it.t; rejected.push(key + '（服务器已有更新登记 ' + localDT(new Date(Number(old.t) || 0).toISOString(), 16) + '，本机旧缓存未生效——拉取对齐即可，无需重新登记）'); }
             continue;
           }
-          // ㉖v118 迁移方向闸：二楼库位→来料区(NB01) 逆流禁止——NB01 只是"未入库前"的家，已上二楼架/地面的框不得回流来料区
+          // ㉖v118 迁移方向闸：二楼库位→来料区(NB04) 逆流禁止——NB04 只是"未入库前"的家，已上二楼架/地面的框不得回流来料区
           // （否则账实倒挂：楼下清点会多出"账面已入库"的筐；确需纠正走网页「账本修正」，那里有原因审计）
           if (old && locRecv(it.l) && !locRecv(old.l)) {
             skipped++;
@@ -3172,6 +3202,13 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (_fsSamp.length < 5) _fsSamp.push(String(v.code || '?') + (Number(v.wt) === 0 ? '·AGV st=' : '·地面 gl=') + String(Number(v.wt) === 0 ? v.st : v.gl));
         }
         if (_flowSick) { console.log(`[flow-loc] ⚠ ${u.name} 本批流水 ${_flowSick} 条跨模式货位错配：${_fsSamp.join(' ; ')}`); try { pushOps(u, '货位格式体检', _flowSick + ' 条错配', _fsSamp.join(' ; ')); } catch (_) {} }
+        // ㉖v120b 来料区停用期误扫体检（流水层·只留痕不回改）：receivingOn=0 时 gl=NB04-* 的采集流水照常入库
+        // （流水=现场原始证据铁律），但账本源头闸已拒其上账——留痕点名设备与操作人，供追查"开关关了怎么还扫上"的幽灵流水；
+        // PDA 侧已同步从入口闸住（locs?recv=1 下发开关+未启用即中止保存），本条为旧版 PDA/竞态窗口的兜底可见性。
+        if (!receivingOn()) {
+          const _rOff = Object.values(snap).filter((v) => /^NB04-/.test(String(v.gl || '').toUpperCase()));
+          if (_rOff.length) { console.log(`[recv-off] ⚠ ${u.name} 来料区停用期流入 ${_rOff.length} 条 NB04 流水：${_rOff.slice(0, 5).map((v) => v.code + '@' + v.gl).join(' ; ')}`); try { pushOps(u, '来料区停用期误扫', _rOff.length + ' 条 NB04 流水（账本已拒未上账）', _rOff.slice(0, 5).map((v) => String(v.code || '?') + '@' + v.gl).join(' ; ')); } catch (_) {} }
+        }
         for (const s of Object.values(snap)) { feedDict(s.pn, s.nm, '采集流水'); feedMitem(s.pn, s.mc, '采集流水'); } // ㉒G7 字典沉淀；㉖v98c 物料号同步沉淀
         // ㉖v103 数量对账防线：本批有效扫码若与账本行件数不符 → 按扫码（MES 直读）纠正账本。
         // 根因场景：PDA LabelInfo 缓存存旧 MES 值，重扫后新值被缓存压住推上账本（11/3 现场虚高 80 件）。
@@ -3318,11 +3355,11 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       // ---- ㉖⑰ 货架位占用查询（服务器账本权威）：PDA 入库自动分配货位用，多PDA不再各算各的 ----
       if (req.method === 'GET' && p === '/api/ledger/locs') {
         const all = url.searchParams.get('all') === '1'; // ㉖v99 all=1 附 NB03 地面格（手动选位弹层实时化；默认口径不变=仅NB02）
-        const recv = url.searchParams.get('recv') === '1'; // ㉖v118 recv=1 仅来料区 NB01 占用（一楼登记页自动放空位用）
-        const m = {}; for (const x of db.ledger || []) { const L = String(x.l || '').toUpperCase(); if (recv ? /^NB01-/.test(L) : (all ? /^NB0[23]-/.test(L) : (/^NB02-/.test(L) && !/-CK-/.test(L)))) (m[L] = m[L] || []).push(String(x.c || '')); }
-        if (recv) { for (const [l, r] of Object.entries(db.locReserve || {})) { if (/^NB01-/.test(l)) (m[l] = m[l] || []).push(String(r.code || '')); } } // 来料区并发占位一并避让（多PDA登记防撞格）
+        const recv = url.searchParams.get('recv') === '1'; // ㉖v118 recv=1 仅来料区 NB04 占用（一楼登记页自动放空位用）
+        const m = {}; for (const x of db.ledger || []) { const L = String(x.l || '').toUpperCase(); if (recv ? /^NB04-/.test(L) : (all ? /^NB0[23]-/.test(L) : (/^NB02-/.test(L) && !/-CK-/.test(L)))) (m[L] = m[L] || []).push(String(x.c || '')); }
+        if (recv) { for (const [l, r] of Object.entries(db.locReserve || {})) { if (/^NB04-/.test(l)) (m[l] = m[l] || []).push(String(r.code || '')); } } // 来料区并发占位一并避让（多PDA登记防撞格）
         else { pruneReserve(); for (const [l, r] of Object.entries(db.locReserve || {})) { (m[l] = m[l] || []).push(String(r.code || '')); } } // ㉖v54 预占即占用：旧版PDA与picker一并避让
-        return send(res, 200, { ok: true, byLoc: m, recvRows: P().recvRows, recvCols: P().recvCols }); // ㉖v120 附带行列上限：PDA 来料模式自动放格与服务器参数同源
+        return send(res, 200, { ok: true, byLoc: m, recvRows: P().recvRows, recvCols: P().recvCols, receivingOn: receivingOn() ? 1 : 0 }); // ㉖v120b 附带行列上限+启用开关：PDA 来料模式自动放格与开关状态同源（关闭时 PDA 从入口闸住，幽灵流水不再产生）
       }
       // ㉖v54 货位预占：AUTO 分配由服务器算位并锁位（Node 单线程同步段内完成判定+登记，多PDA并发拿到不同格，根治5~15秒竞态撞位）
       if (req.method === 'POST' && p === '/api/ledger/reserve') {
@@ -3333,7 +3370,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         if (!code || code.length > 40) return send(res, 400, { ok: false, msg: '缺少标签号' });
         const inLed = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code);
         if (inLed && !locRecv(inLed.l)) return send(res, 200, { ok: true, loc: String(inLed.l || '').toUpperCase(), kept: true }); // 已上账：回现位，不重复占
-        // ㉖v118 例外：现位在来料区(NB01)=二楼转入场景，不回吐旧位，继续往下正常分配 NB02 空位
+        // ㉖v118 例外：现位在来料区(NB04)=二楼转入场景，不回吐旧位，继续往下正常分配 NB02 空位
         pruneReserve();
         const R = db.locReserve = db.locReserve || {};
         const usedLoc = new Set(); for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (/^NB02-/.test(l) && !/-CK-/.test(l)) usedLoc.add(l); }
@@ -4057,7 +4094,7 @@ return send(res, 200, {
         return send(res, 200, { ok: true });
       }
       // ===== ㉒G5 账本修正（网页控制台风扇：改位/补登记/消位；原因必填+diff留痕+服务器权威时间戳） =====
-      const locOk = (l) => /^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$/.test(l) || (/^NB01-R\d{1,2}-\d{2}$/.test(l) && recvSlotOk(l)); // ㉖v118 账本修正同样认来料区格位（范围由参数闸复核）
+      const locOk = (l) => /^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$/.test(l) || (/^NB04-[A-H]-\d{2}-\d{3}$/.test(l) && recvSlotOk(l)); // ㉖v120d 账本修正同样认来料区格位（固定位数：排2位格3位；范围由参数闸复核）
       if (req.method === 'POST' && p === '/api/ledger/fix') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
         const b = await readBody(req);
@@ -4172,7 +4209,7 @@ return send(res, 200, {
         if (ds === 'D9' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '活动流审计仅管理员可导出' }); // ㉕A1 角色门禁（方案6.6）
         if ((ds === 'D8' || ds === 'D10') && u.role === 'material') return send(res, 403, { ok: false, msg: '该数据集需仓管员/管理员权限' });
         const fmt = ['xls', 'json'].includes(url.searchParams.get('fmt')) ? url.searchParams.get('fmt') : 'csv';
-        const fRaw = { from: url.searchParams.get('from') || '', to: url.searchParams.get('to') || '', batchId: url.searchParams.get('batchId') || '', arch: url.searchParams.get('arch') || '', zero: url.searchParams.get('zero') || '', loc: url.searchParams.get('loc') || '' }; // ㉖v120 loc=货位前缀过滤（NB01 来料区单独导出）
+        const fRaw = { from: url.searchParams.get('from') || '', to: url.searchParams.get('to') || '', batchId: url.searchParams.get('batchId') || '', arch: url.searchParams.get('arch') || '', zero: url.searchParams.get('zero') || '', loc: url.searchParams.get('loc') || '' }; // ㉖v120 loc=货位前缀过滤（NB04 来料区单独导出）
         let d;
         try { d = buildExport(ds, fRaw); } catch (e) { return send(res, 500, { ok: false, msg: '导出构建失败：' + e.message }); }
         if (!d) return send(res, 400, { ok: false, msg: 'ds 需为 D1库位表/D2库存汇总/D3入库/D4出库/D5AGV任务/D6异常/D7工作量/D8领料/PACK对账包' });
@@ -4929,7 +4966,7 @@ return send(res, 200, {
         const cs = String(url.searchParams.get('c') || '').trim().toUpperCase();
         if (!cs) return send(res, 400, { ok: false, msg: '缺少 c' });
         const retMode = url.searchParams.get('ret') === '1'; // ㉖v118 二楼生产退库模式：豁免出库历史复用拦（新码/原码两条路同判）
-        const recvMode = url.searchParams.get('recv') === '1'; // ㉖v118 一楼来料登记模式：需 receiving_reg 权限，命中在库 NB01 行仍拦（重复登记）
+        const recvMode = url.searchParams.get('recv') === '1'; // ㉖v118 一楼来料登记模式：需 receiving_reg 权限，命中在库 NB04 行仍拦（重复登记）
         if (retMode && !canFeature(u, 'collect')) return send(res, 403, { ok: false, msg: '当前角色未开通「采集录入」权限' });
         if (recvMode && !receivingOn()) return send(res, 403, { ok: false, msg: '来料区未启用（设置页「来料区启用」开关关闭）——一楼登记不可用，请二楼直接按货架/地面位采集入库' });
         if (recvMode && !canFeature(u, 'receiving_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「来料区登记」权限' });
@@ -5840,7 +5877,7 @@ return send(res, 200, {
             hpush(`转MES ${target.partNo} 实发${got}件${got < (Number(target.qty) || 0) ? '（短装' + ((Number(target.qty) || 0) - got) + '件）' : ''}（${u.name}）`); // ㉖v105 对账框留痕：此前MES已转、本地回写中断的框按已转单入账，不再重复调拨
             { const _rc = Array.isArray(b.recon) ? b.recon.map((x) => String(x).toUpperCase()).filter(Boolean) : []; if (_rc.length) hpush(`🔎 对账入账：框 ${_rc.join('/')} 经 MES 确认此前已在目标仓，本次仅补记账（未重复调拨）`); }
             finalize();
-            setTimeout(() => { try { outboundLedgerFix(); } catch (_) {} }, 3 * 60000); // ㉖v94r 3分钟后自查该行台账是否落库（给PDA推送留足窗口），缺则补建
+            setTimeout(() => { try { outboundLedgerFix({ grace: 0 }); } catch (_) {} }, 3 * 60000); // ㉖v94r 3分钟后自查该行台账是否落库（给PDA推送留足窗口），缺则补建；㉖v120c 传 grace=0 豁免宽限期——本次自查正是为刚转的单兜底，宽限会把它废掉
           } else if (act === 'skip') {
             // 行级跳过：仓库无货，0件转单，等下次补货可另开单
             if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员可跳过' });
@@ -6800,7 +6837,7 @@ async function _rcsPollInner() {
       // 且 v102 自愈回退按 ep===station 比对被污染失效、到站判定抓错站台快照可能提前判完成。
       // 本块语义=出库任务 RCS 换台，只应命中"货架→站台"方向且同趟（fromLoc=事件起点sp）的项；
       // 入库/归位腿目的地本就是货架，RCS 不会换货架位，天然不该进此纠正。
-      if (codes.length) { const _qq = (db.agvQueue || []).find((x) => codes.includes(String(x.code || '').toUpperCase()) && ['已下发', '到站'].includes(x.state) && x.station && x.station !== ep && x.type !== 'inbound' && x.type !== 'inspback' && String(x.fromLoc || '').toUpperCase() === sp); if (_qq) { (_qq.trace = _qq.trace || []).push('RCS实际送达 ' + ep + '（请求 ' + _qq.station + '，已自动纠正）'); _qq.station = ep; _qq.updAt = nowMs; } } // eslint-disable-line max-len
+      if (codes.length) { const _qq = (db.agvQueue || []).find((x) => codes.includes(String(x.code || '').toUpperCase()) && ['已下发', '到站'].includes(x.state) && x.station && x.station !== ep && x.type !== 'inbound' && x.type !== 'inspback' && String(x.fromLoc || '').toUpperCase() === sp && finTs >= (Number(x.sentAt) || Number(x.at) || 0) - 60000); if (_qq) { (_qq.trace = _qq.trace || []).push('RCS实际送达 ' + ep + '（请求 ' + _qq.station + '，已自动纠正）'); _qq.station = ep; _qq.updAt = nowMs; } } // eslint-disable-line max-len
     } else if (isCK(sp) && !isCK(ep)) { // 入库叉回货架 → 仅当入库完成时刻晚于站台现有"有货"到站时刻才清台（防乱序穿越删除）
       const cur = db.rcsStations[sp];
       if (!cur || (cur.ts || 0) <= finTs) delete db.rcsStations[sp];
@@ -6835,7 +6872,7 @@ async function _rcsPollInner() {
     if (db.agvTasks[t.dispatchNo]) continue; // 任务号去重
     const { sp, ep } = parsePts(t);
     const ex = rcsTs(t.exeTime);
-    db.agvTasks[t.dispatchNo] = { car: t.exeAgvId ?? 0, ex, fin, pick: nodeTimes(t).pickAt, dur: ex && fin > ex ? Math.round((fin - ex) / 1000) : 0, sp, ep, ck: isCK(ep) && !isCK(sp) ? 'out' : isCK(sp) && !isCK(ep) ? 'in' : 'other' };
+    db.agvTasks[t.dispatchNo] = { car: t.exeAgvId ?? 0, st: t.taskState, ex, fin, pick: nodeTimes(t).pickAt, dur: ex && fin > ex ? Math.round((fin - ex) / 1000) : 0, sp, ep, ck: isCK(ep) && !isCK(sp) ? 'out' : isCK(sp) && !isCK(ep) ? 'in' : 'other' };
   }
   { const cutoff = nowMs - 30 * 86400000; for (const [k, v] of Object.entries(db.agvTasks)) { if ((v.fin || 0) < cutoff) delete db.agvTasks[k]; } }
   // ===== 到站催扫：站台仍"有货"且到站超10分钟 → 通知叫车人（用快照标签，不受货架位补新框干扰） =====
@@ -7321,6 +7358,7 @@ async function agvDispatch(nowMs, runT) {
           if (t.ck !== 'out' || String(t.ep || '').toUpperCase() !== String(q.station).toUpperCase()) continue;
           if (String(t.sp || '').toUpperCase() !== String(q.fromLoc || '').toUpperCase()) continue;
           if ((t.fin || 0) < q.sentAt - 60000) continue;
+          if (t.st !== undefined && t.st !== 2) continue; // ㉖v120 外部清除/驳回的取消终态不作送达旁证（11/07 N26J290111：AGV系统清除0039后其取消时刻被旁证当完成→0052假到站假完成+容器误释放）；存量旧记录无 st 字段不误杀
           if ((t.fin || 0) > fin) fin = t.fin;
         }
         if (fin) { q.state = '到站'; q.dockAt = fin; q.updAt = nowMs; (q.trace = q.trace || []).push('RCS沉淀旁证：搬运已完成，快照未抓到到站，按记录推进'); }

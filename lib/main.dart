@@ -1484,6 +1484,8 @@ class _MainPageState extends State<MainPage>
   late Isar _isar;
   String? _currentBatchId;
   int _workType = 0; //0 AGV站台，1人工地面，2来料区登记（㉖v120 需 receiving_reg 角色开关）
+  int? _recvOn; // ㉖v120b 服务器来料区启用开关探测（locs?recv=1 顺带下发；null=未探到/旧版服务器，不改变行为）
+  bool _recvOffFlag = false; // ㉖v120b nb01AutoSlot 判定"未启用"置位，保存链据此中止并提示（与"区满/离线"区分）
   String? _selectedStation; //【修改：存储编码 NB02-CK-05】
   String? _lastScanStation; // ㉖ 扫码保存后站台即清，留作手动「提交任务」回退
   String? _lastScanContainer; // ㉖ 容器类型同左
@@ -1609,7 +1611,7 @@ class _MainPageState extends State<MainPage>
     TabCustom.restore().then((_) => _applyCustomTabs()); // ㉖v53 应用自定义顺序/显隐
     kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
     _startNotifPolling();
-    _restoreWorkMode(); // ②按登录账号恢复上次工作模式（AGV站台/人工地面）
+    _probeReceivingOn().then((_) => _restoreWorkMode()); // ②先探来料区启用开关再恢复工作模式（㉖v120b 时序保证：关闭态不恢复来料档）
     _loadContainers(); // ㉖ 容器类型从服务器拉取（新增框型免发版）
     _applyDefaultPallet(); // 第3档 按偏好预填默认框型（减少每托重复点选）
     // ㉖ 我的AGV任务：进页拉一次 + 叫车成功广播即时刷 + 30秒轮询跟进排队→在途→到站
@@ -2163,7 +2165,7 @@ class _MainPageState extends State<MainPage>
   }
 
   /// ㉖① 全局标签查重：服务器 labelSeen 权威（任何批次录过即拦）；断网降级本机 Isar 全批次。命中默认拒绝，可填原因强制继续（留痕）。
-  /// ㉖v120 recv=1：来料区登记模式——命中在库 NB01 行不豁免（重复登记照拦）
+  /// ㉖v120 recv=1：来料区登记模式——命中在库 NB04 行不豁免（重复登记照拦）
   Future<bool> _globalDupCheck(String code, {bool recv = false}) async {
     final r = await AuthApi.labelCheck(code, recv: recv);
     if (r["net"] == true) {
@@ -2182,6 +2184,23 @@ class _MainPageState extends State<MainPage>
         return true;
       }
       return false;
+    }
+    // ㉖v120b 来料登记模式：服务器明确拒绝(403=未启用/无权限)必须硬拦——旧版 ok=false 一律静默放行，
+    // 开关关闭时照样扫出幽灵流水（11/07 现场 N26K030105@NB04-A-01-01：账本被源头闸拒、流水照常落库档案挂未登记）
+    if (recv && r["_status"] == 403) {
+      if (mounted) {
+        showDialog(
+            context: context,
+            builder: (dc) => AlertDialog(
+                  icon: const Icon(Icons.block, color: Colors.red, size: 34),
+                  title: const Text("来料登记被服务器拒绝"),
+                  content: Text((r["msg"] ?? "来料区未启用或无权限").toString()),
+                  actions: [
+                    FilledButton(onPressed: () => Navigator.pop(dc), child: const Text("知道了"))
+                  ],
+                ));
+      }
+      return true;
     }
     if (r["ok"] != true || r["blockIn"] != true) return false;
     final reason = (r["reason"] ?? "该标签已存在").toString();
@@ -2582,14 +2601,18 @@ class _MainPageState extends State<MainPage>
           }
         }
       }
-      // ㉖v120 来料区登记模式：向服务器申请自动格位（占用+预占权威，防撞格）；申请不到=区满/离线，中止保存
+      // ㉖v120 来料区登记模式：向服务器申请自动格位（占用+预占权威，防撞格）；申请不到=未启用/区满/离线，中止保存
       String? recvSlotAuto;
       if (_workType == 2) {
+        _recvOffFlag = false;
         recvSlotAuto = await nb01AutoSlot();
         if (recvSlotAuto == null) {
+          // ㉖v120b 中止在放格这一步=流水/账本都不落库，杜绝"开关关了还扫上"的幽灵流水（11/07 现场 N26K030105 根因）
           if (mounted)
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text("来料区暂无空格位（已满或服务器不通）——请搬运清位或联网后重试"),
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(_recvOffFlag
+                    ? "来料区已被管理员关闭（设置页「来料区启用」=关）——本筐未录入，请改用二楼正常采集入库或联系管理员"
+                    : "来料区暂无空格位（已满或服务器不通）——请搬运清位或联网后重试"),
                 backgroundColor: Colors.orange));
           _isSaving = false;
           return;
@@ -2599,7 +2622,7 @@ class _MainPageState extends State<MainPage>
         scanTime: DateTime.now(),
         workType: _workType,
         stationNo: _workType == 0 ? _selectedStation : null,
-        groundLocation: _workType == 1 ? _selectedGroundLoc : (_workType == 2 ? recvSlotAuto : null), // ㉖v120 来料流水带自动格位（gl=NB01-*）
+        groundLocation: _workType == 1 ? _selectedGroundLoc : (_workType == 2 ? recvSlotAuto : null), // ㉖v120 来料流水带自动格位（gl=NB04-*）
         goodsCode: code,
         remark: finalRemark,
         batchId: _currentBatchId!,
@@ -2748,14 +2771,14 @@ class _MainPageState extends State<MainPage>
           return;
         }
       }
-      // ㉖v118 认来料区格位 NB01-R{行}-{列}（结构域：行1-99、列01-20；行列上限=服务器参数 recvRows×recvCols，超限由服务器拒回）：一楼来料登记（地面模式+手填/选 NB01 位）直接入账=来料区库存
+      // ㉖v120d 认来料区格位 NB04-{区}-{排}-{格}（结构域：区A-H、排1-99、格1-999；范围上限=服务器参数 recvRows×recvCols，超限由服务器拒回）：一楼来料登记（地面模式+手填/选 NB04 位）直接入账=来料区库存
       if (!RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$')
               .hasMatch(loc) &&
-          !RegExp(r'^NB01-R\d{1,2}-(0[1-9]|1\d|20)$').hasMatch(loc)) {
+          !RegExp(r'^NB04-[A-H]-\d{2}-\d{3}$').hasMatch(loc)) {
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content:
-                  Text("货位编码「$loc」格式不符（例 NB02-A-08-2F / NB03-B-13-07 / NB01-R1-03），本筐未入账本"),
+                  Text("货位编码「$loc」格式不符（例 NB02-A-08-2F / NB03-B-13-07 / NB04-A-01-003），本筐未入账本"),
               backgroundColor: Colors.orange));
         return; //保留输入内容，改正后可直接重扫标签再保存
       }
@@ -2875,7 +2898,7 @@ class _MainPageState extends State<MainPage>
   }
 
   /// ㉖v120 来料区登记模式专用入账：格位已由服务器 recv 权威分配（nb01AutoSlot），
-  /// 本机落 shelfPlacements（loc=NB01-*，容器默认筐）→ 走同款账本推送链（mv=登记/src=来料区 由 workType==2 派生）。
+  /// 本机落 shelfPlacements（loc=NB04-*，容器默认筐）→ 走同款账本推送链（mv=登记/src=来料区 由 workType==2 派生）。
   /// 两台 PDA 同刻抢同格由服务器货位互斥闸拒回点名，本机弹窗提示重扫即可。
   Future<void> _writeRecvLedger(String code, String slot) async {
     final oper = Auth.user?.name ?? Auth.user?.username ?? "来料登记";
@@ -3916,8 +3939,8 @@ class _MainPageState extends State<MainPage>
                             child: _workModeCard(1, "人工地面摆放", "人工地堆托盘扫码"),
                           ),
                         ),
-                        // ㉖v120 来料区登记模式：仅开通 receiving_reg 角色可见（一楼仓管：只扫码+自动放格）
-                        if (Auth.can("receiving_reg")) ...[
+                        // ㉖v120 来料区登记模式：开通 receiving_reg 角色可见；㉖v120b 服务器明确关闭时同步隐藏入口（_recvOn==null 未探到不改变行为，防旧版服务器误隐藏）
+                        if (Auth.can("receiving_reg") && _recvOn != 0) ...[
                           const SizedBox(width: 10),
                           Expanded(
                             child: InkWell(
@@ -4472,7 +4495,18 @@ class _MainPageState extends State<MainPage>
     final sp = await SharedPreferences.getInstance();
     final v = sp.getInt('worktype_' + (Auth.user?.id ?? ''));
     if (v == 1 && mounted) setState(() => _workType = 1);
-    if (v == 2 && Auth.can("receiving_reg") && mounted) setState(() => _workType = 2); // ㉖v120 无来料权限不恢复
+    if (v == 2 && Auth.can("receiving_reg") && _recvOn != 0 && mounted) setState(() => _workType = 2); // ㉖v120 无来料权限不恢复；㉖v120b 服务器明确关闭也不恢复（null=未探到不改变行为）
+  }
+
+  /// ㉖v120b 来料区启用开关探测：locs?recv=1 顺带下发 receivingOn，进采集页拉一次即可
+  /// （旧版服务器无此字段=_recvOn 保持 null，一切行为与 v120 相同，向后兼容零风险）
+  Future<void> _probeReceivingOn() async {
+    try {
+      final r = await AuthApi.ledgerLocs(recv: true).timeout(const Duration(seconds: 6));
+      if (r["ok"] == true && r["receivingOn"] is num && mounted) {
+        setState(() => _recvOn = (r["receivingOn"] as num).toInt());
+      }
+    } catch (_) {} // 离线不改变行为（本机无法判定开关，保守放行由服务器端兜底）
   }
 
   /// 第3档 按偏好预填默认框型（仅在尚未选择时；全机偏好）㉖ 合法值跟随服务器容器类型配置

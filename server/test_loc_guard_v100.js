@@ -1,9 +1,9 @@
 // ㉖v100 货位格式防线判据单元测试（纯函数，不依赖服务/数据）
 // 判据直接从 server.js 现行实现抄录，逐值断言合法形态放行、病值/错配拦截。
-// ㉖v118 同步：locStrict 扩来料区结构域（行1-99、列01-20）；行列上限=在线参数 recvRows×recvCols（默认15×12=180格），由 recvSlotOk 复核
-const locStrict = (l) => { const s = String(l || '').trim().toUpperCase(); return /^NB02-[A-H]-\d{1,2}-[1-4]F$/.test(s) || /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(s) || /^NB01-R\d{1,2}-\d{2}$/.test(s); };
-const recvSlotOk = (l, pr) => { const m = String(l || '').trim().toUpperCase().match(/^NB01-R(\d{1,2})-(\d{2})$/); if (!m) return false; pr = pr || { recvRows: 15, recvCols: 12 }; const r = Number(m[1]), c = Number(m[2]); return r >= 1 && r <= pr.recvRows && c >= 1 && c <= pr.recvCols; };
-const locRecv = (l) => /^NB01-/.test(String(l || '').trim().toUpperCase());
+// ㉖v120d 同步：locStrict 扩来料区结构域 NB04-{区}-{排2位}-{格3位}（固定位数，与 server.js 现行实现逐字一致）；排格上限=在线参数 recvRows×recvCols（默认1×720=720格），由 recvSlotOk 复核
+const locStrict = (l) => { const s = String(l || '').trim().toUpperCase(); return /^NB02-[A-H]-\d{1,2}-[1-4]F$/.test(s) || /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(s) || /^NB04-[A-H]-\d{2}-\d{3}$/.test(s); };
+const recvSlotOk = (l, pr) => { const m = String(l || '').trim().toUpperCase().match(/^NB04-[A-H]-(\d{2})-(\d{3})$/); if (!m) return false; pr = pr || { recvRows: 1, recvCols: 720 }; const r = Number(m[1]), c = Number(m[2]); return r >= 1 && r <= pr.recvRows && c >= 1 && c <= pr.recvCols; };
+const locRecv = (l) => /^NB04-/.test(String(l || '').trim().toUpperCase());
 const locStation = (l) => /^NB02-CK-\d{1,2}$/.test(String(l || '').trim().toUpperCase());
 const flowModeBad = (wt, st, gl) => { const s = String(st || '').trim().toUpperCase(), g = String(gl || '').trim().toUpperCase(); return Number(wt) === 0 ? /^NB03-/.test(s) : locStation(g); };
 
@@ -30,7 +30,7 @@ T('B5 区字母+排(C12)', locStrict('C12'), false);
 T('B6 单字母(H7)', locStrict('H7'), false);
 T('B7 空值', locStrict(''), false);
 T('B8 任意串', locStrict('随便写的'), false);
-T('B9 错误前缀(NB01)', locStrict('NB01-A-01-1F'), false);
+T('B9 错误前缀(NB04)', locStrict('NB04-A-01-1F'), false);
 T('B10 层号越界 5F', locStrict('NB02-A-01-5F'), false);
 T('B11 地面格层号混用', locStrict('NB03-A-01-1F'), false);
 
@@ -57,21 +57,24 @@ T('E1 恢复取到站台码被闸', !locStrict('NB02-CK-03'), true);
 T('E2 恢复取到货架位放行', locStrict('NB02-A-05-1F'), true);
 T('E3 恢复取到粗码被闸', !locStrict('NB03-H-09'), true);
 
-console.log('== F. ㉖v118 来料区 NB01：结构域双层闸（locStrict 结构 + recvSlotOk 参数范围，默认15行×12列=180格）==');
-const RP = { recvRows: 15, recvCols: 12 }; // 默认参数快照（与 server PARAMS d 值同源）
-T('F1 来料格 R1-03', locStrict('NB01-R1-03') && recvSlotOk('NB01-R1-03', RP), true);
-T('F2 末格 R15-12(180格边界内)', locStrict('NB01-R15-12') && recvSlotOk('NB01-R15-12', RP), true);
-T('F3 小写归一', locStrict('nb01-r2-07') && recvSlotOk('nb01-r2-07', RP), true);
-T('F4 行5 结构放行且参数内(旧48格时代越界)', locStrict('NB01-R5-01') && recvSlotOk('NB01-R5-01', RP), true);
-T('F5 行16 超参数拒', locStrict('NB01-R16-01') && recvSlotOk('NB01-R16-01', RP), false);
-T('F6 列13 超参数拒(结构域放行)', locStrict('NB01-R1-13') && recvSlotOk('NB01-R1-13', RP), false);
-T('F7 列21 结构域放行但超参数拒', locStrict('NB01-R1-21') && !recvSlotOk('NB01-R1-21', RP), true);
-T('F8 列00 结构域放行但超参数拒', locStrict('NB01-R1-00') && !recvSlotOk('NB01-R1-00', RP), true);
-T('F9 旧错格式(带层)', locStrict('NB01-A-01-1F'), false);
-T('F10 单段粗码', locStrict('NB01-R1'), false);
-T('F11 locRecv 判来料区', locRecv('NB01-R1-03'), true);
+console.log('== F. ㉖v120d 来料区 NB04-A-排-格：结构域双层闸（locStrict 结构 + recvSlotOk 参数范围，默认1排×720格=720格）==');
+const RP = { recvRows: 1, recvCols: 720 }; // 默认参数快照（与 server PARAMS d 值同源）
+T('F1 首格 A-01-001', locStrict('NB04-A-01-001') && recvSlotOk('NB04-A-01-001', RP), true);
+T('F2 末格 A-01-720(720格边界内)', locStrict('NB04-A-01-720') && recvSlotOk('NB04-A-01-720', RP), true);
+T('F3 小写归一', locStrict('nb04-a-01-007') && recvSlotOk('nb04-a-01-007', RP), true);
+T('F4 格721 超参数拒(结构域放行)', locStrict('NB04-A-01-721') && recvSlotOk('NB04-A-01-721', RP), false);
+T('F5 排02 超参数拒(结构域放行)', locStrict('NB04-A-02-001') && recvSlotOk('NB04-A-02-001', RP), false);
+T('F6 格1000 结构域拒(4位超999)', locStrict('NB04-A-01-1000'), false);
+T('F7 格000 结构域放行但超参数拒', locStrict('NB04-A-01-000') && !recvSlotOk('NB04-A-01-000', RP), true);
+T('F8 旧NB01-R编码废弃拒', locStrict('NB01-R1-03'), false);
+T('F9 旧错格式(带层)', locStrict('NB04-A-01-1F'), false);
+T('F10 三段粗码拒', locStrict('NB04-A-01'), false);
+T('F11 locRecv 判来料区', locRecv('NB04-A-01-003'), true);
 T('F12 locRecv 非来料', locRecv('NB02-A-01-1F'), false);
-T('F13 参数放大后 R1-13 放行', locStrict('NB01-R1-13') && recvSlotOk('NB01-R1-13', { recvRows: 15, recvCols: 20 }), true);
+T('F13 扩排后 A-02-001 放行', locStrict('NB04-A-02-001') && recvSlotOk('NB04-A-02-001', { recvRows: 3, recvCols: 720 }), true);
+T('F14 扩格后 A-01-999 结构放行参数内', locStrict('NB04-A-01-999') && recvSlotOk('NB04-A-01-999', { recvRows: 1, recvCols: 999 }), true);
+T('F15 排1位(A-1-001) 结构域拒(固定2位)', locStrict('NB04-A-1-001'), false);
+T('F16 格2位(A-01-1) 结构域拒(固定3位)', locStrict('NB04-A-01-1'), false);
 
 console.log(`\n===== 判据单测：${pass} PASS / ${fail} FAIL =====`);
 process.exit(fail ? 1 : 0);

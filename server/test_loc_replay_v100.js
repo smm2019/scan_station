@@ -4,7 +4,7 @@
 const fs = require('fs');
 const db = JSON.parse(fs.readFileSync(__dirname + '/data/db.json', 'utf8'));
 
-const locStrict = (l) => { const s = String(l || '').trim().toUpperCase(); return /^NB02-[A-H]-\d{1,2}-[1-4]F$/.test(s) || /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(s) || /^NB01-R\d{1,2}-\d{2}$/.test(s); }; // ㉖v118 同步扩来料区结构域（真实账本出现 NB01 行后 R1 不误报；范围闸为写入时防线，回放不涉及）
+const locStrict = (l) => { const s = String(l || '').trim().toUpperCase(); return /^NB02-[A-H]-\d{1,2}-[1-4]F$/.test(s) || /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(s) || /^NB04-[A-H]-\d{1,2}-\d{1,3}$/.test(s); }; // ㉖v120d 同步扩来料区结构域（真实账本出现 NB04 行后不误报；范围闸为写入时防线，回放不涉及）
 const locStation = (l) => /^NB02-CK-\d{1,2}$/.test(String(l || '').trim().toUpperCase());
 const flowModeBad = (wt, st, gl) => { const s = String(st || '').trim().toUpperCase(), g = String(gl || '').trim().toUpperCase(); return Number(wt) === 0 ? /^NB03-/.test(s) : locStation(g); };
 
