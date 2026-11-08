@@ -448,6 +448,19 @@ class _InventoryHomePageState extends State<InventoryHomePage> {
                 ),
               ),
             ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFF515BD4), side: const BorderSide(color: Color(0xFF515BD4)), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+                  onPressed: () => Navigator.push(ctx, MaterialPageRoute(builder: (_) => const ShelfCountPage())),
+                  icon: const Icon(Icons.inventory),
+                  label: const Text("货架AGV盘点 · 盲区抽盘"),
+                ),
+              ),
+            ),
             Expanded(
               child: tasks.isEmpty
                   ? const Center(child: Text("暂无盘点任务，点击上方新建\n（盘点前请先在网页门户上传两份基准CSV）", textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: Colors.grey)))
@@ -1410,7 +1423,8 @@ class _InvDiffPageState extends State<_InvDiffPage> {
         "applied": applied, "applyTime": applied ? nowMs : 0,
         if (liveMeta != null) "liveMeta": liveMeta,
         "parts": d.parts.map((p) => {"pn": p.partNo, "nm": p.itemName, "book": p.bookQty, "real": p.realQty, "boxes": p.realBoxes, "out": p.outsideBoxes, "warn": p.warnFlag}).toList(),
-        "locs": d.locs.map((l) => {"loc": l.locCode, "pn": l.partNo, "book": l.bookQty, "real": l.realQty, "boxes": l.realBoxes}).toList(),
+        // ㉖v123b 标签级明细随货位行上收：codes实扫 / outCodes账外 / bookCodes基准应到（各"码|件数"，账外与应到无件数则仅码）
+        "locs": d.locs.map((l) => {"loc": l.locCode, "pn": l.partNo, "book": l.bookQty, "real": l.realQty, "boxes": l.realBoxes, "codes": l.labels, "outCodes": l.outsideLabels, "bookCodes": l.bookLabels}).toList(),
       });
       LocalLog.op('盘点上收', '${t.batchId}${applied ? "（已改账版）" : ""}');
     } catch (_) {}
@@ -1617,5 +1631,157 @@ class _InvDiffPageState extends State<_InvDiffPage> {
         },
       ),
     );
+  }
+}
+
+// ===== ㉖v123 货架AGV盘点（盲区随机抽盘）：发起会话→AGV取框到站台→扫码核对→归位原格 =====
+// 独立于人工盘点任务模型：AGV 双腿搬运 + 服务器工单状态机，本页面只做看板与到台操作。
+class ShelfCountPage extends StatefulWidget {
+  const ShelfCountPage({super.key});
+  @override
+  State<ShelfCountPage> createState() => _ShelfCountPageState();
+}
+
+class _ShelfCountPageState extends State<ShelfCountPage> {
+  List<Map> _list = [];
+  int _cand = 0, _busy = 0, _conc = 3;
+  bool _loading = false, _busyOp = false;
+  Timer? _timer;
+  String _err = "";
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _timer = Timer.periodic(const Duration(seconds: 6), (_) => _refresh()); // 看板轮询（AGV 到台/归位由服务器推进）
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    final r = await AuthApi.countList(all: true);
+    if (!mounted) return;
+    if (r["ok"] == true) {
+      setState(() {
+        _list = List<Map>.from((r["list"] as List?) ?? []);
+        _cand = (r["cand"] as num?)?.toInt() ?? 0;
+        _busy = (r["busy"] as num?)?.toInt() ?? 0;
+        _conc = (r["conc"] as num?)?.toInt() ?? 3;
+        _err = "";
+      });
+    } else setState(() => _err = (r["msg"] ?? "看板加载失败").toString());
+  }
+
+  Future<void> _start() async {
+    final ok = await showDialog<bool>(context: context, builder: (c) => AlertDialog(
+      title: const Text("发起盲区随机抽盘"),
+      content: Text("从滞留≥7天、近期未被出入库验证的货架框中随机抽取。\n当前盲区候选框：$_cand 个\n会话上限与并发由服务器参数控制。\n\nAGV 会把框取到站台，你到台扫码核对后归位回原格。\n\n确认发起？"),
+      actions: [TextButton(onPressed: () => Navigator.pop(c, false), child: const Text("取消")), ElevatedButton(onPressed: () => Navigator.pop(c, true), child: const Text("发起"))],
+    ));
+    if (ok != true) return;
+    setState(() => _loading = true);
+    final r = await AuthApi.countStart();
+    setState(() => _loading = false);
+    if (r["ok"] == true) { _snack("已发起：抽取 ${(r["picked"] as num?)?.toInt() ?? 0} 框（候选 ${r["total"]}）"); _refresh(); }
+    else _snack((r["msg"] ?? "发起失败").toString(), err: true);
+  }
+
+  // 到台核对：相机/手输扫码 → MES 反查件数 → 提交服务器比对
+  Future<void> _scan(Map q) async {
+    final code = await cameraScanDialog(context, valid: (c) => labelFormatErr(c) == null) ?? await _inputCode();
+    if (code == null || code.isEmpty) return;
+    setState(() => _busyOp = true);
+    int mesQty = -1;
+    final mr = await mesQueryLabel(code);
+    if (mr["ok"] == true) mesQty = (mr["qty"] as num?)?.toInt() ?? -1;
+    final r = await AuthApi.countScan(q["id"].toString(), code, mesQty: mesQty);
+    setState(() => _busyOp = false);
+    if (r["ok"] == true) { _snack((r["msg"] ?? "已核对").toString(), err: r["match"] != true); _refresh(); }
+    else _snack((r["msg"] ?? "核对失败").toString(), err: true);
+  }
+
+  Future<void> _doReturn(Map q) async {
+    setState(() => _busyOp = true);
+    final r = await AuthApi.countReturn(q["id"].toString());
+    setState(() => _busyOp = false);
+    if (r["ok"] == true) { _snack("归位任务已下发，回 ${q["from"]}"); _refresh(); }
+    else _snack((r["msg"] ?? "归位失败").toString(), err: true);
+  }
+
+  Future<void> _doCancel(Map q) async {
+    final why = await _inputCode(title: "取消原因（选填）", hint: "如：急需发料先解冻");
+    setState(() => _busyOp = true);
+    final r = await AuthApi.countCancel(q["id"].toString(), why ?? "");
+    setState(() => _busyOp = false);
+    if (r["ok"] == true) { _snack("已取消，该框解冻"); _refresh(); }
+    else _snack((r["msg"] ?? "取消失败").toString(), err: true);
+  }
+
+  Future<String?> _inputCode({String title = "输入标签码", String hint = "N 开头 10 位"}) async {
+    final ctl = TextEditingController();
+    return showDialog<String>(context: context, builder: (c) => AlertDialog(
+      title: Text(title),
+      content: TextField(controller: ctl, autofocus: true, keyboardType: TextInputType.text, decoration: InputDecoration(hintText: hint)),
+      actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text("取消")), ElevatedButton(onPressed: () => Navigator.pop(c, ctl.text.trim()), child: const Text("确定"))],
+    ));
+  }
+
+  void _snack(String m, {bool err = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), backgroundColor: err ? Colors.deepOrange : const Color(0xFF43A047)));
+  }
+
+  static const _stColor = {"pending": Colors.grey, "toStation": Color(0xFF1E88E5), "atStation": Color(0xFFFB8C00), "scanned": Color(0xFF43A047), "returning": Color(0xFF00897B), "done": Colors.green, "mismatch": Colors.red, "taskGone": Colors.red, "canceled": Colors.blueGrey, "stuck": Colors.purple};
+  static const _stText = {"pending": "待发车", "toStation": "取货在途", "atStation": "到台待扫", "scanned": "已核对·待归位", "returning": "归位在途", "done": "完成", "mismatch": "不符·待处置", "taskGone": "任务消失", "canceled": "已取消", "stuck": "超时·请核查"};
+
+  @override
+  Widget build(BuildContext context) {
+    final active = _list.where((q) => !["done", "canceled"].contains(q["state"])).toList();
+    final closed = _list.where((q) => ["done", "canceled"].contains(q["state"])).toList();
+    return Scaffold(
+      appBar: AppBar(title: const Text("货架AGV盘点 · 盲区抽盘"), backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white,
+        actions: [IconButton(onPressed: _refresh, icon: const Icon(Icons.refresh))]),
+      body: Column(children: [
+        Container(padding: const EdgeInsets.fromLTRB(12, 10, 12, 10), color: const Color(0xFFF3F4FB),
+          child: Row(children: [
+            Expanded(child: Text("盲区候选 $_cand 框 · 双腿在途 $_busy/$_conc", style: const TextStyle(fontSize: 13, color: Color(0xFF3949AB)))),
+            ElevatedButton.icon(onPressed: _loading ? null : _start, icon: _loading ? const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.play_arrow), label: const Text("发起抽盘"), style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white)),
+          ])),
+        if (_err.isNotEmpty) Padding(padding: const EdgeInsets.all(8), child: Text(_err, style: const TextStyle(color: Colors.red, fontSize: 12))),
+        Expanded(child: active.isEmpty && closed.isEmpty
+            ? const Center(child: Text("暂无盘点工单\n点右上「发起抽盘」从盲区框随机抽取", textAlign: TextAlign.center, style: TextStyle(fontSize: 13, color: Colors.grey)))
+            : RefreshIndicator(onRefresh: _refresh, child: ListView(padding: const EdgeInsets.all(10), children: [
+                if (active.isNotEmpty) Padding(padding: const EdgeInsets.fromLTRB(2, 2, 2, 6), child: Text("进行中 ${active.length}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+                ...active.map(_card),
+                if (closed.isNotEmpty) Padding(padding: const EdgeInsets.fromLTRB(2, 12, 2, 6), child: Text("已结束 ${closed.length}", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey))),
+                ...closed.map(_card),
+              ]))),
+      ]),
+    );
+  }
+
+  Widget _card(Map q) {
+    final st = q["state"]?.toString() ?? "";
+    final col = _stColor[st] ?? Colors.grey;
+    final canScan = st == "atStation" || st == "stuck"; // 到台/超时待扫=可核对
+    final canRet = st == "scanned"; // 已核对=可归位
+    return Card(margin: const EdgeInsets.symmetric(vertical: 5), child: ListTile(
+      isThreeLine: true,
+      leading: CircleAvatar(radius: 15, backgroundColor: col.withOpacity(0.15), child: Text(_stText[st]?.substring(0, 1) ?? "?", style: TextStyle(color: col, fontSize: 12))),
+      title: Text("${q["code"]} · ${q["part"]}", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+      subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("原格 ${q["from"]}${q["station"] != null && q["station"].toString().isNotEmpty ? " → ${q["station"]}" : ""} · 账面 ${q["qty"]}件 · 滞留${q["ageDays"]}天", style: const TextStyle(fontSize: 12)),
+        Row(children: [
+          Text(_stText[st] ?? st, style: TextStyle(fontSize: 12, color: col, fontWeight: FontWeight.w600)),
+          if (canScan) ...[const SizedBox(width: 8), TextButton(onPressed: _busyOp ? null : () => _scan(q), child: const Text("扫码核对"))],
+          if (canRet) ...[const SizedBox(width: 8), TextButton(onPressed: _busyOp ? null : () => _doReturn(q), child: const Text("归位"))],
+          if (["pending", "toStation", "atStation", "scanned", "mismatch", "taskGone", "stuck"].contains(st)) ...[const SizedBox(width: 8), TextButton(onPressed: _busyOp ? null : () => _doCancel(q), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text("取消"))],
+        ]),
+      ]),
+    ));
   }
 }
