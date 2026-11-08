@@ -2819,6 +2819,13 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       return;
     }
 
+    // ---- ㉖v123c PDA 横屏 AGV 实时地图（独立移动端页；HTML公开，数据接口全部要token，与 console 同口径）----
+    if (req.method === 'GET' && p === '/agvmap') {
+      try { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(__dirname, 'public', 'agvmap.html'))); }
+      catch (_) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('agvmap.html 缺失：请确认 server/public/ 目录随 server 一起部署'); }
+      return;
+    }
+
     // ---- 领料单打印页（局域网内公开，凭单号打开，浏览器 Ctrl+P 打印；㉔S3 pageAuth 开启后需登录态）----
     if (req.method === 'GET' && p === '/print/requisition') {
       if (!pageAuthOk(req, url)) { const tk = String(url.searchParams.get('t') || ''); res.writeHead(302, { Location: '/console' + (tk ? '?t=' + encodeURIComponent(tk) : '') }); res.end(); return; }

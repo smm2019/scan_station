@@ -1930,10 +1930,10 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
       OutlinedButton.icon(
           icon: const Icon(Icons.map, size: 18, color: Color(0xFF00897B)),
-          label: const Text("业务叠加地图（含站台占用/释放预测）",
+          label: const Text("AGV 实时地图（网页版·横屏·捏合缩放）",
               style: TextStyle(fontSize: 12, color: Color(0xFF00897B))),
           onPressed: () => Navigator.push(
-              context, MaterialPageRoute(builder: (_) => const AgvMapPage()))),
+              context, MaterialPageRoute(builder: (_) => const AgvWebMapPage()))),
       const SizedBox(height: 14),
       const Icon(Icons.monitor, size: 40, color: Color(0xFF37474F)),
       const SizedBox(height: 6),
@@ -1963,9 +1963,123 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
   }
 }
 
+// ===================== ㉖v123c 网页版AGV实时地图（WebView横屏）：/agvmap 独立移动端页，捏合精细缩放/平移/点选明细 =====================
+class AgvWebMapPage extends StatefulWidget {
+  const AgvWebMapPage({super.key});
+  @override
+  State<AgvWebMapPage> createState() => _AgvWebMapPageState();
+}
+
+class _AgvWebMapPageState extends State<AgvWebMapPage> {
+  late final WebViewController _ctrl;
+  bool _loading = true;
+  String _err = "";
+
+  @override
+  void initState() {
+    super.initState();
+    // 进入本页强制横屏，退出恢复全方向（项目内首个方向锁，成对设置防泄漏到其它页面）
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    _ctrl = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0xFF0B1220))
+      ..setNavigationDelegate(NavigationDelegate(
+        onPageStarted: (_) {
+          if (mounted) setState(() => _loading = true);
+        },
+        onWebResourceError: (e) {
+          if (e.errorCode >= -4) return; // 子资源小错忽略
+          if (mounted)
+            setState(() {
+              _loading = false;
+              _err = "页面加载失败：${e.description ?? "网络异常"}（确认服务器已更新并重启）";
+            });
+        },
+        onPageFinished: (_) {
+          if (mounted) setState(() => _loading = false);
+        },
+      ));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _boot());
+  }
+
+  @override
+  void dispose() {
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    super.dispose();
+  }
+
+  Future<void> _boot() async {
+    setState(() {
+      _err = "";
+      _loading = true;
+    });
+    final base =
+        (await AuthStore.serverUrl()).replaceFirst(RegExp(r"/+$"), "");
+    if (base.isEmpty) {
+      if (mounted) setState(() => _err = "未配置服务器地址（先去「MES服务器设置」）");
+      return;
+    }
+    // 与 ConsoleWebPage 同模式：原生会话换发不绑指纹的网页 token，?t= 免登录接管
+    final j = await AuthApi.webSession();
+    final tk = j["ok"] == true ? (j["token"] ?? "").toString() : "";
+    if (tk.isEmpty) {
+      if (mounted)
+        setState(() => _err = "会话换发失败：${j["msg"] ?? "请重新登录后再试"}");
+      return;
+    }
+    await _ctrl
+        .loadRequest(Uri.parse("$base/agvmap?t=${Uri.encodeComponent(tk)}"));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+          child: Stack(children: [
+        WebViewWidget(controller: _ctrl),
+        Positioned(
+            top: 4,
+            left: 6,
+            child: GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                        color: const Color(0xCC101A2E),
+                        borderRadius: BorderRadius.circular(6)),
+                    child: const Text("← 返回",
+                        style: TextStyle(
+                            color: Colors.white, fontSize: 12)))),
+            ),
+        if (_loading)
+          const Center(
+              child:
+                  CircularProgressIndicator(color: Colors.cyan)),
+        if (_err.isNotEmpty)
+          Center(
+              child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(_err,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: Color(0xFFFF8A80), fontSize: 13)))),
+      ])),
+    );
+  }
+}
+
 // ===================== AGV实时调度界面（WebView，注入token自动登录） =====================
-class AgvWebViewPage extends StatefulWidget {
-  final String spaRoute; // 非空=SPA内路由（如 /home-pda 原厂手机版）；nginx无回退，先载根路径再前端跳转
+class AgvWebViewPage extends StatefulWidget {  final String spaRoute; // 非空=SPA内路由（如 /home-pda 原厂手机版）；nginx无回退，先载根路径再前端跳转
   const AgvWebViewPage({super.key, this.spaRoute = ""});
   @override
   State<AgvWebViewPage> createState() => _AgvWebViewPageState();

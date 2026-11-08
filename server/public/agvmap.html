@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>AGV 实时地图</title>
+<style>
+:root{--bg:#0b1220;--card:#141d30;--ink:#e6ecf5;--sub:#8ea3bf;--line:#243350;--ok:#43a047;--warn:#fb8c00;--bad:#e53935;--pri:#42a5f5}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.5 "PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden;touch-action:none;user-select:none}
+#top{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border-bottom:1px solid var(--line);flex-wrap:wrap}
+#top b{font-size:13px}
+.lamp{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--sub)}
+.lamp i{width:8px;height:8px;border-radius:50%;background:#90a4ae;display:inline-block}
+.btn{border:1px solid var(--line);background:#1b2740;color:var(--ink);border-radius:6px;padding:3px 9px;font-size:11.5px}
+.btn.on{border-color:var(--pri);color:var(--pri)}
+#wrap{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column}
+#cvbox{flex:1;position:relative;min-height:0}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+#lg{position:absolute;left:8px;bottom:6px;right:8px;font-size:10.5px;color:var(--sub);background:rgba(11,18,32,.72);border-radius:6px;padding:3px 8px;pointer-events:none;line-height:1.7}
+#tip{position:absolute;top:8px;left:8px;font-size:11px;color:var(--sub);background:rgba(11,18,32,.72);border-radius:6px;padding:2px 8px;pointer-events:none}
+#det{background:var(--card);border-top:1px solid var(--line);padding:6px 10px;font-size:12px;display:none;max-height:26vh;overflow:auto}
+#det .k{color:var(--sub)}
+#det .x{float:right;color:var(--pri);font-size:12px;padding:0 4px}
+.mono{font-family:ui-monospace,Consolas,monospace}
+.warnx{color:var(--warn);font-weight:700}
+</style>
+</head>
+<body>
+<div id="wrap">
+<div id="top">
+  <b>AGV 实时地图</b>
+  <span class="lamp" id="l_sse" title="SSE 实时推送（45秒内有帧=绿）"><i></i>推送</span>
+  <span class="lamp" id="l_rcs" title="RCS 调度心跳（90秒内=绿）"><i></i>RCS</span>
+  <span class="lamp" id="l_wm" title="WMAS 下发通道"><i></i>WMAS</span>
+  <button class="btn" id="b_heat" title="货架占用热力叠加">🔥热力</button>
+  <button class="btn" id="b_fit" title="复位视图（双击画面也可复位）">⛶复位</button>
+  <span style="flex:1"></span>
+  <span class="lamp" id="zoomx" style="min-width:44px;text-align:right">100%</span>
+</div>
+<div id="cvbox">
+  <canvas id="cv"></canvas>
+  <div id="tip">单指拖动平移 · 双指捏合缩放 · 点车辆/货架看明细</div>
+  <div id="lg">加载中…</div>
+</div>
+<div id="det"></div>
+</div>
+<script>
+// ===== ㉖v123c PDA 横屏 AGV 实时地图：网页版指挥舱地图的移动端独立页 =====
+// 数据链路与 console 指挥舱完全同源：/api/rcs/net + /api/rcs/map + /api/sse 触发刷新（10秒兜底轮询）
+// 凭证：APP WebView 以 ?t=<webSession token> 打开；本页 fetch 带 Bearer，EventSource 带 query token
+// 交互增强（网页版没有的）：双指捏合精细缩放（0.5~16x，围绕捏合中点）、单指平移、双击定放大、点选车辆/货架明细
+const TK=(()=>{const m=/[?&]t=([^&]+)/.exec(location.search);if(m)return decodeURIComponent(m[1]);try{const t=localStorage.getItem('ck_tok');if(t)return t}catch(_){}return ''})();
+const $=(s)=>document.querySelector(s);
+async function api(p,opt){const r=await fetch(p,Object.assign({headers:{'Authorization':'Bearer '+TK}},opt||{}));if(r.status===401||r.status===403){$('#lg').innerHTML='❌ 登录态失效，请退回 APP 重新进入本页';throw new Error('401')}return r.json()}
+let NET=null,MAP=null,LAMP={},_sseOk=0,HEAT=false;
+// ---- 楼层/充电桩判定（与 console.html 同口径） ----
+const FLOOR=(l)=>!!l&&(l.r!==undefined?l.r===2:l.y>7);
+const CHARGER_LANDS={1729:1,1730:1};
+function isChg(l){return !!l&&(l.t!==undefined?l.t===6:!!CHARGER_LANDS[l])}
+// ---- 坐标：世界→基准画布（fit 一次算好），再叠加用户变换 k/tx/ty ----
+let W=0,H=0,base=null; // base: (x,y)=>[bx,by]
+function fitBase(){const pts=[];const L=(NET&&NET.lands)||{};for(const k in L){if(FLOOR(L[k]))pts.push(L[k])}if(!pts.length){base=(x,y)=>[x,y];return}
+ let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;for(const p of pts){if(!Number.isFinite(p.x)||!Number.isFinite(p.y))continue;mnx=Math.min(mnx,p.x);mxx=Math.max(mxx,p.x);mny=Math.min(mny,p.y);mxy=Math.max(mxy,p.y)}
+ const pad=18,sc=Math.min((W-2*pad)/Math.max(1,mxx-mnx),(H-2*pad)/Math.max(1,mxy-mny));
+ base=(x,y)=>[pad+(x-mnx)*sc,H-pad-(y-mny)*sc]}
+let k=1,tx=0,ty=0; // 用户变换：screen = base*k + t
+const w2c=(x,y)=>{const p=base(x,y);return[p[0]*k+tx,p[1]*k+ty]};
+const c2w=(sx,sy)=>[(sx-tx)/k,(sy-ty)/k]; // screen→base 空间（供命中检测反查）
+// ---- 车辆状态口径（与 console drawMap 逐字一致） ----
+const carStOf=(c)=>c.emerg?'急停':(c.mstop?'人工停':(c.blocked?'被交管':(!c.online?'离线':(c.alarm?'告警':((c.charging&&!c.full)?'充电':(c.task?(/^[0-9a-fA-F]{8}-/.test(String(c.task))?'待命/充电':'执行中'):((({pause:'暂停',error:'故障'})[c.state])||'空闲')))))));
+const stColOf=(s)=>({'急停':'#e53935','人工停':'#e53935','被交管':'#ff6d00','离线':'#90a4ae','告警':'#ad1457','待命/充电':'#26a69a','充电':'#f9a825','充满':'#f9a825','执行中':'#1e88e5','暂停':'#8e24aa','故障':'#d81b60','空闲':'#43a047'}[s]||'#43a047');
+function drawMap(){const cv=$('#cv');if(!cv||!MAP||!NET)return;const dpr=window.devicePixelRatio||1;W=cv.clientWidth;H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr;const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);
+ g.fillStyle='#141d30';g.fillRect(0,0,W,H);
+ const L=NET.lands||{};
+ // 路网边
+ g.strokeStyle='rgba(120,140,170,.30)';g.lineWidth=1;for(const e of(NET.edges||[])){const a=L[e[0]],b=L[e[1]];if(FLOOR(a)&&FLOOR(b)){const p=w2c(a.x,a.y),q=w2c(b.x,b.y);g.beginPath();g.moveTo(p[0],p[1]);g.lineTo(q[0],q[1]);g.stroke()}}
+ // 货架列：小方块（放大后按占用数画堆叠点）
+ g.fillStyle='#90a4ae';for(const s of(MAP.shelf||[])){const l=L[s.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);const r=Math.max(2,Math.min(6,2*k/2));g.fillRect(p[0]-r,p[1]-r,2*r,2*r)}
+ // 热力层（同 console heatLayer 口径）
+ if(HEAT&&MAP.shelf){const byShelf={};for(const s of MAP.shelf){const pre=String(s.loc||'').toUpperCase().replace(/-\d+F$/,'');byShelf[pre]=(byShelf[pre]||0)+(s.n||1)}const cap=Math.max(3,...Object.values(byShelf));const seen={};for(const s of MAP.shelf){const l=L[s.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);const pre=String(s.loc||'').toUpperCase().replace(/-\d+F$/,'');const t=(byShelf[pre]||0)/cap;const col=t>.66?'rgba(229,57,53,':t>.33?'rgba(251,140,0,':'rgba(102,187,106,';const kk=pre+'#'+Math.round(p[0]/6)+','+Math.round(p[1]/6);if(seen[kk])continue;seen[kk]=1;g.fillStyle=col+'.34)';g.beginPath();g.arc(p[0],p[1],Math.max(6,13*Math.min(3,k)/3),0,7);g.fill()}}
+ // 站台
+ for(const st of(MAP.stations||[])){const l=L[st.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);g.beginPath();g.arc(p[0],p[1],Math.max(4,6*Math.min(3,k)/2.2),0,7);g.fillStyle=st.state=='有货'?'#ff6d00':st.state=='占用中'?'#29b6f6':'#66bb6a';g.fill();g.fillStyle='#cfe0f5';g.font=(Math.max(8,9*Math.min(2.4,k)))+'px sans-serif';g.fillText((st.code||'').split('-').pop(),p[0]+8,p[1]-6)}
+ // 堵点红圈
+ g.strokeStyle='#ff5252';g.lineWidth=2;for(const j of(MAP.jam||[])){const l=L[j.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);g.beginPath();g.arc(p[0],p[1],Math.max(5,9*Math.min(3,k)/2.2),0,7);g.stroke()}
+ // 充电桩
+ for(const kk in L){const l=L[kk];if(!FLOOR(l)||!isChg(l))continue;const p=w2c(l.x,l.y);g.fillStyle='#ffd600';g.beginPath();g.arc(p[0],p[1],Math.max(4,7*Math.min(3,k)/2.2),0,7);g.fill();g.strokeStyle='#d50000';g.lineWidth=2;g.beginPath();g.arc(p[0],p[1],Math.max(6,10*Math.min(3,k)/2.2),0,7);g.stroke();g.fillStyle='#1c2430';g.font='bold 10px sans-serif';g.fillText('⚡',p[0]-5,p[1]+4)}
+ // 车辆：车身+状态箭头+双货叉+标签避让
+ const lbls=[];const rrd=(x,y,w,h,r)=>{g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath()};
+ const sel=SEL&&SEL.type=='car'?SEL.key:'';
+ for(const c of(MAP.cars||[])){if(!Number.isFinite(c.x))continue;const p=w2c(c.x,c.y);const s=Math.min(3,k);
+  g.save();g.translate(p[0],p[1]);g.rotate(-(c.yaw||0)*Math.PI/180);
+  const col=stColOf(carStOf(c));g.fillStyle='#37474f';g.fillRect(-10*s/1.6,-7*s/1.6,13*s/1.6,14*s/1.6);g.strokeStyle='rgba(255,255,255,.6)';g.lineWidth=1;g.strokeRect(-10*s/1.6,-7*s/1.6,13*s/1.6,14*s/1.6);
+  g.fillStyle=col;g.beginPath();g.moveTo(11*s/1.6,0);g.lineTo(3*s/1.6,6*s/1.6);g.lineTo(3*s/1.6,-6*s/1.6);g.closePath();g.fill();
+  g.strokeStyle=col;g.lineWidth=1.8;g.beginPath();g.moveTo(11*s/1.6,-3.5*s/1.6);g.lineTo(17*s/1.6,-3.5*s/1.6);g.moveTo(11*s/1.6,3.5*s/1.6);g.lineTo(17*s/1.6,3.5*s/1.6);g.stroke();g.restore();
+  const nm=String(c.name||('AGV'+c.id)),st=carStOf(c);
+  if(sel===nm){g.strokeStyle='#ffd600';g.lineWidth=3;g.beginPath();g.arc(p[0],p[1],16+5*Math.abs(Math.sin(Date.now()/280)),0,7);g.stroke()}
+  if(!c.online){g.strokeStyle='#e53935';g.lineWidth=2;g.beginPath();g.arc(p[0],p[1],11,0,7);g.stroke()}
+  g.font='bold 11px sans-serif';const w1=g.measureText(nm).width+10,w2=g.measureText(st).width+12,lx=p[0]+13,ly0=p[1]-8;
+  let ly=ly0;for(let t=0;t<24;t++){let hit=false;for(const q of lbls){if(lx<q[0]+q[1]+4&&lx+w1+w2+4>q[0]&&ly<q[2]+16&&ly+15>q[2]){hit=true;ly=q[2]+17;break}}if(!hit)break}
+  lbls.push([lx,w1+w2+4,ly]);
+  rrd(lx,ly,w1,15,4);g.fillStyle='#eef1f6';g.fill();g.strokeStyle='#9fb0c3';g.lineWidth=1;g.stroke();g.fillStyle='#22303f';g.fillText(nm,lx+5,ly+11);
+  rrd(lx+w1+4,ly,w2,15,4);g.globalAlpha=.16;g.fillStyle=col;g.fill();g.globalAlpha=1;g.strokeStyle=col;g.stroke();g.fillStyle=col;g.fillText(st,lx+w1+9,ly+11);
+  if(c.cargo){g.fillStyle='#cfe0f5';g.font='bold 9px sans-serif';const _cg=c.cargo,_fp=(_cg.from||'').replace(/^NB0[23]-/,''),_tp=(_cg.to||'').replace(/^NB0[23]-/,'');g.fillText(_cg.dir+' '+(_fp||'?')+'→'+(_tp||'?')+' '+(_cg.p?_cg.p+'×'+(_cg.q||0):'货物未知'),lx+w1+w2+8,ly+11)}
+  if((st=='急停'||st=='故障'||st=='告警')&&(c.err||c.alarm)){g.fillStyle='#ff8a80';g.font='9px sans-serif';g.fillText(String(c.err||c.alarm).slice(0,18),lx,ly+26)}}
+ // 图例 + 状态行
+ const on=(MAP.cars||[]).filter(c=>c.online).length;
+ const age=LAMP.at?Math.max(0,Math.round((Date.now()-Date.parse(LAMP.at))/1000)):999;
+ $('#lg').innerHTML='二楼 · 在线 '+on+'/'+(MAP.cars||[]).length+' · 堵点 '+(MAP.jam||[]).length+' · 货架 '+(MAP.shelf||[]).length+' · '+new Date(MAP.at).toLocaleTimeString('zh-CN')+(age>60?' <span class="warnx">⚠RCS心跳'+age+'秒前</span>':'')+(MAP.msg?' <span class="warnx">⚠️ '+MAP.msg+'</span>':'')+'<br><span style="color:#43a047">■空闲</span> <span style="color:#1e88e5">■执行中</span> <span style="color:#26a69a">■待命/充电</span> <span style="color:#ad1457">■告警</span> <span style="color:#f9a825">■充电</span> <span style="color:#ff6d00">■被交管</span> <span style="color:#e53935">■急停/故障</span> <span style="color:#90a4ae">■离线</span>'}
+// ---- 明细卡：点车辆/货架/站台 ----
+let SEL=null;
+const esc=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+function showDet(html){const d=$('#det');d.innerHTML='<span class="x" onclick="hideDet()">✕ 关闭</span>'+html;d.style.display='block'}
+function hideDet(){SEL=null;$('#det').style.display='none';drawMap()}
+function hitTest(sx,sy){if(!MAP||!NET)return null;const L=NET.lands||{};let best=null,bd=1e9;
+ for(const c of(MAP.cars||[])){if(!Number.isFinite(c.x))continue;const p=w2c(c.x,c.y);const d=Math.hypot(p[0]-sx,p[1]-sy);if(d<26&&d<bd){bd=d;best={type:'car',key:String(c.name||('AGV'+c.id)),c}}}
+ if(best)return best;
+ for(const s of(MAP.shelf||[])){const l=L[s.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);const d=Math.hypot(p[0]-sx,p[1]-sy);if(d<14&&d<bd){bd=d;best={type:'shelf',s}}}
+ if(best)return best;
+ for(const st of(MAP.stations||[])){const l=L[st.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);const d=Math.hypot(p[0]-sx,p[1]-sy);if(d<14&&d<bd){bd=d;best={type:'stn',st}}}
+ return best}
+function applySel(center){if(!SEL)return;const L=(NET&&NET.lands)||{};
+ if(SEL.type=='car'){const c=MAP&&MAP.cars&&MAP.cars.find((x)=>String(x.name||('AGV'+x.id))===SEL.key);if(!c){hideDet();return}
+  const st=carStOf(c),col=stColOf(st);const cg=c.cargo;
+  showDet('<b style="color:'+col+'">🚗 '+esc(SEL.key)+' · '+esc(st)+'</b><br>'+
+   '<span class="k">坐标</span> <span class="mono">'+Math.round(c.x)+' , '+Math.round(c.y)+' · 朝向'+Math.round(c.yaw||0)+'°</span><br>'+
+   (cg?'<span class="k">当前任务</span> '+esc(cg.dir)+' <span class="mono">'+esc(cg.from||'?')+' → '+esc(cg.to||'?')+'</span>'+esc(cg.p?' · '+cg.p+'×'+(cg.q||0):'')+'<br>':'')+
+   (c.task&&!cg?'<span class="k">调度号</span> <span class="mono">'+esc(String(c.task).slice(0,26))+'</span><br>':'')+
+   (c.err||c.alarm?'<span class="warnx">⚠ '+esc(String(c.err||c.alarm))+'</span><br>':'')+
+   '<span class="k">电量</span> '+(c.batt!=null?esc(c.batt)+'% · ':'')+'<span class="k">在线</span> '+(c.online?'是':'<span class="warnx">否</span>')+'<br><span style="color:var(--sub);font-size:11px">地图已锁定该车（黄圈跟随）</span>');
+  if(center){const p=w2c(c.x,c.y);tx+=W/2-p[0];ty+=H/2-p[1]}drawMap();return}
+ if(SEL.type=='shelf'){const l=L[SEL.s.land];showDet('<b>📦 货架列 '+esc(SEL.s.loc)+'</b><br><span class="k">在架框数</span> '+(SEL.s.n||0)+(SEL.s.tiers?'<br><span class="k">分层</span> '+esc(Object.entries(SEL.s.tiers).map(([a,b])=>a+'层'+b+'框').join(' · ')):'')+'<br><span class="k">坐标</span> <span class="mono">'+Math.round(l.x)+' , '+Math.round(l.y)+'</span>');return}
+ if(SEL.type=='stn'){showDet('<b>🚉 站台 '+esc(SEL.st.code)+'</b><br><span class="k">状态</span> '+esc(SEL.st.state)+(SEL.st.code2?'<br><span class="k">备注</span> '+esc(SEL.st.code2):''));return}}
+// ---- 手势：平移/捏合缩放/双击/点选 ----
+const cv=$('#cv');const pts={};let pinch=null,moved=0,downT=0,lastTap=0,lastTapXY=[0,0],dragStart=null;
+function evXY(e){const r=cv.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top]}
+function pcount(){return Object.keys(pts).length}
+cv.addEventListener('pointerdown',(e)=>{cv.setPointerCapture(e.pointerId);pts[e.pointerId]=evXY(e);moved=0;downT=Date.now();
+ if(pcount()==2){const a=Object.values(pts);pinch={d:Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]),k0:k,mx:(a[0][0]+a[1][0])/2,my:(a[0][1]+a[1][1])/2}}
+ else dragStart=evXY(e)});
+cv.addEventListener('pointermove',(e)=>{if(!(e.pointerId in pts))return;const old=pts[e.pointerId],now=evXY(e);pts[e.pointerId]=now;moved+=Math.hypot(now[0]-old[0],now[1]-old[1]);
+ if(pcount()==2&&pinch){const a=Object.values(pts);const d=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]);const mx=(a[0][0]+a[1][0])/2,my=(a[0][1]+a[1][1])/2;
+  const nk=Math.max(.5,Math.min(16,pinch.k0*d/pinch.d));const r=nk/k; // 相对上一帧：围绕当前捏合中点缩放，再叠加中点位移=平移
+  tx=mx-(mx-tx)*r+(mx-pinch.mx);ty=my-(my-ty)*r+(my-pinch.my);k=nk;pinch.d=d;pinch.mx=mx;pinch.my=my;
+  $('#zoomx').textContent=Math.round(k*100)+'%';drawMap();return}
+ if(pcount()==1&&dragStart){tx+=now[0]-old[0];ty+=now[1]-old[1];drawMap()}});
+function upHandler(e){if(!(e.pointerId in pts))return;delete pts[e.pointerId];if(pcount()<2)pinch=null;
+ if(pcount()==0&&moved<9&&Date.now()-downT<400){ // 判定为点选
+  const p=evXY(e);const now=Date.now();
+  if(now-lastTap<320&&Math.hypot(p[0]-lastTapXY[0],p[1]-lastTapXY[1])<30){ // 双击：k>2.2 复位，否则以该点为中心放大2.4x
+   if(k>2.2){resetView()}else{const nk=Math.min(16,k*2.4),r=nk/k;tx=p[0]-(p[0]-tx)*r;ty=p[1]-(p[1]-ty)*r;k=nk;$('#zoomx').textContent=Math.round(k*100)+'%';drawMap()}
+   lastTap=0;return}
+  lastTap=now;lastTapXY=p;
+  const hit=hitTest(p[0],p[1]);if(hit){SEL=hit;applySel(true)}else{SEL=null;$('#det').style.display='none';drawMap()}}
+ if(pcount()==0)dragStart=null}
+cv.addEventListener('pointerup',upHandler);cv.addEventListener('pointercancel',(e)=>{delete pts[e.pointerId];pinch=null;dragStart=null});
+cv.addEventListener('wheel',(e)=>{e.preventDefault();const p=evXY(e);const nk=Math.max(.5,Math.min(16,k*Math.exp(-e.deltaY/500)));const r=nk/k;tx=p[0]-(p[0]-tx)*r;ty=p[1]-(p[1]-ty)*r;k=nk;$('#zoomx').textContent=Math.round(k*100)+'%';drawMap()},{passive:false});
+function resetView(){k=1;tx=0;ty=0;$('#zoomx').textContent='100%';fitBase();drawMap()}
+$('#b_fit').onclick=resetView;
+$('#b_heat').onclick=()=>{HEAT=!HEAT;$('#b_heat').className='btn'+(HEAT?' on':'');drawMap()};
+// ---- 数据装载：SSE 触发 + 10 秒兜底 ----
+let _loadT=0;
+async function loadMap(){if(document.hidden)return;clearTimeout(window._mRt);window._mRt=setTimeout(()=>loadMap(),10000);
+ try{if(!NET||!NET.ready){try{const n=await api('/api/rcs/net');if(n&&n.ready)NET=n}catch(_){}}
+  if(!base||W!==cv.clientWidth||H!==cv.clientHeight)fitBase();
+  MAP=await api('/api/rcs/map');drawMap();if(SEL)applySel()}
+ catch(e){const l=$('#lg');if(l&&/401/.test(String(e.message)))return;l&&(l.innerHTML='❌ 地图数据拉取失败：'+esc(String((e&&e.message)||e).slice(0,60))+' · 10秒后自动重试')}}
+function esSSE(){try{const es=new EventSource('/api/sse?token='+encodeURIComponent(TK));es.onmessage=(e)=>{try{_sseOk=Date.now();const d=JSON.parse(e.data);if(d.t==='snap'){LAMP=d; lamps();loadMap()}}catch(_){}};window._es=es}catch(_){}}
+function lamps(){const now=Date.now();
+ const set=(id,st)=>{const el=$(id);if(el)el.firstElementChild.style.background=st=='ok'?'#43a047':st=='warn'?'#fb8c00':st=='bad'?'#e53935':'#b0bec5'};
+ set('#l_sse',_sseOk?(now-_sseOk<45000?'ok':'bad'):'warn');
+ const age=LAMP.at?now-Date.parse(LAMP.at):9e9;set('#l_rcs',LAMP.on?(age<90000?'ok':'bad'):'warn');
+ if(window._wm!=null)set('#l_wm',window._wm)}
+async function probeWm(){try{const j=await api('/api/sysstatus');window._wm=(j.wmas&&j.wmas.cfg)?(j.wmas.ok?'ok':'bad'):'warn';lamps()}catch(_){window._wm='warn'}}
+// ---- 启动 ----
+window.addEventListener('resize',()=>{fitBase();drawMap()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadMap()});
+(async()=>{if(!TK){$('#lg').innerHTML='❌ 缺少登录凭证（应由 APP 带 ?t= 打开本页）';return}
+ try{NET=await api('/api/rcs/net')}catch(_){NET={lands:{},edges:[]}}
+ fitBase();loadMap();esSSE();probeWm();setInterval(probeWm,60000);
+ // 车辆状态每秒轻刷（黄圈动画与心跳秒数）
+ setInterval(()=>{if(!document.hidden&&MAP)drawMap()},1000);
+})();
+</script>
+</body>
+</html>
