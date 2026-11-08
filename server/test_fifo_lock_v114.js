@@ -22,6 +22,7 @@ const src = [
   grab('function boxKeyOf', 'function groupLedgerBoxes'),
   grab('function groupLedgerBoxes', 'function agvMapOf'),
   grab('function pickSuggest', 'function reqView'),
+  grab('function trimLastLot', 'function pickSuggest'), // ㉖v126 同批末段最小覆盖修剪：pickSuggest 新增依赖，沙箱须一并注入
   grab('function countActive', 'function countBusyLegs'), // ㉖v123 盘点冻结集：pickSuggest 新增 countFrozenSet 依赖，沙箱须一并注入真实函数体（生产库无 counts 时返回空集，行为同旧版）
 ].join('\n');
 

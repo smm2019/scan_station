@@ -1377,10 +1377,29 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
       });
       local.removeWhere(ghosts.contains);
     }
+    // ㉖v127 同码多行自愈（PDA-00206「账本拉取合并 IsarError: Unique index violated」根因）：
+    //   设备本地 shelfPlacements 若残留同 goodsCode 多行（历史导入/并发写脏数据），localMap 只映射其中一行、
+    //   删除分支也只删该行，随后 putAll 新行会撞上其余残留同码行触发唯一索引冲突、整批合并失败。
+    //   合并前先按码归一：保留 assignedAt 最新的一行，其余删除并从 local 移除，使 localMap 与物理行一致。
+    {
+      final byCode = <String, List<ShelfPlacement>>{};
+      for (final p in local) (byCode[p.goodsCode.toUpperCase()] ??= <ShelfPlacement>[]).add(p);
+      final dupIds = <int>[];
+      for (final g in byCode.values) {
+        if (g.length < 2) continue;
+        g.sort((a, b) => b.assignedAt.compareTo(a.assignedAt)); // 最新在前
+        for (var i = 1; i < g.length; i++) dupIds.add(g[i].id);
+      }
+      if (dupIds.isNotEmpty) {
+        await _globalIsar.writeTxn(() => _globalIsar.shelfPlacements.deleteAll(dupIds));
+        local.removeWhere((p) => dupIds.contains(p.id));
+      }
+    }
     final localMap = {for (final p in local) p.goodsCode.toUpperCase(): p};
     final tombMap = await _loadTombs();
     var added = 0, updated = 0, deleted = 0;
     final upserts = <ShelfPlacement>[];
+    final _seenCode = <String>{}; // ㉖v127 兜底：服务器 items 若同码重复，只入列一次，防 putAll 撞唯一索引
     final infoUpserts = <LabelInfo>[];
     final rmIds = <int>{};
     final tombAdds = <String, int>{};
@@ -1400,6 +1419,7 @@ Future<Map> ledgerPullMerge({bool force = false}) async {
         if (pid0.isNotEmpty) pidPatches[c] = pid0;
         continue;
       }
+      if (!_seenCode.add(c)) continue; // ㉖v127 同码重复行只入列一次，防 putAll 撞唯一索引
       upserts.add(ShelfPlacement()
         ..goodsCode = c
         ..loc = l

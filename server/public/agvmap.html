@@ -8,7 +8,7 @@
 :root{--bg:#0b1220;--card:#141d30;--ink:#e6ecf5;--sub:#8ea3bf;--line:#243350;--ok:#43a047;--warn:#fb8c00;--bad:#e53935;--pri:#42a5f5}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.5 "PingFang SC","Microsoft YaHei",sans-serif;overflow:hidden;touch-action:none;user-select:none}
-#top{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--card);border-bottom:1px solid var(--line);flex-wrap:wrap}
+#top{display:flex;align-items:center;gap:6px;padding:6px 10px 6px 76px;background:var(--card);border-bottom:1px solid var(--line);flex-wrap:wrap} /* 左76px=APP原生返回浮层让位 */
 #top b{font-size:13px}
 .lamp{display:inline-flex;align-items:center;gap:3px;font-size:11px;color:var(--sub)}
 .lamp i{width:8px;height:8px;border-radius:50%;background:#90a4ae;display:inline-block}
@@ -17,8 +17,8 @@ html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1
 #wrap{position:absolute;top:0;left:0;right:0;bottom:0;display:flex;flex-direction:column}
 #cvbox{flex:1;position:relative;min-height:0}
 canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
-#lg{position:absolute;left:8px;bottom:6px;right:8px;font-size:10.5px;color:var(--sub);background:rgba(11,18,32,.72);border-radius:6px;padding:3px 8px;pointer-events:none;line-height:1.7}
-#tip{position:absolute;top:8px;left:8px;font-size:11px;color:var(--sub);background:rgba(11,18,32,.72);border-radius:6px;padding:2px 8px;pointer-events:none}
+#lg{font-size:10.5px;color:var(--sub);background:var(--card);border-top:1px solid var(--line);padding:3px 10px;line-height:1.7;flex-shrink:0} /* 静态底行：不再悬浮压住画布车辆标签 */
+#tip{position:absolute;top:8px;left:8px;font-size:11px;color:var(--sub);background:rgba(11,18,32,.72);border-radius:6px;padding:2px 8px;pointer-events:none;transition:opacity 1.2s}
 #det{background:var(--card);border-top:1px solid var(--line);padding:6px 10px;font-size:12px;display:none;max-height:26vh;overflow:auto}
 #det .k{color:var(--sub)}
 #det .x{float:right;color:var(--pri);font-size:12px;padding:0 4px}
@@ -41,8 +41,8 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 <div id="cvbox">
   <canvas id="cv"></canvas>
   <div id="tip">单指拖动平移 · 双指捏合缩放 · 点车辆/货架看明细</div>
-  <div id="lg">加载中…</div>
 </div>
+<div id="lg">加载中…</div>
 <div id="det"></div>
 </div>
 <script>
@@ -60,7 +60,8 @@ const CHARGER_LANDS={1729:1,1730:1};
 function isChg(l){return !!l&&(l.t!==undefined?l.t===6:!!CHARGER_LANDS[l])}
 // ---- 坐标：世界→基准画布（fit 一次算好），再叠加用户变换 k/tx/ty ----
 let W=0,H=0,base=null; // base: (x,y)=>[bx,by]
-function fitBase(){const pts=[];const L=(NET&&NET.lands)||{};for(const k in L){if(FLOOR(L[k]))pts.push(L[k])}if(!pts.length){base=(x,y)=>[x,y];return}
+function fitBase(){const _cv=$('#cv');if(_cv&&_cv.clientWidth){W=_cv.clientWidth;H=_cv.clientHeight} // 首屏修：启动序列里 W/H 还是 0 会算出负缩放（要点复位才看清的根因）
+ const pts=[];const L=(NET&&NET.lands)||{};for(const k in L){if(FLOOR(L[k]))pts.push(L[k])}if(!pts.length){base=(x,y)=>[x,y];return}
  let mnx=1e9,mny=1e9,mxx=-1e9,mxy=-1e9;for(const p of pts){if(!Number.isFinite(p.x)||!Number.isFinite(p.y))continue;mnx=Math.min(mnx,p.x);mxx=Math.max(mxx,p.x);mny=Math.min(mny,p.y);mxy=Math.max(mxy,p.y)}
  const pad=18,sc=Math.min((W-2*pad)/Math.max(1,mxx-mnx),(H-2*pad)/Math.max(1,mxy-mny));
  base=(x,y)=>[pad+(x-mnx)*sc,H-pad-(y-mny)*sc]}
@@ -178,6 +179,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadMap()}
 (async()=>{if(!TK){$('#lg').innerHTML='❌ 缺少登录凭证（应由 APP 带 ?t= 打开本页）';return}
  try{NET=await api('/api/rcs/net')}catch(_){NET={lands:{},edges:[]}}
  fitBase();loadMap();esSSE();probeWm();setInterval(probeWm,60000);
+ setTimeout(()=>{const t=$('#tip');if(t)t.style.opacity='0'},6000); // 提示条淡出，少占画布
  // 车辆状态每秒轻刷（黄圈动画与心跳秒数）
  setInterval(()=>{if(!document.hidden&&MAP)drawMap()},1000);
 })();

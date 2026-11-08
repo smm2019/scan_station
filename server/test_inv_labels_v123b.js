@@ -123,6 +123,7 @@ const BIG = 'X'.repeat(80), BIG_CUT = 'X'.repeat(60);
   chkT('F 服务日志无未捕获异常', uncaught.length === 0);
   if (uncaught.length) console.log(uncaught.join('\n'));
   srv.kill('SIGKILL');
+  fs.rmSync(TDIR, { recursive: true, force: true });
   console.log(`\n===== v123b 盘点标签级明细上收实例证明 ${total - fail}/${total} PASS =====`);
   process.exit(fail ? 1 : 0);
 })();

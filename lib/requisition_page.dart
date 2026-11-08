@@ -2911,8 +2911,13 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         }
         // 3. 回写服务器行级 transferred（幂等），并落出库台账关联领料单号
         // ㉖v103 带实传框集合；㉖v105 对账框一并入账（codes=全部勾选框=tC∪rc），recon 供服务器留痕
+        // ㉖v127 逐框证据：reconEv 每框标 at=MES 是否实证在目标仓、loc=仓位实况；人工整批确认（路径C）的框 at=false，服务器据此分级留痕不夸大"经MES确认"
+        final reconEv = rc.map((c) {
+          final d = onHand[c];
+          return {"c": c, "at": d != null && atTarget(d), "loc": mesLocDesc(c)};
+        }).toList();
         final res = await AuthApi.reqAction(_r["id"].toString(), "transfer",
-            {"partNo": partNo, "codes": List.from(item["issued"] ?? []), if (rc.isNotEmpty) "recon": rc});
+            {"partNo": partNo, "codes": List.from(item["issued"] ?? []), if (rc.isNotEmpty) "recon": rc, if (rc.isNotEmpty) "reconEv": reconEv});
         if (res["ok"] != true)
           throw Exception("MES已转单，但服务器回写失败：${res["msg"]}（请重开该单重试，MES侧勿重复转）");
         try {

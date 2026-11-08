@@ -27,7 +27,7 @@ function baseDb() {
   db.ledger = [];
   BLIND.forEach((b) => db.ledger.push({ c: b.code, l: b.loc, f: '1800*1200_2', t: now - b.age * DAY, p: b.part, n: '盘点件' + b.code.slice(-1), q: b.qty, b: '2026-10-01', pid: '', by: '夹具', rec: now - b.age * DAY }));
   db.ledger.push({ c: 'CTB0000005', l: 'NB02-B-01-1F', f: '1800*1200_2', t: now - 1 * 36e5, p: 'CTPART005', n: '盘点件5近期', q: 500, b: '2026-11-08', pid: '', by: '夹具', rec: now - 1 * 36e5 });
-  db.params = Object.assign({}, db.params, { countMax: 2, countSamplePct: 100, countStaleDays: 7, countConc: 3, receivingOn: 0 }); // P() 数字参数只认 number
+  db.params = Object.assign({}, db.params, { countMax: 2, countSamplePct: 100, countStaleDays: 7, countConc: 3, receivingOn: 0, reqHoursOn: 0 }); // P() 数字参数只认 number；reqHoursOn=0 关领料时段闸（夹具继承生产库该闸为开，非工作时段建单会被拒致 B 组假失败）
   db.counts = []; db.agvQueue = []; db.rcsStations = {};
   db.autoDispatch = false; db.agvDispatchMode = 'dry';
   delete db.rcsConfig; delete db.wmasConfig;

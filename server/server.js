@@ -1629,6 +1629,12 @@ function parseRowList(v) {
 let SYS_ERR_MAX = 500;
 function logErr(where, e, extra) {
   try {
+    // ㉖v127 传输层断连降噪：客户端上传/长轮询中途关页面、切后台、杀进程、网络抖动 → Node 抛 aborted/ECONNRESET/EPIPE/socket hang up，
+    //   属正常客户端行为、非服务器故障，旧版误记进 sysErr 污染「服务器自身异常」面板（现场见 REQ POST /api/scanlog/sync · aborted）。统一在此过滤，真实 500/后台吞错仍照记。
+    const _code = String((e && e.code) || '');
+    const _msg = String((e && e.message) || e || '');
+    if (/^(aborted|ECONNRESET|EPIPE|ERR_STREAM_PREMATURE_CLOSE|ERR_STREAM_DESTROYED|socket hang up)$/i.test(_code)
+        || /\b(aborted|socket hang up|ECONNRESET|EPIPE|premature close|stream destroyed)\b/i.test(_msg)) return;
     db.sysErr = db.sysErr || [];
     const stack = e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : '';
     db.sysErr.push({ id: newId('se'), at: Date.now(), where: String(where).slice(0, 60), msg: String((e && e.message) || e || '').slice(0, 400), stack: stack.slice(0, 600), extra: extra ? String(extra).slice(0, 200) : '' });
@@ -1987,6 +1993,56 @@ function agvMapOf(i) {
   }
   return m;
 }
+// ㉖v127 地图交管红圈（jam）语义修正：旧版把 landmarkOwners 全部锁格无差别画红圈——
+//   landmarkOwners 是 RCS「车辆预锁的路径格」，正常行驶时每台车前方都锁一串（实测 46 格 / 4 车），
+//   于是满屏红圈、遮挡货架格号与车辆标签，且毫无告警价值（此刻 blockedCars 为空＝一台都没真卡）。
+//   正确语义：红圈＝真堵点，只画「被交管拦停车辆」当前持有的锁格（owner 车号 ∈ blocked）。
+//   无车被卡时返回空数组＝地图干净；有车被卡时精确标出它卡在哪一片。
+function jamLands(owners, blocked, lands) {
+  return Object.entries(owners || {}).map(([land, car]) => ({ land, car })).filter((j) => lands && lands[j.land] && blocked && blocked.has(Number(j.car)));
+}
+// ㉖v126 末批次最小覆盖修剪（超发治理·用户拍板）
+// 根因：贪心按「批次→货位」顺序累加、够数即停，末批次内选哪几框纯看货位号先后。
+//   现场单 LL2026110813532714：需求 1404，在架同批次(2026-11-06)两框 1308@B-11-02 / 1500@B-11-07，
+//   先累 1308 不够 → 再累 1500 = 建议 2808（超发 1404=100%）；反过来先碰 1500 则一框够数（超发仅 96）。
+//   同批次内先进先出已无先后约束，拣哪个都不违 FIFO；v82b 撤销的只是「跨批次挑大框跳批」，此处不越界。
+// 做法：只重排「末批次」那一段——该批之前的框是够数所必需、全部保留；
+//   对同批次在架框集合枚举总件数 ≥ 末段需求且最小的子集，换出更省的组合。
+//   跨批次顺序不动、不引入更晚批次，严格守 v82b 拍板边界。
+function trimLastLot(pick, needQty, boxes) {
+  if (!pick || !pick.length || !(needQty > 0)) return null;
+  const lotOf = (b) => String(b.b || '9999');
+  const lastLot = lotOf(pick[pick.length - 1]);
+  const head = [], tailNow = [];
+  for (const b of pick) (lotOf(b) === lastLot ? tailNow : head).push(b);
+  if (head.some((b) => lotOf(b) > lastLot)) return null; // pick 批次非单调（v69 换入更早批框）：不修剪，绝不重排跨批顺序
+  const headSum = head.reduce((s, b) => s + (Number(b.q) || 0), 0);
+  if (headSum >= needQty) return null; // 前段已够数：末批本不该进选，异常态不处理
+  const needTail = needQty - headSum;
+  const pool = boxes.filter((b) => lotOf(b) === lastLot);
+  if (pool.length < 2) return null; // 末批只有一个框，无从优化
+  // ㉖v126 已叫车框强制保留：AGV 已在途/已到台，丢出建议=白搬一车+白占站台，且现场必须扫它闭环
+  const must = tailNow.filter((b) => b.agv);
+  const mustSum = must.reduce((s, b) => s + (Number(b.q) || 0), 0);
+  const opt = pool.filter((b) => !must.includes(b));
+  const nCap = Math.min(opt.length, Math.max(0, 12 - must.length)); // 子集枚举上限 2^12=4096，防极端大池耗时
+  const cand = opt.slice(0, nCap);
+  let best = 0, bestSum = mustSum, bestCnt = must.length, found = mustSum >= needTail; // 已叫车框本身够数 → 不额外加框
+  for (let m = 1; m < (1 << nCap); m++) {
+    let sum = 0, cnt = 0;
+    for (let i = 0; i < nCap; i++) if (m & (1 << i)) { sum += Number(cand[i].q) || 0; cnt++; }
+    const tot = mustSum + sum;
+    if (tot < needTail) continue;
+    if (!found || tot < bestSum || (tot === bestSum && must.length + cnt < bestCnt)) { best = m; bestSum = tot; bestCnt = must.length + cnt; found = true; }
+  }
+  if (!found) return null; // 池内（截断后）无可行覆盖 → 保守不动
+  const tailNew = must.concat(cand.filter((_, i) => best & (1 << i)));
+  const nowSum = tailNow.reduce((s, b) => s + (Number(b.q) || 0), 0);
+  const sameSet = tailNew.length === tailNow.length && tailNew.every((b) => tailNow.includes(b));
+  if (sameSet) return null; // 贪心已是最优
+  if (bestSum > nowSum || (bestSum === nowSum && tailNew.length >= tailNow.length)) return null; // 无收益不硬换
+  return head.concat(tailNew);
+}
 // 取货建议：PDA 同步的货位账本（含托号 pid）→ 按框（同托多码=1框）FIFO 选框；agvMap 标记已叫AGV的框
 // sugCodes（㉖v98c 可选）：接单时刻盖章的本行建议框全码集（it.sugCodes）——发齐态灰框以"当初真正建议过"为准
 function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
@@ -2045,8 +2101,11 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
       for (const bx of _pool) for (const c of (bx.codes || [])) sugAll.push(String(c).toUpperCase()); // 未扫码入可扫白名单（兄弟码随框一起）
       const _pk = []; let _acc = 0;
       for (const bx of _pool) { _pk.push(bx); _acc += bx.q; if (_acc >= needQty) break; if (_pk.length >= 24) break; } // 池内够数即停，批次序不乱
+      // ㉖v126 同批末段最小覆盖修剪（只在盖章池内换，绝不引入池外框——守 v114「盖章集全程可扫」）
+      const _tr = trimLastLot(_pk, needQty, _pool);
+      if (_tr) { _pk.length = 0; for (const bx of _tr) _pk.push(bx); _acc = _tr.reduce((s, b) => s + (Number(b.q) || 0), 0); }
       const _over = Math.max(0, Math.round((_acc - needQty) * 100) / 100);
-      const _severe = needQty > 0 && _pk.length > 0 && _over > needQty;
+      const _severe = needQty > 0 && _pk.length > 0 && _over >= needQty; // ㉖v126 边界修复：over 恰好=need（100%超发）同样告警
       const _flat = _pk.flatMap((g0) => g0.items.map((it) => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv })));
       return { boxes: _pk, flatBoxes: _flat, total: Math.round(_acc * 100) / 100, over: _over, severeOver: _severe, left: Math.max(0, Math.round(needQty * 100) / 100), need: Math.max(0, Math.round((needQty - _acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size, locked: true, sugAll };
     }
@@ -2073,9 +2132,13 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
   }
   // ㉖v82b 撤销"单框最小覆盖"（用户拍板：装框不规范时600小筐+3000大筐并存，跳批次选大筐严重违背先进先出；宁可按FIFO多叫筐，不可挑框）
   // 原逻辑：if (needQty > 0 && pick.length > 1) { const one = boxes.filter(x => x.q >= needQty).sort((a, b) => a.q - b.q)[0]; if (one && one.q < acc) {...} }
+  // ㉖v126 同批末段最小覆盖修剪：v69 只换「最后一框」，同批两框都进（1308+1500 覆盖 1404）时无能为力——
+  //   此处对末批次枚举更省组合；仅同批次内换框、不引入更晚批次，不违背 v82b 的跨批次边界
+  { const _tr = trimLastLot(pick, needQty, boxes);
+    if (_tr) { pick.length = 0; for (const bx of _tr) pick.push(bx); acc = _tr.reduce((s, b) => s + (Number(b.q) || 0), 0); } }
   const over = Math.max(0, Math.round((acc - needQty) * 100) / 100); // 超发件数（整框发料无法精确凑数时，供UI提示"多备N件/可返架"）
-  // ㉖v82 严重超发判定：超发 > 需求本身（如一筐2400只为补109件）——建议区红字提示+接单即派不自动派这种框，人工拍板
-  const severeOver = needQty > 0 && pick.length > 0 && over > needQty;
+  // ㉖v82 严重超发判定：超发 ≥ 需求本身（如一筐2400只为补109件、或同批两框恰好翻倍覆盖）——建议区红字提示+接单即派不自动派这种框，人工拍板
+  const severeOver = needQty > 0 && pick.length > 0 && over >= needQty; // ㉖v126 边界修复：over 恰好=need（100%超发，历史 13 行）同样触发
   const flatBoxes = pick.flatMap(g0 => g0.items.map(it => ({ c: it.c, q: it.q, l: g0.l, b: g0.b, f: g0.f, agv: g0.agv }))); // 标签级：供逐码复制/扫码
   return { boxes: pick, flatBoxes, total: acc, over, severeOver, left: Math.max(0, Math.round(needQty * 100) / 100), need: Math.max(0, Math.round((needQty - acc) * 100) / 100), inStock: boxes.length, noInfoQty: noInfoKeys.size }; // ㉖v82 left=本轮建议前还差多少（旧"还差"取need=建议后缺口，够数时显示0件易误导）
 }
@@ -2160,11 +2223,12 @@ function autoEnqueueOnAccept(r, byName, byId) {
     const excl = new Set(((it.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
     const sg = pickSuggest(it.partNo, Number(it.qty) || 0, excl, agvMapOf(it));
     // ㉖v82 严重超发闸（事故：需1949自动派1840+2400两筐，发完一筐第二筐2400骑虎难下）：
-    // 逐筐累计，从某筐起累计超发>需求本身→该筐及其后不自动派（红字留给人工拍板），前段照常派
+    // 逐筐累计，从某筐起累计超发≥需求本身→该筐及其后不自动派（红字留给人工拍板），前段照常派
+    // ㉖v126 边界修复：> 改 ≥——恰好等于需求即 100% 超发（LL2026110813532714 需1404发2808），旧判定漏放
     const _needQ = Number(it.qty) || 0; let _accQ = 0; const _keep = [];
     for (const bx of sg.boxes) {
       _accQ += Number(bx.q) || 0;
-      if (_needQ > 0 && _accQ - _needQ > _needQ) { console.log(`[auto派] ${r.no} 行 ${it.partNo} 尾筐 ${bx.codes && bx.codes[0]} 起严重超发(累计${_accQ}/需${_needQ})，不自动派，留人工拍板`); break; }
+      if (_needQ > 0 && _accQ - _needQ >= _needQ) { console.log(`[auto派] ${r.no} 行 ${it.partNo} 尾筐 ${bx.codes && bx.codes[0]} 起严重超发(累计${_accQ}/需${_needQ})，不自动派，留人工拍板`); break; }
       _keep.push(bx);
     }
     for (const bx of _keep) {
@@ -3671,7 +3735,7 @@ return send(res, 200, {
         const dir = _dirTx[q && q.type] || (_isCk(from) ? '入库' : (_isCk(to) ? '出库' : '搬运'));
         return { dir, p: pt.p, q: pt.q, from, to }; })() })), // ㉖v56 状态字段随地图下发；㉖v92 cargo 带完整 from→to 路径+RCS任务兜底+活动告警
           shelf, shelfCols, ground, stations: stn,
-          jam: Object.entries(owners).map(([land, car]) => ({ land, car })).filter((j) => NetMap.lands[j.land]),
+          jam: jamLands(owners, mapBlocked, NetMap.lands), // ㉖v127 红圈＝真堵点（仅被拦停车辆的锁格），不再把预锁路径全画成红圈遮挡地图
         });
       }
       // ===== ㉖ 指挥舱 RCS 代理（PDA AGV模块糅合进网页：任务/车辆/交管 + 操作） =====
@@ -4378,6 +4442,12 @@ return send(res, 200, {
           for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); if (!pn || _have.has(pn)) continue; _have.add(pn); list.push({ pn, nm: String(x.n || '').replace(/[\uFFFD]/g, ''), src: '账本', mc: (_md[pn] && _md[pn].mc) || '' }); }
           // ㉖v98c 物料号字典独有键并入：补录端点只写 mitemDict 不写名称字典，否则纯补录零件在字典页不可见（nm 空不影响领料联想带名）
           for (const pn of Object.keys(_md)) { if (!pn || _have.has(pn)) continue; _have.add(pn); list.push({ pn, nm: '', src: (_md[pn] && _md[pn].src) || '物料号字典', mc: (_md[pn] && _md[pn].mc) || '' }); } }
+        // ㉖v128 每框均值下发：网页建单按【框数】填（对齐 PDA v71b 口径，杜绝"填10框提交变10件"）——
+        //   perBoxQty=该零件在架件数÷在架框数，框按 boxKeyOf 去重（同托多码=1框），与 PDA 库存页/发料同口径；无在架不下发该字段（前端兜底按原值当件数）
+        { const _bx = {};
+          for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); if (!pn) continue; const b = _bx[pn] = _bx[pn] || { s: new Set(), q: 0 }; b.s.add(boxKeyOf(x)); b.q += Number(x.q) || 0; }
+          for (const it of list) { const b = _bx[it.pn]; if (b && b.s.size) { it.boxes = b.s.size; it.perBoxQty = Math.round(b.q / b.s.size * 10) / 10; } }
+        }
         if (q) list = list.filter((x) => x.pn.includes(q) || x.nm.toUpperCase().includes(q) || String(x.mc || '').includes(q)); // ㉖v98c 可按物料号搜
         list.sort((a, b) => a.pn.localeCompare(b.pn));
         if ((url.searchParams.get('miss') || '') === '1' || (url.searchParams.get('miss') || '') === '2') { // ㉖G8 缺口扫描：=1 物料名缺口；㉖v98c =2 物料号缺口（在用零件号但 mitemDict 无值）
@@ -4521,6 +4591,51 @@ return send(res, 200, {
         const ds = Object.keys(w.days).sort().map((k) => ({ day: k, ...w.days[k] }));
         const cs = Object.keys(w.cars).sort().map((k) => ({ car: k, ...w.cars[k], avgDur: w.cars[k].n ? Math.round(w.cars[k].dur / w.cars[k].n) : 0, dur: undefined }));
         return send(res, 200, { ok: true, from: wdstr(F), to: wdstr(T), persons: ps, days: ds, cars: cs });
+      }
+      // ===== ㉖v125 人员效率：与 /api/report/work 同扫描口径 + 人×小时活跃（节奏热力）；纯观察性指标，不做排名处罚依据 =====
+      if (req.method === 'GET' && p === '/api/report/people') {
+        if (u.role !== 'admin' && u.role !== 'warehouse') return send(res, 403, { ok: false, msg: '人员效率仅管理员/仓管员可见' });
+        const fr = String(url.searchParams.get('from') || ''), tt = String(url.searchParams.get('to') || '');
+        const F = fr ? Date.parse(fr + 'T00:00:00') : Date.now() - 14 * 864e5;
+        let T = tt ? Date.parse(tt + 'T23:59:59') : Date.now();
+        if (!Number.isFinite(F) || !Number.isFinite(T) || F > T) return send(res, 400, { ok: false, msg: '日期范围不对' });
+        if (T > Date.now()) T = Date.now(); // 选到今天：截到现在，小时热力不留未来空段
+        const w = buildWork(F, T);
+        // 人×小时活跃（入库扫码/出库发料/接单三个动作源；与上方扫描同判定同去重）
+        const hrs = {}; // name -> Array(24)
+        const H = (name) => (hrs[name] = hrs[name] || Array(24).fill(0));
+        const boxSeen2 = {};
+        for (const s of Object.values(db.scanlog || {})) {
+          if (s.cx) continue; const t = s.t || 0; if (t < F || t > T) continue;
+          const k2 = String(s.pid || '').toUpperCase() || String(s.code || '').toUpperCase();
+          if (boxSeen2[k2]) continue; boxSeen2[k2] = 1;
+          H(wdName(String(s.op || '').trim() || '未知'))[new Date(t).getHours()]++;
+        }
+        for (const o of Object.values(db.outbound || {})) {
+          if (isMoveOrder(o)) continue; const t = Number(o.createdAt) || 0; if (t < F || t > T) continue;
+          if (!(o.items || []).some((i) => String(i.barcode || '').toUpperCase())) continue;
+          H(opNameOf(o.operator) || '未知')[new Date(t).getHours()]++;
+        }
+        for (const r of db.requisitions || []) {
+          const accEv = (r.history || []).find((h) => /^接单/.test(h.text));
+          const aAt = accEv ? Date.parse(accEv.time) : 0;
+          if (accEv && aAt >= F && aAt <= T) H(wdName(String(accEv.by || '').trim() || '未知'))[new Date(aAt).getHours()]++;
+        }
+        // ㉖v125c 系统管理员=账号非作业人员：本页纯作业人员视角，其操作（多为系统测试/修账）不计入在岗人数、榜单与团队总量（口径自洽：总框数=Σ榜内人）
+        const list = Object.values(w.persons).filter((p) => p.name !== '系统管理员').map((p) => {
+          const actDays = Object.keys(p.days || {}).length;
+          const boxes = p.inB + p.outB;
+          return { name: p.name, inB: p.inB, outB: p.outB, outQ: p.outQ, acc: p.acc, fix: p.fix, ret: p.ret,
+            actDays, avgDay: actDays ? Math.round(boxes / actDays) : 0,
+            avgAccMin: p.finN ? Math.round(p.finMin / p.finN) : null,
+            qRatio: boxes ? Math.round((p.fix + p.ret) * 1000 / boxes) : 0, // ‱：修正+返架 每千框，观察性
+            hours: hrs[p.name] || Array(24).fill(0) };
+        }).sort((a, b) => (b.inB + b.outB) - (a.inB + a.outB));
+        const totBox = list.reduce((s, x) => s + x.inB + x.outB, 0), totDays = list.reduce((s, x) => s + x.actDays, 0);
+        const conc = list.length && totBox ? Math.round((list[0].inB + list[0].outB) * 100 / totBox) : 0;
+        const accW = list.reduce((s, x) => s + (x.avgAccMin == null ? 0 : x.avgAccMin * x.acc), 0), accN = list.reduce((s, x) => s + x.acc, 0);
+        return send(res, 200, { ok: true, from: wdstr(F), to: wdstr(T), list,
+          team: { persons: list.length, totBox, avgTeamDay: totDays ? Math.round(totBox / totDays) : 0, conc, avgAccMin: accN ? Math.round(accW / accN) : null, qRatio: totBox ? Math.round(list.reduce((s, x) => s + x.fix + x.ret, 0) * 1000 / totBox) : 0 } });
       }
       // ===== ㉖v52 分析报表：日/周/月（日=当天快照；周/月=日快照现场聚合；缺日标 missing，支持回填）=====
       if (req.method === 'GET' && p === '/api/report/analytics') {
@@ -4678,8 +4793,9 @@ return send(res, 200, {
       }
       // ===== ㉖v63 AGV 运力体检：近N天任务底仓——车均负载/单趟均时/峰值并发/忙时分布 =====
       if (req.method === 'GET' && p === '/api/agv/capacity') {
-        const N = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7));
-        const cut = Date.now() - N * 864e5;
+        const N = Math.min(30, Math.max(1, Number(url.searchParams.get('days')) || 7)); // ㉖v125 底仓只留30天，90天档名存实亡→上限收敛
+        const _db0 = new Date(); _db0.setHours(0, 0, 0, 0); // ㉖v125 窗口改自然日：与 /api/agv/report 同口径（旧滚动窗与自然日同页并存必打架）
+        const cut = N === 1 ? _db0.getTime() : _db0.getTime() - (N - 1) * 864e5;
         const tasks = Object.values(db.agvTasks || {}).filter((t) => (t.fin || 0) >= cut);
         const byCar = {};
         for (const t of tasks) { const c = t.car || 0; const b = byCar[c] = byCar[c] || { car: c, n: 0, dur: 0, dn: 0, out: 0, in: 0 }; b.n++; if (t.dur > 0) { b.dur += t.dur; b.dn++; } if (t.ck === 'out') b.out++; else if (t.ck === 'in') b.in++; }
@@ -5146,10 +5262,25 @@ return send(res, 200, {
         const rec = (db.counts || []).find((x) => x.id === String(b.id || ''));
         if (!rec) return send(res, 400, { ok: false, msg: '盘点工单不存在' });
         if (['done', 'canceled'].includes(rec.state)) return send(res, 400, { ok: false, msg: '工单已终态[' + rec.state + ']' });
-        for (const q of db.agvQueue || []) if (q.countId === rec.id && ['排队', '下发中'].includes(q.state)) { q.state = '取消'; q.err = '盘点单取消（人工）'; }
+        // ㉖v127 取消前先撤已下发的 AGV 搬运任务（对齐检验通道口径）：旧写法只把队列项状态改"取消"、从不撤 WMAS——
+        //   本系统工单 canceled、冻结解除了，但车照跑，框被送到站台后无人认领，只能去 AGV 系统手工撤（11/8 现场 N26J3300127 盘点下架超时即此）。
+        const st0 = rec.state;
+        const _legT = st0 === 'returning' ? 'countback' : 'count';
+        const _q = (db.agvQueue || []).find((x) => x.countId === rec.id && x.type === _legT && ['下发中', '已下发'].includes(x.state));
+        const _taskNo = _q && _q.wmsTask; // 仅"已下发未叉取"才撤；到站/完成=搬运已发生（撤不了也不该撤），dry 演算无 wmsTask 自动跳过
+        if (_taskNo) {
+          const tk = await wmasToken();
+          if (!tk) return send(res, 400, { ok: false, msg: '该框 AGV 搬运任务已下发（' + _taskNo + '），但 WMAS 未配置/登录失败无法撤销——请先在 AGV 系统取消该搬运任务，再回来取消盘点单' });
+          const cr = await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [_taskNo]);
+          if (!wmasOk(cr) && !String((cr && (cr.message || cr.msg || cr.code)) || '').includes('不存在')) {
+            return send(res, 400, { ok: false, msg: 'AGV 任务撤销未成功（车可能已叉取在途）：' + ((cr && (cr.message || cr.code || cr.msg)) || 'WMAS无响应') + '——请在 AGV 系统确认搬运任务后再取消；强行取消会让框送到站台无人认领' });
+          }
+        }
+        // 撤单成功（或本就未下发）→ 统一回收该工单所有活跃队列项（走 retireQueueItem：清叫车占位+站台预占+解冻工单，旧写法漏清）
+        for (const qq of db.agvQueue || []) if (qq.countId === rec.id && ['排队', '下发中', '已下发', '失败'].includes(qq.state)) retireQueueItem(qq, '取消', '盘点单取消（人工）');
         rec.state = 'canceled'; rec.doneAt = Date.now(); rec.err = String(b.reason || '人工取消').slice(0, 120); rec.updAt = Date.now();
-        save(); pushOps(u, '盘点取消', rec.code, '状态 ' + rec.state + '：' + rec.err + '（注意：若框仍在站台需人工处理归位或出库）');
-        return send(res, 200, { ok: true, rec });
+        save(); pushOps(u, '盘点取消', rec.code, st0 + '→canceled：' + rec.err + (_taskNo ? '（已撤 AGV 搬运任务 ' + _taskNo + '）' : '') + (['atStation', 'stuck'].includes(st0) ? '；⚠ 框可能已在站台，请确认实物并归位/出库' : ''));
+        return send(res, 200, { ok: true, rec, wmasCancelled: !!_taskNo });
       }
       if (req.method === 'GET' && p === '/api/count/list') {
         const onlyDone = url.searchParams.get('all') !== '1';
@@ -6031,7 +6162,18 @@ return send(res, 200, {
             target.mesNo = String(b.mesNo || '').trim(); // App 侧出库单号，便于对账
             target.transferAt = Date.now(); target.transferBy = u.name; // ㉖v94r 转单时刻/人：出库台账兜底补建需要（PDA推送是fire-and-forget，失败即永久缺失）
             hpush(`转MES ${target.partNo} 实发${got}件${got < (Number(target.qty) || 0) ? '（短装' + ((Number(target.qty) || 0) - got) + '件）' : ''}（${u.name}）`); // ㉖v105 对账框留痕：此前MES已转、本地回写中断的框按已转单入账，不再重复调拨
-            { const _rc = Array.isArray(b.recon) ? b.recon.map((x) => String(x).toUpperCase()).filter(Boolean) : []; if (_rc.length) hpush(`🔎 对账入账：框 ${_rc.join('/')} 经 MES 确认此前已在目标仓，本次仅补记账（未重复调拨）`); }
+            { const _rc = Array.isArray(b.recon) ? b.recon.map((x) => String(x).toUpperCase()).filter(Boolean) : [];
+              if (_rc.length) {
+                // ㉖v127 对账入账逐框存证：reconEv=每框 {c, at:MES是否实证在目标仓, loc:仓位实况}。路径C（人工整批确认）的框 at=false，留痕如实分级
+                const _ev = Array.isArray(b.reconEv) ? b.reconEv : null;
+                if (_ev && _ev.length) {
+                  const _man = _ev.filter((x) => !x || x.at !== true);
+                  const _dg = _ev.map((x) => `${String((x && x.c) || '').toUpperCase()}=${String((x && x.loc) || '（未记录）').slice(0, 60)}`).join('；');
+                  target.reconLog = _ev.map((x) => ({ c: String((x && x.c) || '').toUpperCase(), at: x && x.at === true ? 1 : 0, loc: String((x && x.loc) || '').slice(0, 60) }));
+                  if (!_man.length) hpush(`🔎 对账入账（MES逐框实证·${_ev.length}框均在目标仓）：${_dg}；本次仅补记账，未重复调拨`);
+                  else hpush(`🔎 对账入账（${_man.length}/${_ev.length}框为人工整批确认·MES未逐框核实其仓位、由操作人确认此前已转）：${_dg}；本次仅补记账，未重复调拨`);
+                } else hpush(`🔎 对账入账：框 ${_rc.join('/')} 此前已在目标仓，本次仅补记账（未重复调拨）〔旧版PDA·未附逐框证据〕`);
+              } }
             finalize();
             setTimeout(() => { try { outboundLedgerFix({ grace: 0 }); } catch (_) {} }, 3 * 60000); // ㉖v94r 3分钟后自查该行台账是否落库（给PDA推送留足窗口），缺则补建；㉖v120c 传 grace=0 豁免宽限期——本次自查正是为刚转的单兜底，宽限会把它废掉
           } else if (act === 'skip') {
