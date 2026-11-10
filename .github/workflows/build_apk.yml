@@ -12,7 +12,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 30 # ㉖v143 15→30：裸装模式(关缓存现场下Flutter/SDK/gradle)正常14~15分贴线，runner偶发慢即超时掐断(11-10 #402 实测15m18s被cancel)
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
