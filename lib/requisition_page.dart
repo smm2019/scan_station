@@ -188,7 +188,8 @@ class _RequisitionPageState extends State<RequisitionPage>
   }
 
   // ㉖v98 状态筛选定义：''=全部；todo=在办（待接单/备料中/待签收）；其余=具体状态；mine=我下的单；rush=急料
-  static const _stNames = {'pending': '待接单', 'accepted': '备料中', 'ready': '待签收', 'done': '已完成', 'rejected': '已拒绝', 'cancelled': '已取消', 'closed': '已关闭'};
+  // ㉖v129 ready 叫法统一为「已备齐」：卡片徽章与服务器 REQ_STATUS_TEXT 一直是"已备齐"，旧 chip 写"待签收"同一状态两张嘴
+  static const _stNames = {'pending': '待接单', 'accepted': '备料中', 'ready': '已备齐', 'done': '已完成', 'rejected': '已拒绝', 'cancelled': '已取消', 'closed': '已关闭'};
   bool _stMatch(Map r) {
     final st = r["status"]?.toString() ?? "";
     switch (_fltSt) {
@@ -348,10 +349,28 @@ class _RequisitionPageState extends State<RequisitionPage>
       }
     }
     hist.forEach((k, v) => hist[k] = v.take(3).toList());
+    // ㉖v137 重复在途提示：本人未完结单 零件号→"单号（申请N件）"摘要（同人同零件在途=可能重复下单，提示不拦截）
+    final openByPn = <String, String>{};
+    {
+      final myUid = Auth.user?.id ?? "";
+      for (final r in _reqs) {
+        if (r["by"]?.toString() != myUid) continue;
+        final st = r["status"]?.toString() ?? "";
+        if (st != "pending" && st != "accepted" && st != "ready") continue;
+        final no = r["no"]?.toString() ?? "";
+        for (final e in List<Map>.from(r["items"] ?? [])) {
+          final pn = e["partNo"]?.toString() ?? "";
+          if (pn.isEmpty) continue;
+          final need = (e["qty"] as num?)?.toInt() ?? 0;
+          final old = openByPn[pn];
+          openByPn[pn] = old == null ? "$no（申请${need}件）" : "$old、$no";
+        }
+      }
+    }
     final res = await showModalBottomSheet<Map<String, dynamic>>(
         context: context,
         isScrollControlled: true,
-        builder: (ctx) => _ReqCreateSheet(parts: parts, hist: hist, prefill: prefill));
+        builder: (ctx) => _ReqCreateSheet(parts: parts, hist: hist, prefill: prefill, openByPn: openByPn));
     if (res == null || !mounted) return;
     final r = await AuthApi.reqCreate(
         res["items"] as List<Map>, res["remark"]?.toString() ?? "",
@@ -514,6 +533,8 @@ class _RequisitionPageState extends State<RequisitionPage>
                                   border: const OutlineInputBorder()),
                             )),
                         // ㉖v98 状态筛选 chips（单子太多不好找：在办/急料/我下的/各状态带计数，与搜索叠加）
+                        // ㉖v129 人性化重排：流程三段（📥待接单→🔧备料中→📦已备齐）恒定前置——0 也显示，
+                        //   让人一眼扫到"卡在哪个环节"；计数按紧急度着色（待接单>0 橙=有活没人接，备齐>0 青=货到了等你处理）
                         Builder(builder: (bc2) {
                           int cnt(String key) {
                             final old = _fltSt;
@@ -522,13 +543,30 @@ class _RequisitionPageState extends State<RequisitionPage>
                             _fltSt = old;
                             return n;
                           }
+                          // chip 计数颜色：流程段按语义色，>0 才上色；其余淡灰
+                          Color cntColor(String key, int n) {
+                            if (n <= 0) return Colors.blueGrey.shade300;
+                            switch (key) {
+                              case "pending": return Colors.deepOrange; // 还没人接单=最该被看到
+                              case "accepted": return Colors.blue; // 仓管正在备
+                              case "ready": return Colors.teal; // 备齐了=催签收
+                              case "rush": return Colors.redAccent;
+                              default: return Colors.blueGrey;
+                            }
+                          }
+                          final flow = <List<String>>[
+                            ["pending", "📥待接单"],
+                            ["accepted", "🔧备料中"],
+                            ["ready", "📦已备齐"],
+                          ];
                           final chips = <List<String>>[
                             ["", "全部"],
+                            ...flow,
                             if (cnt("todo") > 0) ["todo", "🕓在办"],
                             if (cnt("rush") > 0) ["rush", "🔥急料"],
                             ["mine", "我下的"],
                             for (final e in _stNames.entries)
-                              if (cnt(e.key) > 0) [e.key, e.value],
+                              if (cnt(e.key) > 0 && !flow.any((f) => f[0] == e.key)) [e.key, e.value],
                           ];
                           return SizedBox(
                               height: 38,
@@ -537,11 +575,15 @@ class _RequisitionPageState extends State<RequisitionPage>
                                   padding: const EdgeInsets.symmetric(horizontal: 10),
                                   children: chips.map((c) {
                                     final on = _fltSt == c[0];
+                                    final n = cnt(c[0]);
                                     return Padding(
                                         padding: const EdgeInsets.only(right: 6, top: 5),
                                         child: ChoiceChip(
-                                            label: Text("${c[1]} ${cnt(c[0])}",
-                                                style: TextStyle(fontSize: 11.5, color: on ? Colors.white : Colors.blueGrey)),
+                                            label: RichText(
+                                                text: TextSpan(children: [
+                                                  TextSpan(text: c[1], style: TextStyle(fontSize: 11.5, color: on ? Colors.white : Colors.blueGrey)),
+                                                  TextSpan(text: " $n", style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: on ? Colors.white : cntColor(c[0], n))),
+                                                ])),
                                             selected: on,
                                             showCheckmark: false,
                                             selectedColor: const Color(0xFF515BD4),
@@ -580,6 +622,8 @@ class _RequisitionPageState extends State<RequisitionPage>
                                               : (st == 'pending'
                                                   ? "\n（原指定 $aName 超时放开）"
                                                   : ""));
+                                      // ㉖v129 在办三态显示"卡在这一步多久"：超阈值橙色警示（没人接/备太久/没人签收一眼可见）
+                                      final waitH = reqWaitHint(r);
                                       return Card(
                                         margin: const EdgeInsets.symmetric(
                                             vertical: 5),
@@ -598,11 +642,25 @@ class _RequisitionPageState extends State<RequisitionPage>
                                                   color: r["rush"] == true
                                                       ? Colors.red.shade700
                                                       : null)),
-                                          subtitle: Text(
-                                              "$itemsText\n${reqTimeLocal(r["createdAt"])}${(r["remark"]?.toString().isNotEmpty ?? false) ? " · ${r["remark"]}" : ""}$assignTxt",
-                                              style: const TextStyle(
-                                                  fontSize: 12)),
-                                          isThreeLine: true,
+                                          subtitle: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                    "$itemsText\n${reqTimeLocal(r["createdAt"])}${(r["remark"]?.toString().isNotEmpty ?? false) ? " · ${r["remark"]}" : ""}$assignTxt",
+                                                    style: const TextStyle(
+                                                        fontSize: 12)),
+                                                if (waitH != null)
+                                                  Text(waitH[0] as String,
+                                                      style: TextStyle(
+                                                          fontSize: 11.5,
+                                                          fontWeight: (waitH[2] as bool)
+                                                              ? FontWeight.w700
+                                                              : FontWeight.w500,
+                                                          color:
+                                                              waitH[1] as Color)),
+                                              ]),
+                                          isThreeLine: waitH == null, // 有等待行时交 ListTile 自适应高度，防三行预留高裁掉第四行
                                           trailing: Container(
                                               padding:
                                                   const EdgeInsets.symmetric(
@@ -638,12 +696,61 @@ IconData _stIcon(String s) => switch (s) {
       _ => Icons.cancel_outlined,
     };
 
+// ㉖v129 时长中文格式化（列表卡片用；详情弹层的 _dur 在 Sheet 类内不可复用）
+String reqDurCn(int min) {
+  if (min < 1) return "刚刚";
+  if (min < 60) return "$min 分钟";
+  final h = min ~/ 60, mm = min % 60;
+  if (h < 24) return mm == 0 ? "$h 小时" : "$h 小时 $mm 分";
+  return "${h ~/ 24} 天${h % 24} 小时";
+}
+
+/// ㉖v129 在办单"卡在这一步多久"提示——列表人性化的核心缺环：
+/// 满屏"已备齐"分不清刚备好的还是 3 小时没人签收；等待接单/备料中同理。
+/// 返回 [文案, 颜色, 是否超阈值]；非在办三态/无时刻数据返回 null（不显示）。
+/// 阈值：待接单>30分橙（有活没人接）、备料中>60分橙（备太久催一催）、已备齐>30分橙（货到了等人签）
+List<Object>? reqWaitHint(Map r) {
+  final st = r["status"]?.toString() ?? "";
+  final now = DateTime.now().millisecondsSinceEpoch;
+  int? msOfV(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toInt() > 0 ? v.toInt() : null;
+    final s = v.toString();
+    if (s.isEmpty) return null;
+    return DateTime.tryParse(s)?.millisecondsSinceEpoch;
+  }
+  int? from;
+  String label;
+  int warnMin;
+  if (st == "pending") {
+    from = msOfV(r["createdAt"]);
+    label = "⏳ 已等待";
+    warnMin = 30;
+  } else if (st == "accepted") {
+    from = msOfV(r["acceptedAt"]) ?? msOfV(r["createdAt"]);
+    label = "🔧 已备料";
+    warnMin = 60;
+  } else if (st == "ready") {
+    from = msOfV(r["readyAt"]) ?? msOfV(r["acceptedAt"]) ?? msOfV(r["createdAt"]);
+    label = "📦 待签收";
+    warnMin = 30;
+  } else {
+    return null;
+  }
+  if (from == null || from <= 0) return null;
+  final m = ((now - from) / 60000).round();
+  if (m < 0) return null;
+  final over = m >= warnMin;
+  return ["$label ${reqDurCn(m)}", over ? Colors.deepOrange : Colors.blueGrey.shade400, over];
+}
+
 // ---------- 新建领料单弹层：从库存选零件号+数量，可多行 ----------
 class _ReqCreateSheet extends StatefulWidget {
   final List<_StockPartRow> parts;
   final Map<String, List<String>> hist; // 零件号→最近领用记录
   final Map<String, String>? prefill; // 再来一单：原单零件号→数量预填（可改）
-  const _ReqCreateSheet({required this.parts, this.hist = const {}, this.prefill});
+  final Map<String, String> openByPn; // ㉖v137 重复在途提示：本人未完结单 零件号→"单号(已发件/申请件)"摘要，已选行命中即警示
+  const _ReqCreateSheet({required this.parts, this.hist = const {}, this.prefill, this.openByPn = const {}});
   @override
   State<_ReqCreateSheet> createState() => _ReqCreateSheetState();
 }
@@ -662,6 +769,10 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   List<Map> _freq = []; // ㉖v62 常领清单（近60天本人聚合，服务端排序）
   List<Map> _tpls = []; // v62 产线模板（私有+共享）
   String _myUid = ""; // v62 当前用户id（判断模板归属：自己的才显示删除）
+  // ㉖v137 补料建议：服务器按出库日均消耗预估的告急清单（纯只读预估，加入仍需人工确认）
+  List<Map> _sug = [];
+  bool _sugOn = true;
+  int _sugWin = 14, _sugCover = 3;
 
   /// v55 数量变化同步已选区：填>0入选（追加到队尾），清空即除名；零件下架由提交时兜底过滤
   void _syncChosen(String partNo) {
@@ -744,6 +855,16 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
       if (!mounted) return;
       if (r["ok"] == true) setState(() => _tpls = List<Map>.from(r["list"] ?? []));
     });
+    // ㉖v137 补料建议：近窗口出库日均消耗预估告急件（失败静默，不影响正常建单）
+    AuthApi.reqSuggest().then((r) {
+      if (!mounted) return;
+      if (r["ok"] == true) setState(() {
+        _sug = List<Map>.from(r["list"] ?? []);
+        _sugOn = r["on"] == 1;
+        _sugWin = (r["win"] as num?)?.toInt() ?? 14;
+        _sugCover = (r["cover"] as num?)?.toInt() ?? 3;
+      });
+    });
   }
 
   /// ㉖v62 建单提效：常领一键加（近60天本人聚合）+ 产线模板整单载入
@@ -772,6 +893,130 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
     }
     if (added > 0) setState(() {});
   }
+
+  /// ㉖v137 补料建议弹层：按出库日均消耗预估的告急清单，按库存状态给两种正确动作
+  ///   · 在架有货但撑不过目标天数 → 勾选后「加入领料单」（建议框数预填，可改）
+  ///   · 已断供(在架0) → 「🔔预约到货」：登记 watchlist 够数自动开单（断供件本就不在可下单零件列表，预约才是正解）
+  void _showSugSheet() {
+    final byPn = {for (final p in widget.parts) p.partNo: p};
+    final sel = <String>{}; // 勾选的可下单件
+    final orderable = _sug.where((x) => (x["stock"] as num?)?.toInt() != 0 && byPn.containsKey(x["pn"].toString())).toList();
+    final outOfStock = _sug.where((x) => (x["stock"] as num?)?.toInt() == 0 || !byPn.containsKey(x["pn"].toString())).toList();
+    showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (mctx) => SafeArea(
+            child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.86),
+                child: StatefulBuilder(builder: (bctx, setSt) {
+                  String dTxt(num d) => d <= 0 ? "已断供" : d < 1 ? "不足1天" : "约${d.round()}天";
+                  return Column(children: [
+                    Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+                        child: Row(children: [
+                          const Icon(Icons.psychology, size: 20, color: Color(0xFFEF6C00)),
+                          const SizedBox(width: 6),
+                          Text("补料建议（近${_sugWin}天消耗）", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                          const Spacer(),
+                          Text("撑不过${_sugCover}天", style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                        ])),
+                    Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+                        child: Text("日均=近${_sugWin}天出库实发件数÷天数；可撑=（在架+在途未发）÷日均。仅供审单参考，不自动下单。",
+                            style: const TextStyle(fontSize: 10.5, color: Colors.grey, height: 1.4), textAlign: TextAlign.left)),
+                    Expanded(
+                        child: ListView(children: [
+                      if (orderable.isNotEmpty) ...[
+                        Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 6, 14, 2),
+                            child: Row(children: [
+                              Text("可下单补货（${orderable.length}）", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32))),
+                              const Spacer(),
+                              GestureDetector(
+                                  onTap: () => setSt(() {
+                                        sel.clear();
+                                        for (final x in orderable) {
+                                          final pn = x["pn"].toString();
+                                          if (!_order.contains(pn)) sel.add(pn);
+                                        }
+                                      }),
+                                  child: const Text("全选", style: TextStyle(fontSize: 11.5, color: Color(0xFF515BD4)))),
+                            ])),
+                        ...orderable.map((x) {
+                          final pn = x["pn"].toString();
+                          final already = _order.contains(pn);
+                          final on = sel.contains(pn) || already;
+                          return CheckboxListTile(
+                              dense: true,
+                              controlAffinity: ListTileControlAffinity.leading,
+                              value: on,
+                              enabled: !already,
+                              onChanged: already ? null : (v) => setSt(() { v == true ? sel.add(pn) : sel.remove(pn); }),
+                              title: Text("$pn  ${x["nm"]?.toString() ?? ""}", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
+                              subtitle: Text("日均${x["avgDay"]}件 · 在架${x["stock"]} · ${dTxt((x["days"] as num?)?.toDouble() ?? 0)} · 建议${x["boxes"]}框(${x["need"]}件)",
+                                  style: const TextStyle(fontSize: 11, color: Color(0xFF78909C))),
+                          );
+                        }),
+                      ],
+                      if (outOfStock.isNotEmpty) ...[
+                        Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 10, 14, 2),
+                            child: Text("已断供 · 建议预约到货（${outOfStock.length}）", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)))),
+                        ...outOfStock.map((x) {
+                          final pn = x["pn"].toString();
+                          return ListTile(
+                              dense: true,
+                              title: Text("$pn  ${x["nm"]?.toString() ?? ""}", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
+                              subtitle: Text("日均${x["avgDay"]}件 · 在架0 · ${dTxt((x["days"] as num?)?.toDouble() ?? 0)} · 到货约${x["boxes"]}框时自动开单",
+                                  style: const TextStyle(fontSize: 11, color: Color(0xFF78909C))),
+                              trailing: TextButton(
+                                  onPressed: () async {
+                                    final r = await AuthApi.watchlistSet(pn, true, qty: (x["boxes"] as num?)?.toInt() ?? 0, itemName: x["nm"]?.toString() ?? "", auto: true);
+                                    if (r["ok"] == true) {
+                                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已预约 $pn：到货够数自动开单"), backgroundColor: Colors.blueGrey.shade700, duration: const Duration(seconds: 2)));
+                                      setSt(() {});
+                                    } else {
+                                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("预约失败：${r["msg"] ?? "?"}"), backgroundColor: Colors.red.shade700));
+                                    }
+                                  },
+                                  child: const Text("🔔预约", style: TextStyle(fontSize: 12))));
+                        }),
+                      ],
+                      if (_sug.isEmpty) const Padding(padding: EdgeInsets.all(30), child: Center(child: Text("暂无告急件", style: TextStyle(color: Colors.grey)))),
+                    ])),
+                    SafeArea(
+                        child: Padding(
+                            padding: const EdgeInsets.fromLTRB(14, 8, 14, 10),
+                            child: Row(children: [
+                              TextButton(onPressed: () => Navigator.pop(mctx), child: const Text("关闭")),
+                              const Spacer(),
+                              ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
+                                  icon: const Icon(Icons.add, size: 18),
+                                  label: Text("加入领料单(${sel.where((p) => !_order.contains(p)).length})"),
+                                  onPressed: sel.where((p) => !_order.contains(p)).isEmpty
+                                      ? null
+                                      : () {
+                                          int added = 0;
+                                          for (final pn in sel) {
+                                            if (_order.contains(pn)) continue;
+                                            final x = _sug.firstWhere((e) => e["pn"].toString() == pn, orElse: () => const {});
+                                            final boxes = (x["boxes"] as num?)?.toInt() ?? 1;
+                                            _qtyCtrl[pn] = TextEditingController(text: "$boxes");
+                                            _syncChosen(pn);
+                                            added++;
+                                          }
+                                          setState(() {});
+                                          Navigator.pop(mctx);
+                                          _toast("已加入 $added 件，请核对框数后提交", err: false);
+                                        },
+                              ),
+                            ])),
+                    ),
+                  ]);
+                }))));
+  }
+
 
   /// ㉖v62 存/编辑产线模板：edit=null 新建（取当前已选行）；edit=模板 原地编辑我的（显示模板自身行，只改名/共享；要改行请用载入后另存）
   void _saveAsTpl({Map? edit}) {
@@ -1013,6 +1258,24 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                       BoxConstraints(minWidth: 34, minHeight: 0),
                   border: OutlineInputBorder()),
             ),
+            // ㉖v137 补料建议入口：按出库日均消耗预估的告急清单（有告急件才显示，点开审清单）
+            if (_sugOn && _sug.isNotEmpty) ...[
+              const SizedBox(height: 6),
+              Padding(
+                padding: const EdgeInsets.only(left: 2),
+                child: ActionChip(
+                  backgroundColor: const Color(0xFFFFF3E0),
+                  avatar: const Icon(Icons.psychology,
+                      size: 16, color: Color(0xFFEF6C00)),
+                  label: Text("🧠 补料建议 · ${_sug.length} 件告急",
+                      style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF6D4C41),
+                          fontWeight: FontWeight.w600)),
+                  onPressed: _showSugSheet,
+                ),
+              ),
+            ],
             // ㉖v62 建单提效：常领一键加（近60天本人聚合）+ 产线模板整单载入
             if (_freq.isNotEmpty || _tpls.isNotEmpty) ...[
               const SizedBox(height: 6),
@@ -1308,6 +1571,28 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                         ])));
                               })
                             ])),
+                  ])),
+            // ㉖v137 重复在途警示：已选行命中本人未完结单 → 黄条点名（提示不拦截：急料重复领用合法）
+            if (_order.any((pn) => widget.openByPn.containsKey(pn)))
+              Container(
+                  margin: const EdgeInsets.only(top: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFFFFF8E1),
+                      borderRadius: BorderRadius.circular(7),
+                      border: Border.all(color: const Color(0xFFFFE082))),
+                  child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Icon(Icons.warning_amber_rounded, size: 15, color: Color(0xFFEF6C00)),
+                    const SizedBox(width: 5),
+                    Expanded(
+                        child: Text(
+                            "已在途未完结：" +
+                                _order
+                                    .where((pn) => widget.openByPn.containsKey(pn))
+                                    .map((pn) => "$pn→${widget.openByPn[pn]}")
+                                    .join("；") +
+                                "。重复下单会占用仓管产能，确认确需再领。",
+                            style: const TextStyle(fontSize: 10.5, color: Color(0xFF8D6E00), height: 1.4))),
                   ])),
             const SizedBox(height: 6),
             const SizedBox(height: 4),
@@ -3776,6 +4061,34 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                       },
                       icon: const Icon(Icons.replay, size: 16),
                       label: const Text("再来一单"))),
+            // ㉖v137 短装追补：已签收单存在缺口行（实发<申请）→ 只按各行"缺多少"预填新建，
+            // 区别于再来一单（整单原量）——防把已发够的部分重复领（9% 短装行此前无人追补）
+            if (widget.onAgain != null &&
+                Auth.can("requisition") &&
+                st == 'done' &&
+                List<Map>.from(_r["items"] ?? []).any((e) {
+                  final need = (e["qty"] as num?)?.toDouble() ?? 0;
+                  return need > 0 && _issuedQtyOf(e) + 1e-6 < need;
+                }))
+              ConstrainedBox(
+                  constraints: const BoxConstraints(minWidth: 110),
+                  child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                          foregroundColor: const Color(0xFFE65100)),
+                      onPressed: () {
+                        final gap = <Map>[];
+                        for (final e in List<Map>.from(_r["items"] ?? [])) {
+                          final need = (e["qty"] as num?)?.toDouble() ?? 0;
+                          final got = _issuedQtyOf(e);
+                          final left = need - got;
+                          if (need > 0 && left > 1e-6) gap.add({"partNo": e["partNo"], "qty": left.round()});
+                        }
+                        final rq = {"items": gap};
+                        Navigator.pop(context, false);
+                        widget.onAgain!.call(rq); // 缺口行走预填通道（件数→框数换算复用 _again 既有逻辑）
+                      },
+                      icon: const Icon(Icons.add_task, size: 16),
+                      label: const Text("补齐缺口"))),
             ConstrainedBox(
                 constraints: const BoxConstraints(minWidth: 92),
                 child: OutlinedButton(

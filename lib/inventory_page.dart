@@ -1782,6 +1782,15 @@ class _ShelfCountPageState extends State<ShelfCountPage> {
     else _snack((r["msg"] ?? "归位失败").toString(), err: true);
   }
 
+  /// ㉖v141 人工拉取发车：点「🚚 发车」才下发该框下架腿（AGV 取框上站台）；默认模式下系统不自动预下架
+  Future<void> _deploy(Map q) async {
+    setState(() => _busyOp = true);
+    final r = await AuthApi.countDeploy(id: q["id"].toString());
+    setState(() => _busyOp = false);
+    if (r["ok"] == true) { _snack("🚚 ${q["code"]} 下架腿已下发，AGV 取框中", err: false); _refresh(); }
+    else _snack((r["msg"] ?? "发车失败").toString(), err: true);
+  }
+
   Future<void> _doCancel(Map q) async {
     final why = await _inputCode(title: "取消原因（选填）", hint: "如：急需发料先解冻");
     setState(() => _busyOp = true);
@@ -1852,6 +1861,8 @@ class _ShelfCountPageState extends State<ShelfCountPage> {
         Text("原格 ${q["from"]}${q["station"] != null && q["station"].toString().isNotEmpty ? " → ${q["station"]}" : ""} · 账面 ${q["qty"]}件 · 滞留${q["ageDays"]}天", style: const TextStyle(fontSize: 12)),
         Row(children: [
           Text(_stText[st] ?? st, style: TextStyle(fontSize: 12, color: col, fontWeight: FontWeight.w600)),
+          // ㉖v141 人工拉取发车：待发车工单点「🚚 发车」才下发下架腿（默认模式下系统不自动预下架）
+          if (st == "pending" && ((q["outQueued"] as num?)?.toInt() ?? 0) == 0) ...[const SizedBox(width: 8), TextButton(onPressed: _busyOp ? null : () => _deploy(q), style: TextButton.styleFrom(foregroundColor: const Color(0xFF00897B)), child: const Text("🚚 发车"))],
           if (canScan) ...[const SizedBox(width: 8), TextButton(onPressed: _busyOp ? null : () => _scan(q), child: const Text("扫码核对"))],
           if (canRet) ...[const SizedBox(width: 8), TextButton(onPressed: _busyOp ? null : () => _doReturn(q), child: const Text("归位"))],
           if (["pending", "toStation", "atStation", "scanned", "mismatch", "taskGone", "stuck"].contains(st)) ...[const SizedBox(width: 8), TextButton(onPressed: _busyOp ? null : () => _doCancel(q), style: TextButton.styleFrom(foregroundColor: Colors.red), child: const Text("取消"))],

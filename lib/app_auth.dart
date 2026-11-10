@@ -247,6 +247,9 @@ class AuthApi {
   /// ㉖v62 建单提效：本人近60天常领清单（频次×最近排序，带上次数量与在架托数）
   static Future<Map> reqFrequent() async =>
       _req("GET", "/api/requisitions/frequent", token: await AuthStore.token());
+  /// ㉖v137 补料建议：按出库实况日均消耗预估告急件与建议框数（纯只读，不下单）
+  static Future<Map> reqSuggest() async =>
+      _req("GET", "/api/requisitions/suggest", token: await AuthStore.token());
   /// ㉖v62 产线模板：列表（本人私有+同事共享）
   static Future<Map> tplList() async =>
       _req("GET", "/api/req-templates", token: await AuthStore.token());
@@ -475,6 +478,9 @@ class AuthApi {
       _req("POST", "/api/count/scan", body: {"id": id, "barcode": barcode, if (mesQty >= 0) "mesQty": mesQty}, token: await AuthStore.token());
   static Future<Map> countReturn(String id) async =>
       _req("POST", "/api/count/return", body: {"id": id}, token: await AuthStore.token());
+  /// ㉖v141 人工拉取发车：待发车工单点「发车」才下发下架腿（sid 非空=整会话批量）
+  static Future<Map> countDeploy({String id = "", String sid = ""}) async =>
+      _req("POST", "/api/count/deploy", body: {if (id.isNotEmpty) "id": id, if (sid.isNotEmpty) "sid": sid}, token: await AuthStore.token());
   static Future<Map> countCancel(String id, String reason) async =>
       _req("POST", "/api/count/cancel", body: {"id": id, "reason": reason}, token: await AuthStore.token());
   static Future<Map> inspectStart(String from, String note,

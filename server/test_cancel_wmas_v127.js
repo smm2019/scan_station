@@ -51,7 +51,7 @@ function mkDb(dir, withWmas) {
   const salt = crypto.randomBytes(16).toString('hex'); const hp = (pw) => crypto.scryptSync(pw, salt, 32).toString('hex');
   const now = Date.now();
   db.users.push({ id: 'u_cw', username: 'cw_wh', name: '撤单仓管', role: 'warehouse', enabled: true, createdAt: now, mustChangePw: false, salt, passHash: hp('E2e#Cw!127') });
-  db.params = Object.assign(db.params || {}, { countMax: 12, countSamplePct: 10, countStaleDays: 7, countConc: 3, receivingOn: 0, staleMin: 40, sendTimeoutMin: 5 });
+  db.params = Object.assign(db.params || {}, { countMax: 12, countSamplePct: 10, countStaleDays: 7, countConc: 3, receivingOn: 0, staleMin: 40, sendTimeoutMin: 5, countAutoDeploy: 1 }); // ㉖v141 开启自动发车保工单进入在途态可复现
   db.ledger = []; db.counts = []; db.agvQueue = []; db.rcsStations = {}; db.requisitions = []; db.outbound = {};
   db.autoDispatch = false; db.agvDispatchMode = 'dry';
   if (withWmas) db.wmasConfig = { host: '127.0.0.1:' + WPORT, account: 'fake', pwd: 'fake' }; else delete db.wmasConfig;

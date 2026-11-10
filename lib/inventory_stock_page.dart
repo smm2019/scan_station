@@ -3144,11 +3144,13 @@ class _TracePageState extends State<TracePage> {
     "scan": Icons.login, "scanx": Icons.block, "req": Icons.assignment,
     "out": Icons.logout, "queue": Icons.hourglass_bottom, "trace": Icons.explore,
     "station": Icons.flag, "agv": Icons.forklift, "shelf": Icons.inventory_2,
+    "recv": Icons.warehouse_outlined, "tin": Icons.arrow_upward, // ㉖v130 两楼流转：一楼来料登记 / 二楼转入
   };
   static const _kCol = <String, Color>{
     "scan": Color(0xFF2E7D32), "scanx": Color(0xFF9E9E9E), "req": Color(0xFF3949AB),
     "out": Color(0xFFE65100), "queue": Color(0xFFE65100), "trace": Color(0xFF6A1B9A),
     "station": Color(0xFF00897B), "agv": Color(0xFFEF6C00), "shelf": Color(0xFF00897B),
+    "recv": Color(0xFF00695C), "tin": Color(0xFF00897B), // ㉖v130 来料登记(深青) / 二楼转入(青)
   };
   static const _seedName = <String, String>{
     "task": "AGV任务", "order": "单据", "box": "框码", "part": "零件号", "unknown": "未知",
@@ -3196,7 +3198,7 @@ class _TracePageState extends State<TracePage> {
 
   /// 关键节点强调（出生/离场/闭环三锚点加粗底色）
   static bool _isKey(String k, String title) =>
-      title.contains("采集入库") || title.contains("入账登记") || title.contains("出库 ") || title.contains("签收确认") || title.contains("转MES");
+      title.contains("采集入库") || title.contains("入账登记") || title.contains("出库 ") || title.contains("签收确认") || title.contains("转MES") || title.contains("来料登记") || title.contains("二楼转入");
 
   /// 事件按自然日分组（新→旧展示更贴合"最近发生了什么"，组内保持时间正序=一生从左到右读）
   List<Map<String, Object>> _groupEvents(List<Map> evs) {

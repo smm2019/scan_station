@@ -39,6 +39,7 @@ function mkCtx(ledger) {
     db: { ledger, scanlog: {}, ledgerTomb: [], ledgerRev: 1, ledgerAt: '', ledgerBy: '', counts: [] },
     ledgerView: () => ctx.db.ledger,
     locRecv: (l) => /^NB04-/.test(String(l || '').trim().toUpperCase()),
+    P: () => ({}), // ㉖v138 沙箱补 P 桩：模拟生产未设 pickMaxBoxes→pickSuggest 走 ||24 默认兜底（封顶语义与旧版一致）
   };
   vm.createContext(ctx);
   vm.runInContext(src + '\nglobalThis.__f={pickSuggest,trimLastLot};', ctx);

@@ -18,7 +18,7 @@ const db0 = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
 const salt = crypto.randomBytes(16).toString('hex'); const hashPw = (pw, s) => crypto.scryptSync(String(pw), s, 32).toString('hex');
 const now = Date.now();
 db0.users.push({ id: 'u_d', username: 'd_wh', name: 'D123d仓管', role: 'warehouse', enabled: true, createdAt: now, mustChangePw: false, salt, passHash: hashPw('E2e#D!123d', salt) });
-db0.params = Object.assign(db0.params || {}, { countMax: 3, countSamplePct: 100, countStaleDays: 7, countConc: 3, receivingOn: 0, strictFifo: 1 }); // conc=3：放行归位接口（0 会因 busy>=conc 挡死 return）
+db0.params = Object.assign(db0.params || {}, { countMax: 3, countSamplePct: 100, countStaleDays: 7, countConc: 3, receivingOn: 0, strictFifo: 1, countAutoDeploy: 1 }); // conc=3：放行归位接口（0 会因 busy>=conc 挡死 return）；㉖v141 开启自动发车保状态机流转可复现
 delete db0.rcsConfig; delete db0.wmasConfig; db0.agvDispatchMode = 'dry';
 // 台账：两框（供在架判定 + E 不变量）
 const P1 = 'CTD0000001', P2 = 'CTD0000002', old = now - 30 * 864e5;

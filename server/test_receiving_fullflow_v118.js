@@ -105,10 +105,10 @@ async function inv(wh) {
     // 越界格位
     const s1b = await post('/api/ledger/sync', wh, { items: [{ c: 'FFOORANGE1', l: 'NB04-A-01-1000', p: P8, q: 1, t: nt(), mv: '登记', src: '来料区' }] }); // 格4位超固定位数结构域(排2格3)
     chkT('S1d 超范围格位拒回', String(JSON.stringify(s1b.json.rejectedLoc || [])).includes('NB04-A-01-1000'));
-    // 预约回填：到货可视提前到卸货点
+    // 预约回填：㉖v132 两楼流转——一楼登记(NB04)不计入预约到料，须二楼转入落 NB02/NB03 才回填进度
     const wl = (await get('/api/watchlist', wh)).json.list || [];
     const w1 = wl.find((x) => String(x.partNo).toUpperCase() === P1) || {};
-    chkT('S1e watchlist 预约 got 回填≥1（卸货即见进度）', (Number(w1.got) || 0) >= 1);
+    chkT('S1e 一楼登记阶段预约 got=0（NB04 未转入不计到料）', (Number(w1.got) || 0) === 0);
     // 急货提醒标注来料区（领料单A缺P1）：断言取服务器 [urgent-in] 日志（notify 落库受夜间静默窗影响，接口断言有时间依赖）
     await sleep(300);
     chkT('S1f 急货提醒标注"在来料区待转入"', _srvLog.includes('急货入库提醒') && _srvLog.includes('当前在来料区，需二楼转入后货架才可拣'));
@@ -129,6 +129,11 @@ async function inv(wh) {
     const i3 = await inv(wh); chk('S3c 恒等式：4=来料2+库位2', [i3.total, i3.recv, i3.loc], [4, 2, 2]);
     const rv2 = await post('/api/ledger/reserve', wh, { code: C1, partNo: P1 });
     chk('S3d 已入库框 reserve 回现位不重复占', [rv2.json.kept, rv2.json.loc], [true, RACK_A]);
+    // ㉖v132 二楼转入后预约进度才回填：C1(P1) 转入 NB02 货架 → got 计 1（预订 qty=3 未够数，只推进度不开单）
+    await sleep(400);
+    const wl2 = (await get('/api/watchlist', wh)).json.list || [];
+    const w1b = wl2.find((x) => String(x.partNo).toUpperCase() === P1) || {};
+    chkT('S3e 转入货架后预约 got 回填≥1（到料可领才计）', (Number(w1b.got) || 0) >= 1);
 
     // ================= S4 意外：跳楼新码 / 一楼旧缓存回推逆流 =================
     const ck4 = (await get('/api/label/check?c=' + CNEW, wh)).json;

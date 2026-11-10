@@ -754,6 +754,9 @@ const EXP_CAL = {
   '月度对账包': [['包含', '库位表+库存汇总+入库流水+出库流水 四工作表+口径说明'], ['用途', '与SAP/供应商对账的标准包；文件内口径说明即对账依据']],
 };
 function expTs(ms) { return ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false }) : ''; }
+// ㉖v131 盘点区域摘要 / ㉖v133 巷道粒度（用户拍板对齐 APP：显示 NB03-H-12 而非 NB03-H）：实扫货位巷道 ∪ scope 巷道 并集去重排序
+// 单一实现供 /api/inventory/list 与 D10 导出共用，防两处口径漂移（scope 是巷道粒度、locs 是格位粒度，巷道并集最完整）
+function invAreas(r) { const s = new Set(); for (const l of (r.locs || [])) { const m0 = String(l.loc || '').toUpperCase().match(/^NB0\d-[A-H]-\d{2}/); if (m0) s.add(m0[0]); } for (const t of String(r.scope || '').split(',')) { const m1 = String(t).trim().toUpperCase().match(/^NB0\d-[A-H]-\d{2}/); if (m1) s.add(m1[0]); } return [...s].sort().join(' '); }
 function expX(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 function expCsvCell(v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 function expCsv(d, meta) { const L = meta.map((m) => '#' + m); L.push(d.headers.map(expCsvCell).join(',')); for (const r of d.rows) L.push(r.map(expCsvCell).join(',')); return '\uFEFF' + L.join('\r\n') + '\r\n'; }
@@ -967,7 +970,7 @@ function buildExport(ds, fRaw) {
   if (ds === 'D9') { const _dv = (s0) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, ''); const rows = opsLoadDays(OPS_KEEP_DAYS).filter((o) => (o.t || 0) >= (from || 0) && (o.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((o) => [expTs(o.t), o.by || '', _dv(o.dev), _dv(o.ip), o.role || '', o.act || '', _dv(o.obj), _dv(o.det)]); return mk('活动流审计', ['时间', '操作人', '设备', 'IP', '角色', '动作', '对象', '详情'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '关键写操作留痕（滚动5000条，凭据不入流；设备/IP为登录会话绑定的来源标识）'); } // ㉖v97d +设备/IP列
   if (ds === 'D10') { const inv = Object.values(db.inventories || {}).filter((r) => { const t = r.at || 0; return t >= (from || 0) && t <= to; }).sort((a, b) => b.at - a.at); const bid = String((fRaw && fRaw.batchId) || '').trim(); const sel = bid ? inv.filter((r) => r.batchId === bid) : inv; const one = sel[0] || {};
     const parts = [
-      { label: '盘点总览', headers: ['批次', '备注', '模式', '盘点人', '结束时间', '总扫次', '有效扫次', 'MES失败', '重复', '账外', '已应用改账', '零件行数', '零件差异行'], types: ['S', 'S', 'S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S', 'N', 'N'], rows: sel.map((r) => [r.batchId, r.remark || '', r.blind ? '盲盘' : '监督', r.by || '', expTs(r.at), r.totalScans || 0, r.validScans || 0, r.mesFail || 0, r.dup || 0, r.outside || 0, r.applied ? ('是·' + expTs(r.applyTime)) : '否', (r.parts || []).length, (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length]), src: 'PDA盘点上收汇总', caliber: EXP_CAL['盘点结果'] },
+      { label: '盘点总览', headers: ['批次', '备注', '模式', '盘点人', '结束时间', '盘点区域', '总扫次', '有效扫次', 'MES失败', '重复', '账外', '已应用改账', '零件行数', '零件差异行'], types: ['S', 'S', 'S', 'S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S', 'N', 'N'], rows: sel.map((r) => [r.batchId, r.remark || '', r.blind ? '盲盘' : '监督', r.by || '', expTs(r.at), invAreas(r), r.totalScans || 0, r.validScans || 0, r.mesFail || 0, r.dup || 0, r.outside || 0, r.applied ? ('是·' + expTs(r.applyTime)) : '否', (r.parts || []).length, (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length]), src: 'PDA盘点上收汇总', caliber: EXP_CAL['盘点结果'] },
       { label: '零件级差异', headers: ['批次', '零件号', '物料名称', '账面数量', '实盘数量', '差异', '实盘框数', '账外框', '双基准矛盾'], types: ['S', 'S', 'S', 'N', 'N', 'N', 'N', 'N', 'S'], rows: sel.flatMap((r) => (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6 || p.out > 0 || p.warn === 7).map((p) => [r.batchId, p.pn, p.nm || '', p.book, p.real, Math.round((p.real - p.book) * 100) / 100, p.boxes, p.out, p.warn === 7 ? '⚠矛盾' : ''])), src: '零件级差异（含账外/矛盾）', caliber: [] },
       { label: '货位级差异', headers: ['批次', '货位', '零件号', '台账数量', '实盘数量', '差异', '实盘框数', '定位/建议'], types: ['S', 'S', 'S', 'N', 'N', 'N', 'N', 'S'], rows: sel.flatMap((r) => { const sg = invPairMoveSuggest(r.locs || []); return (r.locs || []).filter((l) => Math.abs(l.real - l.book) > 1e-6).map((l) => [r.batchId, l.loc, l.pn, l.book, l.real, Math.round((l.real - l.book) * 100) / 100, l.boxes, sg[String(l.loc).toUpperCase() + '|' + String(l.pn).toUpperCase()] || '']); }), src: '货位×零件级差异（定位/建议=同零件亏盈互配推断疑似串位，与PDA盘点报表同算法）', caliber: EXP_CAL['盘点结果'] },
       // ㉖v123b 标签级明细：每码一行（实扫/账外/应到未扫到），老批次未上收标签则本表为空
@@ -1301,10 +1304,11 @@ function buildEvents() {
 }
 
 // ㉖①② 标签全局状态：返回该标签在各数据域的命中（账本在库/采集流水/出库单/领料已发/AGV队列在途/检验中/历史出库）
-// ---- ㉖v54 货位预占：NB02 AUTO 分配服务器原子版（与 PDA nb02AutoAssign 同款算法：同架→同区→全局，前三层优先；预占10分钟过期） ----
-const RES_TTL_MS = 10 * 60 * 1000;
+// ---- ㉖v54 货位预占：NB02 AUTO 分配服务器原子版（与 PDA nb02AutoAssign 同款算法：同架→同区→全局，前三层优先；预占时长参数化，默认10分钟） ----
+// ㉖v138 RES_TTL_MS 常量化改运行时读参数 reserveTtlMin（现场批量登记落账链路慢时可调长防预占提前过期撞格；调短则死锁格位更快回收）
+function resTtlMs() { return Math.max(1, Number(P().reserveTtlMin) || 10) * 60000; }
 function nb02MasterSeq() { const out = []; for (const z of ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']) { for (let r = 1; r <= 16; r++) { const rr = String(r).padStart(2, '0'); for (let f = 1; f <= 4; f++) out.push('NB02-' + z + '-' + rr + '-' + f + 'F'); } } return out; }
-function pruneReserve() { const R = db.locReserve || {}; const now = Date.now(); for (const l of Object.keys(R)) { if (now - (Number(R[l].at) || 0) > RES_TTL_MS) delete R[l]; } }
+function pruneReserve() { const R = db.locReserve || {}; const now = Date.now(); for (const l of Object.keys(R)) { if (now - (Number(R[l].at) || 0) > resTtlMs()) delete R[l]; } }
 function nb02AssignFree(partNo) {
   pruneReserve();
   const R = db.locReserve || {};
@@ -1355,7 +1359,7 @@ function nb02AssignFree(partNo) {
 // ㉖v122 来料区(NB04)服务器原子放格：11-07 18:43 现场 liu1234 连扫 094/097/084 三框，
 // 旧版 PDA 端 nb01AutoSlot 每次现算"第一个空格"，但三框同属一条未推送批次——094 还没落账，
 // 后两框拿到的还是 A-01-001，直到合并才被互斥闸拒回（弹窗"货位登记冲突"）。
-// 与 NB02 同款治法：分配即写 locReserve 预占（RES_TTL_MS 过期），账本 NB04 行+预占一并避让，
+// 与 NB02 同款治法：分配即写 locReserve 预占（resTtlMs 过期），账本 NB04 行+预占一并避让，
 // 同标签幂等复用原格；顺序=排1格1→…→排×格上限（recvRows×recvCols，与 PDA 展示口径同源）。
 function nb04AssignFree(code) {
   pruneReserve();
@@ -1518,23 +1522,33 @@ const PARAMS = {
   receivingOn:    { grp: '存储配置', name: '来料区启用', unit: '开关', min: 0, max: 1, d: 0, tip: '㉖v118 来料区(NB04)总开关。0=关闭：整套两楼流转惰性、NB04 格位禁止登记，二楼回到原生采集录入直接上 NB02/NB03（一楼没扫码条件时不影响二楼作业）。1=启用：一楼登记进来料区库存、二楼转入迁移、滞留提醒全部生效。㉖v121 启用后另有源头闸：全新框未经一楼登记且无出库历史，二楼采集直接上架会被拦（生产退料=曾出库自动豁免；急料可「强制继续」填原因放行留痕）。一楼硬件/流程就绪后由管理员开启' },
   recvRows:       { grp: '存储配置', hide: 1, name: '来料区排数', unit: '排', min: 1, max: 40, d: 1, tip: '㉖v120d NB04 来料区（楼下缓冲）排数；总格位=排数×每排格数，默认 1×720=720 格（NB04-A-01-001 ~ NB04-A-01-720）。一楼登记自动分配超出即拒（提示来料区已满）' },
   recvCols:       { grp: '存储配置', hide: 1, name: '每排格数', unit: '格', min: 1, max: 999, d: 720, tip: '㉖v120d 来料区每排格数（编码尾段 001~999，上限999）；现场划线改动只调此二参数，无需改代码' },
+  reserveTtlMin:  { grp: '存储配置', name: '货位预占时长', unit: '分钟', min: 1, max: 60, d: 10, tip: '㉖v138 自动分配货位后的原子预占有效期：分配即占位，超时未落账则释放给别的框（防多PDA并发登记撞同一格）。现场登记批量大、落账链路慢时可调长（如15~20分钟）防预占提前过期撞格；调短则死锁格位更快回收。默认10分钟（与旧版硬编码一致）' },
   abcWindow:      { grp: '调度策略', name: 'ABC周转统计窗', unit: '天', min: 7, max: 365, d: 30, tip: '出库单+采集流水的统计窗口，用于给零件打周转分' },
   abcTop:         { grp: '调度策略', name: 'A类件比例', unit: '%', min: 0, max: 80, d: 20, tip: '周转分前N%判为A类：入库自动分配时优先靠近CK站台的货架列（0=关闭该策略）' },
   aisleCap:       { grp: '调度策略', name: '巷道并发上限', unit: '任务', min: 0, max: 8, d: 2, tip: '同一货架巷道(区-排)在途搬运任务数上限，达到则新出库任务本轮不放行、入库分配避开（0=关闭节流）' },
   stnWinPct:      { grp: '调度策略', name: '站台时间窗系数', unit: '%', min: 50, max: 300, d: 100, tip: '预约窗=路网行程+60秒缓冲+该台平均清台时长×系数；窗内站台不派新单，防两车前后脚撞台' },
   lowTier:        { grp: '调度策略', name: '入库常用层上限', unit: '层', min: 1, max: 4, d: 3, tip: 'AUTO自动分配的硬性层约束：只在1~N层找空位（同架/同区集中也在层圈内生效），圈内全满才上更高层；4=不限。AGV叉高层耗时且重心高风险大，建议3' },
+  pickMaxBoxes:   { grp: '调度策略', name: '选框建议框数上限', unit: '框', min: 4, max: 60, d: 24, tip: '㉖v138 发料「取货建议」一次最多建议的框数（够数即停之外的硬封顶，防超大单建议清单刷屏+仓管跑断腿）。现场实锤有单件建议已逼近24上限——大单多可调大到40~60；站台周转紧维持24。只影响建议清单长度，不改够数即停与超发判定' },
   strictFifo:     { grp: '调度策略', name: '严格FIFO发料', unit: '开关', min: 0, max: 1, d: 1, tip: '1=扫码发料只允许「取货建议」清单里的标签（含同托兄弟码与已叫车框）。晚批次码：PDA黄窗确认→服务端复核放行（工单+事件双留痕）。㉖v98 发齐不藏框：行发齐后该零件仍在架未扫的框继续显示在建议区（灰框），仓管点扫=弹超发确认，确认后放行留痕；不确认则留待下次。幽灵码（不在任何清单）仍拒绝。0=回退旧行为（服务端不拦，仅PDA提醒）' },
   // ㉖v123 货架AGV盘点（盲区随机抽盘：AGV取框到站台→扫码核对→归位原格；只盘滞留≥N天从未被日常出入验证的框）
   countMax:       { grp: '调度策略', name: '盘点会话框数上限', unit: '框', min: 1, max: 30, d: 12, tip: '单次随机抽盘会话最多生成的盘点工单数（一框=2个AGV任务，控制对生产调度的挤占）' },
   countConc:      { grp: '调度策略', name: '盘点双腿并发上限', unit: '任务', min: 0, max: 4, d: 3, tip: '盘点下架/归位腿同时在途任务总数上限（8台通用站台至少留4台给生产出库；0=暂停盘点发车，已建工单排队等待）' },
   countStaleDays: { grp: '调度策略', name: '盘点盲区阈值', unit: '天', min: 1, max: 90, d: 7, tip: '滞留≥此天数未动的货架框才进随机抽盘候选（近期动过的框已被日常出入逐次验证，抽它们是重复劳动）' },
-  countSamplePct: { grp: '调度策略', name: '盘点抽样比例', unit: '%', min: 1, max: 100, d: 10, tip: '每次会话从盲区候选框中随机抽取的百分比（受会话上限截断）' },
+  countSamplePct: { grp: '调度策略', name: '盘点抽样比例', unit: '%', min: 1, max: 100, d: 10, tip: '㉖v139 每次会话从盲区候选框中随机抽取的百分比（受会话上限截断）' },
+  // ㉖v141 盘点下架腿发车方式（用户实锤：不要自动预下架——框何时上站台由人决定；夜间 AGV 关机断电也从根上不存在"系统半夜偷偷发车"）
+  countAutoDeploy: { grp: '调度策略', name: '盘点自动发车', unit: '开关', min: 0, max: 1, d: 0, tip: '㉖v141 0=人工拉取发车（默认）：抽盘会话建单后下架腿不自动下发，人在盘点页逐框点「🚚 发车」才叫 AGV 取框——何时搬、搬几个、先搬哪个全由人掌控，AGV 关机时段零空发风险。1=自动发车（v140 前旧行为）：状态机 15 秒轮自动补发下架腿（受双腿并发上限约束），适合全程有人白班' },
   gateMode:       { grp: '领料闸门', name: '待签收闸门模式', unit: '档', min: 0, max: 2, d: 1, tip: '物料员手里有货到待签收的领料单时能否下新单。0=关闭；1=宽限后拦（推荐）：待签收单滞留超宽限期才拦，急料单在豁免上限内不拦；2=严格：有待签收即拦（急料豁免上限内同样放行）。只拦物料员角色，管理员代下不受限' },
   gateGraceMin:   { grp: '领料闸门', name: '待签收宽限期', unit: '分钟', min: 0, max: 240, d: 30, tip: '模式1生效：待签收单从"备齐到站"（readyAt）起算，超过此时长仍未签收才拦新单；0=有待签收立即拦。给物料员留出去线边送货/回车间的正常时间' },
   gateRushMaxMin: { grp: '领料闸门', name: '急料豁免上限', unit: '分钟', min: 0, max: 1440, d: 120, tip: '㉖v98c 急料待签收单享受豁免的最长滞留（从备齐到站readyAt起算）：超上限照常拦——防"每单都勾急"把闸门变免死金牌、急料单囤两天不领（10/29 现场：某物料员22张急料待签收畅通下单）。0=急料永远豁免（旧行为）' },
   // ㉖v108 领料时段管控（用户需求：自定义领料时间+开关，时段外下单拦截并提示系统维护中）
   reqHoursOn:     { grp: '领料闸门', name: '领料时段管控', unit: '开关', min: 0, max: 1, d: 0, tip: '1=启用领料时段闸门：时段外所有角色 POST 下单被服务器拒绝（提示"系统维护中"），已存在的单接单/发料/签收不受影响。0=全天可下单（默认，行为与旧版一致）。时段在「领料可用时段」配置' },
   reqHours:       { grp: '领料闸门', str: 1, name: '领料可用时段', unit: '文本', min: 0, max: 0, d: '07:00-18:00', tip: 'HH:MM-HH:MM，可逗号分隔多段（如 07:00-11:30,13:00-17:30）；起含、止不含；结束早于开始=跨天窗口（如 22:00-06:00）；留空或格式错误=闸门自动放行（防配错把全员锁死），修改后立即生效' },
+  // ㉖v137 补料建议（领料员建单提效：按出库实况日均消耗预估"还能撑几天"，告急件给建议框数）
+  reqSuggestOn:    { grp: '领料闸门', name: '补料建议开关', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v137 PDA 建单页「🧠 补料建议」数据源总开关。0=接口返回空清单（PDA 显示未启用）。1=启用：按近「消耗统计窗口」天出库实发件数算每零件日均消耗，对比在架+在途余量，撑不过「目标覆盖天数」的进告急清单并给建议框数（纯只读预估，不下单不拦截）' },
+  reqSuggestDays:  { grp: '领料闸门', name: '消耗统计窗口', unit: '天', min: 3, max: 60, d: 14, tip: '㉖v137 日均消耗=近 N 天出库实发件数÷N。窗口短灵敏但易受单批大单扰动，窗口长平稳但滞后新机型切换；默认14天（两周节拍）。出库流水 90 天归档，超窗口自动截断' },
+  reqSuggestCover: { grp: '领料闸门', name: '目标覆盖天数', unit: '天', min: 1, max: 14, d: 3, tip: '㉖v137 库存(在架+在途未发)可撑天数低于此值=告急入清单；建议框数=补到该天数用量所需。产线节拍快、补货频繁可降到 2；到货周期长/周末停产建议升到 4~5' },
+  reqSuggestMax:   { grp: '领料闸门', name: '建议清单上限', unit: '件', min: 0, max: 200, d: 30, tip: '㉖v138 「🧠 补料建议」弹层最多展示/可一键加入的告急件数（按当前排序取前 N）。0=不限全给。现场实锤默认30时告急136件被藏106件——想一次看全调0或调大；嫌刷屏维持30。与「建议排序」配合决定你能看到哪些件' },
+  reqSuggestSort:  { grp: '领料闸门', name: '建议排序', unit: '档', min: 0, max: 2, d: 0, tip: '㉖v138 告急清单排序（截断上限下决定优先看到哪些件）。0=最急先（可撑天数升序，断供/临断线置顶，默认）；1=建议框数降序（先补占仓管运力最多的大头件，一次清库存效率高）；2=日均消耗降序（先救流水最大的产线命脉件，防停线）' },
   // ㉖v108 看门狗配置（用户要求：判活阈值进面板；经 /api/health-ping 下发给 watchdog.ps1，服务不通时脚本用本地默认兜底）
   wdHbStaleSec:   { grp: '看门狗', name: '心跳假死阈值', unit: '秒', min: 60, max: 600, d: 180, tip: 'RCS轮询心跳停跳超此秒数判"进程假死"计一次异常。实际生效值=max(本值, RCS轮询间隔×2+60)——防轮询调大后误杀正常服务。连续异常达「重启触发阈值」次才重启服务' },
   wdFailThreshold: { grp: '看门狗', name: '重启触发阈值', unit: '次', min: 2, max: 10, d: 3, tip: '看门狗连续判异常达此次数才重启 HSAuthServer（防单次网络抖动误杀）。下限2=禁止1次即重启。另有硬限速：1小时内最多重启2次，超限停止自动救援转人工。看门狗每5分钟检查一次（间隔由计划任务控制，改后需重注册）' },
@@ -1856,7 +1870,8 @@ function stockWatchScan(pre, byName) {
     const wl = db.watchlist || [];
     if (wl.length) {
       const arrived = {}, arrQty = {}, _abseen = {}; // ㉖v102 预约开单件数换算：arrived=框数，arrQty=对应件数（框键去重后取整框值）
-      for (const x of db.ledger || []) { if ((x.t || 0) < t0.getTime()) continue; const p = String(x.p || '').toUpperCase(); if (!p) continue; const kk = p + '|' + boxKeyOf(x); if (_abseen[kk]) continue; _abseen[kk] = 1; arrived[p] = (arrived[p] || 0) + 1; arrQty[p] = (arrQty[p] || 0) + (Number(x.q) || 0); }
+      // ㉖v132 两楼流转：来料区(NB04)登记只算"到了一楼"，不计入预约到料——须二楼转入落 NB02/NB03（ledgerPut 刷新 t 为转入时刻，跨日转入照样计入）后，才算"到料可领"并触发进度/自动开单。杜绝"单先到、货还躺在来料区拣不了"的时间差
+      for (const x of db.ledger || []) { if ((x.t || 0) < t0.getTime() || locRecv(x.l)) continue; const p = String(x.p || '').toUpperCase(); if (!p) continue; const kk = p + '|' + boxKeyOf(x); if (_abseen[kk]) continue; _abseen[kk] = 1; arrived[p] = (arrived[p] || 0) + 1; arrQty[p] = (arrQty[p] || 0) + (Number(x.q) || 0); }
       const dayKey = new Date().toISOString().slice(0, 10); // ㉖ 预约到料=每零件每天一次（旧10分钟窗口：当天只要持续入库就反复轰炸）
       db.watchSeen = (db.watchSeen && typeof db.watchSeen === 'object' && !Array.isArray(db.watchSeen)) ? db.watchSeen : {};
       for (const k of Object.keys(db.watchSeen)) if (!k.endsWith('|' + dayKey)) delete db.watchSeen[k]; // 跨天自动清
@@ -2115,7 +2130,7 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
     pick.push(x);
     acc += x.q;
     if (acc >= needQty) break;
-    if (pick.length >= 24) break; // 最多建议 24 框（大单一筐20件×25框也能覆盖大半）
+    if (pick.length >= (Math.max(4, Number(P().pickMaxBoxes) || 24))) break; // ㉖v138 建议框数硬封顶参数化（默认24=旧值；防超大单建议清单刷屏，够数即停与超发判定不受影响）
   }
   // ㉖v69 末框最小化超发：贪心够数后，若最后一框明显过大，用未选框中"能补足剩余需求且件数最小"的框替换（批次不晚于它，守 FIFO 大序）
   if (needQty > 0 && acc > needQty && pick.length) {
@@ -2914,8 +2929,12 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       // ㉖ 批次口径：按 MES 标签打印时间派生（浅拷贝返回，不回写 db.scanlog，保持库内原样）
       // ㉖v122 reg 生效态：账本在=1；已作废=-1；流水正常但账本无此码=0（登记被拒/未落账）——
       // 网页流水页据此显示"未上账"徽标，消除"状态正常却查无此框"的误导（11-07 三框撞格实锤）
+      // ㉖v136 误标修复：出库后账本行被删属正常流转，不是"未上账"——seenOut 有出库史→reg=2（已出库，灰色不警示）。
+      // 全库实查：旧口径 reg=0 的 1872 条有效行里 1870 条（99.9%）其实已正常出库，真空挂仅 2 条被淹没；
+      // 与零件档案页 unreg 判据（排除 seenOut）同口径对齐。仅当账本无+出库史也无才是真·未上账（reg=0 橙警示保留）
       const _ledSet = new Set(); for (const x of db.ledger || []) _ledSet.add(String(x.c || '').toUpperCase());
-      const _out = arr.slice(0, lim).map((x) => { const o = x.mk ? Object.assign({}, x, { lot: printLot(x.mk, x.lot) }) : Object.assign({}, x); o.reg = x.cx ? -1 : (_ledSet.has(String(x.code || '').toUpperCase()) ? 1 : 0); return o; });
+      const _so = db.seenOut || {};
+      const _out = arr.slice(0, lim).map((x) => { const o = x.mk ? Object.assign({}, x, { lot: printLot(x.mk, x.lot) }) : Object.assign({}, x); const _cc = String(x.code || '').toUpperCase(); o.reg = x.cx ? -1 : (_ledSet.has(_cc) ? 1 : (_so[_cc] ? 2 : 0)); return o; });
       return send(res, 200, { ok: true, at: db.scanlogAt, total: db.scanlogCount, count: arr.length, items: _out });
     }
     if (req.method === 'GET' && p === '/api/outbound') {
@@ -3252,7 +3271,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         db.ledgerTomb = [...tomb.entries()].map(([c, v]) => ({ c, t: v.t, rec: v.rec })).sort((a, b2) => b2.t - a.t).slice(0, 20000);
         if (db.tombReject && Object.keys(db.tombReject).length > 5000) { const _k = Object.keys(db.tombReject); _k.sort((a, b2) => (Number(db.tombReject[a]) || 0) - (Number(db.tombReject[b2]) || 0)); for (const k of _k.slice(0, _k.length - 5000)) delete db.tombReject[k]; } // ㉖v97b 拒弹记录上限剪枝（防无界增长）
         if (db.locReject && Object.keys(db.locReject).length > 2000) { const _lk = Object.keys(db.locReject); for (const k of _lk.slice(0, _lk.length - 2000)) delete db.locReject[k]; } // ㉖v100 格式拒回记录上限剪枝（正常随标签改合法登记即清除，此处防异常累积）
-        if (db.locReserve) { for (const l of Object.keys(db.locReserve)) { if (cur.has(String(db.locReserve[l].code || '').toUpperCase()) || rec0 - (Number(db.locReserve[l].at) || 0) > RES_TTL_MS) delete db.locReserve[l]; } } // ㉖v54 标签落账(任意位)或预占过期→释放
+        if (db.locReserve) { for (const l of Object.keys(db.locReserve)) { if (cur.has(String(db.locReserve[l].code || '').toUpperCase()) || rec0 - (Number(db.locReserve[l].at) || 0) > resTtlMs()) delete db.locReserve[l]; } } // ㉖v54 标签落账(任意位)或预占过期→释放
         db.ledgerRev = (db.ledgerRev || 0) + 1;
         db.ledgerAt = new Date().toISOString();
         db.ledgerBy = u.name;
@@ -3861,6 +3880,10 @@ return send(res, 200, {
         const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '7') || 7));
         return send(res, 200, { ok: true, days, stages: buildFunnel(days) });
       }
+      if (req.method === 'GET' && p === '/api/agv/schedstats') { // ㉖v142 L0 调度观测：节流计数聚合 + 车辆健康分 + 排队分位数
+        const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '14') || 14));
+        return send(res, 200, { ok: true, days, block: schedBlockAgg(days), cars: schedCarHealth(), queue: buildFunnel(days).queue });
+      }
       // 按标签反查AGV搬运链路（采集详情用）：队列项+任务沉淀 起终点/车号/节点时间
       if (req.method === 'GET' && p === '/api/agv/taskOf') {
         const code = String(url.searchParams.get('c') || '').trim().toUpperCase();
@@ -4074,7 +4097,18 @@ return send(res, 200, {
           if (c === Q || CODES.has(c) || (partExpand && p === Q)) { scans.push(st); if (c) CODES.add(c); if (p) PNS.add(p); }
         }
         scans.sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0));
-        for (const st of scans.slice(0, 60)) push(st.t, st.cx ? 'scanx' : 'scan', (st.cx ? '❌ 已撤销采集 ' : '📥 采集入库 ') + String(st.code || ''), (st.pn ? '零件 ' + st.pn + ' · ' : '') + '数量 ' + (Number(st.q) || 0) + ((st.wt === 0 ? st.st : st.gl) ? ' · ' + (st.wt === 0 ? st.st : st.gl) : ''), st.op || '');
+        // ㉖v130 两楼流转识别：一楼来料登记(wt=2·NB04)=第一步；来料框后续落 NB02/NB03 的采集(wt=0/1)=第二步"二楼转入"（server.js 分配例外路径 3514 实证转入走采集再扫）。判据=同框最早未作废 wt=2 时刻，其后的 wt=0/1 视为转入
+        const _recvFirst = {};
+        for (const st of Object.values(db.scanlog || {})) { if (st.cx) continue; if (Number(st.wt) === 2) { const c = codeOf(st.code), t = Number(st.t) || 0; if (c && t && (!_recvFirst[c] || t < _recvFirst[c])) _recvFirst[c] = t; } }
+        for (const st of scans.slice(0, 60)) {
+          const _c = codeOf(st.code), _t = Number(st.t) || 0, _w = Number(st.wt);
+          const _isRecv = _w === 2 && !st.cx;
+          const _isTin = !_isRecv && !st.cx && _recvFirst[_c] && _t >= _recvFirst[_c];
+          const _loc = _w === 0 ? st.st : st.gl;
+          push(_t, st.cx ? 'scanx' : _isRecv ? 'recv' : _isTin ? 'tin' : 'scan',
+            (st.cx ? '❌ 已撤销采集 ' : _isRecv ? '🏭 来料登记（一楼·来料区） ' : _isTin ? '⬆ 二楼转入（来料区→货架） ' : '📥 采集入库 ') + String(st.code || ''),
+            (st.pn ? '零件 ' + st.pn + ' · ' : '') + '数量 ' + (Number(st.q) || 0) + (_loc ? ' · ' + _loc : ''), st.op || '');
+        }
         // — ㉖v99 ②b 流水已归档框的 seenIn 兜底：无采集流水记录但历史录入索引有 → 补"📝 入账登记"事件
         // （出库后链路只剩出库半条的根因：流水90天归档后入库信息消失；seenIn 富字段带数量/批次/托号=终身出生证明）
         { const _scanHas = new Set(); for (const st of scans) { const c = codeOf(st.code); if (c && !st.cx) _scanHas.add(c); }
@@ -4338,7 +4372,7 @@ return send(res, 200, {
       }
       if (req.method === 'GET' && p === '/api/inventory/list') {
         const lim = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '20') || 20));
-        const list = Object.values(db.inventories || {}).sort((a, b) => b.at - a.at).slice(0, lim).map((r) => ({ batchId: r.batchId, remark: r.remark, by: r.by, at: r.at, blind: r.blind, totalScans: r.totalScans, validScans: r.validScans, partN: (r.parts || []).length, diffN: (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length, locN: (r.locs || []).length, locDiffN: (r.locs || []).filter((l) => Math.abs(l.real - l.book) > 1e-6).length, applied: r.applied }));
+        const list = Object.values(db.inventories || {}).sort((a, b) => b.at - a.at).slice(0, lim).map((r) => ({ batchId: r.batchId, remark: r.remark, by: r.by, at: r.at, blind: r.blind, totalScans: r.totalScans, validScans: r.validScans, partN: (r.parts || []).length, diffN: (r.parts || []).filter((p) => Math.abs(p.real - p.book) > 1e-6).length, locN: (r.locs || []).length, locDiffN: (r.locs || []).filter((l) => Math.abs(l.real - l.book) > 1e-6).length, applied: r.applied, areas: invAreas(r) })); // ㉖v131 盘点区域（invAreas 共享实现，与 D10 导出同口径；scope 原文不上浮，列表够用）
         return send(res, 200, { ok: true, list });
       }
       if (req.method === 'GET' && p === '/api/inventory/get') {
@@ -4544,6 +4578,23 @@ return send(res, 200, {
         save(); pushOps(u, '项目字典', `删码 ${code}`, `解绑 ${unbind} 零件`);
         console.log(`[proj] ${u.name} 删码 ${code}（解绑 ${unbind}）`);
         return send(res, 200, { ok: true, unbind });
+      }
+      // ---- ㉖v133 行级编辑 /api/proj/upd：项目名改名 + 零件挂上/解绑（nm 字段 v101 起就有，网页从未给入口）----
+      if (req.method === 'POST' && p === '/api/proj/upd') {
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可维护项目字典' });
+        const b = await readBody(req);
+        const code = String(b.code || '').toUpperCase().trim();
+        if (!db.projDict || !db.projDict[code]) return send(res, 400, { ok: false, msg: '项目码不存在' });
+        let renamed = false, add = 0, del = 0;
+        if (typeof b.nm === 'string') { const nm = b.nm.trim().slice(0, 40); if (nm !== (db.projDict[code].nm || '')) { db.projDict[code].nm = nm; renamed = true; } }
+        const pnIn = (Array.isArray(b.add) ? b.add : []).map((s) => String(s || '').toUpperCase().trim()).filter((s) => s && s.length <= 40);
+        const pnDel = new Set((Array.isArray(b.del) ? b.del : []).map((s) => String(s || '').toUpperCase().trim()));
+        db.projMap = db.projMap || {};
+        for (const pn of pnIn) { const old = db.projMap[pn] || []; const cs = [...new Set(old.concat([code]))]; if (cs.length !== old.length) { db.projMap[pn] = cs; add++; } }
+        for (const pn of pnDel) { if (!db.projMap[pn]) continue; const nx = db.projMap[pn].filter((c) => c !== code); if (!nx.length) delete db.projMap[pn]; else db.projMap[pn] = nx; del++; }
+        save(); pushOps(u, '项目字典', `编辑 ${code}`, [renamed ? '改名' : '', add ? `挂${add}` : '', del ? `解绑${del}` : ''].filter(Boolean).join(' · '));
+        console.log(`[proj] ${u.name} 编辑 ${code}：改名${renamed} 挂${add} 解绑${del}`);
+        return send(res, 200, { ok: true, renamed, add, del });
       }
       // ---- ㉖v118 项目→地面区映射（二楼人工直送建议源）：配置了区的项目件，采集时建议直送 NB03 对应区；未配置=建议AGV站台 ----
       if (req.method === 'GET' && p === '/api/proj/ground') {
@@ -5220,6 +5271,24 @@ return send(res, 200, {
         save(); pushOps(u, '发起盘点', sid, recs.length + ' 框（候选' + cands.length + '，比例' + pct + '%，上限' + cap + '）');
         return send(res, 200, { ok: true, sid, total: cands.length, picked: recs.length, list: recs });
       }
+      if (req.method === 'POST' && p === '/api/count/deploy') { // ㉖v141 人工拉取发车：人点「发车」才下发下架腿（默认模式下状态机不自动发）。{id=单框} 或 {sid=整会话逐个发}，受双腿并发上限
+        if (!isWhC) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可发车' });
+        const b = await readBody(req).catch(() => ({}));
+        const conc = Number(P().countConc) || 0;
+        const targets = (db.counts || []).filter((x) => x.state === 'pending' && !x.outQueued && (b.id ? String(x.id) === String(b.id) : (b.sid ? x.sid === b.sid : false)));
+        if (!targets.length) return send(res, 200, { ok: false, msg: '无可发车工单（需待发车状态；单框请核对 id，整会话请核对 sid）' });
+        const out = [];
+        for (const q of targets) {
+          if (countBusyLegs() >= conc) { out.push({ id: q.id, code: q.code, ok: false, msg: '双腿并发已满(' + conc + ')，稍后再发' }); continue; }
+          const it = await countEnqueue(q, 'out', { name: u.name }, q.from, '', 'PD-' + q.code);
+          const nowMs = Date.now();
+          if (it.state === '已下发') { q.taskNo = it.wmsTask || ''; q.station = it.station || q.station; q.state = 'toStation'; q.at = nowMs; } else q.outQueued = 1;
+          q.updAt = nowMs;
+          out.push({ id: q.id, code: q.code, ok: true, queued: it.state === '已下发' ? '已下发' : '排队中' });
+        }
+        pushOps(u, '盘点发车', String(b.sid || b.id), out.filter((x) => x.ok).length + '/' + out.length + ' 框下架腿已下发'); save();
+        return send(res, 200, { ok: true, done: out.filter((x) => x.ok).length, list: out });
+      }
       if (req.method === 'POST' && p === '/api/count/scan') { // 到台扫码核对：验证语义，绝不写账本；码对核数、码不对记串位
         if (!isWhC) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可执行盘点核对' });
         const b = await readBody(req);
@@ -5286,7 +5355,7 @@ return send(res, 200, {
         const onlyDone = url.searchParams.get('all') !== '1';
         const list = (db.counts || []).filter((q) => !onlyDone || !['done', 'canceled'].includes(q.state)).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 300);
         const _qtrace = {}; for (const q2 of db.agvQueue || []) { if (q2.countId && (q2.trace || []).length) { const arr = _qtrace[q2.countId] = _qtrace[q2.countId] || { out: [], back: [] }; if (q2.type === 'count') arr.out = q2.trace; else if (q2.type === 'countback') arr.back = q2.trace; } }
-        return send(res, 200, { ok: true, list: list.map((q) => Object.assign({}, q, { legTrace: _qtrace[q.id] || { out: [], back: [] } })), cand: countCandidates().length, busy: countBusyLegs(), conc: Number(P().countConc) || 0 });
+        return send(res, 200, { ok: true, list: list.map((q) => Object.assign({}, q, { legTrace: _qtrace[q.id] || { out: [], back: [] } })), cand: countCandidates().length, busy: countBusyLegs(), conc: Number(P().countConc) || 0, autoDeploy: P().countAutoDeploy ? 1 : 0 }); // ㉖v141 发车方式透出：0=人工拉取（网页/PDA 显示发车按钮），1=自动
       }
       if (req.method === 'GET' && p === '/api/prefs') {
         return send(res, 200, { ok: true, prefs: prefsFor(u.id), templates: (db.prefTemplates || []).map((t) => ({ name: t.name, by: t.by })) });
@@ -5575,6 +5644,65 @@ return send(res, 200, {
         const canRcv = (db.features[u.role] || {}).receive_confirm === true;
         const isWh = u.role === 'warehouse' || u.role === 'admin';
 
+// ㉖v137 补料建议：按出库实况日均消耗预估"还能撑几天"，告急件给建议框数（纯只读，不下单不拦截）
+        // 口径：日均=近 reqSuggestDays 天出库实发件数÷窗口；可撑=（在架件+在途未发件）÷日均；
+        //       告急=可撑<reqSuggestCover 天；建议补到 cover 天用量；件/框均值优先在架口径，在架框少时回退出库明细近90天 件/框 均值
+        //       （告急件往往正是快没货的件，在架均值算不出或失真——回退保证建议框数可用）
+        if (req.method === 'GET' && p === '/api/requisitions/suggest') {
+          if (!P().reqSuggestOn) return send(res, 200, { ok: true, on: 0, list: [] });
+          const win = Math.max(3, Number(P().reqSuggestDays) || 14);
+          const cover = Math.max(1, Number(P().reqSuggestCover) || 3);
+          const nowMs = Date.now(), cut = nowMs - win * 864e5, cut90 = nowMs - 90 * 864e5;
+          const cons = {}, boxAgg = {}; // 窗口内消耗件数；近90天出库 框→件 聚合（回退均值用）
+          for (const o of Object.values(db.outbound || {})) {
+            const t = Number(o.createdAt) || 0; if (!t || t > nowMs) continue;
+            for (const it of o.items || []) {
+              const pn = String(it.code || '').toUpperCase(); if (!pn) continue;
+              const q = Number(it.qty) || 0;
+              if (t >= cut) cons[pn] = (cons[pn] || 0) + q;
+              if (t >= cut90) { const bc = String(it.barcode || '').toUpperCase() || pn + '|' + t; const b = boxAgg[bc] = boxAgg[bc] || { pn, q: 0 }; b.q += q; }
+            }
+          }
+          const inStock = {}, boxCnt = {}; // 在架件数 / 在架框数（boxKeyOf 同托多码=1框，与发料同口径）
+          for (const x of db.ledger || []) {
+            const p = String(x.p || '').toUpperCase(); if (!p) continue;
+            inStock[p] = (inStock[p] || 0) + (Number(x.q) || 0);
+            (boxCnt[p] = boxCnt[p] || new Set()).add(boxKeyOf(x));
+          }
+          const transit = {}; // 在途未发件数：open 单 qty−已发（pending/accepted/ready 都会被仓管发出，算"已在路上"防重复建议）
+          for (const r of db.requisitions || []) {
+            if (!['pending', 'accepted', 'ready'].includes(r.status)) continue;
+            for (const it of r.items || []) {
+              const pn = String(it.partNo || '').toUpperCase(); if (!pn) continue;
+              const got = (it.issued || []).reduce((a, e) => a + (typeof e === 'string' ? 0 : Number(e.q) || 0), 0);
+              const left = (Number(it.qty) || 0) - got; if (left > 0) transit[pn] = (transit[pn] || 0) + left;
+            }
+          }
+          const obPb = {}; // 出库明细回退均值：零件→近90天 件/框（按 barcode 分组求均值）
+          { const _sb = {}, _sq = {}; for (const b of Object.values(boxAgg)) { _sb[b.pn] = (_sb[b.pn] || 0) + 1; _sq[b.pn] = (_sq[b.pn] || 0) + b.q; } for (const pn of Object.keys(_sb)) if (_sb[pn]) obPb[pn] = _sq[pn] / _sb[pn]; }
+          const list = [];
+          for (const pn of Object.keys(cons)) {
+            const avgDay = cons[pn] / win; if (avgDay <= 0) continue;
+            const stock = inStock[pn] || 0, tr = transit[pn] || 0;
+            const days = (stock + tr) / avgDay;
+            if (days >= cover) continue; // 够撑目标天数=不告急
+            const need = Math.ceil(cover * avgDay - stock - tr); if (need <= 0) continue;
+            const nb = boxCnt[pn] ? boxCnt[pn].size : 0;
+            const perBox = nb > 0 ? stock / nb : (obPb[pn] || 0); // 在架均值优先；快没货的件回退出库均值
+            const boxes = perBox > 0 ? Math.ceil(need / perBox) : need;
+            let nm = '';
+            { const d = db.itemDict && (db.itemDict[pn] || db.itemDict[pn.toUpperCase()]); if (d && d.nm) nm = String(d.nm).replace(/[■◆\uFFFD]/g, '').slice(0, 60); }
+            if (!nm) { const lx = (db.ledger || []).find((x) => String(x.p || '').toUpperCase() === pn); if (lx) nm = String(lx.n || '').slice(0, 60); }
+            list.push({ pn, nm, avgDay: Math.round(avgDay * 10) / 10, stock, transit: tr, days: Math.round(days * 10) / 10, need, boxes, perBox: Math.round(perBox * 10) / 10, perBoxSrc: nb > 0 ? 'stock' : (obPb[pn] ? 'outbound' : 'none') });
+          }
+          // ㉖v138 排序可配（截断上限下决定优先看到哪些件）：0=最急先(默认)/1=建议框数降序/2=日均消耗降序；同档内二级键兜底稳定
+          const sortMode = Math.max(0, Math.min(2, Number(P().reqSuggestSort) || 0));
+          if (sortMode === 1) list.sort((a, b) => b.boxes - a.boxes || a.days - b.days);
+          else if (sortMode === 2) list.sort((a, b) => b.avgDay - a.avgDay || a.days - b.days);
+          else list.sort((a, b) => a.days - b.days || b.avgDay - a.avgDay); // 最急先；同为断供级（0天）按日均消耗降序——大流水件排前
+          const cap = Math.max(0, Number(P().reqSuggestMax)); // 0=不限全给
+          return send(res, 200, { ok: true, on: 1, win, cover, sort: sortMode, cap, total: list.length, list: cap > 0 ? list.slice(0, cap) : list });
+        }
 // ㉖v62 建单提效：常领清单（近60天本人聚合） + 产线模板（私有+共享）
         // 常领：频次×最近加权排序，带上次数量与在架托数，物料员一键加单不输零件号
         if (req.method === 'GET' && p === '/api/requisitions/frequent') {
@@ -7027,8 +7155,8 @@ async function updateCounts(nowMs) {
     const conc = Number(P().countConc) || 0;
     for (const q of db.counts || []) {
       const _qi = (tp) => (db.agvQueue || []).find((x) => x.countId === q.id && ['下发中', '已下发', '到站', '完成'].includes(x.state) && (!tp || x.type === tp));
-      // pending 且未入队：并发有空位才补入队下架腿（countConc=0 暂停发车）
-      if (q.state === 'pending' && !q.outQueued && countBusyLegs() < conc) { const it = await countEnqueue(q, 'out', { name: q.by }, q.from, '', 'PD-' + q.code); if (it.state === '已下发') { q.taskNo = it.wmsTask || ''; q.station = it.station || q.station; q.state = 'toStation'; q.at = nowMs; } else q.outQueued = 1; dirty = true; }
+      // pending 且未入队：㉖v141 默认人工拉取发车（countAutoDeploy=0 不自动下发，防"自动预下架"与夜间空发）；开关1=旧自动行为（并发有空位才补入队）
+      if (q.state === 'pending' && !q.outQueued && P().countAutoDeploy && countBusyLegs() < conc) { const it = await countEnqueue(q, 'out', { name: q.by }, q.from, '', 'PD-' + q.code); if (it.state === '已下发') { q.taskNo = it.wmsTask || ''; q.station = it.station || q.station; q.state = 'toStation'; q.at = nowMs; } else q.outQueued = 1; dirty = true; }
       else if (q.state === 'pending' && q.outQueued) { const it = _qi('count'); if (it) { q.state = 'toStation'; q.taskNo = it.wmsTask || ''; q.station = it.station || q.station; q.at = nowMs; q.outQueued = 0; dirty = true; } }
       else if (q.state === 'scanned' && q.backQueued) { const it = _qi('countback'); if (it) { q.state = 'returning'; q.taskNo2 = it.wmsTask || ''; q.retAt = nowMs; q.backQueued = 0; dirty = true; } }
       if (q.state === 'toStation') {
@@ -7572,6 +7700,7 @@ function clearQueueCall(reqId, code) { // 队列项取消/失败出队 → 解�
 // ㉖v72 队列项终态统一回收：叫车标记 + 站台时间窗预约一并释放（取消/失败/判消失共用，杜绝"车不来了台还锁着"）
 function retireQueueItem(q, st, err) {
   q.state = st; q.err = err || ''; q.updAt = Date.now();
+  if (q.blockSince) schedBlockClose(q, Date.now()); // ㉖v142 取消/判失败终态：闭合被挡段入桶（否则起点泄漏、该框再入队会串计时）
   (q.trace = q.trace || []).push((st === '取消' ? '已取消' : '判失败') + (err ? '：' + err : ''));
   if (q.trace.length > 8) q.trace = q.trace.slice(-8);
   clearQueueCall(q.reqId, q.code); releaseStnBook(q.code);
@@ -7666,9 +7795,9 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
   // ㉖ 检验下架项指定台判据换检验口径（出库判据排除检验·入库专用台，会把指定到 insp 台的任务永远卡排队）
   const mfree = q.type === 'insp' ? inspStationFree(q.stationManual, nowMs, q.inspId) : agvStationFree(q.stationManual, nowMs, runT, assigned);
   if (q.stationManual && mfree) { stn = q.stationManual; trPush(q, '指定台 ' + stn + ' 可用，按指定执行'); }
-  if (!stn && q.manualOnly) { trPush(q, '起终点固定任务：指定台 ' + (q.stationManual || '?') + ' 当前不可用，排队等待（不自动改派）'); return false; }
+  if (!stn && q.manualOnly) { q.blockRsn = '指定台占用'; q.blockKey = '指定台'; schedBlockMark(q, nowMs); trPush(q, '起终点固定任务：指定台 ' + (q.stationManual || '?') + ' 当前不可用，排队等待（不自动改派）'); return false; }
   const _capB = P().aisleCap; const _abB = _capB > 0 ? aisleBusy() : null; // B 巷道并发节流：源巷道在途达上限→本轮不放行（指定台任务豁免，人工意图优先）
-  if (_abB && !q.stationManual && /^NB02-/.test(String(q.fromLoc || '')) && (_abB[String(q.fromLoc).slice(0, 9)] || 0) >= _capB) { trPush(q, '通道节流：源巷道 ' + String(q.fromLoc).slice(0, 9) + ' 在途 ' + _abB[String(q.fromLoc).slice(0, 9)] + ' ≥上限' + _capB + '，本轮不放行'); return false; }
+  if (_abB && !q.stationManual && /^NB02-/.test(String(q.fromLoc || '')) && (_abB[String(q.fromLoc).slice(0, 9)] || 0) >= _capB) { q.blockRsn = '巷道并发'; q.blockKey = String(q.fromLoc).slice(0, 9).toUpperCase(); schedBlockMark(q, nowMs); trPush(q, '通道节流：源巷道 ' + String(q.fromLoc).slice(0, 9) + ' 在途 ' + _abB[String(q.fromLoc).slice(0, 9)] + ' ≥上限' + _capB + '，本轮不放行'); return false; }
   if (!stn) {
     const skip = [];
     const free = AGV_STNS.filter((x) => { const ok = agvStationFree(x, nowMs, runT, assigned); if (ok && !q.stationManual) { const w = stnHoldUntil(x, nowMs); if (w > nowMs) { if (skip.length < 4) skip.push(x + '(时间窗预约中)'); return false; } } if (!ok && skip.length < 4) skip.push(x + '(' + stnWhy(x, nowMs, runT, assigned) + ')'); return ok; });
@@ -7678,9 +7807,10 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
       stn = best || free[0];
       trPush(q, '选台 ' + stn + (bestD < Infinity ? '（' + free.length + '空闲台中路网最近 ' + Math.round(bestD) + 'm）' : '（空闲台首个）'));
       if (skip.length) trPush(q, '已排除 ' + skip.join('、'));
-    } else { trPush(q, '暂无可用台：' + (skip.join('、') || '全部站台占用/停用') + '，等待下轮'); }
+    } else { q.blockRsn = '无空闲台'; q.blockKey = '站台'; schedBlockMark(q, nowMs); trPush(q, '暂无可用台：' + (skip.join('、') || '全部站台占用/停用') + '，等待下轮'); }
   }
   if (!stn) return false;
+  if (q.blockSince) schedBlockClose(q, nowMs); // ㉖v142 本轮放行=被挡段结束，累计真实时长入桶
   assigned.push(stn); q.station = stn; q.updAt = nowMs;
   // ㉖v94l 位货绑定硬闸（用户要求：入库必须把该站台的货放到指定货架位，出库必须把指定货架位的货放到指定站台）：
   // 建 WMAS 任务前用服务器账本核"框↔起终点"绑定，杜绝叉错框/叉空位/放错位——
@@ -7938,8 +8068,75 @@ async function carAlarmWatch(tk, nowMs) {
     }
   }
 }
+// ===== ㉖v142 L0 调度观测地基：节流计数器 / 车辆健康分 / 等待分位数辅助 =====
+// 设计要点（正确性优先，逐条对应实测隐患）：
+// ① 节流计数用【真实时长】而非轮次累计——生产 pollSec=3 秒（非默认20），按轮次会把被挡时长放大6~20倍；
+//    改为拦截时打 blockSince 起点，放行/终态时按 (now-blockSince) 累计真实秒数入桶，同一起点不重复计。
+// ② 桶按【巷道×小时×原因】聚合，保留期滚动清理，防无限膨胀。
+// ③ 车辆健康分从 carEvents 近7天聚合，扣分制+原始计数并列（分数旁必带明细，防"分数黑箱"）。
+// ④ 等待分位数含"秒发=0"样本（现有 stat 的 v>0 过滤会把最快样本排除致 p50 虚高），单独算 queue 分位。
+let _schedPruneAt = 0; // ㉖v142 节流清理时间戳（6小时一次，防桶无限膨胀）
+function schedBlockMark(q, nowMs) { // 拦截起点登记：仅首次（无 blockSince）打点，避免每轮刷新起点致时长恒等于一轮
+  if (!q.blockSince) q.blockSince = nowMs;
+}
+function schedBlockClose(q, nowMs) { // 放行/终态：结算被挡段真实时长入桶，清起点
+  if (!q.blockSince) return;
+  const durS = Math.max(0, Math.round((nowMs - q.blockSince) / 1000));
+  q.blockSince = 0;
+  const rsn = String(q.blockRsn || '其他'); q.blockRsn = '';
+  const key = String(q.blockKey || (q.fromLoc ? String(q.fromLoc).slice(0, 9).toUpperCase() : '站台'));
+  if (durS <= 0) return; // 同轮放行=0秒，不计（防 dry 演算/瞬时抖动灌桶）
+  db.schedBlock = db.schedBlock || [];
+  if (nowMs - _schedPruneAt > 6 * 3600000) { _schedPruneAt = nowMs; schedBlockPrune(nowMs); } // ㉖v142 低频滚动清理
+  const hr = Math.floor(nowMs / 3600000) * 3600000; // 按小时对齐入桶
+  let b = db.schedBlock.find((x) => x.hr === hr && x.key === key && x.rsn === rsn);
+  if (!b) { b = { hr, key, rsn, n: 0, sec: 0, max: 0 }; db.schedBlock.push(b); }
+  b.n++; b.sec += durS; if (durS > b.max) b.max = durS;
+}
+function schedBlockPrune(nowMs) { // 保留近 N 天，滚动清理（默认30天，与漏斗窗口对齐）
+  const keep = (nowMs || Date.now()) - 30 * 86400000;
+  if (db.schedBlock && db.schedBlock.length) db.schedBlock = db.schedBlock.filter((x) => x.hr >= keep);
+}
+function schedBlockAgg(days) { // 聚合输出：按原因汇总 + 按巷道明细（供 aisleCap 调优决策）
+  const since = Date.now() - (days || 14) * 86400000;
+  const rows = (db.schedBlock || []).filter((x) => x.hr >= since);
+  const byRsn = {}, byAisle = {};
+  for (const x of rows) {
+    byRsn[x.rsn] = byRsn[x.rsn] || { n: 0, sec: 0, max: 0 };
+    byRsn[x.rsn].n += x.n; byRsn[x.rsn].sec += x.sec; if (x.max > byRsn[x.rsn].max) byRsn[x.rsn].max = x.max;
+    if (/^NB02-/.test(x.key)) { byAisle[x.key] = byAisle[x.key] || { n: 0, sec: 0, max: 0 }; byAisle[x.key].n += x.n; byAisle[x.key].sec += x.sec; if (x.max > byAisle[x.key].max) byAisle[x.key].max = x.max; }
+  }
+  const fmt = (o) => Object.entries(o).map(([k, v]) => ({ k, n: v.n, avgMin: Math.round(v.sec / Math.max(1, v.n) / 6) / 10, totMin: Math.round(v.sec / 60), maxMin: Math.round(v.max / 6) / 10 })).sort((a, b) => b.totMin - a.totMin);
+  return { days: days || 14, byRsn: fmt(byRsn), byAisle: fmt(byAisle) };
+}
+function schedCarHealth() { // 车辆健康分：近7天 carEvents 按车聚合，扣分制+原始计数并列
+  const since = Date.now() - 7 * 86400000;
+  const ev = (db.carEvents || []).filter((e) => (e.ts || 0) >= since);
+  const cars = {};
+  const touch = (id) => (cars[id] = cars[id] || { id, comm: 0, lowBat: 0, err: 0, jam: 0, estop: 0, score: 100 });
+  for (const e of ev) {
+    const who = String(e.who || ''), msg = String(e.msg || '');
+    if (!/^AGV\d+/.test(who)) continue; // 只统计车（排除 WMAS 等）
+    const c = touch(who);
+    if (/通讯断开|网络连接/.test(msg)) c.comm++;
+    else if (/低电量|电量/.test(msg)) c.lowBat++;
+    else if (/急停/.test(e.kind) || /急停/.test(msg)) c.estop++;
+    else if (e.kind === '堵点') c.jam++;
+    else if (/错误:|告警/.test(msg) && e.kind === '告警') c.err++;
+  }
+  for (const c of Object.values(cars)) { // 扣分权重：通讯/急停最伤可用性，堵点次之，低电与一般错误再次
+    c.score = Math.max(0, 100 - c.comm * 3 - c.estop * 5 - c.jam * 2 - c.lowBat * 1.5 - c.err * 1);
+    c.score = Math.round(c.score);
+  }
+  return Object.values(cars).sort((a, b) => a.score - b.score);
+}
+function quantile(sortedArr, p) { // 线性插值分位数；空数组返 0
+  const a = sortedArr || []; if (!a.length) return 0;
+  if (a.length === 1) return a[0];
+  const idx = (a.length - 1) * p, lo = Math.floor(idx), hi = Math.ceil(idx);
+  return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (idx - lo);
+}
 
-// ===== ④A 全链路交付漏斗：接单→叫车→排队→下发→叉出→到站→清台 分段平均耗时（起终点+时间窗关联） =====
 function buildFunnel(days) {
   const nowMs = Date.now(), since = nowMs - days * 86400000;
   const tasks = Object.values(db.agvTasks || {}).filter((t) => t.ck === 'out' && t.fin >= since);
@@ -7960,9 +8157,9 @@ function buildFunnel(days) {
       const fromLoc = (String(e.from || '') || String((q && q.fromLoc) || it.loc || '')).toUpperCase();
       const tk = ((e.task && db.agvTasks[e.task]) || (q && q.wmsTask && db.agvTasks[q.wmsTask])) // ①taskNo精确关联（WMAS与RCS同号）；㉖v98c 归档任务号优先
         || (fromLoc && stn ? findTask(fromLoc, stn, sentAt - 60000, Math.max(dispAt, sentAt) + 6 * 3600000) : null); // ②兜底：起终点+时间窗
-      const s = { call: 0, queue: 0, dispatch: 0, pick: 0, arrive: 0, hold: 0, total: 0 };
+      const s = { call: 0, queue: 0, dispatch: 0, pick: 0, arrive: 0, hold: 0, total: 0, _q: false };
       if (acceptT) s.call = (calledAt - acceptT) / 60000;
-      if (dispAt && sentAt) s.queue = (dispAt - sentAt) / 60000;
+      if (dispAt && sentAt) { s.queue = (dispAt - sentAt) / 60000; s._q = true; } // ㉖v142 _q 标记=真实下发过（含秒发0值），与"无时间戳缺失"区分
       if (tk) {
         if (tk.ex) s.dispatch = (tk.ex - (dispAt || sentAt)) / 60000;
         if (tk.pick && tk.ex) s.pick = (tk.pick - tk.ex) / 60000;
@@ -7975,7 +8172,11 @@ function buildFunnel(days) {
     }
   }
   const stat = (key) => { const a = samples.map((s) => s[key]).filter((v) => v > 0 && v < 720); return { avg: a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length * 10) / 10 : 0, n: a.length }; };
-  return { call: stat('call'), queue: stat('queue'), dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
+  // ㉖v142 排队段单独用【含0】口径（_q 标记的真实下发样本）：现有 stat 的 v>0 过滤会把"秒发"全排除致 p50/均值虚高——等待分布必须含最快的那些
+  const qv = samples.filter((s) => s._q && s.queue >= 0).map((s) => s.queue).sort((a, b) => a - b); // ㉖v142 含秒发0值；负值=时钟回拨脏数据剔除防拉低下分位
+  const r1 = (x) => Math.round(x * 10) / 10;
+  const qPct = qv.length ? { avg: r1(qv.reduce((x, y) => x + y, 0) / qv.length), n: qv.length, p50: r1(quantile(qv, 0.5)), p90: r1(quantile(qv, 0.9)), p99: r1(quantile(qv, 0.99)) } : { avg: 0, n: 0, p50: 0, p90: 0, p99: 0 };
+  return { call: stat('call'), queue: qPct, dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
 }
 
 process.on('uncaughtException', (e) => { try { logErr('uncaughtException', e); if (P().asyncSave) save(); else flushSave(); } catch (_) {} console.error('[FATAL] 未捕获异常：', e); }); // ㉖ 崩溃前留痕（不退出：调度循环中断比报错更糟）；㉖v56 改 flushSave 同步落盘防合并窗口丢数据；㉖v111 异步模式改走 save() 排队——在途写收尾后自动带最新快照，禁同步写与异步写并发 rename
