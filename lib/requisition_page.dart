@@ -897,9 +897,15 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   /// ㉖v137 补料建议弹层：按出库日均消耗预估的告急清单，按库存状态给两种正确动作
   ///   · 在架有货但撑不过目标天数 → 勾选后「加入领料单」（建议框数预填，可改）
   ///   · 已断供(在架0) → 「🔔预约到货」：登记 watchlist 够数自动开单（断供件本就不在可下单零件列表，预约才是正解）
-  void _showSugSheet() {
+  Future<void> _showSugSheet() async {
     final byPn = {for (final p in widget.parts) p.partNo: p};
     final sel = <String>{}; // 勾选的可下单件
+    // ㉖v146 预约反馈修复：旧版 SnackBar 显示在底层 Scaffold，被本弹层(86%高)完全挡住=看着"没反应"（预约其实已成功）；
+    //   改行内状态机（预约中…/✓已预约/✗点击重试），并打开时回读服务器存量预约（booked 种子，重开弹层也显示已预约）
+    final selOut = <String>{}; // 勾选的断供件（批量预约）
+    final booking = <String>{}, bookFail = <String>{};
+    final booked = <String>{};
+    try { final wl = await AuthApi.watchlistGet(); for (final w in List<Map>.from(wl["list"] ?? [])) booked.add(w["partNo"].toString().toUpperCase()); } catch (_) {}
     final orderable = _sug.where((x) => (x["stock"] as num?)?.toInt() != 0 && byPn.containsKey(x["pn"].toString())).toList();
     final outOfStock = _sug.where((x) => (x["stock"] as num?)?.toInt() == 0 || !byPn.containsKey(x["pn"].toString())).toList();
     showModalBottomSheet(
@@ -961,25 +967,40 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                       if (outOfStock.isNotEmpty) ...[
                         Padding(
                             padding: const EdgeInsets.fromLTRB(14, 10, 14, 2),
-                            child: Text("已断供 · 建议预约到货（${outOfStock.length}）", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828)))),
+                            child: Row(children: [
+                              Text("已断供 · 建议预约到货（${outOfStock.length}）", style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFFC62828))),
+                              const Spacer(),
+                              GestureDetector(
+                                  onTap: () => setSt(() {
+                                        if (selOut.length == outOfStock.length) { selOut.clear(); }
+                                        else { selOut.clear(); for (final x in outOfStock) selOut.add(x["pn"].toString()); }
+                                      }),
+                                  child: Text(selOut.length == outOfStock.length && outOfStock.isNotEmpty ? "取消全选" : "全选", style: const TextStyle(fontSize: 11.5, color: Color(0xFF515BD4)))),
+                            ])),
                         ...outOfStock.map((x) {
                           final pn = x["pn"].toString();
-                          return ListTile(
-                              dense: true,
-                              title: Text("$pn  ${x["nm"]?.toString() ?? ""}", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
-                              subtitle: Text("日均${x["avgDay"]}件 · 在架0 · ${dTxt((x["days"] as num?)?.toDouble() ?? 0)} · 到货约${x["boxes"]}框时自动开单",
+                          final isBooked = booked.contains(pn.toUpperCase()), isBusy = booking.contains(pn), isFail = bookFail.contains(pn);
+                          Future<void> doBook() async {
+                            setSt(() { booking.add(pn); bookFail.remove(pn); });
+                            try {
+                              final r = await AuthApi.watchlistSet(pn, true, qty: (x["boxes"] as num?)?.toInt() ?? 0, itemName: x["nm"]?.toString() ?? "", auto: true);
+                              setSt(() { booking.remove(pn); if (r["ok"] == true) { booked.add(pn.toUpperCase()); bookFail.remove(pn); } else { bookFail.add(pn); } });
+                            } catch (_) { setSt(() { booking.remove(pn); bookFail.add(pn); }); }
+                          }
+                          return Row(children: [
+                            Checkbox(value: selOut.contains(pn), visualDensity: VisualDensity.compact, onChanged: (v) => setSt(() { v == true ? selOut.add(pn) : selOut.remove(pn); })),
+                            Expanded(
+                                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text("$pn  ${x["nm"]?.toString() ?? ""}", maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
+                              Text("日均${x["avgDay"]}件 · 在架0 · ${dTxt((x["days"] as num?)?.toDouble() ?? 0)} · 到货约${x["boxes"]}框时自动开单",
                                   style: const TextStyle(fontSize: 11, color: Color(0xFF78909C))),
-                              trailing: TextButton(
-                                  onPressed: () async {
-                                    final r = await AuthApi.watchlistSet(pn, true, qty: (x["boxes"] as num?)?.toInt() ?? 0, itemName: x["nm"]?.toString() ?? "", auto: true);
-                                    if (r["ok"] == true) {
-                                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("已预约 $pn：到货够数自动开单"), backgroundColor: Colors.blueGrey.shade700, duration: const Duration(seconds: 2)));
-                                      setSt(() {});
-                                    } else {
-                                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("预约失败：${r["msg"] ?? "?"}"), backgroundColor: Colors.red.shade700));
-                                    }
-                                  },
-                                  child: const Text("🔔预约", style: TextStyle(fontSize: 12))));
+                            ])),
+                            isBooked
+                                ? const Padding(padding: EdgeInsets.only(right: 10), child: Text("✓已预约", style: TextStyle(fontSize: 11.5, color: Color(0xFF2E7D32), fontWeight: FontWeight.w700)))
+                                : TextButton(
+                                    onPressed: isBusy ? null : doBook,
+                                    child: Text(isBusy ? "预约中…" : (isFail ? "✗重试" : "🔔预约"), style: TextStyle(fontSize: 12, color: isFail ? Colors.red.shade700 : null))),
+                          ]);
                         }),
                       ],
                       if (_sug.isEmpty) const Padding(padding: EdgeInsets.all(30), child: Center(child: Text("暂无告急件", style: TextStyle(color: Colors.grey)))),
@@ -990,6 +1011,27 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                             child: Row(children: [
                               TextButton(onPressed: () => Navigator.pop(mctx), child: const Text("关闭")),
                               const Spacer(),
+                              // ㉖v146 批量预约：勾选的断供件串行逐个登记（防并发打爆服务器），已预约项自动跳过
+                              if (outOfStock.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 8),
+                                  child: OutlinedButton.icon(
+                                      style: OutlinedButton.styleFrom(foregroundColor: const Color(0xFFC62828)),
+                                      icon: const Icon(Icons.notifications_active_outlined, size: 16),
+                                      label: Text("批量预约(${selOut.where((p) => !booked.contains(p.toUpperCase())).length})"),
+                                      onPressed: () async {
+                                        final todo = selOut.where((p) => !booked.contains(p.toUpperCase())).toList();
+                                        for (final pn in todo) {
+                                          setSt(() { booking.add(pn); bookFail.remove(pn); });
+                                          final x = outOfStock.firstWhere((e) => e["pn"].toString() == pn);
+                                          try {
+                                            final r = await AuthApi.watchlistSet(pn, true, qty: (x["boxes"] as num?)?.toInt() ?? 0, itemName: x["nm"]?.toString() ?? "", auto: true);
+                                            setSt(() { booking.remove(pn); if (r["ok"] == true) { booked.add(pn.toUpperCase()); selOut.remove(pn); } else bookFail.add(pn); });
+                                          } catch (_) { setSt(() { booking.remove(pn); bookFail.add(pn); }); }
+                                        }
+                                      },
+                                  ),
+                                ),
                               ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
                                   icon: const Icon(Icons.add, size: 18),
@@ -1258,30 +1300,24 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                       BoxConstraints(minWidth: 34, minHeight: 0),
                   border: OutlineInputBorder()),
             ),
-            // ㉖v137 补料建议入口：按出库日均消耗预估的告急清单（有告急件才显示，点开审清单）
-            if (_sugOn && _sug.isNotEmpty) ...[
-              const SizedBox(height: 6),
-              Padding(
-                padding: const EdgeInsets.only(left: 2),
-                child: ActionChip(
-                  backgroundColor: const Color(0xFFFFF3E0),
-                  avatar: const Icon(Icons.psychology,
-                      size: 16, color: Color(0xFFEF6C00)),
-                  label: Text("🧠 补料建议 · ${_sug.length} 件告急",
-                      style: const TextStyle(
-                          fontSize: 12,
-                          color: Color(0xFF6D4C41),
-                          fontWeight: FontWeight.w600)),
-                  onPressed: _showSugSheet,
-                ),
-              ),
-            ],
+            // ㉖v146 布局压缩：补料建议不再独占一行，并入下方横滑工具条首位（用户实锤独占一行浪费空间）
             // ㉖v62 建单提效：常领一键加（近60天本人聚合）+ 产线模板整单载入
-            if (_freq.isNotEmpty || _tpls.isNotEmpty) ...[
+            if (_sugOn && _sug.isNotEmpty || _freq.isNotEmpty || _tpls.isNotEmpty) ...[
               const SizedBox(height: 6),
               SizedBox(
                 height: 40,
                 child: ListView(scrollDirection: Axis.horizontal, children: [
+                  if (_sugOn && _sug.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ActionChip(
+                        backgroundColor: const Color(0xFFFFF3E0),
+                        avatar: const Icon(Icons.psychology, size: 16, color: Color(0xFFEF6C00)),
+                        label: Text("🧠 补料建议(${_sug.length} 件告急)",
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF6D4C41), fontWeight: FontWeight.w600)),
+                        onPressed: _showSugSheet,
+                      ),
+                    ),
                   if (_tpls.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(right: 8),
@@ -1647,42 +1683,43 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
               }),
             ])),
             const SizedBox(height: 6),
-            InkWell(
-              onTap: () => setState(() => _rush = !_rush),
-              child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
-                  child: Row(children: [
-                    Icon(
-                        _rush ? Icons.check_box : Icons.check_box_outline_blank,
-                        size: 20,
-                        color: _rush ? Colors.red : Colors.grey),
-                    const SizedBox(width: 6),
-                    Text("急料（AGV排队优先，到站5分钟催扫广播全员）",
-                        style: TextStyle(
-                            fontSize: 12.5,
-                            color:
-                                _rush ? Colors.red.shade700 : Colors.blueGrey,
-                            fontWeight:
-                                _rush ? FontWeight.bold : FontWeight.normal)),
-                  ])),
-            ),
-            const SizedBox(height: 4),
-            if (chosen.isNotEmpty) // ㉖v62 把本单物料存成产线模板，下次一键载入
-              Align(
-                  widthFactor: 1.0,
-                  heightFactor: 1.0, // ㉖v70b 修复：Align 不设 factor 会撑满 Column 剩余空间，致急料与存模板之间大片空白
-                  alignment: Alignment.centerRight,
-                  child: TextButton.icon(
-                      onPressed: _saveAsTpl,
-                      style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
-                          visualDensity: VisualDensity.compact),
-                      icon: const Icon(Icons.folder_open_outlined,
-                          size: 16, color: Color(0xFF3949AB)),
-                      label: const Text("存为产线模板",
-                          style:
-                              TextStyle(fontSize: 12, color: Color(0xFF3949AB))))),
+            // ㉖v146 底部合并一行：急料勾选与「存为产线模板」同行（各占一行浪费空间，用户实锤）；
+            //   急料说明长括号删除（悬停 title 保留详情，行内已见🔥语义不再啰嗦）
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Expanded(
+                child: InkWell(
+                  onTap: () => setState(() => _rush = !_rush),
+                  child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 2),
+                      child: Row(children: [
+                        Icon(
+                            _rush ? Icons.check_box : Icons.check_box_outline_blank,
+                            size: 20,
+                            color: _rush ? Colors.red : Colors.grey),
+                        const SizedBox(width: 6),
+                        Flexible(
+                            child: Text("急料",
+                                style: TextStyle(
+                                    fontSize: 12.5,
+                                    color:
+                                        _rush ? Colors.red.shade700 : Colors.blueGrey,
+                                    fontWeight:
+                                        _rush ? FontWeight.bold : FontWeight.normal))),
+                      ])),
+                ),
+              ),
+              if (chosen.isNotEmpty) // ㉖v62 把本单物料存成产线模板，下次一键载入
+                TextButton.icon(
+                    onPressed: _saveAsTpl,
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        visualDensity: VisualDensity.compact),
+                    icon: const Icon(Icons.folder_open_outlined,
+                        size: 16, color: Color(0xFF3949AB)),
+                    label: const Text("存为产线模板",
+                        style:
+                            TextStyle(fontSize: 12, color: Color(0xFF3949AB)))),
+            ]),
             Row(children: [
               Expanded(
                   child: OutlinedButton(

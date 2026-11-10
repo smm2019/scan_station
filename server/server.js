@@ -2231,9 +2231,9 @@ function reqView(r, lite) {
 // ㉖v55 行级急料：该行标急 或 整单标急（旧版兼容）→ 队列项插队
 function lineRush(r, it) { return !!(r && (r.rush || (it && it.rush === true))); }
 function autoEnqueueOnAccept(r, byName, byId) {
-  if (db.autoDispatch === false) return 0; // 全局开关（管理员可在设置关闭）
+  if (db.autoDispatch === false) return { n: 0, skip: 0 }; // 全局开关（管理员可在设置关闭）
   db.agvQueue = db.agvQueue || [];
-  let n = 0;
+  let n = 0, skipBusy = 0; // ㉖v144 skipBusy=建议框正被搬运任务占用（上架在途/盘点冻结）而本轮不自动派的框数
   for (const it of r.items || []) {
     const excl = new Set(((it.issued || []).map(x => String(typeof x === 'string' ? x : (x.c || '')).toUpperCase()).filter(Boolean)));
     const sg = pickSuggest(it.partNo, Number(it.qty) || 0, excl, agvMapOf(it));
@@ -2251,16 +2251,16 @@ function autoEnqueueOnAccept(r, byName, byId) {
       if (!l.startsWith('NB02-') || l.includes('-CK-')) continue; // 只派货架框；地面/已在站台不动
       const code = String((bx.codes && bx.codes[0]) || '').toUpperCase();
       if (!code) continue;
-      if (countFrozen(code)) continue; // ㉖v123 盘点冻结框不自动派（AGV 正取它/压台待核，撞框）
-      if (bx.codes.some((c) => db.agvQueue.some((q) => String(q.code).toUpperCase() === String(c).toUpperCase() && !['完成', '取消', '失败'].includes(q.state)))) continue; // 同框已在队
+      if (countFrozen(code)) { skipBusy++; continue; } // ㉖v123 盘点冻结框不自动派（AGV 正取它/压台待核，撞框）
+      if (bx.codes.some((c) => db.agvQueue.some((q) => String(q.code).toUpperCase() === String(c).toUpperCase() && !['完成', '取消', '失败'].includes(q.state)))) { skipBusy++; continue; } // 同框已在队
       db.agvQueue.push({ code, fromLoc: l, palletType: String(bx.f || ''), stationManual: '', reqId: r.id, reqNo: r.no, by: byName, state: '排队', rush: lineRush(r, it), rushBy: lineRush(r, it) ? String(r.rushBy || r.byName || '') : '', auto: 1, station: '', at: Date.now(), updAt: Date.now() }); // v55 行级急料（靠前=加急；旧单无行标回退整单）㉖v61 急料带插队人
       it.agvCalled = (it.agvCalled || []).filter((e) => String(e.c).toUpperCase() !== code);
       it.agvCalled.push({ c: code, s: '', q: 1, by: byId, t: new Date().toISOString() }); // 登记叫车标记（建议区变🚗排队）
       n++;
     }
   }
-  if (n) console.log(`[auto派] ${r.no} 接单即派入队 ${n} 框`);
-  return n;
+  if (n || skipBusy) console.log(`[auto派] ${r.no} 接单即派入队 ${n} 框${skipBusy ? '，另 ' + skipBusy + ' 框被搬运任务占用本轮不派' : ''}`);
+  return { n, skip: skipBusy };
 }
 // ===== ㉖v52 备料排队看板：待接单+备料中的单按下单先后排队，供下单回执与看板接口共用 =====
 // nowReq 传入则算"我排在几号"；items 全员可见（单号+下单人），mine 标记本人。ETA 用近 20 单实测备料均时×前方单数，无样本则 null（不臆造）。
@@ -5994,9 +5994,9 @@ return send(res, 200, {
             notify(r.by, 'req_accept', `你的领料单 ${r.no} 已由 ${u.name} 接单备料`, r.id);
             if (r.assigneeId && r.assigneeId !== u.id) { const aU = db.users.find((x) => x.id === r.assigneeId); if (aU && aU.enabled) notify(r.assigneeId, 'req_reassign', `📢 你被指定的领料单 ${r.no} 已由 ${u.name} 接单，请勿再备料`, r.id); } // ⑲防原指定人白备料
             // 接单即派：建议货架框自动入队（是否真实下发仍由演算/真实模式把关）
-            const nAuto = autoEnqueueOnAccept(r, u.name, u.id);
-            if (nAuto > 0) {
-              hpush(`接单即派：${nAuto} 个货架框已加入AGV队列`);
+            const auto = autoEnqueueOnAccept(r, u.name, u.id);
+            if (auto.n > 0 || auto.skip > 0) {
+              hpush(`接单即派：${auto.n} 个货架框已加入AGV队列${auto.skip > 0 ? `（另 ${auto.skip} 框正在上架/盘点任务中，完成后扫码发料自动叫车）` : ''}`);
               rcsPoll(); // 立即调度一轮
             }
           } else if (act === 'reject') {
