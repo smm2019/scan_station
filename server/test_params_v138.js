@@ -79,6 +79,9 @@ async function runWith(extra, port) {
   {
     const m = sj.match(/Math\.max\(4, Number\(P\(\)\.pickMaxBoxes\) \|\| 24\)/);
     chkT('C1 封顶表达式在位且读参数', !!m, '');
+    // ㉖v143 两条路径（贪心 + 接单盖章池）封顶都必须读参数：v138 曾漏改盖章路径，参数调大对该路径无效
+    chk('C1b 封顶表达式两处齐全（贪心+盖章）', (sj.match(/Math\.max\(4, Number\(P\(\)\.pickMaxBoxes\) \|\| 24\)/g) || []).length, 2);
+    chk('C1c 硬编码 >=24 封顶清零（无漏网路径）', (sj.match(/\.length >= 24\) break/g) || []).length, 0);
     if (m) {
       const fn = new Function('P', 'return (' + m[0] + ');');
       chk('C2 默认(参数缺省)→24', fn(() => ({})), 24);

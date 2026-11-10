@@ -2115,7 +2115,7 @@ function pickSuggest(partNo, needQty, excludeCodes, agvMap, sugCodes) {
       const sugAll = [];
       for (const bx of _pool) for (const c of (bx.codes || [])) sugAll.push(String(c).toUpperCase()); // 未扫码入可扫白名单（兄弟码随框一起）
       const _pk = []; let _acc = 0;
-      for (const bx of _pool) { _pk.push(bx); _acc += bx.q; if (_acc >= needQty) break; if (_pk.length >= 24) break; } // 池内够数即停，批次序不乱
+      for (const bx of _pool) { _pk.push(bx); _acc += bx.q; if (_acc >= needQty) break; if (_pk.length >= (Math.max(4, Number(P().pickMaxBoxes) || 24))) break; } // 池内够数即停，批次序不乱；㉖v143 补漏：此路径封顶与贪心路径同步接 pickMaxBoxes 参数（v138 漏改，接单盖章单调大参数曾无效）
       // ㉖v126 同批末段最小覆盖修剪（只在盖章池内换，绝不引入池外框——守 v114「盖章集全程可扫」）
       const _tr = trimLastLot(_pk, needQty, _pool);
       if (_tr) { _pk.length = 0; for (const bx of _tr) _pk.push(bx); _acc = _tr.reduce((s, b) => s + (Number(b.q) || 0), 0); }
