@@ -50,3 +50,9 @@ server/data/
 *.keystore
 
 deploy/out/
+
+# 测试隔离实例数据目录（DATA_DIR 副本：含生产库快照与 secret.key，严禁入库）
+server/proof_*/
+server/*_data/
+deploy/watchdog-fail.count
+server/tmp_prob_smoke.js

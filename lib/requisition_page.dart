@@ -757,6 +757,7 @@ class _ReqCreateSheet extends StatefulWidget {
 
 class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   final Map<String, TextEditingController> _qtyCtrl = {}; // partNo -> qty 输入控制器
+  final ScrollController _stockScroll = ScrollController(); // ㉖v149 库存列表懒加载滚动控制器（防输入框数整表重建卡顿）
   String _search = "";
   List<Map> _warehouses = []; // 可选仓管员（指定备料）
   String _assigneeId = "";
@@ -980,10 +981,34 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                         ...outOfStock.map((x) {
                           final pn = x["pn"].toString();
                           final isBooked = booked.contains(pn.toUpperCase()), isBusy = booking.contains(pn), isFail = bookFail.contains(pn);
-                          Future<void> doBook() async {
+                          Future<void> doBook() async { // ㉖v147 单件预约先弹框：预填建议框数可改；填 0/留空=纯到货提醒(不自动开单)；取消=不预约
+                            final sug = (x["boxes"] as num?)?.toInt() ?? 0;
+                            final ctl = TextEditingController(text: sug > 0 ? "$sug" : "");
+                            int? picked;
+                            final ok = await showDialog<bool>(
+                                context: mctx,
+                                builder: (c2) => AlertDialog(
+                                    icon: Icon(Icons.notifications_active, color: Colors.amber.shade700, size: 30),
+                                    title: Text("预约到货\n$pn", style: const TextStyle(fontSize: 15)),
+                                    content: Column(mainAxisSize: MainAxisSize.min, children: [
+                                      Text("建议框数 $sug 框（按近14天日均消耗算，到货够数自动开领料单）", style: const TextStyle(fontSize: 12.5, color: Color(0xFF607D8B))),
+                                      const SizedBox(height: 10),
+                                      TextField(
+                                          controller: ctl,
+                                          autofocus: true,
+                                          keyboardType: TextInputType.number,
+                                          decoration: const InputDecoration(labelText: "预约框数", hintText: "0=只提醒不到货开单", isDense: true, border: OutlineInputBorder()),
+                                          onChanged: (v) => picked = int.tryParse(v.trim())),
+                                    ]),
+                                    actions: [
+                                      TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消")),
+                                      FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("确认预约")),
+                                    ]));
+                            if (ok != true) return;
+                            final q = picked ?? sug;
                             setSt(() { booking.add(pn); bookFail.remove(pn); });
                             try {
-                              final r = await AuthApi.watchlistSet(pn, true, qty: (x["boxes"] as num?)?.toInt() ?? 0, itemName: x["nm"]?.toString() ?? "", auto: true);
+                              final r = await AuthApi.watchlistSet(pn, true, qty: q > 0 ? q : 0, itemName: x["nm"]?.toString() ?? "", auto: q > 0);
                               setSt(() { booking.remove(pn); if (r["ok"] == true) { booked.add(pn.toUpperCase()); bookFail.remove(pn); } else { bookFail.add(pn); } });
                             } catch (_) { setSt(() { booking.remove(pn); bookFail.add(pn); }); }
                           }
@@ -1258,6 +1283,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
 
   @override
   void dispose() {
+    _stockScroll.dispose(); // ㉖v149
     for (final c in _qtyCtrl.values) {
       c.dispose();
     }
@@ -1638,8 +1664,12 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                     color: Color(0xFF3949AB),
                     fontWeight: FontWeight.w600)),
             Expanded(
-                child: ListView(children: [
-              ...list.map((p) {
+                child: ListView.builder( // ㉖v149 懒加载：旧 ListView(children:) 一次构建全部行（约250行×输入框），
+              // 填框数每次 setState 整表重建=手机卡顿主因；builder 只渲染可视窗口，控制器经 putIfAbsent 与行生命周期解耦不丢
+              controller: _stockScroll,
+              itemCount: list.length,
+              itemBuilder: (ctx, i) {
+                final p = list[i];
                 final h = widget.hist[p.partNo] ?? [];
                 return ListTile(
                   dense: true,
@@ -1680,8 +1710,8 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                             size: 18, color: Color(0xFFB0BEC5)),
                       ]),
                 );
-              }),
-            ])),
+              },
+            )),
             const SizedBox(height: 6),
             // ㉖v146 底部合并一行：急料勾选与「存为产线模板」同行（各占一行浪费空间，用户实锤）；
             //   急料说明长括号删除（悬停 title 保留详情，行内已见🔥语义不再啰嗦）

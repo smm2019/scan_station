@@ -106,6 +106,19 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
       }
     }
     if (_singleScanOnly && _rows.isNotEmpty) { _toast("当前权限不支持多次扫码置码"); return; }
+    // ㉖v151 出库预检（服务端 /api/outbound/scanCheck 早已备好，此前只有网页一处调用、PDA 从未接，
+    // 导致"一楼没扫就直接直调出库"在车间实际路径上零提示、事后无痕）。
+    // 只采纳 block 三类硬信号：无采集流水且无账本=来源不明 / 已发料到领料单=重复出库 / 检验中。
+    // warn("不在任何活跃出库单明细内") 故意不拦——DT 单是提交后才同步到服务器，扫码时必然无单，
+    // 采纳它等于每扫一次多弹一个确认窗，比不拦更扰民。预检自身失败/超时不阻断：
+    // 服务器同步侧还有消账与幽灵出库检出兜底，不能因断网把直调彻底堵死。
+    try {
+      final ck = await AuthApi.outboundScanCheck(code);
+      if (ck["ok"] == true && ck["level"] == "block") {
+        _toast("${ck["reason"] ?? "该标签不允许出库"}｜${ck["advice"] ?? ""}");
+        return;
+      }
+    } catch (_) {}
     setState(() => _busy = true);
     try {
       final d = await _getData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {

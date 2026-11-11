@@ -1505,6 +1505,11 @@ class _MainPageState extends State<MainPage>
   Timer? _ledgerSyncTimer; //账本同步防抖：连扫攒一批再全量推
   String _autoCallTip = ""; // ㉒自动叫车结果状态条（常驻，防SnackBar被"采集保存成功"顶掉）
   String _autoCallCode = ""; // ㉖v69 提示条对应的货物标签号：队列刷新时校验任务是否还活着，没了就自动撤提示
+  // ㉖v153 叫车失败独立常驻红条：账本已记"在架"但叫车未成功=货实际还在站台（11-11 N26K100170/N26K110142：
+  // 入账后叫车请求未达服务器，账面全绿、货在台上压半小时无人知）。独立于 _autoCallTip——普通 tip 会被下一框
+  // 的叫车结果顶掉，丢单提示必须持续到「该框任务真的出现」或人工确认，否则又回到无声丢单。
+  String _callFailTip = ""; // 空=无失败；非空=红条常驻显示内容
+  String _callFailCode = ""; // 失败框标签号：队列刷新见该码已入队（人工重叫/手动提交成功）即自动撤销
   // ㉖ 采集页 AGV 队列：本账号活跃任务计数与明细（叫车结果/在途位置可见，与领料页同交互）
   List<Map> _myQueue = [];
   Map<String, int> _myQueueCnt = {};
@@ -2412,10 +2417,22 @@ class _MainPageState extends State<MainPage>
       return;
     }
     _isSaving = true;
+    // ㉖v154 竞态修复（11-11 13:31 胡明将 N26K110043 实锤）：本函数后面有 6 个 await（MES 查询要走网络、数秒），
+    // 期间页面 _loadWorkMode 的 SharedPreferences 异步回调会把 _workType 改成「上次记住的模式」——旧代码校验和
+    // 落库都直接读可变的 _workType/_selectedStation，于是出现「校验按地面模式放行、落库却写成 AGV 模式+空台站」的
+    // 混档记录：mv=AGV 但台站空 → 自动叫车前置条件不满足被整段静默跳过（不报错、账照入）→ 账称在架 NB02-C-05-3F、
+    // 实物还压在台面上，且 v152 巡检因台站缺失只降级留痕、v153 红条因未走到失败分支也抓不到。
+    // 修法：本单一经开始就用快照，校验/落库/叫车全链路只认快照，后续任何 setState 都改不动这一单。
+    final int wt0 = _workType; // 作业模式快照：0=AGV站台 1=地面 2=来料区
+    final String? st0 = _selectedStation; // 台站快照
+    final String? gl0 = _selectedGroundLoc; // 地面货位/区快照
+    final String? ct0 = _containerType; // 容器类型快照
+    final bool pallet0 = _palletMode; // 整托模式快照
+    final bool ret0 = _retMode; // ㉖v122 退库勾选快照
 // ==========【新增前置校验，从这里开始】==========
     try {
       //校验1：容器类型不能为空（㉖v120 来料区模式免选：容器默认筐，见保存段兜底）
-      if (_containerType == null && _workType != 2) {
+      if (ct0 == null && wt0 != 2) {
         if (mounted)
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text("请先选择容器类型！")));
@@ -2425,12 +2442,12 @@ class _MainPageState extends State<MainPage>
       }
       //校验2：货位/站台校验
       bool locationValid = false;
-      if (_workType == 0) {
-        locationValid = _selectedStation != null;
-      } else if (_workType == 2) {
+      if (wt0 == 0) {
+        locationValid = st0 != null;
+      } else if (wt0 == 2) {
         locationValid = true; // ㉖v120 来料区模式：格位自动分配，无需选人
       } else {
-        locationValid = _selectedGroundLoc != null;
+        locationValid = gl0 != null;
       }
       if (!locationValid) {
         if (mounted)
@@ -2453,20 +2470,20 @@ class _MainPageState extends State<MainPage>
               .showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
         return;
       }
-      if (await _globalDupCheck(code, recv: _workType == 2, ret: _retMode && _workType != 2)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）；来料模式带 recv；㉖v122 退库勾选带 ret（来料模式不适用）
+      if (await _globalDupCheck(code, recv: wt0 == 2, ret: ret0 && wt0 != 2)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）；来料模式带 recv；㉖v122 退库勾选带 ret（来料模式不适用）
       if (await _isCodeDuplicate(code)) return;
-      if (_workType == 0 && _selectedStation == null) {
+      if (wt0 == 0 && st0 == null) {
         if (mounted) {
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text("请先选择站台！")));
         }
         return;
       }
-      if (_workType == 0) {
+      if (wt0 == 0) {
         final existStationRecord = await _isar.scanRecords
             .filter()
             .batchIdEqualTo(_currentBatchId!)
-            .stationNoEqualTo(_selectedStation)
+            .stationNoEqualTo(st0)
             .isCancelEqualTo(false)
             .findAll();
         // 整托模式：本托内的记录不算占用，允许同托多码共用站台；非本托记录仍拦截
@@ -2477,7 +2494,7 @@ class _MainPageState extends State<MainPage>
               .goodsCodeEqualTo(rec.goodsCode)
               .findFirst();
           final recPallet = extra?.palletId ?? "";
-          if (!(_palletMode &&
+          if (!(pallet0 &&
               _currentPalletId != null &&
               recPallet == _currentPalletId &&
               recPallet.isNotEmpty)) {
@@ -2488,12 +2505,12 @@ class _MainPageState extends State<MainPage>
         if (occupiedByOtherPallet != null) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text("${_selectedStation}站台已登记货物，不可再次使用！")));
+                SnackBar(content: Text("${st0}站台已登记货物，不可再次使用！")));
           }
           return;
         }
       }
-      if (_workType == 1 && _selectedGroundLoc == null) {
+      if (wt0 == 1 && gl0 == null) {
         if (mounted) {
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text("请先选择地面货位！")));
@@ -2507,14 +2524,14 @@ class _MainPageState extends State<MainPage>
         finalRemark += _remarkInputCtrl.text.trim();
       }
       // =========整托模式：首码自动建托号=========
-      if (_palletMode && _currentPalletId == null) {
+      if (pallet0 && _currentPalletId == null) {
         final ts = DateTime.now();
         setState(() {
           _currentPalletId = "TP${ts.millisecondsSinceEpoch}";
         });
       }
       final String palletIdForSave =
-          _palletMode ? (_currentPalletId ?? "") : "";
+          pallet0 ? (_currentPalletId ?? "") : "";
 
 // ===================== MES接口请求【统一走 mesQueryLabel：失效自动静默重登并重试一次】=====================
       String? mesPartNo;
@@ -2579,7 +2596,7 @@ class _MainPageState extends State<MainPage>
         }
         //MES查询失败，字段保留null，不阻断保存流程
       }
-      if (_palletMode &&
+      if (pallet0 &&
           _currentPalletId != null &&
           (mesPartNo?.isNotEmpty ?? false)) {
         // 非首码时：若零件号在本托未出现过，轻提示防误扫（不拦截）
@@ -2606,7 +2623,7 @@ class _MainPageState extends State<MainPage>
       }
       // ㉖v120 来料区登记模式：向服务器申请自动格位（占用+预占权威，防撞格）；申请不到=未启用/区满/离线，中止保存
       String? recvSlotAuto;
-      if (_workType == 2) {
+      if (wt0 == 2) {
         _recvOffFlag = false;
         recvSlotAuto = await nb01AutoSlot(code); // ㉖v122 带标签号：服务器原子占位锁格，连扫多框必得不同格
         if (recvSlotAuto == null) {
@@ -2623,13 +2640,13 @@ class _MainPageState extends State<MainPage>
       }
       final rec = ScanRecord(
         scanTime: DateTime.now(),
-        workType: _workType,
-        stationNo: _workType == 0 ? _selectedStation : null,
-        groundLocation: _workType == 1 ? _selectedGroundLoc : (_workType == 2 ? recvSlotAuto : null), // ㉖v120 来料流水带自动格位（gl=NB04-*）
+        workType: wt0,
+        stationNo: wt0 == 0 ? st0 : null,
+        groundLocation: wt0 == 1 ? gl0 : (wt0 == 2 ? recvSlotAuto : null), // ㉖v120 来料流水带自动格位（gl=NB04-*）
         goodsCode: code,
         remark: finalRemark,
         batchId: _currentBatchId!,
-        containerType: _containerType,
+        containerType: ct0,
         //MES参数
         mesPartNo: mesPartNo,
         mesQty: mesQty,
@@ -2648,13 +2665,13 @@ class _MainPageState extends State<MainPage>
           operator: Auth.user?.name ?? Auth.user?.username ?? "",
         );
         await _isar.recordExtras.put(extraRec);
-        if (_workType == 0 && _selectedStation != null) {
+        if (wt0 == 0 && st0 != null) {
           BatchInfo? batch = await _getCurrentBatch();
           if (batch != null) {
             List<String> mutableList = batch.usedStation.toList();
 
-            if (!mutableList.contains(_selectedStation)) {
-              mutableList.add(_selectedStation!);
+            if (!mutableList.contains(st0)) {
+              mutableList.add(st0!);
               batch.usedStation = mutableList;
               await _isar.batchInfos.put(batch);
             }
@@ -2665,24 +2682,24 @@ class _MainPageState extends State<MainPage>
       await _scanSuccessAction(
           mesPartNo: rec.mesPartNo ?? "", qty: rec.mesQty ?? 0);
       _goodsInputCtrl.clear();
-      final lastCtype = _containerType; // ㉖⑬ 清空前捕获容器，供手动「提交任务」
-      // ㉖v85c 清空前捕获地面选区：原自动落格分支读 _selectedGroundLoc，但它在下方 setState 已被置空，
+      final lastCtype = ct0; // ㉖⑬ 清空前捕获容器，供手动「提交任务」
+      // ㉖v85c 清空前捕获地面选区：原自动落格分支读 gl0，但它在下方 setState 已被置空，
       // 条件恒为假=死代码（实测 10/23 宋明明选 H9 后流水只落粗码、账本无行）；与站台 autoCallSt 同款先捕获再传参
-      final lastGroundZone = _selectedGroundLoc ?? "";
+      final lastGroundZone = gl0 ?? "";
       setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
         _retMode = false; // ㉖v122 退库勾选单次生效：本筐已按退料入账，自动关闭防下一筐普通新料被误豁免
         _remarkInputCtrl.clear();
-        if (!_palletMode) {
+        if (!pallet0) {
           _containerType = null; // 新增：保存成功，容器类型取消选中
         }
-        if (_workType == 1 && !_palletMode) {
+        if (wt0 == 1 && !pallet0) {
           _selectedGroundLoc = null; // ✅人工模式，录入成功清空地面货位
         }
       });
       final autoCallSt =
-          _workType == 0 ? (_selectedStation ?? "") : ""; // ⑳清空前捕获站台，供自动入库叫车
-      if (_workType == 0 && !_palletMode) {
+          wt0 == 0 ? (st0 ?? "") : ""; // ⑳清空前捕获站台，供自动入库叫车
+      if (wt0 == 0 && !pallet0) {
         setState(() {
           _selectedStation = null;
           _lastScanStation = autoCallSt.isEmpty ? null : autoCallSt; // ㉖ 手动提交回退
@@ -2690,6 +2707,7 @@ class _MainPageState extends State<MainPage>
         });
       }
       await _ledgerRegisterOnSave(code,
+          wtSnap: wt0, palletSnap: pallet0, ctSnap: ct0,
           autoCallStation: autoCallSt,
           groundZone: lastGroundZone,
           recvSlot: recvSlotAuto); //顺手登记货位账本（选填，不影响采集主流程）；㉖v120 来料模式带自动格位
@@ -2723,7 +2741,8 @@ class _MainPageState extends State<MainPage>
   ///采集页顺手登记：保存成功时若填了「货位账本编码」，把本标签（整托含兄弟码）写入账本，并预约全量同步电脑。
   ///留空则不写账本，与改动前行为完全一致；编码格式不符或货位已被他人占用时只提示不写入。
   Future<void> _ledgerRegisterOnSave(String code,
-      {String autoCallStation = "", String groundZone = "", String? recvSlot}) async {
+      {required int wtSnap, required bool palletSnap, String? ctSnap, // ㉖v154 快照入参(必填，漏传即编译报错)：本函数在保存清界面之后才跑，读实时值会拿到被改写/清空的模式
+      String autoCallStation = "", String groundZone = "", String? recvSlot}) async {
     try {
       if (recvSlot != null && recvSlot.isNotEmpty) {
         // ㉖v120 来料区登记模式：格位已由服务器 recv 权威分配，直接入账，不走手填/AUTO/picker 分支
@@ -2736,7 +2755,7 @@ class _MainPageState extends State<MainPage>
       }
       var loc = _ledgerLocCtrl.text.trim().toUpperCase();
       if (loc == 'AUTO') return; //AUTO 分配失败的情形，不写账本
-      if (loc.isEmpty && _workType == 1 && groundZone.isNotEmpty) {
+      if (loc.isEmpty && wtSnap == 1 && groundZone.isNotEmpty) {
         // 地面模式未填编码：在人选的区内自动分配第一个空格位
         // ㉖v85c 读调用方清空前捕获的 groundZone（原读 _selectedGroundLoc 恒为空=死代码）
         final auto = await this.nb03AutoSlot(groundZone);
@@ -2755,7 +2774,7 @@ class _MainPageState extends State<MainPage>
         // ㉖v94h AGV模式货位留空=等同 AUTO 自动分配：旧版把自动分配绑架在"自动叫车开关"上——
         // 开关关着（现场常态：手动提交模式）时留空保存→不分配不写账本→"待入位"→提交任务被拦
         //（10/24 17:20 复盘：用户以为默认自动分配，实际只有自动叫车开着才分配；输 AUTO 或选位则正常）
-        if (_workType == 0) {
+        if (wtSnap == 0) {
           final recA = await _isar.scanRecords
               .filter()
               .goodsCodeEqualTo(code.toUpperCase())
@@ -2788,7 +2807,7 @@ class _MainPageState extends State<MainPage>
       }
       // ㉖v69c 模式与货位一致性闸：AGV站台模式目的地只能是 NB02 高架（AGV跑不到地面区），
       // 残留/误填的 NB03 地面码在此拦下，从源头杜绝"库位不在WMAS主档"叫车失败 + 账本污染
-      if (_workType == 0 && loc.startsWith('NB03-')) {
+      if (wtSnap == 0 && loc.startsWith('NB03-')) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text(
@@ -2799,12 +2818,12 @@ class _MainPageState extends State<MainPage>
         }
         return;
       }
-      final ctype = _containerType ??
+      final ctype = ctSnap ??
           _lastScanContainer ??
-          ""; // ㉖⑳ 修自动叫车不触发：本函数在保存清空 _containerType 之后才被调用，须回退扫码时捕获的容器（与手动「提交任务」同口径）
+          ""; // ㉖⑳ 修自动叫车不触发：本函数在保存清界面之后才被调用，须用扫码时快照的容器（与手动「提交任务」同口径）
       final oper = Auth.user?.name ?? Auth.user?.username ?? "采集页";
       final codes = <String>{code.toUpperCase()};
-      if (_palletMode &&
+      if (palletSnap &&
           _currentPalletId != null &&
           _currentPalletId!.isNotEmpty) {
         final mates = await _isar.recordExtras
@@ -2861,7 +2880,7 @@ class _MainPageState extends State<MainPage>
             ..assignedAt = now);
         }
       });
-      if (_workType == 1) {
+      if (wtSnap == 1) {
         // 采集流水地面位置升级为完整格位编码（原来只有 B13 区）；整托兄弟码一并更新
         for (final cG in codes) {
           final recsG =
@@ -2876,17 +2895,17 @@ class _MainPageState extends State<MainPage>
         }
       }
       await ledgerUnmarkDeleted(codes); //重新登记→撤销本地墓碑，别台PDA拉取后复活本位
-      if (!_palletMode) _ledgerLocCtrl.clear(); //登记成功后才清；整托多码保留复用同位
+      if (!palletSnap) _ledgerLocCtrl.clear(); //登记成功后才清；整托多码保留复用同位
       _scheduleLedgerSync();
       // ㉖v80 扫码链路降噪：登记成功改内联提示条（原弹条盖住扫码视线）
       if (mounted) setState(() => _autoCallTip = "✅ 已入账 $loc（${codes.length} 码）");
       // ⑳扫码自动入库：账本登记成功后触发；校验链与手动提交一致，失败不影响账本
-      if (_workType == 0 &&
+      if (wtSnap == 0 &&
           autoCallStation.isNotEmpty &&
           loc.startsWith('NB02-') &&
           ctype.isNotEmpty &&
           await WmasConfig.autoCallEnabled()) {
-        if (_palletMode) {
+        if (palletSnap) {
           if (mounted) setState(() => _autoCallTip = "ℹ️ 整托模式：扫完点「结束本托」→「结托并叫车」一步到位");
           // ㉖v80 降噪：整托提示已有常驻内联条，不再弹条；㉖v85d 引导改为结托叫车一体
         } else {

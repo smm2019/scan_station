@@ -98,6 +98,13 @@ a{color:var(--pri)}
 .dlg.wide{width:min(1020px,94vw)} /* ㉖ 表格类弹窗宽屏适配：电脑大屏放得开，不再挤成竖排+横向滚动条 */
 .dlg h3{margin-bottom:10px}.dlg label{display:block;font-size:12px;color:var(--sub);margin:8px 0 3px}
 .dlg input,.dlg select{width:100%}
+/* ㉖v148 建单弹窗常领横滑条：手机单指滑动、chip 不被 flex 压缩（-webkit-overflow-scrolling 惯性滚） */
+.nfreq{display:flex;gap:5px;overflow-x:auto;margin:2px 0 6px;align-items:center;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+.nfreq::-webkit-scrollbar{height:3px}
+.nfLbl{flex:0 0 auto;font-size:11px;color:var(--sub);padding-left:2px}
+.nfchip{flex:0 0 auto;padding:6px 11px;font-size:11.5px;border-radius:15px;border:1px solid var(--line);background:var(--bg);color:var(--ink);white-space:nowrap;cursor:pointer;min-height:32px}
+.nfchip:active{background:var(--pri);color:#fff}
+.nfchip.risk{border-color:var(--warn);color:var(--warn);font-weight:600}
 .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#26323e;color:#fff;padding:9px 18px;border-radius:8px;z-index:20;max-width:90vw}
 @media(max-width:640px){.grid{grid-template-columns:repeat(2,1fr)}main{padding:8px 8px 66px}header b{font-size:14px}
  header{flex-wrap:wrap;gap:6px;padding:8px 10px}header button{padding:4px 8px;font-size:12px}#who{display:none} /* ㉖ 驾驶舱窄屏：用户名隐藏防挤压换行 */
@@ -163,7 +170,7 @@ function nrowPn(inp){const row=inp.closest('.nrow'),pop=row.querySelector('.npop
  if(v.length>=4&&!((window._dictCache)||[]).some(x=>x.pn===v)){inp.style.borderColor='var(--warn)';inp.title='字典里没有此零件号——提交后仓管需人工核对名称';}else inp.style.borderColor='';}
 function nrowPick(el,pn){const row=el.closest('.nrow');row.querySelector('.npn').value=pn;const d=(window._dictCache||[]).find(x=>x.pn===pn),nm=row.querySelector('.nnm');if(d&&d.nm){nm.value=d.nm;delete nm.dataset.touched}row.querySelector('.npop').style.display='none';const q=row.querySelector('.nqty');nrowHint(q);q.focus()}
 function nrowMove(btn,dir){const r=btn.closest('.nrow'),sib=dir<0?r.previousElementSibling:r.nextElementSibling;if(!sib||!sib.classList.contains('nrow'))return;r.parentNode.insertBefore(dir<0?r:sib,dir<0?sib:r)}
-async function newReqDlg(){ // ㉖v98c 待签收预检：调服务器统一判定端点（与 POST 兜底闸门同口径；急料豁免/宽限期在服务器算）
+async function newReqDlg(prefill){ // ㉖v148 prefill=再来一单（零件号→件数，打开后换算框数预填）；㉖v98c 待签收预检：调服务器统一判定端点（与 POST 兜底闸门同口径；急料豁免/宽限期在服务器算）
  if(U.role=='material'){let block=[];try{const j=await api('/api/requisitions/gate');block=j.block||[]}catch(_){} // 查询失败不拦（POST闸门兜底）
   if(block.length){const names=block.slice(0,3).map(r=>r.no+(block.length>3&&r===block[2]?'…':'')).join('、');
    if(confirm('您有 '+block.length+' 张领料单货到待签收未处理（'+names+'），签收后才能下新单。\n\n点「确定」跳去签收，「取消」关闭新建。')){openReqById(block[0].id)}
@@ -171,8 +178,18 @@ async function newReqDlg(){ // ㉖v98c 待签收预检：调服务器统一判�
  let whs=[];try{whs=(await api('/api/requisitions/warehouse-users')).users||[]}catch(_){}
  dictLoad().then(()=>{try{document.querySelectorAll('.nrow .npn').forEach(nrowPn)}catch(_){}}); // ㉖v95b 预载字典：输入即联想
  nTplPreload(); // ㉖v145 预取产线模板列表填充载入下拉
+ nFreqPreload(); // ㉖v148 预取本人常领清单填充横滑条（与 PDA 同源同端口）
+ if(prefill&&Object.keys(prefill).length){setTimeout(()=>{ // ㉖v148 再来一单：原单件数换算回框数预填（无均值=原值当件数，与提交兜底同式）
+   const box=document.getElementById('nitems');if(!box)return;box.innerHTML='';let miss=0;
+   Object.entries(prefill).forEach(([pn,pieces])=>{const d=(window._dictCache||[]).find(x=>x.pn===pn),per=d&&Number(d.perBoxQty)||0;
+    if(!d)miss++;box.insertAdjacentHTML('beforeend',window._nrowTpl());const r=box.lastElementChild;
+    r.querySelector('.npn').value=pn;r.querySelector('.nnm').value=String((d&&d.nm)||'');
+    r.querySelector('.nqty').value=per>0?Math.max(1,Math.ceil((Number(pieces)||0)/per)):Math.max(1,Number(pieces)||1);
+    try{nrowHint(r.querySelector('.nqty'))}catch(_){}});
+   if(!box.querySelectorAll('.nrow').length)box.innerHTML=_nrowTpl()+_nrowTpl();
+   if(miss)T('原单 '+miss+' 个零件字典已无档案，名称留空请核对',1);},0);}
  const q=id=>String.fromCharCode(39)+id+String.fromCharCode(39);
- dlg('<h3>＋ 新建领料单</h3><div style="font-size:11.5px;color:var(--sub);margin:-2px 0 8px">数量填<b style="color:var(--ink)">框数</b>（1框=发料最小单位），行下方自动显示"≈N件"换算；与 PDA 建单同口径。</div><div id="nitems">'+_nrowTpl()+_nrowTpl()+'</div><button class="pill q" style="margin:2px 0 8px" onclick="document.getElementById('+q('nitems')+').insertAdjacentHTML('+q('beforeend')+',window._nrowTpl())">＋ 加一行</button><span style="font-size:11.5px;color:var(--sub);margin-left:10px">📁</span><select id="ntpl_sel" style="max-width:170px;padding:4px 6px"><option value="">载入模板…</option></select><button class="pill q" style="padding:4px 8px" onclick="nTplLoad()">载入</button><button class="pill q" style="padding:4px 8px" onclick="nTplSave()">存为模板</button><label style="font-size:11px;margin-left:2px" title="共享后同产线同事可在两端载入此模板"><input type="checkbox" id="ntpl_sh">共享</label><label>备注</label><input id="nrm" placeholder="用途/线边工位等"><div class="row" style="gap:10px;margin:8px 0;flex-wrap:wrap"><label style="flex:1;min-width:160px">指定仓管员<select id="nasg"><option value="">不指定（全体仓管可接）</option>'+whs.map(w=>'<option value='+q(w.id)+'>'+w.name+'</option>').join('')+'</select></label><label style="width:150px">期望到货<input id="nnd" type="date"></label><label style="width:96px;margin-top:22px"><input id="nrush" type="checkbox"> 🔥整单急料</label><span style="font-size:11px;color:#888;align-self:center">行内🔥=单行加急；↑↓调序，靠前先出库</span></div><div class="row" style="justify-content:flex-end;margin-top:6px"><button class="pill q" onclick="document.getElementById('+q('mask')+').classList.add('+q('hide')+')">取消</button><button class="pill g" id="nreqbtn" onclick="newReqGo(this)">提交领料单</button></div>',1)}
+ dlg('<h3>＋ 新建领料单</h3><div style="font-size:11.5px;color:var(--sub);margin:-2px 0 8px">数量填<b style="color:var(--ink)">框数</b>（1框=发料最小单位），行下方自动显示"≈N件"换算；与 PDA 建单同口径。</div><div id="nfreq"></div><div id="nitems">'+_nrowTpl()+_nrowTpl()+'</div><button class="pill q" style="margin:2px 0 8px" onclick="document.getElementById('+q('nitems')+').insertAdjacentHTML('+q('beforeend')+',window._nrowTpl())">＋ 加一行</button><span style="font-size:11.5px;color:var(--sub);margin-left:10px">📁</span><select id="ntpl_sel" style="max-width:170px;padding:4px 6px"><option value="">载入模板…</option></select><button class="pill q" style="padding:4px 8px" onclick="nTplLoad()">载入</button><button class="pill q" style="padding:4px 8px" onclick="nTplSave()">存为模板</button><label style="font-size:11px;margin-left:2px" title="共享后同产线同事可在两端载入此模板"><input type="checkbox" id="ntpl_sh">共享</label><label>备注</label><input id="nrm" placeholder="用途/线边工位等"><div class="row" style="gap:10px;margin:8px 0;flex-wrap:wrap"><label style="flex:1;min-width:160px">指定仓管员<select id="nasg"><option value="">不指定（全体仓管可接）</option>'+whs.map(w=>'<option value='+q(w.id)+'>'+w.name+'</option>').join('')+'</select></label><label style="width:150px">期望到货<input id="nnd" type="date"></label><label style="width:96px;margin-top:22px"><input id="nrush" type="checkbox"> 🔥整单急料</label><span style="font-size:11px;color:#888;align-self:center">行内🔥=单行加急；↑↓调序，靠前先出库</span></div><div class="row" style="justify-content:flex-end;margin-top:6px"><button class="pill q" onclick="document.getElementById('+q('mask')+').classList.add('+q('hide')+')">取消</button><button class="pill g" id="nreqbtn" onclick="newReqGo(this)">提交领料单</button></div>',1)}
 // ===== ㉖v145 建单弹窗产线模板：载入（items.qty=框数口径，与 PDA v71b 一致）/ 存为（收集当前行）/ 预取列表 =====
 async function nTplPreload(){try{const j=await api('/api/req-templates');window._nTpls=(j&&j.ok)?(j.list||[]):[];}catch(_){window._nTpls=[]}
  const s=document.getElementById('ntpl_sel');if(!s)return;
@@ -194,6 +211,25 @@ async function nTplSave(){const items=[];
  const shared=document.getElementById('ntpl_sh')?document.getElementById('ntpl_sh').checked:false;
  try{const j=await api('/api/req-templates',{method:'POST',body:{name:name.trim(),items,shared}});
   if(j&&j.ok){T(`✅ 模板「${name.trim()}」已保存（${items.length}行${shared?'·已共享':''}）`,1);nTplPreload();}else T('❌ '+((j&&j.msg)||'保存失败'));}catch(_){T('保存失败')}}
+// ===== ㉖v148 常领一键加（本人近60天高频，与 PDA 同源 /api/requisitions/frequent）+ 再来一单（原单零件行预填） =====
+async function nFreqPreload(){try{await dictLoad()}catch(_){}let list=[];try{const j=await api('/api/requisitions/frequent');list=(j&&j.list)||[]}catch(_){}
+ window._nFreq=list;const el=document.getElementById('nfreq');if(!el||!list.length)return; // 无常领历史=整条不占位
+ el.innerHTML='<span class="nfLbl">⚡常领</span>'+list.slice(0,20).map(f=>{const d=(window._dictCache||[]).find(x=>x.pn===f.pn),per=d&&Number(d.perBoxQty)||0;
+  const boxes=per>0?Math.ceil((Number(f.lastQty)||0)/per):(Number(f.lastQty)||0); // 上次件数→框数（ceil，与 PDA _boxesFromPieces 同式）
+  const risk=f.daysLeft!=null&&f.daysLeft<=3; // 断料≤3天红标（端点已算 daysLeft）
+  return `<button class="pill nfchip${risk?' risk':''}" title="${_esc(f.nm||'')} · 60天领${f.n}次 · 上次${f.lastQty}件${f.inBoxes?' · 在架'+f.inBoxes+'框':''}${risk?' · ⚠仅剩'+Math.round(f.daysLeft)+'天':''}" onclick="nFreqAdd('${f.pn}')">${f.pn.length>6?f.pn.slice(-6):f.pn}×${boxes}框${risk?'⚠':''}</button>`}).join('');}
+function nFreqAdd(pn){const box=document.getElementById('nitems');if(!box)return;
+ let r=[...box.querySelectorAll('.nrow')].find(x=>!(x.querySelector('.npn').value||'').trim()); // 优先填空行，无空行追加
+ if(!r){box.insertAdjacentHTML('beforeend',window._nrowTpl());r=box.lastElementChild;}
+ const f=(window._nFreq||[]).find(x=>x.pn===pn)||{},d=(window._dictCache||[]).find(x=>x.pn===pn),per=d&&Number(d.perBoxQty)||0;
+ r.querySelector('.npn').value=pn;r.querySelector('.nnm').value=String(f.nm||(d&&d.nm)||'');
+ r.querySelector('.nqty').value=per>0?Math.ceil((Number(f.lastQty)||0)/per):Math.max(1,Number(f.lastQty)||1);
+ try{nrowHint(r.querySelector('.nqty'))}catch(_){}
+ try{r.querySelector('.nqty').focus()}catch(_){}}
+function reqAgain(id){const r=(window._reqs||[]).find(x=>x.id==id)||{};if(!r.id){T('数据已刷新，请重新点开');return}
+ const pf={};(r.items||[]).forEach(i=>{if(i.partNo)pf[String(i.partNo).toUpperCase()]=String(Number(i.qty)||0)});
+ if(!Object.keys(pf).length){T('原单无有效零件行');return}
+ newReqDlg(pf);} // 原单 qty=件数，弹窗内换算回框数预填
 async function newReqGo(btn){ // ㉖v128 框数→件数换算（对齐 PDA requisition_page:687：有每框均值则 框×均值，无均值兜底原值当件数）
  const items=[...document.querySelectorAll('.nrow')].map(r=>{const pn=r.querySelector('.npn').value.trim(),q=Number(r.querySelector('.nqty').value)||0,d=(window._dictCache||[]).find(x=>x.pn===pn.toUpperCase()),per=Number(d&&d.perBoxQty)||0;
   return {partNo:pn,itemName:r.querySelector('.nnm').value.trim(),qty:per>0?Math.round(q*per):q,boxes:q,perBox:per,avail:Number(d&&d.boxes)||0,rush:r.querySelector('.nrs').checked}}).filter(i=>i.partNo&&i.qty>0);
@@ -311,22 +347,28 @@ async function pgDash(silent){if(!silent)$('#main').innerHTML='<div class="card 
   else if(q.ok&&q.msg)rc=`<div class="card" style="margin-top:10px;font-size:12px;color:var(--sub)">🧾 账本自对账：${q.msg}</div>`}catch(_){}
  let pa='';if(U.role=='admin'){try{const q=await api('/api/admin/pageauth');pa=`<div class="card" style="margin-top:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap"><b style="font-size:13px">🔐 看板页门禁（/board 与打印页）</b><span class="tag ${q.on?'t-d':'t-x'}">${q.on?'开 · 需登录':'关 · 公开'}</span><span style="font-size:12px;color:var(--sub)">${q.on?'未登录设备打开看板/打印页会跳回登录页':'当前内网任何设备可直开看板页；旧版PDA门户内嵌领料页，请先出新版APK再开启'}</span><button class="pill ${q.on?'r':'g'}" onclick="togglePA(${!q.on})">${q.on?'关闭门禁':'开启门禁'}</button></div>`}catch(_){}}
  const cell=(n,t,c,fn)=>`<div class="card kpi" ${fn?`style="cursor:pointer" onclick="${fn}"`:''}><div class="n" ${/^\d+$/.test(String(n))?`data-r="${n}"`:''} style="color:${c||'var(--ink)'}">${n}</div><div class="t">${t}</div></div>`;
- const KARR=[['今日入库(标签)',k.inBoxes,'',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日入库件数',k.inQty,'var(--ok)',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日出库拣下',k.outToday,'var(--warn)',"go('flow');TF={k:'out',d:todayStr()};pgFlow()"],['今日AGV搬运',k.agvToday,'var(--pri)',"TMRPT={from:todayStr(),to:todayStr()};go('rpt')"],['队列中',k.agvQueue,'var(--pri)',"go('agv/q')"],['在库框数',k.stockBoxes,'',"go('ledger')"],['占用货位',k.stockLocs,'',"go('ledger')"],['待接单',k.pending,k.pending?'var(--warn)':'var(--ok)',"reqJump('pending')"],['备料中',k.accepted,'',"reqJump('accepted')"],['待签收',k.ready,'',"reqJump('ready')"],['站台在用',k.stnBusy+'/'+k.stnTotal,'var(--pri)',"go('agv/board')"],['检验待处理',k.inspWait||0,k.inspWait?'var(--warn)':'',"go('insp')"]];
- const _ord=(PF.kpi&&PF.kpi.length)?PF.kpi.filter((n)=>KARR.some((x)=>x[0]===n)):[];
- const kshow=_ord.length?_ord.map((n)=>KARR.find((x)=>x[0]===n)):KARR;
+ const KARR=[['今日入库(标签)',k.inBoxes,'',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日入库件数',k.inQty,'var(--ok)',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['一楼来料登记(标签)',k.recvToday||0,'',"go('flow');TF={k:'in',d:todayStr(),q:'NB04'};pgFlow()"],['待入库(来料区)',k.pendRecv||0,(k.pendRecv||0)?'var(--warn)':'var(--ok)',"TM.lq='NB04';go('ledger')"],['今日出库拣下',k.outToday,'var(--warn)',"go('flow');TF={k:'out',d:todayStr()};pgFlow()"],['今日AGV搬运',k.agvToday,'var(--pri)',"TMRPT={from:todayStr(),to:todayStr()};go('rpt')"],['队列中',k.agvQueue,'var(--pri)',"go('agv/q')"],['在库框数',k.stockBoxes,'',"go('ledger')"],['占用货位',k.stockLocs,'',"go('ledger')"],['待接单',k.pending,k.pending?'var(--warn)':'var(--ok)',"reqJump('pending')"],['备料中',k.accepted,'',"reqJump('accepted')"],['待签收',k.ready,'',"reqJump('ready')"],['站台在用',k.stnBusy+'/'+k.stnTotal,'var(--pri)',"go('agv/board')"],['检验待处理',k.inspWait||0,k.inspWait?'var(--warn)':'',"go('insp')"]];
+ // ㉖v151 KPI 显隐改「隐藏清单」制：PF.kpi 只决定顺序，PF.kpiH 才是隐藏项；快照未覆盖的新卡片自动补到末尾。
+ // 旧版 PF.kpi 是白名单——管理员 11-06 存快照时「一楼来料登记/待入库(来料区)」尚未上线，此后永久看不到（11-11 现场反馈）
+ const _KALL=KARR.map((x)=>x[0]); window._KALL=_KALL; // 偏好弹窗候选清单与此同源，杜绝"下拉里没有→新卡片永远加不回"
+ const _hid=new Set((Array.isArray(PF.kpiH)?PF.kpiH:[]).filter((n)=>_KALL.includes(n)));
+ let kshow=KARR.filter((x)=>!_hid.has(x[0]));
+ { const _ord=(Array.isArray(PF.kpi)?PF.kpi:[]).filter((n)=>_KALL.includes(n)&&!_hid.has(n));
+   if(_ord.length){const _m=new Map(KARR.map((x)=>[x[0],x]));kshow=_ord.map((n)=>_m.get(n)).filter(Boolean).concat(kshow.filter((x)=>!_ord.includes(x[0])));} }
  $('#main').innerHTML=`<div class="row"><span style="color:var(--sub)">数据时刻 ${new Date(j.at).toLocaleTimeString('zh-CN')} · 30 秒自动刷新 · 点卡片可下钻 · <b style="color:var(--pri);cursor:pointer" onclick="kkOpen()">⌘K 快捷搜索</b></span><span class="sp"></span><button class="pill g" style="padding:3px 10px;font-size:12px" onclick="shiftDlg()">📋 交接日报</button></div>
 <div id="lamp">${lampHtml()}</div>
 ${ex}${rc}${pa}
 <div class="grid">${kshow.map((x)=>cell(x[1],x[0],x[2],x[3])).join('')}</div>
 <div class="card" style="margin-top:12px;position:relative">${trendChart(tr)}</div>`}
 // ---- ㉖第3档 #6 KPI 自选排序：有序数组 _kord，上/下移、移除、加入 ----
-let _kord=[];
+// ㉖v151 移除=加入 _khide（显式隐藏），加入=从 _khide 撤回；下拉候选=全部已知卡片未在当前列表的（含被隐藏的，可加回）
+let _kord=[],_khide=new Set();
 function renderKpiOrd(){const el=document.getElementById('kord');if(!el)return;const K=window._K||[];
- el.innerHTML=_kord.length?_kord.map((n,i)=>`<div class="row" style="margin:2px 0;padding:2px 0;gap:6px;align-items:center;border-bottom:1px solid var(--line)"><span style="flex:1;font-size:12.5px">${i+1}. ${n}</span><button class="pill q" style="padding:1px 8px;font-size:12px" ${i===0?'disabled':''} onclick="kpiMove(${i},-1)">↑</button><button class="pill q" style="padding:1px 8px;font-size:12px" ${i===_kord.length-1?'disabled':''} onclick="kpiMove(${i},1)">↓</button><button class="pill r" style="padding:1px 8px;font-size:12px" onclick="kpiRm(${i})">✕</button></div>`).join(''):'<div style="color:var(--sub);font-size:12px;padding:6px">（未选=全部显示，默认顺序）</div>';
+ el.innerHTML=_kord.length?_kord.map((n,i)=>`<div class="row" style="margin:2px 0;padding:2px 0;gap:6px;align-items:center;border-bottom:1px solid var(--line)"><span style="flex:1;font-size:12.5px">${i+1}. ${n}</span><button class="pill q" style="padding:1px 8px;font-size:12px" ${i===0?'disabled':''} onclick="kpiMove(${i},-1)">↑</button><button class="pill q" style="padding:1px 8px;font-size:12px" ${i===_kord.length-1?'disabled':''} onclick="kpiMove(${i},1)">↓</button><button class="pill r" style="padding:1px 8px;font-size:12px" onclick="kpiRm(${i})">✕</button></div>`).join(''):'<div style="color:var(--sub);font-size:12px;padding:6px">（列表为空=全部显示，默认顺序）</div>';
  const add=document.getElementById('kadd');if(add){const left=K.filter((n)=>!_kord.includes(n));add.innerHTML=left.length?left.map((n)=>`<option>${n}</option>`).join(''):'<option value="">（已全部加入）</option>';add.disabled=!left.length;}}
 function kpiMove(i,d){const j=i+d;if(j<0||j>=_kord.length)return;const t=_kord[i];_kord[i]=_kord[j];_kord[j]=t;renderKpiOrd()}
-function kpiRm(i){_kord.splice(i,1);renderKpiOrd()}
-function kpiAdd(){const s=document.getElementById('kadd');if(!s)return;const v=s.value;if(v&&!_kord.includes(v)){_kord.push(v);renderKpiOrd()}}
+function kpiRm(i){const n=_kord.splice(i,1)[0];if(n)_khide.add(n);renderKpiOrd()}
+function kpiAdd(){const s=document.getElementById('kadd');if(!s)return;const v=s.value;if(v&&!_kord.includes(v)){_khide.delete(v);_kord.push(v);renderKpiOrd()}}
 // ---- ㉖v56 修改密码（网页端入口补齐：服务端 /api/change_password 早已存在，网页一直缺表单） ----
 async function chgPw(btn){const o=$('#cp_o').value,n1=$('#cp_n').value,n2=$('#cp_n2').value;
  if(n1.length<6){T('新密码至少6位');return}if(n1!==n2){T('两次输入的新密码不一致');return}
@@ -335,9 +377,12 @@ async function chgPw(btn){const o=$('#cp_o').value,n1=$('#cp_n').value,n2=$('#cp
 // ---- ㉕F5 个人偏好弹窗（落地页/通知订阅/概览卡/模板） ----
 async function prefDlg(){try{const q=await api('/api/prefs');window._tpls=q.templates||[];if(q.prefs)PF=Object.assign(PF,q.prefs);}catch(_){}
  const N=[['req_new','新领料单'],['req_urge','催单'],['req_arrive','到站催扫'],['req_flow','流转动态(接单/备齐/签收等)'],['watch_in','预约到料'],['stock_out','断料预警']];
- const K=['今日入库(标签)','今日入库件数','今日出库拣下','今日AGV搬运','队列中','在库框数','占用货位','待接单','备料中','待签收','站台在用'];
- const pf=PF.notes||{};const kk=PF.kpi&&PF.kpi.length?PF.kpi:K;
- window._K=K;_kord=kk.filter((n)=>K.includes(n));
+ // ㉖v151 候选清单与概览渲染卡同源（旧版此处硬编码13项，漏「检验待处理」→ 该卡被✕移除后再也加不回）
+ const K=(window._KALL&&window._KALL.length)?window._KALL:['今日入库(标签)','今日入库件数','一楼来料登记(标签)','待入库(来料区)','今日出库拣下','今日AGV搬运','队列中','在库框数','占用货位','待接单','备料中','待签收','站台在用','检验待处理'];
+ const pf=PF.notes||{};
+ const _kn=(a)=>(Array.isArray(a)?a:[]).filter((n)=>K.includes(n));
+ window._K=K;_khide=new Set(_kn(PF.kpiH));
+ { const _ord=_kn(PF.kpi).filter((n)=>!_khide.has(n)); _kord=_ord.concat(K.filter((n)=>!_khide.has(n)&&!_ord.includes(n))); } // 列表=当前显示卡（含快照后新增的），✕=隐藏、＋加入=撤回隐藏
  dlg(`<h3>⚙ 个人偏好（存在服务器，换设备登录同样生效）</h3>
 <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:2px 22px;align-items:start"><div>
 <label>登录后默认落地页</label><select id="pd_l"><option value="">📊 概览</option>${TABS.filter(([k])=>(k!='admin'||U.role=='admin')&&(k!='inv'||U.role!='material')).map(([k,n])=>`<option value="${k}" ${PF.landing==k?'selected':''}>${n}</option>`).join('')}</select>
@@ -349,11 +394,11 @@ async function prefDlg(){try{const q=await api('/api/prefs');window._tpls=q.temp
 </div></div>
 <div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill" onclick="prefSave(this)">保存</button></div>`
 ,1);renderKpiOrd();prefRepaintUi()}
-async function prefSave(btn){btn.disabled=true;const notes={},kpi=[];document.querySelectorAll('#dlg input[data-n]').forEach((c)=>notes[c.dataset.n]=c.checked);_kord.forEach((n)=>{if((window._K||[]).includes(n))kpi.push(n)});
- UiTune.persist();UiTune.pushT0();UiTune.push();try{const j=await api('/api/prefs',{method:'POST',body:{landing:$('#pd_l').value,kpi,notes}});if(j.ok){PF=Object.assign(PF,j.prefs||{});T('✅ 偏好已保存（含界面个性化）',1);$('#mask').classList.add('hide');UiTune.renderNav();if(TAB==='dash')pgDash()}else T('❌ '+(j.msg||'失败'))}catch(_){T('保存失败')}btn.disabled=false}
+async function prefSave(btn){btn.disabled=true;const notes={},kpi=[];document.querySelectorAll('#dlg input[data-n]').forEach((c)=>notes[c.dataset.n]=c.checked);_kord.forEach((n)=>{if((window._K||[]).includes(n))kpi.push(n)});const kpiH=[..._khide].filter((n)=>(window._K||[]).includes(n)); // ㉖v151 隐藏清单随行提交：删掉的是"隐藏了谁"，不再是"保留了谁"
+ UiTune.persist();UiTune.pushT0();UiTune.push();try{const j=await api('/api/prefs',{method:'POST',body:{landing:$('#pd_l').value,kpi,kpiH,notes}});if(j.ok){PF=Object.assign(PF,j.prefs||{});T('✅ 偏好已保存（含界面个性化）',1);$('#mask').classList.add('hide');UiTune.renderNav();if(TAB==='dash')pgDash()}else T('❌ '+(j.msg||'失败'))}catch(_){T('保存失败')}btn.disabled=false}
 async function tplApply(){try{const j=await api('/api/prefs/apply',{method:'POST',body:{name:$('#pd_tpl').value}});if(j.ok){PF=Object.assign(PF,j.prefs||{});T('✅ 模板已套用',1);$('#mask').classList.add('hide');go(PF.landing||TAB)}else T('❌ '+(j.msg||'失败'))}catch(_){T('失败')}}
-async function tplSave(){const n=prompt('模板名（如：夜班模式）');if(!n)return;const notes={},kpi=[];document.querySelectorAll('#dlg input[data-n]').forEach((c)=>notes[c.dataset.n]=c.checked);_kord.forEach((n)=>{if((window._K||[]).includes(n))kpi.push(n)});
- try{const j=await api('/api/admin/prefs/template',{method:'POST',body:{name:n,prefs:{landing:$('#pd_l').value,kpi,notes}}});T(j.ok?'✅ 模板已保存（他人可在偏好里套用）':'❌ '+(j.msg||''))}catch(_){T('失败')}}
+async function tplSave(){const n=prompt('模板名（如：夜班模式）');if(!n)return;const notes={},kpi=[];document.querySelectorAll('#dlg input[data-n]').forEach((c)=>notes[c.dataset.n]=c.checked);_kord.forEach((n)=>{if((window._K||[]).includes(n))kpi.push(n)});const kpiH=[..._khide].filter((n)=>(window._K||[]).includes(n)); // ㉖v151 模板同带隐藏清单，套用者显隐才与制作者一致
+ try{const j=await api('/api/admin/prefs/template',{method:'POST',body:{name:n,prefs:{landing:$('#pd_l').value,kpi,kpiH,notes}}});T(j.ok?'✅ 模板已保存（他人可在偏好里套用）':'❌ '+(j.msg||''))}catch(_){T('失败')}}
 // ---- ㉕F7 交接日报打印 ----
 async function shiftDlg(){T('统计中…');try{const j=await api('/api/report/shift');const t=j.today||{};const e2=(s)=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  const w=window.open('','_blank');if(!w){T('浏览器拦截了新窗口');return}
@@ -414,7 +459,7 @@ function reqDrawer(id){if(id===1){T('请点击具体单据行查看');return}con
  tl[tl.length-1]=tl[tl.length-1].replace('tl-i','tl-i cur');
  $('#dw_t').innerHTML=`${r.rush?'🔥':''}<span class="mono">${_esc(r.no)}</span> <span class="tag ${(ST[r.status]||['?','t-x'])[1]}">${(ST[r.status]||['?'])[0]}</span>`;
  $('#dw_b').innerHTML=`<div style="font-size:12px;color:var(--sub);margin-bottom:10px">下单人 ${_esc(r.byName||'')}${r.acceptedBy?' · 接单人 '+_esc(r.acceptedBy):''}${r.confirmedBy?' · 签收人 '+_esc(r.confirmedBy):''}${(r.toLoc&&r.toLoc.LOC_NAME)?' · 转入 '+_esc(r.toLoc.WAREHOUSE_NAME||'')+'/'+_esc(r.toLoc.DISTRICT_NAME||'')+'/'+_esc(r.toLoc.LOC_NAME):''}${r.needDate?'<br>📅 期望到货：'+_esc(r.needDate):''}${r.shortInfo?'<br>⚠ 短装：'+_esc(r.shortInfo):''}</div><b style="font-size:13px">生命周期</b><div class="tl" style="margin:8px 0 14px">${tl.join('')}</div><b style="font-size:13px">出库去向核对</b><div id="dwob" style="margin:6px 0 14px;font-size:12px;color:var(--sub)">查询中…</div><b style="font-size:13px">明细（${(r.items||[]).length}行）</b><div style="overflow:auto;margin-top:6px"><table><thead><tr><th>零件号</th><th>申请</th><th>实发</th><th>状态</th></tr></thead><tbody>${(r.items||[]).map((i)=>{const q=(i.issued||[]).reduce((s,e)=>s+(Number((typeof e==='string'?0:e.q))||0),0);return `<tr><td class="mono">${_esc(i.partNo)}</td><td>${i.qty}</td><td>${q}${i.transferred?' <span class="tag t-d">已转MES'+(i.mesNo?' '+_esc(i.mesNo):'')+'</span>':i.skipped?' <span class="tag t-x">跳过</span>':q?' <span class="tag t-a">已发料</span>':' <span class="tag t-p">待发</span>'}</td><td>${i.qty-q<1e-9?'齐':(i.transferred?'短'+(i.qty-q):'缺'+(i.qty-q))}</td></tr>`}).join('')}</tbody></table></div>
- <div class="row" style="margin-top:14px;gap:8px"><a class="pill" style="text-decoration:none;text-align:center;flex:1" href="/print/requisition?id=${r.id}" target="_blank">🖨 打印单据</a>${r.status=='ready'&&(U.features||{}).receive_confirm?`<button class="pill g" style="flex:1" onclick="reqConfirm('${r.id}',this)">✅ 确认收到货物</button>`:''}</div>`;
+ <div class="row" style="margin-top:14px;gap:8px"><a class="pill" style="text-decoration:none;text-align:center;flex:1" href="/print/requisition?id=${r.id}" target="_blank">🖨 打印单据</a>${(U.features||{}).requisition&&(r.items||[]).length?`<button class="pill" style="flex:1" onclick="closeDrawer();reqAgain('${r.id}')">🔁 再来一单</button>`:''}${r.status=='ready'&&(U.features||{}).receive_confirm?`<button class="pill g" style="flex:1" onclick="reqConfirm('${r.id}',this)">✅ 确认收到货物</button>`:''}</div>`;
  $('#drawer').classList.add('dw-on');{const m=$('#dwmask');m.style.opacity='.4';m.style.pointerEvents='auto'}
  api('/api/outbound?req='+encodeURIComponent(r.no)).then((j)=>{const ob=(j.items||[]).filter((o)=>String(o.linkReqNo||'').toUpperCase()===String(r.no).toUpperCase());
   $('#dwob').innerHTML=ob.length?`<table><thead><tr><th>出库单</th><th>时间</th><th>去向</th><th>操作人</th><th>框数</th></tr></thead><tbody>${ob.map((o)=>`<tr><td class="mono" style="font-size:11.5px">${_esc(o.orderNo)}</td><td style="font-size:11px">${new Date(Number(o.createdAt)||Date.now()).toLocaleString('zh-CN',{hour12:false}).slice(5,16)}</td><td style="font-size:11.5px">${_esc(o.toLoc||'')}</td><td style="font-size:11.5px">${_esc(String(o.operator||'').replace(/\s*\((?:[^()]*)\)\s*$/,''))}</td><td>${(o.items||[]).length}</td></tr>`).join('')}</tbody></table>`:'尚无关联出库单（未转MES或直调单不挂领料号）'}).catch(()=>{$('#dwob').textContent='核对查询失败'})}
@@ -425,7 +470,7 @@ function sTh(st,key,label,num,fn){const on=st.k==key;const arr=on?(st.d<0?'▼':
 function pgBar(st,total,fn){st=st||{pg:1,sz:100};const sz=st.sz||1e9;const pgs=Math.max(1,Math.ceil(total/sz));if(st.pg>pgs)st.pg=pgs;const a=(st.pg-1)*sz,b=Math.min(total,a+sz);return `<div class="row" style="align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--sub)"><select style="padding:2px 6px;font-size:12px" onchange="${fn}Sz(this.value)">${[[50,'每页50行'],[100,'每页100行'],[200,'每页200行'],[0,'全部']].map(([v,n])=>`<option value="${v}" ${(sz>=1e9?v==0:v==sz)?'selected':''}>${n}</option>`).join('')}</select><button class="pill q" style="padding:2px 10px;font-size:11px" ${st.pg<=1?'disabled':''} onclick="${fn}Pg(-1)">‹ 上一页</button><b style="color:var(--ink)">${st.pg} / ${pgs}</b><span>共 ${total} 条${total?` · 显示 ${a+1}–${b}`:''}</span><button class="pill q" style="padding:2px 10px;font-size:11px" ${st.pg>=pgs?'disabled':''} onclick="${fn}Pg(1)">下一页 ›</button></div>`}
 function closeDrawer(){$('#drawer').classList.remove('dw-on');$('#drawer').classList.remove('dw-full');{const b=$('#dw_fs');if(b){b.textContent='⛶';b.title='全屏'}}const m=$('#dwmask');m.style.opacity='0';m.style.pointerEvents='none';window._msgOpen=0}
 // ===== ㉖⑯ 网页消息中心（PDA 创意功能搬来：分组+红点+精准直达，复用现成抽屉天然响应式）=====
-const NGRP=[['work','📋','派单与超时',['req_new','req_timeout','req_reassign'],'#515BD4'],['urge','⏰','催单',['req_urge'],'#E65100'],['flow','🚚','接单与进度',['req_accept','req_ready','req_ready_wh','req_done','req_confirm','req_reject','req_cancel','req_flow'],'#00897B'],['arrive','📥','到站与移库',['req_arrive','transfer_done'],'#FF8F00'],['car','⚠️','车辆告警',['car_alarm'],'#D32F2F'],['insp','🔎','检验协助',['inspect'],'#7B1FA2'],['stock','📦','断料与预约',['stock_out','watch_in'],'#546E7A'],['other','🔔','其他与系统',[],'#9E9E9E']];
+const NGRP=[['work','📋','派单与超时',['req_new','req_timeout','req_reassign'],'#515BD4'],['urge','⏰','催单',['req_urge'],'#E65100'],['flow','🚚','接单与进度',['req_accept','req_ready','req_ready_wh','req_done','req_confirm','req_reject','req_cancel','req_flow'],'#00897B'],['arrive','📥','到站与移库',['req_arrive','transfer_done'],'#FF8F00'],['car','⚠️','车辆告警',['car_alarm'],'#D32F2F'],['insp','🔎','检验协助',['inspect'],'#7B1FA2'],['stock','📦','断料与预约',['stock_out','watch_in'],'#546E7A'],['audit','🧾','账实核对',['ghost_out'],'#B71C1C'],['other','🔔','其他与系统',[],'#9E9E9E']]; // ㉖v151 新增"账实核对"组：幽灵出库（MES已出库、本地无入库记录）独立归类，不与断料预警混在一起
 function ngrpOf(t){for(const g of NGRP)if(g[3].includes(t))return g[0];return 'other'}
 async function notifPoll(){try{const j=await api('/api/notifications/unread');const n=j.unread||0;const b=$('#nbdg');if(b){b.textContent=n>99?'99+':n;b.classList.toggle('hide',!n)}window._notifUnread=n;if(n&&window._msgOpen)openMsgs()}catch(_){}}
 function openReqById(id){(async()=>{try{if(!(window._reqs||[]).some(x=>x.id==id)){const j=await api('/api/requisitions');window._reqs=j.reqs||[]}reqDrawer(id)}catch(_){T('单据加载失败')}})()}
@@ -434,6 +479,7 @@ function notifRoute(n){closeDrawer();const id=n.reqId||'',ty=n.type||'';
  if(ty=='inspect'){go('insp');return}
  if(ty=='car_alarm'){EVUN=1;EVK='';EVDAY='';go('agv/rev');return} // ㉖v113 深链直达；顺带预设「仅未认领」，点通知就是来看待处理的
  if(ty=='stock_out'){go('inv');return}
+ if(ty=='ghost_out'){go('flow');TF={k:'out'};pgFlow();return} // ㉖v151 幽灵出库：点击直达出库流水页，配合消息里的标签号核对哪笔出库本地无账
  if(ty=='watch_in'){go('parts');return}
  if(ty=='transfer_done'||ty=='req_arrive'||ty=='req_flow'){go('flow');return}
  T('该消息无关联详情')}
@@ -679,7 +725,7 @@ async function traceBox(codeRaw){const code=String(codeRaw||'').trim().toUpperCa
  h+='<div class="row" style="margin-top:12px"><button class="pill" onclick="go(\'ledger\');TM.lq=\''+_sq+'\';pgLedger()">在账本中查</button><button class="pill" onclick="go(\'flow\');TF={k:\'in\',q:\''+_sq+'\'};pgFlow()">在入库流水中查</button><button class="pill" onclick="go(\'flow\');TF={k:\'out\',q:\''+_sq+'\'};pgFlow()">在出库流水中查</button><button class="pill" onclick="closeDrawer()">关闭</button></div>';
  $('#dw_b').innerHTML=h;}catch(_){$('#dw_b').innerHTML='<div style="color:var(--warn)">追溯查询失败（服务需重启加载新代码）</div>'}}
 async function pgFlow(){TF=TF||{k:'in'};
- $('#main').innerHTML=`<div class="card"><div class="row"><button class="pill ${TF.k=='in'?'':'q'}" onclick="TF.k='in';pgFlow()">📥 入库流水</button><button class="pill ${TF.k=='out'?'':'q'}" onclick="TF.k='out';pgFlow()">📤 出库流水</button><button class="pill ${TF.k=='all'?'':'q'}" title="入库+出库同屏" onclick="TF.k='all';pgFlow()">🗂 全部</button><input id="fq" placeholder="标签号 / 零件号 / 单号 / 批次 / 操作人…" value="${TF.q||''}" style="flex:1;min-width:170px" onkeydown="if(event.key=='Enter')flowGo()"><input id="fd" type="date" value="${TF.d||''}" title="只看某一天"><select id="fk" style="width:118px"><option value="0" ${!TF.h?'selected':''}>全部时间</option><option value="1" ${TF.h=='1'?'selected':''}>近7天</option><option value="3" ${TF.h=='3'?'selected':''}>近3天</option></select><button class="pill" onclick="flowGo()">查询</button><button class="pill q" title="清空关键字/日期，时间窗回全部" onclick="TF.q='';TF.d='';TF.h='0';pgFlow()">↺ 重置</button><span style="font-size:11.5px;color:var(--sub)">30秒自动刷新</span></div><div id="acnt" style="font-size:12px;margin-bottom:8px;line-height:1.9">数据资产加载中…</div><div id="flist">加载中…</div></div>`;
+ $('#main').innerHTML=`<div class="card"><div class="row"><button class="pill ${TF.k=='in'?'':'q'}" onclick="TF.k='in';pgFlow()">📥 入库流水</button><button class="pill ${TF.k=='out'?'':'q'}" onclick="TF.k='out';pgFlow()">📤 出库流水</button><button class="pill ${TF.k=='all'?'':'q'}" title="入库+出库同屏" onclick="TF.k='all';pgFlow()">🗂 全部</button><input id="fq" placeholder="标签号 / 零件号 / 单号 / 批次 / 操作人 / 货位(如NB04)…" value="${TF.q||''}" style="flex:1;min-width:170px" onkeydown="if(event.key=='Enter')flowGo()"><input id="fd" type="date" value="${TF.d||''}" title="只看某一天"><select id="fk" style="width:118px"><option value="0" ${!TF.h?'selected':''}>全部时间</option><option value="1" ${TF.h=='1'?'selected':''}>近7天</option><option value="3" ${TF.h=='3'?'selected':''}>近3天</option></select><button class="pill" onclick="flowGo()">查询</button><button class="pill q" title="清空关键字/日期，时间窗回全部" onclick="TF.q='';TF.d='';TF.h='0';pgFlow()">↺ 重置</button><span style="font-size:11.5px;color:var(--sub)">30秒自动刷新</span></div><div id="acnt" style="font-size:12px;margin-bottom:8px;line-height:1.9">数据资产加载中…</div><div id="flist">加载中…</div></div>`;
  assetBar();flowGo();if(_flowT)clearInterval(_flowT);_flowT=setInterval(()=>{if(TAB=='flow')srFlow()},30000)}
 async function flowGo(silent){TF.q=($('#fq')?$('#fq').value:'').trim();TF.d=($('#fd')?$('#fd').value:'');TF.h=($('#fk')?$('#fk').value:'0');
  if(!TF.s)TF.s={k:'t',d:-1,sz:100,pg:1};
@@ -688,12 +734,12 @@ async function flowGo(silent){TF.q=($('#fq')?$('#fq').value:'').trim();TF.d=($('
  try{let rows='',meta='',_oRows='',_oMeta='';const _t=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}).slice(5,16):'';
  const _h=Number(TF.h)||0;const day0=TF.d?new Date(TF.d+'T00:00:00').getTime():0,day1=TF.d?day0+86399999:0;const win0=day0||(_h?Date.now()-_h*864e5:0); // ㉖ 修"有流水却不显示"：TF.h 是下拉框字符串，选[全部时间]值为"0"是truthy，旧写法 !TF.h 判假→win0 被算成当前时刻→from=now 把所有历史全过滤成0行
  if(TF.k=='in'||TF.k=='all'){const j=await api('/api/scanlog?limit=4000'+(win0?'&from='+win0:'')+(day1?'&to='+day1:''));let A=j.items||[];
-  if(TF.q){const k=TF.q.toUpperCase();A=A.filter((x)=>String(x.code||'').toUpperCase().includes(k)||String(x.pn||'').toUpperCase().includes(k)||String(x.nm||'').toUpperCase().includes(k)||String(x.op||'').toUpperCase().includes(k)||String(x.lot||'').toUpperCase().includes(k));}
+  if(TF.q){const k=TF.q.toUpperCase();A=A.filter((x)=>String(x.code||'').toUpperCase().includes(k)||String(x.pn||'').toUpperCase().includes(k)||String(x.nm||'').toUpperCase().includes(k)||String(x.op||'').toUpperCase().includes(k)||String(x.lot||'').toUpperCase().includes(k)||String(x.loc||'').toUpperCase().includes(k));} // ㉖v150b 搜索加货位字段：概览「一楼来料登记」卡预填 NB04 下钻过滤
   A=A.map((x)=>{const wl=String(x.wt===0?x.st:x.gl||'');return {...x,wl,wbad:x.wt===1&&!x.cx&&wl&&wl.indexOf('NB03-')!==0}}); // 初始货位计算列，供排序；㉖v83 地面模式粗码（只选区排未落格位）标⚠
   A=sortArr(A,TF.s);
   // ㉖v89c 口径拆解：行数≠KPI入库标签数（KPI=有效行按标签去重），现场多次追问"62行为何KPI才42"
   {const _ok=A.filter((x)=>!x.cx),_cxA=A.length-_ok.length;const _uq=new Set(_ok.map((x)=>String(x.code||'').toUpperCase())).size;
-  meta=`命中 ${A.length} 行（服务器窗口共 ${j.total||0} 条）= 有效 ${_ok.length} 行/${_uq} 个标签 · 作废 ${_cxA} 行${_ok.length!==_uq?`（${_ok.length-_uq} 个标签重复扫入，概览KPI「今日入库(标签)」按去重计 ${_uq}）`:''}`;}
+  meta=`命中 ${A.length} 行（服务器窗口共 ${j.total||0} 条）= 有效 ${_ok.length} 行/${_uq} 个标签 · 作废 ${_cxA} 行${_ok.length!==_uq?`（${_ok.length-_uq} 个标签重复扫入，本页按去重计 ${_uq}）`:''}；概览「今日入库」=其中二楼上架扫码的标签，一楼登记行走「一楼来料登记」卡`;}
   const _pg=TF.k=='in'?A.slice((TF.s.pg-1)*TF.s.sz,TF.s.pg*TF.s.sz):A.slice(0,300); // 全部模式保持粗览截断，单表模式走分页
   rows=`<table><thead><tr>${sTh(TF.s,'t','时间',1,'fsT')}${sTh(TF.s,'code','标签号',0,'fsT')}${sTh(TF.s,'pn','零件号',0,'fsT')}${sTh(TF.s,'nm','物料名',0,'fsT')}${sTh(TF.s,'q','数量',1,'fsT')}${sTh(TF.s,'lot','批次',0,'fsT')}${sTh(TF.s,'wl','初始货位',0,'fsT')}${sTh(TF.s,'pid','托号',0,'fsT')}${sTh(TF.s,'op','操作人',0,'fsT')}${sTh(TF.s,'cx','状态',1,'fsT')}<th>备注</th><th>链路</th>${(U.role=='warehouse'||U.role=='admin')?'<th>操作</th>':''}</tr></thead><tbody>${_pg.map((x)=>`<tr><td style="font-size:11px;color:var(--sub)">${_t(x.t)}</td><td class="mono" style="font-size:11.5px"><a href="javascript:void 0" style="color:var(--pri)" title="标签全链路" onclick="traceBox('${_esc(x.code)}')">${_esc(x.code)}</a></td><td class="mono" style="font-size:11.5px;cursor:pointer;color:var(--pri)" title="点开零件档案" onclick="go('parts');ppOpen('${_esc(x.pn||'')}')">${_esc(x.pn)}</td><td style="font-size:11.5px">${_esc(x.nm)}</td><td>${x.q||0}</td><td style="font-size:11px">${_esc(x.lot)}</td><td style="font-size:11.5px">${_esc(x.wl)}${x.wbad?' <span class="tag" style="background:rgba(230,81,0,.12);color:var(--warn);cursor:help" title="地面模式只选了区排、未落成具体格位（或登记失败）——此框不在货位账本，库存查无；请到「修正与返架」补登记实际货位">⚠未登记</span>':''}</td><td style="font-size:11px;color:var(--sub)">${_esc(x.pid)}</td><td style="font-size:11.5px">${_esc(x.op)}</td><td>${x.cx?'<span class="tag t-x">作废</span>':(x.reg===0?'<span class="tag" style="background:rgba(230,81,0,.12);color:var(--warn);cursor:help" title="流水正常但货位账本无此框且无出库史——登记被服务器拒回（撞格/货位不符）或尚未同步；去「库存」页核对，或到修正页补登记实际货位">未上账</span>':(x.reg===2?'<span class="tag" style="background:rgba(120,140,170,.12);color:var(--sub);cursor:help" title="该框已正常出库，账本行随之消位——非登记异常">已出库</span>':'<span class="tag t-d">正常</span>'))}</td><td style="font-size:11px;color:var(--sub)">${_esc(x.rm)}</td><td><a href="javascript:void 0" style="font-size:11.5px" title="标签全链路" onclick="traceBox('${_esc(x.code)}')">🔎链路</a></td>${(U.role=='warehouse'||U.role=='admin')?`<td><a href="javascript:void 0" style="font-size:11.5px;color:${x.cx?'var(--ok)':'var(--warn)'}" onclick="webCancel('${_esc(x.k)}',${x.cx?'false':'true'},'${_esc(x.code)}')">${x.cx?'↩恢复':'作废'}</a></td>`:''}</tr>`).join('')}</tbody></table>${TF.k=='all'&&A.length>300?'<div style="color:var(--sub);font-size:11px;margin-top:4px">全部模式仅显示前300行，切单表可分页</div>':''}`;
   if(TF.k=='in')rows+=pgBar(TF.s,A.length,'fs')}

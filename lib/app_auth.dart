@@ -459,6 +459,11 @@ class AuthApi {
       _req("GET", "/api/label/check?c=" + Uri.encodeComponent(c) +
           (recv ? "&recv=1" : "") + (ret ? "&ret=1" : ""),
           token: await AuthStore.token());
+  // ㉖v151 出库扫码预检（直调页专用）：服务端早已备好该闸（无流水无账本=来源不明 block），但此前只有网页
+  // 一处调用，PDA 直调从未接——导致"一楼没扫直接直调出库"在车间实际路径上零提示、事后无痕
+  static Future<Map> outboundScanCheck(String c) async =>
+      _req("GET", "/api/outbound/scanCheck?c=" + Uri.encodeComponent(c),
+          token: await AuthStore.token());
   static Future<Map> labelForce(String c, String why) async =>
       _req("POST", "/api/label/force",
           body: {"code": c, "why": why}, token: await AuthStore.token());

@@ -197,6 +197,34 @@ extension CollectionLedgerExt on _MainPageState {
             ],
           ],
         ),
+        // ㉖v153 叫车失败独立红条：账本已记"在架"但任务未建（货实际还在站台），持续到该框出现在服务器队列
+        // 或人工点关闭——普通 tip 会被下一框叫车结果顶掉，丢单提示绝不能被顶掉
+        if (_callFailTip.isNotEmpty)
+          Padding(
+              padding: const EdgeInsets.only(top: 5),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFFFEBEE),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Colors.red.shade300)),
+                child: Row(children: [
+                  Expanded(
+                      child: Text(_callFailTip,
+                          style: TextStyle(
+                              fontSize: 11.5,
+                              color: Colors.red.shade900,
+                              fontWeight: FontWeight.w600))),
+                  InkWell(
+                      onTap: () =>
+                          setState(() { _callFailTip = ""; _callFailCode = ""; }),
+                      child: Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: Icon(Icons.close,
+                              size: 16, color: Colors.red.shade600))),
+                ]),
+              )),
         if (_autoCallTip.isNotEmpty)
           Padding(
               padding: const EdgeInsets.only(top: 5),
@@ -281,6 +309,13 @@ extension CollectionLedgerExt on _MainPageState {
       for (final q in mine) {
         final s = q["state"]?.toString() ?? "?";
         cnt[s] = (cnt[s] ?? 0) + 1;
+      }
+      final allQ = List<Map>.from(r["queue"] ?? []); // 全量队列（不限本人）：他人重叫也算丢单已处置（11-11 即宋明明重扫闭环）
+      // ㉖v153 失败红条自动撤销：该框已在服务器队列出现（任意状态，含本人手动提交/他人重叫）→ 丢单已处置
+      if (_callFailTip.isNotEmpty && _callFailCode.isNotEmpty &&
+          allQ.any((q) => (q["code"] ?? "").toString().toUpperCase() == _callFailCode)) {
+        _callFailTip = "";
+        _callFailCode = "";
       }
       // ㉖v103 防重复名单活跃性清理：货位是复用资源——前框叫车送达、出库拉走后，同位进新框必须能再叫车。
       // 旧版 _colCalled 只增不减（仅杀 App 才清空），11/3 现场 C-02-3F：17:51 叫车→18:07 该框出库→18:22 新框入同位，
@@ -782,9 +817,16 @@ extension CollectionLedgerExt on _MainPageState {
       } else if (mounted) {
         // ㉖v94i 超时≠失败：服务器可能已把任务下发完成（WMAS 慢导致 PDA 先掐表），此时盲目重叫会撞在途闸/造成困惑
         final _netFail = r["net"] == true;
-        setState(() => _autoCallTip = _netFail
-            ? "⚠️ 自动叫车请求超时：任务可能已下发，请看下方队列条/AGV 任务确认，勿立即重叫"
-            : "⚠️ 自动叫车失败：${r["msg"]}｜可手动「提交任务」");
+        setState(() {
+          _autoCallTip = _netFail
+              ? "⚠️ 自动叫车请求超时：任务可能已下发，请看下方队列条/AGV 任务确认，勿立即重叫"
+              : "⚠️ 自动叫车失败：${r["msg"]}｜可手动「提交任务」";
+          // ㉖v153 独立红条：明确失败=账本已记"在架"但任务未建，红字"待搬运"逼面对；超时=橙色引导查队列（不武断判死）
+          _callFailCode = (codes0.isNotEmpty ? codes0.first : "").toUpperCase(); // 与成功分支同款取码（本函数无 code 参数）
+          _callFailTip = _netFail
+              ? "🟠 $loc 叫车请求超时——任务可能已下发，请到下方队列/AGV 任务确认；若无任务请手动「提交任务」"
+              : "🔴 ${_callFailCode}（$loc）已入账但叫车失败：${r["msg"]}——账本虽记在架，实物仍在 $st 台上，请手动「提交任务」或到 AGV 页重叫，否则货不会上架";
+        });
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(_netFail
                 ? "自动叫车超时：任务可能已下发成功，请刷新队列确认后再决定是否重叫"
@@ -794,7 +836,10 @@ extension CollectionLedgerExt on _MainPageState {
       }
     } catch (e) {
       debugPrint('[auto-call] $e');
-      if (mounted) setState(() => _autoCallTip = "⚠️ 自动叫车异常：$e");
+      if (mounted) setState(() {
+        _autoCallTip = "⚠️ 自动叫车异常：$e";
+        _callFailTip = "🔴 $loc 自动叫车异常：$e——账本已入账但任务未建，实物仍在台上，请手动「提交任务」"; // ㉖v153 异常同样入红条，防静默丢单
+      });
     }
   }
 

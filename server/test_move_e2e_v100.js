@@ -96,7 +96,10 @@ async function get(p, token) {
     // —— 消账物理动作不受口径影响：seenOut 两标签都登记（移仓实物同样离库）——
     await sleep(300);
     const dd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
-    chk('X1 移仓标签同样登记 seenOut', [!!dd.seenOut[TAG1], !!dd.seenOut[TAG2]], [true, true]);
+    // ㉖v108 口径修正（原断言停留在 v100"移仓也盖戳"）：移仓单不盖"已出库"戳——标签随货移仓后可能回流，
+    // 误盖会拦死合法再采集（11/5 现场 N26K040083/74 冷冲件仓移仓被盖戳致采集"历史上架并已出库"误拦）。
+    // 现由 test_seenout_v108.js 专项守卫该行为，本处同步为正确期望：线边出库盖戳、冷冲移仓不盖。
+    chk('X1 仅真实出库登记 seenOut，移仓不盖戳（v108 保标签回流）', [!!dd.seenOut[TAG1], !!dd.seenOut[TAG2]], [true, false]);
 
     // —— 呆滞/最近出库有意含移仓：D2 消费 lastOut 无 mv 过滤（代码注释已声明），此处以 profile 移仓行仍出现在列表验证"保留可见" ——
     chk('V1 移仓行保留在档案列表（标注可见非隐藏）', outRows.length, 2);

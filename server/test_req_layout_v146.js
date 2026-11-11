@@ -13,7 +13,7 @@ const chk = (n, g, w) => { total++; const ok = JSON.stringify(g) === JSON.string
 console.log('== A组 预约反馈修复（根因级） ==');
 {
   // A1 旧根因消除：弹层内不再有任何 SnackBar 调用（context 的 messenger 被弹层挡）
-  const sheet = dart.slice(dart.indexOf('Future<void> _showSugSheet'), dart.indexOf('_showSugSheet') + 9000);
+  const sheet = dart.slice(dart.indexOf('Future<void> _showSugSheet'), dart.indexOf('Future<void> _showSugSheet') + 16000);
   chk('A1 弹层内 SnackBar 调用清零（反馈不再被挡）', (sheet.match(/ScaffoldMessenger|showSnackBar/g) || []).length, 0);
   chkT('A2 行内状态机在位（预约中/已预约/重试三态）', sheet.includes('预约中…') && sheet.includes('✓已预约') && sheet.includes('✗重试'), '');
   chkT('A3 打开弹层回读存量预约（booked 种子）', /final booked = <String>\{\}/.test(sheet) && sheet.includes('AuthApi.watchlistGet()') && sheet.includes('booked.add(w["partNo"]'), '');
@@ -47,5 +47,16 @@ console.log('== D组 结构完整性 ==');
   chkT('D2 无旧代码碎片残留（nAuto 类事故防再）', !dart.includes('icon: const Icon(Icons.folder_open_outlined,\n                          size: 16') || (dart.match(/folder_open_outlined/g) || []).length <= 2, (dart.match(/folder_open_outlined/g) || []).length + '处');
   chkT('D3 CheckboxListTile 误用清零', !/CheckboxListTile\([\s\S]{0,600}trailing:/.test(dart), '');
 }
-console.log(`\n===== v146 建单布局与预约反馈实例证明 ${total - fail}/${total} PASS =====`);
+console.log('== E组 v147 单件预约弹框可改框数 ==');
+{
+  const bookSeg = dart.slice(dart.indexOf('Future<void> doBook()'), dart.indexOf('return Row(children: [', dart.indexOf('Future<void> doBook()')));
+  chkT('E1 预约先弹对话框（预填建议框数+确认按钮）', bookSeg.includes('showDialog<bool>') && bookSeg.includes('labelText: "预约框数"') && bookSeg.includes('确认预约'), '');
+  chkT('E2 预填=建议框数（sug>0 回填，0 留空）', /TextEditingController\(text: sug > 0 \? "\$sug" : ""\)/.test(bookSeg), '');
+  chkT('E3 框数>0 才自动开单（0=纯到货提醒 auto:false）', bookSeg.includes('auto: q > 0') && bookSeg.includes('qty: q > 0 ? q : 0'), '');
+  chkT('E4 取消不发起请求（ok!=true 直接 return）', bookSeg.includes('if (ok != true) return;'), '');
+  chkT('E5 输入框数字键盘+自动聚焦', bookSeg.includes('TextInputType.number') && bookSeg.includes('autofocus: true'), '');
+  chkT('E6 全文件无占位符垃圾残留（v142/v147 事故防再）', !dart.includes('[omitted') && !dart.includes('omitted 1612 chars'), '');
+  chkT('E7 批量预约保持建议值直登（不逐个弹框）', !dart.slice(dart.indexOf('批量预约'), dart.indexOf('批量预约') + 1200).includes('showDialog'), '');
+}
+console.log(`\n===== v146+v147 建单布局与预约框数实例证明 ${total - fail}/${total} PASS =====`);
 process.exit(fail ? 1 : 0);
