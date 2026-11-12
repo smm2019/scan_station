@@ -3341,7 +3341,26 @@ const server = http.createServer((req, res) => { // ㉖v97d 请求级上下文�
   opsCtx.run({ ip: clientIp(req), dev: '' }, () => handleReq(req, res)).catch((e) => { try { logErr('CTX ' + (req.method || '') + ' ' + (req.url || '?'), e); } catch (_) {} try { if (!res.headersSent) send(res, 500, { ok: false, msg: '服务器错误：' + e.message }); } catch (_) {} });
 });
 async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入（内部try/catch兜底不变）
-  const url = new URL(req.url, 'http://x');
+  // ㉖v170 旧版 App 点「检查更新」报「接口不存在」的修复（必须在【URL 解析之前】做）：
+  //   PDA 其它接口统一走 app_auth._req，那里有 base.replace(/\/+$/,'') 剥掉地址末尾斜杠；
+  //   唯独升级检查 update_page 是裸拼 "$server/api/app/version" 的 http.get，不过那道保护。
+  //   服务器地址一旦存成带末尾斜杠（http://10.96.7.1:8099/），请求行就变成 //api/app/version。
+  //   ⚠ 两层坑，只治一层没用（我第一次只改了 pathname，实测仍 404）：
+  //     ① new URL("//api/app/version","http://x") 会把它当【协议相对 URL】——
+  //        host 变成 "api"、pathname 只剩 "/app/version"，接口名在解析阶段就被吃掉；
+  //     ② 中段重复斜杠（/api//x）pathname 会原样保留，照样匹配不上 p === '/api/x'。
+  //   所以必须先折叠原始请求行再交给 URL：本文件全部路由都是精确匹配，兜底才报
+  //   404{msg:'接口不存在'}。修在服务端入口，旧版 APK 无需升级即自愈。
+  //   只折叠重复斜杠、不动 query（?x=1 原样保留）、不动尾斜杠（/console/ 保持形态）；
+  //   静态页与资源全部按固定文件名读取，无任何 p 参与文件路径拼接，无路径穿越面。
+  const rawUrl = (() => {
+    let s = String((req && req.url) || '');
+    if (!s) return '/';
+    if (!s.startsWith('/')) return s; // 绝对形式/CONNECT 等原样交给 URL 自己处理
+    if (s.startsWith('//')) s = '/' + s.replace(/^\/+/, '/');
+    return s.replace(/\/{2,}/g, '/');
+  })();
+  const url = new URL(rawUrl, 'http://x');
   const p = url.pathname;
   res._t0 = Date.now(); res.reqUrl = p; // ㉖v98 接口耗时打点起点（send 内结算，路径归属用 pathname 防 query 爆炸）
   if (req.method === 'OPTIONS') return send(res, 204, {});
