@@ -4636,7 +4636,27 @@ return send(res, 200, {
           let rel = no === Q || REQS.has(codeOf(o.linkReqNo));
           if (!rel) for (const it of o.items || []) { if (CODES.has(codeOf(it.barcode)) || (partExpand && PNS.has(codeOf(it.code)))) { rel = true; break; } }
           if (!rel) continue;
-          push(o.createdAt, 'out', '📤 出库 ' + no, (o.items || []).map((i) => String(i.barcode || i.code || '') + '×' + (Number(i.qty) || 0)).join('、') + (o.toLoc ? ' → ' + o.toLoc : ''), opNameOf(o.operator));
+          // ㉖v169 出库明细只显示"与本次查询相关"的行（11-12 现场实锤 N26K070124）：
+          // 同一领料单常拆成多张出库单（LL2026111007592767 → 081451/081834/082224），旧版只要
+          // linkReqNo 命中就把整单明细摊出来，查这一个框却看到别人的 220/800 件被列成它的去向，
+          // 现场读作"这框出库了 3 次、还搬走了别框的货"。
+          // 口径：查框/查零件 → 只列相关行，与本次查询完全无关的单整条不列（首版我写成
+          //   "mine 为空则回退列整单"，结果不但没消除泄漏，还出现"提示未列出、内容却列出4框"的自相矛盾）；
+          //   查单号/领料单/AGV任务 → 仍列全单，那本来就该看全。
+          // 防改丢：出库明细无 barcode 字段（旧数据/MES转单缺字段）时无法判定相关性，保守按整单列出。
+          const its = o.items || [];
+          if (isBox || partExpand) {
+            const hasBc = its.some((i) => codeOf(i.barcode));
+            const mine = hasBc ? its.filter((i) => CODES.has(codeOf(i.barcode)) || (partExpand && PNS.has(codeOf(i.code)))) : its;
+            if (hasBc && !mine.length) continue; // 与本次查询无关的兄弟单，不列
+            const otherN = its.length - mine.length;
+            push(o.createdAt, 'out', '📤 出库 ' + no,
+              mine.map((i) => String(i.barcode || i.code || '') + '×' + (Number(i.qty) || 0)).join('、')
+              + (otherN > 0 ? '（同单另有 ' + otherN + ' 框非本次查询对象，未列出）' : '')
+              + (o.toLoc ? ' → ' + o.toLoc : ''), opNameOf(o.operator));
+            continue;
+          }
+          push(o.createdAt, 'out', '📤 出库 ' + no, its.map((i) => String(i.barcode || i.code || '') + '×' + (Number(i.qty) || 0)).join('、') + (o.toLoc ? ' → ' + o.toLoc : ''), opNameOf(o.operator));
         }
         // — ⑤ AGV 调度状态 + 决策留痕 trace
         for (const x of qItems) {
@@ -5701,6 +5721,40 @@ return send(res, 200, {
       }
       // ================= 数据驾驶舱（只读聚合，登录即可看） =================
       // ---- ㉕F5 个人偏好 prefs（落地页/通知订阅/概览卡自选）+ 管理员模板 ----
+      // ---- ㉖v169 货位占用图服务器实时视图：格位 → 在库框（与 /api/counts 四卡同源算法）----
+      // 动因（11-11 现场截图）：NB02-A-13-1F 在货位占用图显示空格，服务器账本实有 N26J290067
+      //   200 件在架（10/29 入库，截图时已在架 13 天）；PDA 刷新/重进都无效。
+      // 已核实：该框服务器账本一直有行、AGV 队列无记录、无任何出库单与归档、检验单已 done。
+      // 未证实：本机 Isar 聚合具体在哪一步把它吞掉——没有出问题的真机数据无法复现。
+      //   猜过的三个原因（本机出库台账永久标记 / 检验下架未同步 / 空零件号被显示条件过滤）
+      //   全部被证据否掉，详见 loc_map_page._reload 注释，不再重复推测。
+      // 本次改造的价值不在于"修对了某个原因"，而在于让显示只依赖账本本身：
+      //   账本有这行 = 这框在架，绕开"每台设备各自的派生缓存链路"这一整类不确定性。
+      // 框键/滞留/件数算法刻意与 /api/counts 的 stockBoxes/stockStale7/stockQty 完全同源
+      //   （同一个 boxKeyOf + 框最早入账时刻），否则货位图与 KPI 四卡会在同一 App 里给出两个数
+      //   （v119 刚治过那种病）。实测三值与四卡逐一对齐，见 test_locmap_v169.js。
+      // 只读端点：不叫车、不改数据。量级=账本行数（现网 682 行→621 框，约 94KB），单次毫秒级。
+      if (req.method === 'GET' && p === '/api/locmap') {
+        const nowMs = Date.now();
+        const byKey = {}, order = [];
+        for (const x of ledgerView()) {
+          const bk = boxKeyOf(x); // 托号优先 → 位+件 → 单码（与四卡同一函数）
+          let b = byKey[bk];
+          if (!b) { b = byKey[bk] = { l: String(x.l || '').toUpperCase(), q: 0, cs: [], p: String(x.p || '').toUpperCase(), n: String(x.n || ''), f: String(x.f || ''), by: String(x.by || ''), t0: 0 }; order.push(bk); }
+          b.q += Number(x.q) || 0;
+          const cc = String(x.c || '').toUpperCase(); if (cc) b.cs.push(cc);
+          if (!b.l && x.l) b.l = String(x.l).toUpperCase(); // 同托多码 loc 取第一个非空（同本机聚合规则）
+          if (!b.p && x.p) b.p = String(x.p).toUpperCase();
+          if (!b.n && x.n) b.n = String(x.n);
+          if (!b.f && x.f) b.f = String(x.f);
+          const t0 = Number(x.t) || 0;
+          if (t0 && (!b.t0 || t0 < b.t0)) b.t0 = t0; // 框最早入账时刻 = 最大滞留（同四卡口径）
+        }
+        const boxes = order.map((bk) => { const b = byKey[bk]; return { l: b.l, q: Math.round(b.q * 100) / 100, c: b.cs.join(','), p: b.p, n: b.n, f: b.f, by: b.by, t: b.t0, ageH: b.t0 > 0 ? Math.floor((nowMs - b.t0) / 3600e3) : -1 }; });
+        let stale7 = 0, sumQ = 0;
+        for (const b of boxes) { if (b.ageH >= 168) stale7++; sumQ += b.q; }
+        return send(res, 200, { ok: true, at: new Date().toISOString(), rev: db.ledgerRev || 0, boxes, total: boxes.length, stale7, qty: Math.round(sumQ) });
+      }
       // ---- ㉖③ 数据资产总计数：各域在库/流水/出库/队列/留痕/事件/检验 + 归档量，网页"有迹可查"面板 ----
       if (req.method === 'GET' && p === '/api/counts') {
         let archScan = 0, archOut = 0; try { for (const f of fs.readdirSync(path.join(DATA_DIR, 'archive'))) { if (/scanlog/.test(f)) archScan += Object.keys(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', f), 'utf8'))).length; else if (/outbound/.test(f)) archOut += Object.keys(JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'archive', f), 'utf8'))).length; } } catch (_) {}
@@ -6714,6 +6768,13 @@ return send(res, 200, {
                     ? `——这是 ${_scanLot} 批，本单建议先拣 ${_oldestLot} 批的框${b.fifo && b.fifo.ok === 1 ? '' : '（如确需发这批，点弹窗确认后放行并留痕）'}`
                     : `——这框不在本单接单时锁定的建议框内${_allArr.length ? '；当前可扫：' + _scanHint : ''}`;
                   hpush(`⛔ 严格FIFO拦截：扫入 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 不在本单建议清单（${_isLater ? '晚批次，应拣' + _oldestLot : '非本单建议框'}；可扫 ${_allArr.length} 码：${_scanHint}）`);
+                  // ㉖v169 拦截也要进「事件流水」（11-12 现场实锤）：旧版只有【放行】那支调 pushEvent，
+                  // 拦截只写进领料单 history → 事件流水筛 FIFO 只看得见放行、看不见拦截，
+                  // 「今日FIFO违反」恒为 0，看板把拦截量系统性读成零（现场当天实拦 2 次仍显示 0）。
+                  // 用新 kind『FIFO拦截』而非复用『FIFO违反』：后者 KPI 标签是"跳批发料"（放行才有业务含义），
+                  // 混进去会让"跳批次数"被拦截数顶高，两个指标各自的含义都废掉。
+                  // 事件页类型下拉是 all0.map(kind) 动态生成，新类型自动出现在筛选项里。
+                  pushEvent('FIFO拦截', String(target.partNo || ''), `领料单 ${r.no} 扫入标签 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 被严格FIFO拦下：${_isLater ? '晚批次，应拣' + _oldestLot : '不在本单接单锁定建议框'}（${u.name}）`);
                   save(); // 留痕立即落盘：旧写法只改内存，靠无关周期存盘才落库，重启即丢审计痕迹
                   return send(res, 400, { ok: false, msg: `标签 ${code} 不在本单建议框内（严格FIFO：只能扫接单时锁定的建议框）${_hint}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
                 }

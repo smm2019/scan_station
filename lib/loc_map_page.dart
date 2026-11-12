@@ -18,6 +18,8 @@ class _LocMapPageState extends State<LocMapPage> {
   _StockAgg? _agg;
   bool _loading = true;
   String _err = "";
+  bool _offline = false; // ㉖v169 服务器视图取不到时回退本机聚合；页面必须显式告知，否则离线快照看着像实时数据
+  String _at = ""; // ㉖v169 服务器数据时刻，让"实时"可核对而不是靠信
   String _zone = 'A'; // NB02 区
   String _tab = 'shelf'; // shelf=AGV货架 NB02 / ground=地面 NB03
   String _filter = 'all'; // all=全部 free=只看空位 stale=滞留预警
@@ -31,17 +33,85 @@ class _LocMapPageState extends State<LocMapPage> {
   @override
   void dispose() { _qc.dispose(); super.dispose(); }
 
+  // ㉖v169 数据源改为服务器实时（用户拍板："数据源要改为服务器能实时刷新"）
+  // 现场现象（11-11 截图）：NB02-A-13-1F 显示空格，服务器账本实有 N26J290067 200件（10/29 入库，
+  //   截图时已在架 13 天）；该框 11/5 曾有「补零件号」修正记录。
+  // 【已核实的事实】① 该框服务器账本一直有行、AGV 队列无记录、无出库单、检验单已 done；
+  //   ② 旧 _reload 本就 ledgerPullMerge(force:true)，刷新重进都救不回来（现场反馈一致）。
+  // 【未证实】本机聚合具体在哪一步把它吞掉：没有出问题的真机 Isar 数据，无法复现。
+  //   先后猜过三个原因，全部被证据否掉——本机出库台账永久标记（该框从无出库记录）、
+  //   检验下架未同步（工单已闭环）、空零件号被丢（v109 守卫实际把空件号框照常放进 byLoc）。
+  //   不再继续猜。改读服务器权威后，"本机派生缓存不满足本机显示条件"这一整类原因被一并绕开，
+  //   这正是本次改造的价值：显示只依赖账本本身，不再依赖每台设备各自的派生缓存链路。
+  // 端点与 KPI 四卡同一算法（实测 621 框 / stale7 153 / 件数 237868 三值与 /api/counts 完全
+  //   一致），杜绝同一 App 两页两个数（v119 刚治过那种病）。也不再需要为刷新强制拉整轮账本。
+  // 断网/服务不可达仍回落本机聚合，保证现场断网可用，但顶部显式标注降级（见 _headCard）。
   Future<void> _reload() async {
-    setState(() { _loading = true; _err = ""; });
+    setState(() { _loading = true; _err = ""; _offline = false; });
+    String whySrv = "";
     try {
-      await ledgerPullMerge(force: true); // ㉖ 先对齐服务器账本（别台入库/拣下），否则占用图停留在本机旧快照
+      final r = await AuthApi.locMap();
+      final list = r["boxes"];
+      if (r["ok"] == true && list is List) {
+        final agg = _StockAgg();
+        for (final e in list) {
+          if (e is! Map) continue;
+          final box = _StockBox()
+            ..barcode = (e["c"] ?? "").toString()
+            ..partNo = (e["p"] ?? "").toString()
+            ..itemName = (e["n"] ?? "").toString()
+            ..container = (e["f"] ?? "").toString()
+            ..operator = (e["by"] ?? "").toString()
+            ..loc = (e["l"] ?? "").toString().trim().toUpperCase()
+            ..qty = (e["q"] as num?)?.toDouble() ?? 0
+            ..ageH = (e["ageH"] as num?)?.toInt() ?? -1
+            ..inStock = true; // 服务器只下发账本在架框，无需本机再判出库
+          box.inStockQty = box.qty;
+          if (box.loc.isEmpty) {
+            agg.unplaced.add(box); // 无货位归未分配，同本机聚合口径
+            continue;
+          }
+          agg.byLoc.putIfAbsent(box.loc, () => []).add(box);
+        }
+        agg.srvBoxes = (r["total"] as num?)?.toInt();
+        agg.srvStale7 = (r["stale7"] as num?)?.toInt();
+        agg.srvQty = (r["qty"] as num?)?.toInt();
+        if (!mounted) return;
+        setState(() { _agg = agg; _at = _fmtAt(r["at"]); _loading = false; });
+        return;
+      }
+      whySrv = (r["msg"] ?? "服务器返回异常").toString();
+    } catch (e) {
+      whySrv = e.toString();
+    }
+    // 兜底：服务器取不到（断网/服务重启中）→ 本机聚合，现场断网仍能用
+    try {
+      await ledgerPullMerge(force: true); // 兜底路径仍需先对齐服务器账本
       final agg = await computeStock();
       if (!mounted) return;
-      setState(() { _agg = agg; _loading = false; });
+      setState(() {
+        _agg = agg;
+        _offline = true;
+        _at = "";
+        _err = ""; // 降级不是"失败"，数据照常显示，提示走 _offline 横幅（见 _headCard）
+        _offReason = whySrv; // 必须与 _offline 同一次 setState，否则降级原因会晚一帧才出现
+        _loading = false;
+      });
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _err = "加载失败：$e"; });
+      setState(() { _loading = false; _offline = false; _err = "加载失败：$e（服务器与本机快照都取不到）"; });
     }
+  }
+
+  String _offReason = ""; // 降级原因（服务器返回的 msg/异常），供顶部提示展开看
+
+  static String _fmtAt(dynamic iso) {
+    if (iso is! String || iso.isEmpty) return "";
+    final d = DateTime.tryParse(iso);
+    if (d == null) return "";
+    final l = d.toLocal();
+    final p = (int n) => n.toString().padLeft(2, "0");
+    return "${p(l.hour)}:${p(l.minute)}:${p(l.second)}";
   }
 
   // 货位 → 在库框（含零件/数量）
@@ -82,12 +152,28 @@ class _LocMapPageState extends State<LocMapPage> {
   // ---- 顶部：页签 + 统计头 + 过滤 + 搜索 ----
   Widget _headCard() {
     final agg = _agg;
-    final totalBoxes = agg?.parts.values.fold<int>(0, (s, r) => s + r.inBoxes) ?? 0;
+    // ㉖v169 全厂在库框数优先取服务器值（与 KPI 四卡同源）。
+    // 新数据源只下发 byLoc，agg.parts 为空——若这里仍按 parts 汇总，头部会显示"全厂在库 0 框"。
+    final totalBoxes = agg?.srvBoxes ?? agg?.parts.values.fold<int>(0, (s, r) => s + r.inBoxes) ?? 0;
     return Container(
       margin: const EdgeInsets.fromLTRB(10, 8, 10, 4),
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), boxShadow: const [BoxShadow(color: Color(0x14000000), blurRadius: 8, offset: Offset(0, 2))]),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // ㉖v169 数据来源必须可见：服务器实时 vs 本机降级快照，两者数字可能不同，
+        // 不标注的话现场会把降级快照当实时数据去核对实物，反而判成"系统又错了"。
+        if (_offline)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Row(children: [
+              const Icon(Icons.cloud_off, size: 14, color: Color(0xFFEF6C00)),
+              const SizedBox(width: 5),
+              Expanded(
+                child: Text("取不到服务器数据，当前为本机快照（可能与其它设备不一致）${_offReason.isEmpty ? "" : "：$_offReason"}",
+                    style: const TextStyle(fontSize: 11, color: Color(0xFFEF6C00))),
+              ),
+            ]),
+          ),
         Row(children: [
           _segTab('shelf', "AGV货架 NB02"),
           const SizedBox(width: 8),
@@ -95,6 +181,12 @@ class _LocMapPageState extends State<LocMapPage> {
           const Spacer(),
           Text("全厂在库 $totalBoxes 框", style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
         ]),
+        // ㉖v169 数据时刻：让"实时"可核对（右上角刷新按钮旁不显示时间，光看页面无法判断新旧）
+        if (!_offline && _at.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text("服务器数据时刻 $_at", style: const TextStyle(fontSize: 10.5, color: Color(0xFF9AA6B4))),
+          ),
         const SizedBox(height: 8),
         if (_tab == 'shelf') _zoneStatsRow(),
         Row(children: [

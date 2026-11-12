@@ -125,6 +125,9 @@ const U = (s) => String(s == null ? "" : s).trim().toUpperCase();
     total++; fail++; console.log("❌ 异常：" + e.message + "\n" + (e.stack || "").split("\n").slice(0, 3).join("\n"));
   } finally {
     srv.kill(); await sleep(400);
+    // 自清理：本目录含整库副本（约 50MB），不清就每跑一次留一份。
+    // 排查失败时可用 KEEP_TDIR=1 保留现场。
+    if (process.env.KEEP_TDIR !== "1") { try { fs.rmSync(TDIR, { recursive: true, force: true }); } catch (_) {} }
   }
   console.log("\n结果: " + (total - fail) + " 通过 / " + fail + " 失败  （全程隔离副本，生产库零接触）");
   process.exit(fail ? 1 : 0);

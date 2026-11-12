@@ -427,6 +427,11 @@ class AuthApi {
   static Future<Map> trace(String q) async =>
       _req("GET", "/api/trace?q=${Uri.encodeComponent(q)}",
           token: await AuthStore.token());
+  // ㉖v169 货位占用图服务器实时视图（账本权威，与 KPI 四卡同源算法）。
+  // 现场 11-11 有格位在服务器账本明明有框、货位图却显示空格且刷新无效；本机聚合具体在哪步
+  // 吞掉该框未证实（详见 loc_map_page._reload 注释），改读服务器后显示只依赖账本本身。
+  static Future<Map> locMap() async =>
+      _req("GET", "/api/locmap", token: await AuthStore.token());
   // ㉖v68 服务器侧零件档案（按框归并在架+采集+出库明细+在途领料需求）
   static Future<Map> partProfile(String pn) async =>
       _req("GET", "/api/part/profile?pn=${Uri.encodeComponent(pn)}",
