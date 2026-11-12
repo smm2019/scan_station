@@ -17,6 +17,20 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      # ㉖v171 第0层③：测试门禁（动因见 server/selftest_ci_runner.js 头注释）
+      # CI 原先 build_runner → analyze → build apk，一个测试都不跑 → 106 个 test_*.js
+      # 只有人手工 node 时才有效力，质量保障是单点人力依赖。此步把它变成每次 push 自动跑。
+      # 放最前（装 Flutter/SDK 之前）：CI 等价实测仅 ~55s，不过就秒级红灯，不必白等 14 分钟构建。
+      # server.js 要求 Node v18+，钉 20 与现场一致；actions/setup-node 顺带提供稳定 node。
+      - name: Setup Node 20 (selftest gate)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Selftest gate (server regression)
+        working-directory: server
+        run: node selftest_ci_runner.js
+
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:

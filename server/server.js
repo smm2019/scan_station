@@ -14,6 +14,38 @@ const PORT = parseInt(process.env.PORT || '8099', 10);
 const HOST = process.env.HOST || '0.0.0.0';
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
+
+// ===== ㉖v171 代码身份可观测（第0层止血：消灭"以为更新了其实没重启"）=====
+// 动因：现场反复出现"代码已改、服务没重启，于是以为修复生效其实没有"。旧 /api/health
+//   只有 ok/uptime/serverTime/memMB/netmap/counts，没有任何字段能回答"线上进程加载的是哪份
+//   代码"，运维只能靠 uptime 心算分钟数反推，而 mtime 只保留最后一次修改，反推不可靠。
+// ★ 关键：必须在【启动那一刻】读自身源码算一次并冻结。若在请求时现算，磁盘与内存永远
+//   "一致"（现算读的就是磁盘），检测能力归零。
+//   用文件内容哈希而非 git sha：无需构建注入、不依赖 .git 存在（现场常为裸目录拷贝），
+//   且能捕获"直接改文件没走 git"的情况。
+function codeFingerprint() {
+  try {
+    const h = crypto.createHash('sha256');
+    h.update(fs.readFileSync(__filename));
+    return { codeSha: h.digest('hex').slice(0, 12), codeBytes: fs.statSync(__filename).size };
+  } catch (e) { return { codeSha: 'unknown', codeBytes: -1 }; } // 读不到自身也不能影响健康检查
+}
+const CODE_FP = codeFingerprint(); // 进程内只算一次=启动时快照，此后不变
+const SERVER_STARTED_AT = Date.now();
+
+// 判"改了代码但没重启"。旧写法不重启就永远发现不了（11-12 实测：health 启动 20:01、
+// server.js 改于 21:46，两者相差 1h45m，但接口上完全看不出来）。
+// ★ 把判好的布尔旗一起下发：运维不必再心算 sha 是否相同，也不会算错。
+//   启动瞬间 mtime 必然等于启动时刻（容 2s 抖动），正常态稳定为 false，不会误报。
+function codeMismatch(nowMs) {
+  let diskM = 0, diskSize = -1;
+  try { const st = fs.statSync(__filename); diskM = st.mtimeMs; diskSize = st.size; } catch (_) { return { codeMismatch: null, diskMtime: 0, diskBytes: -1 }; } // 取不到=未知，不谎报
+  return {
+    codeMismatch: (Math.round(diskM) > Math.round(SERVER_STARTED_AT) + 2000) || (diskSize >= 0 && CODE_FP.codeBytes >= 0 && diskSize !== CODE_FP.codeBytes),
+    diskMtime: diskM ? new Date(diskM).toISOString() : '',
+    diskBytes: diskSize,
+  };
+}
 const SESSION_TTL_MS = 12 * 3600 * 1000; // 12 小时滑动过期
 const LOGIN_FAIL_LIMIT = 5; // 同一账号 1 分钟内最多失败 5 次
 const LOGIN_FAIL_WINDOW_MS = 60 * 1000;
@@ -3481,8 +3513,12 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
     }
 
     // ---- G1 健康端点：无鉴权，供PDA失联检测/运维探测/网页健康分 ----
+    // ㉖v171 新增代码身份字段（只增字段，ok/uptime/memMB/netmap/counts 全部原样保留——
+    //   PDA 失联检测与网页健康分都在读这些，改结构会伤到它们）。
+    //   codeSha=启动时冻结的自身哈希；codeMismatch=已判好的"改了代码没重启"布尔旗，
+    //   运维不必再心算 sha 是否相同。见顶部 codeFingerprint/codeMismatch。
     if (req.method === 'GET' && p === '/api/health') {
-      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), netmap: { lands: Object.keys(NetMap.lands).length, edges: Object.keys(NetMap.adj).length, ready: NetMap.ready(), builtAgo: NetMap.builtAt ? Math.round((Date.now() - NetMap.builtAt) / 1000) : -1 }, counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length } });
+      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), code: Object.assign({ startedAt: new Date(SERVER_STARTED_AT).toISOString() }, CODE_FP, codeMismatch(Date.now())), netmap: { lands: Object.keys(NetMap.lands).length, edges: Object.keys(NetMap.adj).length, ready: NetMap.ready(), builtAgo: NetMap.builtAt ? Math.round((Date.now() - NetMap.builtAt) / 1000) : -1 }, counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length } });
     }
     // ---- ㉖v108 看门狗探测端点：无鉴权轻量应答，返回循环心跳年龄（外部计划任务据此判"进程活着但假死"并自动重启服务） ----
     if (req.method === 'GET' && p === '/api/health-ping') {

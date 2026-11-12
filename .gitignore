@@ -56,3 +56,9 @@ server/proof_*/
 server/*_data/
 deploy/watchdog-fail.count
 server/tmp_prob_smoke.js
+
+# ㉖v171 selftest 门禁产物：CI等价副本（含全仓拷贝，严禁入库）与本机会话基线
+server/_cisim*/
+server/_mkcisim.js
+server/.ci_baseline.txt
+server/.ci_out/
