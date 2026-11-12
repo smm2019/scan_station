@@ -1652,6 +1652,8 @@ const PARAMS = {
   nb01StaleH:     { grp: '告警阈值', name: '来料区滞留告警', unit: '小时', min: 1, max: 72, d: 4, tip: '㉖v118 来料区(NB04)框登记后超此小时数仍未二楼入库→站内通知全体仓管核对搬运上楼（每标签7天内只提醒一次）' },
   lostCallAlertM: { grp: '告警阈值', name: '入库丢单巡检', unit: '分钟', min: 0, max: 240, d: 15, tip: '㉖v152 账本 mv=AGV 已记"在架"、但入账超此分钟数仍查无叫车队列记录且无对应 AGV 任务（目标货位=该行货位、接令晚于入账）→ 判定"账称在架、车未叫"丢单，必达点名全体仓管回站台核对实物（11-11 N26K100170/N26K110142：扫码入账后叫车请求未达服务器，货在台上压了半小时无人知）。0=关闭。每标签7天只提醒一次；只查入账后2小时~28天，避开30天任务底仓边界的假阳性' },
   coarseAlertOn:  { grp: '告警阈值', name: '粗码未上账告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 地面模式采集流水货位仅为区排粗码（如 F4/H9，非 NB03-B-13-07 完整格位）→ v100 格式闸本就拒其上账，但流水会静默滞留（累计25框"未上账"全靠网页流水页偶然发现）；本开关=1 时 sync 落库当场 ops 留痕+必达点名"请到位置登记补完整格位"，同码同排去重' },
+  wmasReloginGapS: { grp: '调度节奏', name: 'WMAS重登冷却', unit: '秒', min: 0, max: 300, d: 30, tip: '㉖v160 WMAS 登录失败后的重登冷却秒数（0=不节流）。凭证被挤下线时若不节流，实测 20 次取票=20 次真实登录，WMAS 可能因频繁失败锁定账号；且每次登录成功会把对方会话踢下线，双方互挤成死循环。默认 30 秒＝最长 30 秒内恢复、又不打爆对方。现场在 WMAS 改密后重新保存 WMAS 配置会立即重置本冷却，不受影响' },
+  agvAuthYieldMin: { grp: '调度节奏', name: '退出登录让位时长', unit: '分钟', min: 1, max: 180, d: 15, tip: '㉖v161 人工点「退出登录」后，服务器在这段时间内【不自动登录】WMAS/AGV 调度系统，把单账号会话让给现场人员。两套系统都是同一账号后登录者踢掉前者：现场为改密/查数据人工登录 → 服务器会话被踢反复 401；服务器若立刻自动重登 → 又把现场人员的窗口踢掉，双方互挤谁都干不成。让位期内 AGV 叫车不可用（提示会写明剩余时间），到期自动恢复；重新保存 WMAS/RCS 配置=人工宣告已处理完，立即解除让位' },
   dupFlowAlertOn: { grp: '告警阈值', name: '重复有效流水告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 同一标签存在多条未作废采集流水 → 网页流水重复计行，且将来作废任一条会静默退回另一条当事实（11-11 N26K100170 两条有效流水台站还不一致 CK-08/CK-09）。增量检测：仅对 sync 本次新引入的重复告警；台站/格位分歧=必达点名人工裁决，位置一致=只留痕不吵人（现网存量43个重复中33个位置分歧，全量开会刷屏）' },
   outConsumeLedger: { grp: '存储配置', name: '出库即消本地账', unit: '档', min: 0, max: 2, d: 1, tip: '㉖v151 出库单（直调/MES转单）落库时同步消掉本地账本行，根治"直调只调MES四接口、本地账无人消"造成的幽灵框（来料区/货架库存与待入库虚高）。1=仅真实出库单消账（移仓单不消，保留 v108 标签回流语义，默认）；2=移仓单一并消（去向为线边仓/成品仓之外的仓间转移也认离架）；0=关闭（回退旧行为，只留痕不改账）。同托兄弟码一律不连坐删除，改站内消息点名交人工处置' },
   batch:          { grp: '调度节奏', name: '单轮最多下发', unit: '单', min: 1, max: 8, d: 4, tip: '排队调度器每轮最多真实下发几单（保守节奏）' },
@@ -1815,7 +1817,7 @@ function logErr(where, e, extra) {
 
 // ---- ㉕T1 通知治理：同类5分钟静默聚合（并入原条"等N条"）/ 每人每分钟超5条跨类型强制聚合 / 夜间22-6点非急停类按人缓冲，早6点各自一条汇总 ----
 const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
-const URGENT_TYPES = new Set(['car_alarm', 'inspect', 'req_rush', 'ghost_out']);   // 车辆告警（含急停）与急料单永不夜间静默（v88：夜班急料等早6点才汇总=失去急的意义）；㉖v151 ghost_out 幽灵出库同列——账实分叉夜间静默会拖到次日才暴露
+const URGENT_TYPES = new Set(['car_alarm', 'inspect', 'req_rush', 'ghost_out', 'wmas_auth']);   // 车辆告警（含急停）与急料单永不夜间静默（v88：夜班急料等早6点才汇总=失去急的意义）；㉖v151 ghost_out 幽灵出库同列——账实分叉夜间静默会拖到次日才暴露；㉖v160 wmas_auth 凭证失效=AGV 全线瘫痪，静默一夜等于整班人工搬运
 const NTYPE = { req_new: 'req_new', req_timeout: 'req_new', req_reassign: 'req_new', req_urge: 'req_urge', req_arrive: 'req_arrive', req_accept: 'req_flow', req_ready: 'req_flow', req_ready_wh: 'req_flow', req_done: 'req_flow', req_reject: 'req_flow', req_cancel: 'req_flow', watch_in: 'watch_in', stock_out: 'stock_out' }; // ㉕F5 订阅粒度（car_alarm不在表内=强制必达）
 function notify(toUserId, type, text, reqId, opts) {
   // ㉖v151 opts.solo=逐单独立成条，不参与同类聚合/限流合并：账实点名类告警（幽灵出库/来料区直调/同托兄弟码）
@@ -3852,6 +3854,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         const host = String(b.host || '').trim(), account = String(b.account || '').trim(), pwd = String(b.pwd || '');
         if (!host || !account || !pwd) return send(res, 400, { ok: false, msg: 'host/account/pwd 不能为空' });
         db.rcsConfig = { host, account, pwd }; db.rcsToken = ''; db.rcsTokenExp = 0;
+        authYieldClear(); // ㉖v161 人工重存配置=现场已处理完（改密/查数完毕），立即解除让位恢复调度
         pushOps(u,'改RCS配置', host, '账号:'+account+'（密码不记）');
         const _cr = cfgBump();
         save();
@@ -5147,7 +5150,7 @@ return send(res, 200, {
         if (tkq.some(function (x) { return x.type === 'transfer' && (x.from === from || x.to === to) && ['排队', '下发中', '已下发'].includes(x.state); })) return send(res, 400, { ok: false, msg: '该货位已有进行中的移库任务，请勿重复' });
         if (tkq.some(function (x) { return x.type !== 'transfer' && ['排队', '下发中', '已下发'].includes(x.state) && String(x.fromLoc).toUpperCase() === from; })) return send(res, 400, { ok: false, msg: '起点 ' + from + ' 的货架已在出库任务中，不能同时移库' });
         if (AGV_STNS.includes(to) && tkq.some(function (x) { return x.type !== 'transfer' && x.station === to && ['排队', '下发中', '已下发'].includes(x.state); })) return send(res, 400, { ok: false, msg: '目标站台 ' + to + ' 已有出库任务占用' });
-        const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: 'WMAS未配置/登录失败' });
+        const tk = await wmasToken(); if (!tk) return send(res, 400, { ok: false, msg: authYieldMsg() || 'WMAS未配置/登录失败' }); // ㉖v161 让位期归因优先：让人知道是"刚人工退出、等会儿或重存配置"，不是配置坏了
         if (String(b.dry || '') === '1') { const _ds = await wmasLocOf(from), _de = await wmasLocOf(to); if (!_ds || !_de) return send(res, 400, { ok: false, msg: '演算预检：起点/终点有货位不在WMAS主档，真实下发会失败' }); return send(res, 200, { ok: true, msg: '演算：移库 ' + from + '→' + to + '（' + (palletType || '自动') + '）主档校验通过，未建任务' }); }
         const item = { type: 'transfer', kind: kind, from: from, to: to, palletType: palletType, code: srcBox.c, boxKey: srcBox.p || '', state: '下发中', by: u.name, at: Date.now(), updAt: Date.now(), trace: ['移库/返架直发：' + from + '→' + to + (palletType ? '（容器 ' + palletType + '）' : '') + '，起终点固定不改派'] };
         db.agvQueue = db.agvQueue || []; db.agvQueue.push(item);
@@ -5326,7 +5329,7 @@ return send(res, 200, {
         const tn = st0 === 'returning' ? (rec.taskNo2 || '') : (rec.taskNo || '');
         if (tn) {
           const tk = await wmasToken();
-          if (!tk) return send(res, 400, { ok: false, msg: 'WMAS 未配置/登录失败，无法撤销已派 AGV 任务' });
+          if (!tk) return send(res, 400, { ok: false, msg: authYieldMsg() || 'WMAS 未配置/登录失败，无法撤销已派 AGV 任务' }); // ㉖v161 让位期无票=人工主动退出，撤销暂停；已派任务不受影响，到期或重存配置后可正常撤销
           const cr = await wmasHttp('POST', '/api/logistics/agv-task/cancelTask', tk, [tn]); // ㉖v72 真实签名；wmasHttp 失败返回 null（不抛异常）
           if (!wmasOk(cr)) return send(res, 400, { ok: false, msg: 'AGV 任务撤销未成功（可能已叉出，需人工处理）：' + ((cr && (cr.message || cr.code)) || 'WMAS无响应') });
         }
@@ -5384,11 +5387,40 @@ return send(res, 200, {
         const _cg = cfgGuard(b); if (_cg) return send(res, 409, { ok: false, code: 'conflict', cfgRev: _cg.cur, msg: _cg.msg });
         const host = String(b.host || '').trim(), account = String(b.account || '').trim(), pwd = String(b.pwd || '');
         if (!host || !account || !pwd) return send(res, 400, { ok: false, msg: 'host/account/pwd 不能为空' });
-        db.wmasConfig = { host, account, pwd }; _wmasTk = ''; _wmasLoc = null;
+        db.wmasConfig = { host, account, pwd }; _wmasTk = ''; _wmasLoc = null; // ㉖v160 人工重存配置=现场已处理账号或已改密，必须立刻可重登：重置登录冷却与凭证失效态（含告警节流起点，便于立刻再收到状态）
+        _wmasLoginFailAt = 0; _wmasAuthBadAt = 0; _wmasAuthNotifiedAt = 0;
+        authYieldClear(); // ㉖v161 同 RCS 入口口径：人工重存配置=已处理完，立即解除让位（现场不必等到期或重启）
         pushOps(u,'改WMAS配置', host, '账号:'+account+'（密码不记）');
         const _cr = cfgBump();
         save();
         return send(res, 200, { ok: true, cfgRev: _cr, msg: 'WMAS配置已保存' });
+      }
+      if (req.method === 'POST' && p === '/api/agv/auth-logout') { // ㉖v161 人工退出 WMAS/AGV 登录（11-12 现场：改了密码仍报"有其他用户登录该账号"——抢号的不是密码，是三方共用同一账号）
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
+        // 两套系统都是【同一账号、后登录者踢前者】，且都【没有登出接口】可调（实测无 logout 端点）→
+        // "退出"只能做两件事：①本地作废已持有的票（不再拿它发业务请求）②在一段时间内不再自动登录，
+        // 把账号让给现场人员去 WMAS/AGV 网页办事（改密、查数据）。到期自愈；重存配置=人工宣告办完，立即恢复。
+        const mins = Math.max(1, Number(P().agvAuthYieldMin) || 15);
+        _wmasTk = ''; _wmasTkAt = 0; _wmasTkFp = ''; _wmasLoc = null; _wmasLocAt = 0;
+        db.rcsToken = ''; db.rcsTokenExp = 0;
+        _wmasAuthBadAt = 0; _wmasAuthNotifiedAt = 0; _wmasLoginFailAt = 0; // 主动退出≠凭证故障：清失效态，防残留一条错误的"凭证失效"告警与后续恢复通报
+        authYieldStart(mins, u.name);
+        depMark('wmas', false, '已人工退出登录，让位中'); depMark('rcs', false, '已人工退出登录，让位中');
+        pushOps(u, '退出AGV登录', String((db.wmasConfig || {}).account || '-') + ' / ' + String((db.rcsConfig || {}).account || '-'), '让位 ' + mins + ' 分钟：期间服务器不自动登录 WMAS/AGV，叫车与撤销暂停，到期自动恢复');
+        save();
+        return send(res, 200, { ok: true, until: _authYieldUntil, mins, by: u.name, msg: '已退出 WMAS/AGV 登录并让位 ' + mins + ' 分钟：现在可用该账号登录 WMAS/AGV 网页处理账号问题。让位期内 AGV 叫车/撤销不可用，到期自动恢复；要提前恢复就在【AGV调度系统设置】重新保存 WMAS 或 RCS 配置' });
+      }
+      if (req.method === 'POST' && p === '/api/agv/auth-resume') { // ㉖v161 结束让位并恢复自动登录（与 auth-logout 成对；现场处理完账号问题后一键恢复，不必等 15 分钟或重启）
+        if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
+        const was = authYieldOn() ? authYieldLeftMin() : 0;
+        authYieldClear(); // 先解除，下面探活才能真正登录
+        save();
+        const tk = await wmasToken(); // 立刻探一次通道：把"恢复后到底能不能登进去"如实回给现场（改密未同步时会直接暴露）
+        pushOps(u, '恢复AGV登录', String((db.wmasConfig || {}).account || '-') + ' / ' + String((db.rcsConfig || {}).account || '-'), (was ? '结束让位（原剩 ' + was + ' 分钟）；' : '') + (tk ? 'WMAS 通道已通' : 'WMAS 仍登录失败：请确认已把新密码重新保存到 WMAS 配置'));
+        return send(res, 200, { ok: true, wmasOk: !!tk, msg: tk ? '已恢复自动登录，WMAS 通道正常，AGV 叫车可用' : '已恢复自动登录，但 WMAS 仍登录失败——多半是新密码没保存到我们系统：请到 AGV调度系统设置 重新保存 WMAS 配置' });
+      }
+      if (req.method === 'GET' && p === '/api/agv/auth-yield') { // ㉖v161 让位状态查询（PDA/网页显示剩余时间与归因，避免误判成"配置丢了"）
+        return send(res, 200, { ok: true, on: authYieldOn(), until: _authYieldUntil, leftMin: authYieldLeftMin(), by: _authYieldBy, msg: authYieldMsg() || '调度系统登录正常' });
       }
       // ================= 数据驾驶舱（只读聚合，登录即可看） =================
       // ---- ㉕F5 个人偏好 prefs（落地页/通知订阅/概览卡自选）+ 管理员模板 ----
@@ -7048,6 +7080,9 @@ function rcsReq(path, method = 'GET', token = '') {
   });
 }
 async function rcsLogin() {
+  // ㉖v161 让位期内不自动登录（AGV(RCS) 与 WMAS 同为"后登录者踢前者"单账号会话）：一处收口，
+  // 覆盖 rcsPoll / rcsReq2 / 指挥舱读写等全部自动重登入口；返回 null 后调用方按"未登录"处理。
+  if (authYieldOn()) { depMark('rcs', false, '已人工退出登录，让位中（剩 ' + authYieldLeftMin() + ' 分钟）'); return null; }
   const cfg = db.rcsConfig || {};
   return new Promise((resolve) => {
     try {
@@ -7564,11 +7599,15 @@ let _wmFail = 0;
 async function wmasHealthWatch() {
   try {
     if (!db.wmasConfig || !db.wmasConfig.host) return;
+    // ㉖v161 让位期内探活直接跳过：此时 wmasToken() 必然返回空（故意不登录），照跑会连败 2 次→给全体
+    // 仓管发一条"mom-logistics 掉线"的错误告警，并写 wmasDownAt 污染故障统计。让位≠故障，两者不可混。
+    if (authYieldOn()) return;
     let ok = false;
     const tk = await wmasToken();
     if (tk) { const r = await wmasHttp('GET', '/api/logistics/container/list?pageNum=1&pageSize=1', tk); ok = wmasOk(r); }
     if (ok) {
       _wmFail = 0; depMark('wmas', true); // ㉖v108 依赖活性
+      wmasAuthRecover(); // ㉖v160 探活成功=通道可用：旧 token 因对方退出而复活（不触发登录）时，恢复通报由此发出（函数内自带"无失效态即返回"判断，无需外层条件）
       if (db.wmasDownAt) { const mins = Math.max(1, Math.round((Date.now() - db.wmasDownAt) / 60000)); db.wmasDownAt = 0; save();
         db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'car_alarm', '✅ WMAS 调度服务已恢复（掉线约 ' + mins + ' 分钟）', ''));
         pushEvent('恢复', 'WMAS', '调度服务恢复，掉线约 ' + mins + ' 分钟', Date.now()); console.log('[wmas-health] 恢复，掉线 ' + mins + ' 分钟'); }
@@ -7593,6 +7632,9 @@ async function rcsPoll() {
 }
 async function _rcsPollInner() {
   if (!db.rcsConfig || !db.rcsConfig.host) return;
+  // ㉖v161 让位期内整轮静默跳过（含排队调度——agvDispatch 挂在本轮内，一并暂停，正是"让位"语义）：
+  // 走下去会每 20 秒打一条"[rcs] 登录失败"并把依赖标成"不可达或凭据失效"——归因错误会误导排查方向。
+  if (authYieldOn()) { depMark('rcs', false, '已人工退出登录，让位中（剩 ' + authYieldLeftMin() + ' 分钟，到期自动恢复）'); return; }
   let tk = (db.rcsToken && Date.now() < (db.rcsTokenExp || 0)) ? db.rcsToken : await rcsLogin();
   if (!tk) { console.log('[rcs] 登录失败，下轮重试'); depMark('rcs', false, 'RCS登录失败（不可达或凭据失效）'); return; }
   let run = await rcsReq('/task/getTaskInfo', 'GET', tk);
@@ -7837,8 +7879,8 @@ function agvStationFree(stn, nowMs, runT, assigned) {
   for (const q of db.agvQueue || []) if (q.station === stn && (q.state === '下发中' || q.state === '已下发')) return false;
   return true;
 }
-function wmasHttp(method, path, token, body) {
-  return new Promise((resolve) => {
+async function wmasHttp(method, path, token, body) {
+  const r = await new Promise((resolve) => {
     try {
       const cfg = db.wmasConfig || {};
       const [host, port] = String(cfg.host || '').split(':');
@@ -7851,18 +7893,122 @@ function wmasHttp(method, path, token, body) {
       if (data) r.write(data); r.end();
     } catch (_) { resolve(null); }
   });
+  // ㉖v160 凭证失效识别（11-12 11:14 现场：账号被他在处登录挤下线，返 {"code":401,"msg":"有其他用户登录该账号，请及时修改密码","errCode":"B-00004"}）：
+  // 旧版对此【零动作】——token 缓存满 10 小时不清不重登，一直拿废凭证反复 401（实测 17 分钟零自愈），且只写日志不告警。
+  // 本层只【标记+告警】、不改写响应（各调用方自带 r.msg 透传，改写会污染现场文案）；清缓存重登由调用方经 wmasTokenFresh 完成。
+  // 网络 null / 超时不在此列——那是服务掉线，归 wmasHealthWatch 看门狗，两种故障文案与出路完全不同，不可混。
+  if (wmasAuthErr(r)) {
+    // 关键自愈点：401 出现即【作废 token 缓存】——废票留在 10 小时新鲜窗内是旧版 17 分钟不自愈的直接原因。
+    // 作废后任何下一次 wmasToken() 都会真正重新登录（改密码场景同样生效：配置里已是新密码）。
+    _wmasAuthBadAt = _wmasAuthBadAt || Date.now(); _wmasAuthErrAt = Date.now();
+    _wmasTk = ''; _wmasTkAt = 0; _wmasTkFp = '';
+    wmasAuthAlert(r);
+  }
+  return r;
 }
-let _wmasTk = '', _wmasTkAt = 0, _wmasLoc = null, _wmasLocAt = 0;
+let _wmasTk = '', _wmasTkAt = 0, _wmasTkFp = '', _wmasLoc = null, _wmasLocAt = 0;
+// ㉖v160 凭证失效自动重试：叫车在"查容器主档"阶段被 401 挡下时，旧版直接把失败甩给现场。
+// 包装下发出口——失败且错误文案属凭证类（401/B-00004/登录字样）时，清缓存重登后【重试一次】。
+// 安全性：容器主档查询在建单之前，401 时任务尚未创建，重试不会重复建单；
+//         即便已进到建单阶段，wmasOwnTask 的"认领同坐标同单号遗留单"逻辑同样防重复。
+async function wmasDispatchOne(q, tk, ov) {
+  const r0 = await _wmasDispatchOnce(q, tk, ov);
+  if (r0 && r0.ok) return r0;
+  const m = String((r0 && r0.msg) || "");
+  if (!/401|B-00004|其他用户登录|登录已?(过期|失效)|未登录|重新登录/.test(m)) return r0;
+  const tk2 = await wmasTokenFresh();
+  if (!tk2) return r0;
+  const r1 = await _wmasDispatchOnce(q, tk2, ov);
+  if (r1 && r1.ok) console.log("[wmas-auth] 凭证重登后重试下发成功：" + (q.code || q.fromLoc || ""));
+  return r1;
+}
+let _wmasAuthBadAt = 0, _wmasAuthNotifiedAt = 0, _wmasAuthErrAt = 0;
+let _wmasLoginFailAt = 0; // ㉖v160 最近一次【登录失败】时刻：冷却期内不再发登录请求（防登录风暴/会话互挤循环） // 凭证失效起始时刻 / 最近点名时刻（30 分钟节流防刷屏）
+// ㉖v161 人工「退出登录」让位窗口：WMAS 与 AGV(RCS) 都是【同一账号、后登录者踢掉前者】。
+// 现场为改密/查数据人工登录 → 服务器会话被踢、叫车反复 401；服务器若立刻自动重登 → 反过来又把
+// 现场人员刚建立的窗口踢掉，三方（服务器 / PDA / 人工浏览器）互挤成死循环，谁都干不成活。
+// 11-12 现场即此症：改了密码仍报"有其他用户登录该账号"，因为抢号的不是密码错误，是号被共用。
+// 让位语义 = 人工点退出后，服务器在这段时间内【完全不自动登录】，把号让给现场；到期自愈。
+// 重新保存 WMAS/RCS 配置 = 人工宣告已处理完 → 立即解除让位（与 v160 重置登录冷却同一入口）。
+let _authYieldUntil = 0, _authYieldBy = '';
+const authYieldOn = () => Date.now() < _authYieldUntil;
+const authYieldLeftMin = () => Math.max(0, Math.ceil((_authYieldUntil - Date.now()) / 60000));
+function authYieldStart(mins, by) { _authYieldUntil = Date.now() + Math.max(1, Number(mins) || 15) * 60000; _authYieldBy = String(by || ''); }
+function authYieldClear() { _authYieldUntil = 0; _authYieldBy = ''; }
+// 让位期统一归因文案：让位是【人工主动】，绝不能报成"WMAS 未配置/凭据失效"——那会把现场推向
+// 去翻配置、甚至改密码，而真正要做的是等到期或重存配置。返回 null=不在让位期，调用方走原文案。
+function authYieldMsg() {
+  if (!authYieldOn()) return null;
+  return '已人工退出 AGV/WMAS 登录（' + (_authYieldBy || '现场人员') + ' 操作），让位中约剩 ' + authYieldLeftMin()
+    + ' 分钟：期间不可叫车/撤销，到期自动恢复；要立刻恢复请在【AGV调度系统设置】重新保存 WMAS 或 RCS 配置';
+}
+// 凭证类失败判定：登录互斥(401/B-00004) 与各接口不统一的"登录过期/失效"文案按形态归并
+function wmasAuthErr(r) {
+  if (!r || typeof r !== 'object') return false;
+  if (r.code === 401 || String(r.errCode || '').indexOf('B-00004') >= 0) return true;
+  return /其他用户登录|账号.*(登录|挤|冲突)|登录已?(过期|失效)|未登录|重新登录/.test(String(r.msg || r.message || ''));
+}
+// 必达点名（ghost_out 同款：不入 NTYPE=个人退订无效、入 URGENT=夜间不静默；solo=不被聚合吞掉出路文案）
+function wmasAuthAlert(r) {
+  const raw = String((r && (r.msg || r.message)) || JSON.stringify(r || '')).slice(0, 90);
+  if (!_wmasAuthNotifiedAt) { try { pushEvent('告警', 'WMAS', 'WMAS 登录凭证失效：' + raw + '｜叫车全线不可用，请到 WMAS 处理账号后重新保存 WMAS 配置', Date.now()); } catch (_) {} }
+  if (Date.now() - _wmasAuthNotifiedAt < 30 * 60000) return;
+  _wmasAuthNotifiedAt = Date.now();
+  const mins = Math.max(1, Math.round((Date.now() - (_wmasAuthBadAt || Date.now())) / 60000));
+  const msg = '🔑 WMAS 账号登录凭证失效（已持续约 ' + mins + ' 分钟）：' + raw + '｜AGV 叫车/撤销/容器查询【全部不可用】。常见原因＝有人用同一账号在别处登录 WMAS 把系统会话挤下线，或该账号密码已被改。请到 WMAS 侧处理（改密后须用新密码），并在 PDA「设置→AGV调度系统」或网页设置里【重新保存一次 WMAS 配置】即刻恢复';
+  try { db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'wmas_auth', msg, '', { solo: true })); save(); } catch (_) {}
+  console.log('[wmas-auth] ' + msg);
+}
 // WMAS 各接口成功标志不统一（登录返回 code:200，业务返回 success:true），统一判定
 const wmasOk = (r) => !!r && (r.success === true || r.code === 200 || r.code === 0);
-function wmasMarkOk() { try { db.wmasOkAt = Date.now(); } catch (_) {} }
+function wmasMarkOk() {
+  try { db.wmasOkAt = Date.now(); } catch (_) {}
+  wmasAuthRecover(); // ㉖v160 登录成功即视为凭证链路已通（改密/重存配置/对方退出登录都会走到这里）
+}
+// ㉖v160 凭证恢复通报（独立函数：登录成功与【看门狗探活成功】两条路径共用）。
+// 为何不能只挂在 wmasMarkOk：现场最常见的恢复方式是"占账号的人自己退出"，此后旧 token 直接复活可用、
+// 不再触发登录 → 只挂登录路径就永远不发恢复通报（补测 S2 实测坐实）。带 60 秒节流防抖 + 事件中心留档。
+let _wmasRecNotifiedAt = 0;
+function wmasAuthRecover() {
+  if (!_wmasAuthBadAt) return;
+  if (Date.now() - _wmasRecNotifiedAt < 60 * 1000) return; // 登录与探活同刻双双成功时只报一次
+  _wmasRecNotifiedAt = Date.now();
+  const mins = Math.max(1, Math.round((Date.now() - _wmasAuthBadAt) / 60000));
+  _wmasAuthBadAt = 0; _wmasAuthNotifiedAt = 0; _wmasLoginFailAt = 0; // 恢复即清空失效态与登录冷却，下一次故障重新计时
+  try {
+    db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'wmas_auth', '✅ WMAS 登录凭证已恢复（失效约 ' + mins + ' 分钟），AGV 叫车可正常使用', ''));
+    pushEvent('恢复', 'WMAS', '登录凭证恢复，失效约 ' + mins + ' 分钟', Date.now());
+    console.log('[wmas-auth] 凭证恢复，失效 ' + mins + ' 分钟');
+  } catch (_) {}
+}
+// 指纹必须含密码密文（enc1: 前缀密文，非明文，仅存内存）：现场在 WMAS 改密后回来重存配置，若只比 host+account
+// 则【改了密码而账号主机未变】时旧废票仍会被复用到 10 小时满——正是 E1 场景；密文随密码变更必变，改一次即弃旧票
+function _wmasCfgFp() { const c = db.wmasConfig || {}; return String(c.host || '') + '|' + String(c.account || '') + '|' + String(c.pwd || '').slice(0, 24); }
 async function wmasToken() {
-  if (_wmasTk && Date.now() - _wmasTkAt < 10 * 3600 * 1000) return _wmasTk;
+  // ㉖v160 缓存带配置指纹：现场改了 WMAS 密码但账号/主机没变时，旧 token 不再被继续复用 10 小时
+  // ㉖v161 让位期内彻底静默：不发登录、不复用旧票。现场点「退出登录」就是要拿这个号去 WMAS 办事
+  // （改密/查数据），服务器任何一次自动登录都会把人家刚建立的窗口踢掉。无票→调用方直接报失败、
+  // 不发业务请求，因此也不会产生 401 与告警噪音（区别于凭证失效路径）。
+  if (authYieldOn()) { depMark('wmas', false, '已人工退出登录，让位中（剩 ' + authYieldLeftMin() + ' 分钟）'); return ''; }
+  const fp = _wmasCfgFp();
+  if (_wmasTk && _wmasTkFp === fp && Date.now() - _wmasTkAt < 10 * 3600 * 1000) return _wmasTk;
   const cfg = db.wmasConfig || {}; if (!cfg.account || !cfg.pwd) return '';
+  // ㉖v160 登录风暴防护：只在【上次登录已失败】后冷却——首次自愈重试不受影响（业务 401→清票→立刻重登仍即时生效）。
+  // 不节流的后果（实测 20 次取票=20 次真实登录）：①WMAS 可能因频繁失败锁定账号 ②每次登录成功会踢掉对方会话，
+  // 对方再登回来又把系统踢掉 → 互挤死循环，且每轮都给全体仓管发一次告警。
+  const _gapS = Math.max(0, Number(P().wmasReloginGapS) || 0);
+  if (_wmasLoginFailAt && _gapS > 0 && Date.now() - _wmasLoginFailAt < _gapS * 1000) return '';
   const r = await wmasHttp('POST', '/api/auth/login', null, { username: cfg.account, password: cfg.pwd });
-  if (wmasOk(r) && r.data && r.data.token) { _wmasTk = r.data.token; _wmasTkAt = Date.now(); wmasMarkOk(); return _wmasTk; }
+  if (wmasOk(r) && r.data && r.data.token) { _wmasTk = r.data.token; _wmasTkAt = Date.now(); _wmasTkFp = fp; _wmasLoginFailAt = 0; wmasMarkOk(); return _wmasTk; }
+  _wmasLoginFailAt = Date.now(); // ㉖v160 登录失败→进入冷却（间隔=参数 wmasReloginGapS）
   console.log('[agv-q] WMAS登录失败：' + JSON.stringify(r).slice(0, 150));
   return '';
+}
+// ㉖v160 供调用方自愈用：401 被踢后旧 token 仍在 10 小时新鲜窗内，单纯再调 wmasToken() 会原样返回【废 token】
+// ——必须先清缓存再登录，否则"重试"永远拿同一张废票（这是本次最容易写错的一点）
+async function wmasTokenFresh() {
+  _wmasTk = ''; _wmasTkAt = 0; _wmasTkFp = ''; // 先试缓存会原样返回废票（实测 B4），fresh 的语义就是强制重登
+  return await wmasToken();
 }
 async function wmasLocOf(code) {
   if (!_wmasLoc || Date.now() - _wmasLocAt > 3600 * 1000) {
@@ -7875,7 +8021,7 @@ async function wmasLocOf(code) {
   }
   return (_wmasLoc || {})[String(code).toUpperCase()] || null;
 }
-async function wmasDispatchOne(q, tk, ov) { const from = (ov && ov.from) || q.fromLoc; const to = (ov && ov.to) || q.station; let pallet = (ov && ov.pallet) || q.palletType; if (!String(pallet || '').trim() && q.code) pallet = palletTypeOf(q.code); // ㉖v52 账本空类型兜底：从采集流水取容器类型
+async function _wmasDispatchOnce(q, tk, ov) { const from = (ov && ov.from) || q.fromLoc; const to = (ov && ov.to) || q.station; let pallet = (ov && ov.pallet) || q.palletType; if (!String(pallet || '').trim() && q.code) pallet = palletTypeOf(q.code); // ㉖v52 账本空类型兜底：从采集流水取容器类型
   const ref = (ov && ov.ref !== undefined) ? ov.ref : (q.reqNo || "");
   // 容器自动选号：优先挑"近30分钟无在途任务"的号；挑不到就复用（与人工叫车同款行为——WMAS不强校验容器号唯一，复用不影响叉货）
   const cr = await wmasHttp('GET', '/api/logistics/container/list?pageNum=1&pageSize=1000', tk);
@@ -8079,6 +8225,14 @@ function trPush(q, msg) {
 async function dispatchOne(q, nowMs, runT, assigned, live) {
   // ㉖v79c 二次防重（与 rcsPoll 防重入锁互补）：已进入下发/在途/到站/完成态的项绝不重复建任务
   if (['下发中', '已下发', '到站', '完成'].includes(q.state)) return true;
+  // ㉖v161 让位守卫（收口【全部】下发入口：轮询/一键叫车/检验/盘点/退回联动，含未来新增路径）：
+  // 人工退出登录期间账号已让给现场，此处绝不发登录、绝不建任务。排队项由 _rcsPollInner 的让位早退
+  // 保护（整轮不跑，不会被反复标失败）；手动入口走到这里才落失败态，文案给准确原因与恢复办法。
+  if (authYieldOn()) {
+    q.state = '失败'; q.err = authYieldMsg() || 'WMAS/AGV 已人工退出登录，让位中';
+    q.trace = q.trace || []; q.trace.push('让位期内不下发（人工退出登录，账号让给现场处理）');
+    return true;
+  }
   q.trace = q.trace || [];
   if (q.trace.length > 5) q.trace = q.trace.slice(-5); // ㉖v56 预裁剪：早退路径（等待/演算）也保证 trace 不膨胀
   let stn = '';

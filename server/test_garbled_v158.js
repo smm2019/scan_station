@@ -153,12 +153,25 @@ setTimeout(() => {
   const pdb = JSON.parse(fs.readFileSync(__dirname + '/data/db.json', 'utf8'));
   const dirtyI = Object.keys(pdb.itemDict || {}).filter(k => FFD.test(k));
   const dirtyM = Object.keys(pdb.mitemDict || {}).filter(k => FFD.test(k));
-  T('P1 生产脏键仅 -海外 系（影响面与取证一致）', dirtyI.length === 2 && dirtyM.length === 2 && dirtyI.concat(dirtyM).every(k => /外$/.test(k)), 'itemDict=' + dirtyI.length + ' mitemDict=' + dirtyM.length);
-  const allSame = dirtyI.every(k => { const num = (k.match(/^\d+/) || [''])[0]; return Object.keys(pdb.itemDict).some(x => x !== k && x.indexOf(num) === 0 && !FFD.test(x) && pdb.itemDict[x].nm === pdb.itemDict[k].nm); })
+  // ㉖v160 断言改为【清理前后两态自洽】：原写法把"尚未清理"当固定前提，清理一旦实际执行
+  // （服务重启即触发）P1/P4 必漂移失败、P2/P3 更危险——脏键为空时 every() 对空数组恒真=静默空过。
+  const cleaned = pdb.dictFfdCleanedV158 === 1;
+  const nDirty = dirtyI.length + dirtyM.length;
+  const logN = (pdb.dictFfdCleanLogV158 || []).length;
+  T('P1 字典脏键与清理标记自洽', cleaned
+    ? (nDirty === 0 && logN === 4)
+    : (nDirty === 4 && dirtyI.concat(dirtyM).every(k => /外$/.test(k))),
+    (cleaned ? '已清理：脏键 0 + 留档 ' + logN + ' 条' : '未清理：脏键 ' + nDirty + ' 条（均为 -海外 系）'));
+  // 信息未丢失的等价证据：清理前=脏键各有同族同值干净键；清理后=留档点名了同族键且其值仍在
+  const sibOk = dirtyI.every(k => { const num = (k.match(/^\d+/) || [''])[0]; return Object.keys(pdb.itemDict).some(x => x !== k && x.indexOf(num) === 0 && !FFD.test(x) && pdb.itemDict[x].nm === pdb.itemDict[k].nm); })
     && dirtyM.every(k => { const num = (k.match(/^\d+/) || [''])[0]; return Object.keys(pdb.mitemDict).some(x => x !== k && x.indexOf(num) === 0 && !FFD.test(x) && pdb.mitemDict[x].mc === pdb.mitemDict[k].mc); });
-  T('P2 生产脏键全部有同族同值干净键→重启清理零信息损失', allSame, true);
-  T('P3 脏键形态字节级与注入模型一致', dirtyI.every(k => Buffer.from(k, 'utf8').toString('hex').indexOf('efbfbd') > 0), true);
-  T('P4 本次验证未写生产库（清理标记仍不存在）', pdb.dictFfdCleanedV158 === undefined, '未重启故未执行，符合预期');
+  const logSibOk = (pdb.dictFfdCleanLogV158 || []).length === 4 && (pdb.dictFfdCleanLogV158 || []).every(e => {
+    const D = pdb[e.dict] || {}; const v = D[e.sameAs];
+    return !!v && String(v[e.dict === 'itemDict' ? 'nm' : 'mc'] || '') === String(e.val[e.dict === 'itemDict' ? 'nm' : 'mc'] || '');
+  });
+  T('P2 脏键信息未丢失（同族同值干净键在库）', cleaned ? logSibOk : sibOk, cleaned ? '留档 4 条的同族键值仍一致' : '脏键 4 条均有同族同值干净键');
+  T('P3 脏键形态与注入模型一致（有脏键时校验字节形态）', nDirty === 0 ? logN === 4 : dirtyI.concat(dirtyM).every(k => Buffer.from(k, 'utf8').toString('hex').indexOf('efbfbd') > 0), nDirty === 0 ? '脏键已清，改校验留档计数' : '4 条均含 efbfbd 切断形态');
+  T('P4 本测试不写生产库（标记状态与脏键数不矛盾）', cleaned ? (nDirty === 0 && logN === 4) : (nDirty === 4 && logN === 0), cleaned ? '清理由服务重启执行，非本测试所为' : '未重启，清理未执行');
   console.log('\n结果: ' + pass + ' PASS / ' + fail + ' FAIL');
   process.exit(fail ? 1 : 0);
 }, 600);

@@ -406,6 +406,15 @@ class AuthApi {
       _req("POST", "/api/agv/wmas-config",
           body: {"host": host, "account": account, "pwd": pwd},
           token: await AuthStore.token());
+  // ㉖v161 人工退出 WMAS/AGV 登录（两套系统同账号互斥，退出后服务器与本机一并让位，现场才能拿到号办事）
+  static Future<Map> agvAuthLogout() async =>
+      _req("POST", "/api/agv/auth-logout",
+          body: {}, token: await AuthStore.token());
+  static Future<Map> agvAuthResume() async =>
+      _req("POST", "/api/agv/auth-resume",
+          body: {}, token: await AuthStore.token());
+  static Future<Map> agvAuthYield() async =>
+      _req("GET", "/api/agv/auth-yield", token: await AuthStore.token());
   // 零件档案：拉服务器全厂流水/出库单（B）+ 单框AGV链路（A补充）
   static Future<Map> scanlogGet({int limit = 5000}) async =>
       _req("GET", "/api/scanlog?limit=$limit", token: await AuthStore.token());

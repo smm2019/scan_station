@@ -48,6 +48,131 @@ class WmasConfig {
   }
 }
 
+/// ㉖v161 本机「退出登录」让位窗口（WMAS 与 AGV(RCS) 共用一把，两个文件同为 part of 'main.dart'）
+/// 两套调度系统都是【同一账号、后登录者踢前者】。现场点退出就是为了拿这个号去对方网页办事
+/// （改密/查数据）；此后 PDA 任何一次 token() 自动重登都会把人家的窗口踢掉，所以本机也要静默。
+/// 与服务器侧 authYieldOn 同一语义、同一起止：点退出即开始，重存配置=人工宣告办完立即解除。
+class AgvAuthYield {
+  static const keyUntil = "agv_auth_yield_until"; // 让位截止时刻（毫秒）
+  static const keyBy = "agv_auth_yield_by";
+
+  static Future<void> start(int mins, {String by = ""}) async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.setInt(keyUntil, DateTime.now().millisecondsSinceEpoch + mins * 60000);
+    await sp.setString(keyBy, by);
+  }
+
+  static Future<void> clear() async {
+    final sp = await SharedPreferences.getInstance();
+    await sp.remove(keyUntil);
+    await sp.remove(keyBy);
+  }
+
+  static bool _on(int until) => until > DateTime.now().millisecondsSinceEpoch;
+
+  static Future<bool> on() async {
+    final sp = await SharedPreferences.getInstance();
+    final u = sp.getInt(keyUntil) ?? 0;
+    if (!_on(u)) {
+      if (u != 0) {
+        await sp.remove(keyUntil); // 到期自愈：顺手清干净，防残留标记一直显示
+        await sp.remove(keyBy);
+      }
+      return false;
+    }
+    return true;
+  }
+
+  static Future<int> leftMin() async {
+    final sp = await SharedPreferences.getInstance();
+    final u = sp.getInt(keyUntil) ?? 0;
+    return _on(u) ? ((u - DateTime.now().millisecondsSinceEpoch) / 60000).ceil() : 0;
+  }
+
+  static String msgOf(int left) => "已退出 WMAS/AGV 登录，让位约剩 $left 分钟"
+      "（期间本机与各端都不自动登录，可用该账号去 WMAS/AGV 网页处理账号问题）；"
+      "到期自动恢复，要提前恢复就重新保存一次 WMAS 或 RCS 配置";
+}
+
+/// ㉖v161 「退出 / 恢复登录」两页共用的唯一入口（WMAS 设置页与 AGV 调度设置页行为必须一致，
+/// 两处各写一份迟早分叉）。按本机当前是否在让位中自动判别方向：正常→退出并让位；让位中→恢复。
+/// 返回 {cancelled:true}（用户取消，调用方原样退回）或 {ok:bool, msg:String}；不抛异常。
+/// ★ 为什么必须"服务器 + 本机"两侧一起动：两套调度系统都是【同一账号、后登录者踢前者】，
+///   服务器每 20 秒轮询、PDA 每页取票都会自动重登，任何一方单独恢复都会把现场人员刚建立的
+///   会话踢掉（正是 11-12 "改了密码仍报有其他用户登录"的死循环本体）。
+/// ★ 恢复方向顺序要紧：先服务器结束、成功后才解本机；反之会出现"本机已恢复重登、服务器仍在
+///   让位"的半恢复态，等于退出白做。
+Future<Map<String, dynamic>> agvAuthToggle(BuildContext context) async {
+  final yielding = await AgvAuthYield.on();
+  if (!yielding) {
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (dc) => AlertDialog(
+            title: const Text("退出 WMAS / AGV 登录？"),
+            content: const Text("退出后服务器与本机都【不再自动登录】两套调度系统，让位约 15 分钟：\n\n"
+                "· 这段时间可用该账号登录 WMAS / AGV 网页处理账号问题（改密、查数据），不会再被踢\n"
+                "· 让位期内 AGV 叫车、撤销任务【不可用】，到期自动恢复\n"
+                "· 也可在退出后回到本页点「恢复登录」提前结束让位\n\n"
+                "已在途的搬运任务不受影响，会继续执行完。"),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dc, false), child: const Text("取消")),
+              FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: const Color(0xFFB71C1C)),
+                  onPressed: () => Navigator.pop(dc, true),
+                  child: const Text("退出并让位")),
+            ]));
+    if (yes != true) return {'cancelled': true};
+    final r = await AuthApi.agvAuthLogout();
+    if (r["ok"] != true) return {'ok': false, 'msg': '退出失败：${r["msg"] ?? "服务器未响应"}（提示权限不足时请换仓管员/管理员账号操作）'};
+    // 服务器已让位，本机同步静默（服务器只管它自己那份，本机 WmasApi/AgvApi 的自动重登要由本机状态压住）
+    await AgvAuthYield.start(int.tryParse("${r["mins"] ?? 15}") ?? 15, by: Auth.user?.name ?? "");
+    return {'ok': true, 'msg': r["msg"]?.toString() ?? '已退出并让位 15 分钟'};
+  }
+  final r = await AuthApi.agvAuthResume();
+  if (r["ok"] != true) return {'ok': false, 'msg': '恢复失败：${r["msg"] ?? "服务器未响应"}（本机仍保持让位、不会自动登录；提示权限不足时请换仓管员/管理员账号操作）'};
+  await AgvAuthYield.clear();
+  return {'ok': true, 'msg': r["msg"]?.toString() ?? '已恢复自动登录'};
+}
+
+/// ㉖v162 凭据同步失败的统一归因（两个设置页共用，part of 'main.dart' 同库可见）。
+/// ★ 绝不笼统报"未同步"：必须区分权限/网络/版本冲突，且一律点明【服务器仍是旧凭据】——
+/// 现场最需要知道的是"叫车是服务器代发的，服务器没更新就仍会 401"，而不是以为改好了。
+/// ㉖v162 把 RCS + WMAS 两条凭据【无条件】同步给鉴权服务器（两个设置页共用）。
+/// ★ 不能再挂在"本机登录成功"之后：旧写法（AGV 页 _test 里 if (t != null) 才同步）意味着
+///   RCS 网络不通时，即便只是改了 WMAS 密码，服务器也永远拿不到更新——与 11-12 同一类病。
+///   "本机能否连上调度系统"与"服务器该不该换新凭据"是两件独立的事。
+/// 返回 null=两条都同步成功；否则返回面向现场的原因（多条以；分隔）。
+Future<String?> agvSyncBothToServer({required bool alsoRcs}) async {
+  final errs = <String>[];
+  if (alsoRcs) {
+    final a = await AgvConfig.get();
+    final s = await AuthApi.rcsConfigSync(
+        host: a["host"] ?? "", account: a["account"] ?? "", pwd: a["pwd"] ?? "");
+    if (s["ok"] != true) errs.add(agvSyncErrText(s, "AGV(RCS)"));
+  }
+  final w = await WmasConfig.get();
+  if ((w["account"] ?? "").isNotEmpty && (w["pwd"] ?? "").isNotEmpty) {
+    final r = await AuthApi.agvWmasConfig(
+        host: w["host"] ?? "", account: w["account"] ?? "", pwd: w["pwd"] ?? "");
+    if (r["ok"] != true) errs.add(agvSyncErrText(r, "WMAS"));
+  }
+  if (errs.isEmpty) {
+    // 同步成功=服务器已刷新并自动解除让位；本机跟着一起解除，否则出现"服务器可用、本机仍说让位中"
+    if (await AgvAuthYield.on()) await AgvAuthYield.clear();
+    return null;
+  }
+  return errs.join('；');
+}
+
+String agvSyncErrText(Map r, String label) {
+  if (r["net"] == true) return '$label 连不上鉴权服务器（${r["msg"]}）——本机已存，但【服务器仍是旧凭据】';
+  final st = r["_status"];
+  if (st == 403) return '$label 同步被拒：当前账号无「AGV车辆控制」权限（物料员/检验角色不可），请换仓管员或管理员保存——【服务器仍是旧凭据】';
+  if (st == 409) return '$label 服务器配置已被他人改过（版本冲突）——刷新后重试，本次【服务器未更新】';
+  if (st == 401) return '$label 同步被拒：登录态已失效，请重新登录后再保存——【服务器仍是旧凭据】';
+  return '$label 同步失败：${r["msg"] ?? "未知原因"}——【服务器仍是旧凭据】';
+}
+
 class WmasApi {
   static const _timeout = Duration(seconds: 12);
 
@@ -127,6 +252,10 @@ class WmasApi {
     var token = sp.getString(WmasConfig.keyToken) ?? "";
     final exp = sp.getInt(WmasConfig.keyTokenExp) ?? 0;
     if (token.isEmpty || DateTime.now().millisecondsSinceEpoch > exp) {
+      // ㉖v161 让位期内绝不自动登录（本机退出后仍会每页取票触发重登，等于把现场人员刚建立的
+      // WMAS 会话踢掉，正是 11-12 "改了密码还报有其他用户登录"的死循环本体）
+      if (await AgvAuthYield.on())
+        return {"ok": false, "msg": AgvAuthYield.msgOf(await AgvAuthYield.leftMin())};
       final t = await login();
       if (t == null)
         return {"ok": false, "msg": "WMAS未登录：请到 设置→WMAS(AGV)设置 填写账号密码"};
@@ -296,6 +425,7 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
   bool _ok = false;
   bool _busy = false;
   bool _autoCall = false; // ⑳扫码自动入库叫车
+  bool _yielding = false; // ㉖v161 是否处于「退出登录让位中」：决定按钮显示 退出登录/恢复登录
 
   @override
   void initState() {
@@ -304,12 +434,17 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
       final cfg = await WmasConfig.get();
       final ac = await WmasConfig
           .autoCallEnabled(); // await须在setState外（回调lambda非async）
+      // ㉖v161 读取让位状态：正在让位时按钮显示「恢复登录」，否则显示「退出登录」
+      final yld = await AgvAuthYield.on();
+      final left = yld ? await AgvAuthYield.leftMin() : 0;
       if (!mounted) return;
       setState(() {
         _hostCtrl.text = cfg["host"] ?? WmasConfig.defaultHost;
         _accCtrl.text = cfg["account"] ?? "";
         _pwdCtrl.text = cfg["pwd"] ?? "";
         _autoCall = ac;
+        _yielding = yld;
+        if (yld) { _ok = true; _msg = AgvAuthYield.msgOf(left); }
       });
     });
   }
@@ -322,6 +457,16 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
     super.dispose();
   }
 
+  /// ㉖v162 「保存」必须【写本机 + 同步鉴权服务器】两件事。旧实现只写本机：AGV 叫车是【服务器代发】的，
+  /// 服务器不更新=改了等于没改。11-12 现场即在 WMAS 改了密码、也在本页填了新密码，本机一切正常，
+  /// 服务器却仍拿旧密码每 20 秒登录一次，持续报「用户名或密码错误」，前后白烧一小时才定位到这里。
+  /// 返回 null=同步成功；否则为面向现场的原因（区分权限/网络/冲突，绝不笼统报"未同步"）。
+  Future<String?> _saveLocalAndSync() async {
+    await WmasConfig.save(
+        host: _hostCtrl.text.trim(), account: _accCtrl.text.trim(), pwd: _pwdCtrl.text);
+    return await agvSyncBothToServer(alsoRcs: false); // 本页只管 WMAS；RCS 同步在 AGV调度设置页
+  }
+
   Future<void> _save() async {
     if (_hostCtrl.text.trim().isEmpty ||
         _accCtrl.text.trim().isEmpty ||
@@ -332,12 +477,20 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
       });
       return;
     }
-    await WmasConfig.save(
-        host: _hostCtrl.text, account: _accCtrl.text, pwd: _pwdCtrl.text);
+    final err = await _saveLocalAndSync();
     if (!mounted) return; // ㉖v98b 保存为await，期间弹窗可能已关：setState前守卫（v97 PDA-34660同款病）
+    // 让位态必须读实际值，不能硬置 false：同步失败时服务器可能仍在让位（甚至本机也仍在让位），
+    // 硬置会让按钮显示成「退出登录」（方向反了），构成"服务器/界面各说各话"的半恢复矛盾态。
+    final yld = await AgvAuthYield.on();
+    if (!mounted) return;
     setState(() {
-      _ok = true;
-      _msg = "已保存";
+      _busy = false;
+      _yielding = yld;
+      _ok = err == null;
+      // 三态分明：全成 / 只存了本机（必须显式警告，这正是 11-12 把现场误导到"以为改好了"的那条路）
+      _msg = err == null
+          ? "已保存并同步服务器（AGV 叫车由服务器代发，配置已生效）"
+          : "⚠️ $err。改 WMAS 密码后必须让服务器也拿到新密码，否则叫车会一直 401/密码错误";
     });
   }
 
@@ -345,16 +498,55 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
     if (_busy) return;
     setState(() {
       _busy = true;
-      _msg = "登录中…";
+      _msg = "保存并同步…";
     });
-    await WmasConfig.save(
-        host: _hostCtrl.text, account: _accCtrl.text, pwd: _pwdCtrl.text);
+    final err = await _saveLocalAndSync(); // 先让服务器拿到新配置（成功后两侧让位一并解除）
+    if (!mounted) return;
+    if (err != null && await AgvAuthYield.on()) {
+      // 服务器没更新且仍在让位 → 此时本机登录成功毫无意义（叫车是服务器发的），
+      // 而且会把现场人员正在用的 WMAS 会话踢掉。绝不登录，如实说明。
+      setState(() {
+        _busy = false;
+        _ok = false;
+        _msg = "未执行登录：$err，且当前处于退出登录让位期（登录会把现场正在用的 WMAS 会话踢掉）";
+      });
+      return;
+    }
+    setState(() => _msg = "登录中…");
     final t = await WmasApi.login();
     if (!mounted) return;
     setState(() {
       _busy = false;
-      _ok = t != null;
-      _msg = t != null ? "登录成功，token 已缓存（11小时有效）" : "登录失败：检查地址/账号/密码（或网络不通）";
+      _ok = t != null && err == null;
+      // 本机通 + 服务器不通 = 今天事故的形态，必须分开说清，不能让绿色"登录成功"掩盖它
+      _msg = t == null
+          ? "登录失败：检查地址/账号/密码（或网络不通）${err == null ? '' : "；另：$err"}"
+          : (err == null ? "登录成功，token 已缓存（11小时有效），服务器配置已同步" : "⚠️ 本机登录成功（密码是对的），但 $err——现场叫车由服务器发起，仍会失败，请按提示处理");
+    });
+  }
+
+  /// ㉖v161 退出 / 恢复 WMAS+AGV 登录：两套系统同账号互斥（后登录者踢前者），现场要登录对方网页处理账号
+  /// （改密/查数据）时，服务器每 20 秒的自动重登和本机每页取票都会把人家踢掉 → 反复 401 死循环。
+  /// 退出=服务器与本机一起停止自动登录并让位一段时间，把号让给现场；到期自愈，也可点本按钮恢复。
+  /// 方向（退出/恢复）与文案由 agvAuthToggle 按当前状态判别，与 AGV 调度设置页共用同一入口。
+  Future<void> _logout() async {
+    setState(() {
+      _busy = true;
+      _msg = (_yielding ? "恢复中…" : "退出中…");
+    });
+    final r = await agvAuthToggle(context);
+    if (!mounted) return;
+    if (r['cancelled'] == true) {
+      setState(() => _busy = false); // 用户取消：任何一侧状态都没动过
+      return;
+    }
+    final yielding = await AgvAuthYield.on();
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _yielding = yielding;
+      _ok = r['ok'] == true;
+      _msg = r['msg']?.toString() ?? '';
     });
   }
 
@@ -396,6 +588,17 @@ class _WmasSettingPageState extends State<WmasSettingPage> {
               child: OutlinedButton(
                   onPressed: _busy ? null : _test,
                   child: Text(_busy ? "登录中…" : "测试登录"))),
+          const SizedBox(width: 12),
+          Expanded(
+              // ㉖v161 退出/恢复登录：账号被 WMAS/AGV 网页端共用时会反复 401（后登录者踢前者），
+              // 退出=服务器与本机一起让位一段时间，现场才能安稳登录对方系统处理账号问题。
+              // 让位中本按钮变「恢复登录」，免得现场以为只能等到期或重启服务器才能叫车。
+              child: OutlinedButton(
+                  onPressed: _busy ? null : _logout,
+                  style: OutlinedButton.styleFrom(
+                      foregroundColor: _yielding ? const Color(0xFF00897B) : const Color(0xFFB71C1C),
+                      side: BorderSide(color: _yielding ? const Color(0xFF00897B) : const Color(0xFFB71C1C))),
+                  child: Text(_yielding ? "恢复登录" : "退出登录"))),
         ]),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
