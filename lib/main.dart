@@ -2223,12 +2223,18 @@ class _MainPageState extends State<MainPage>
             children: [
               Text(reason, style: const TextStyle(fontSize: 13.5)),
               const SizedBox(height: 4),
-              Text("提示：全厂范围内该标签号不允许重复入账。若确认是系统误拦（如标签确实换了实物用途），由责任人填写原因后强制继续。",
-                  style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+              // ㉖v167 把「强制继续」的真实后果写明白：11-12 现场 N26K120114 就是把它当成"改位置"用，
+              // 旧流水没作废 → 同一框留下两条有效流水、件数翻倍。现在强过=取代，旧采集流水会自动作废。
+              const Text("点「强制继续」= 用本次录入【取代】旧记录：本框此前的采集流水会自动作废，账本以本次货位为准；"
+                  "原因必须写清（只填「1」这类数字符号会被服务器拒绝）。",
+                  style: TextStyle(fontSize: 11.5, color: Colors.orange)),
+              const SizedBox(height: 4),
+              const Text("若只想改货位/数量，不必重扫：到「位置登记」改该行即可，采集流水保持一条。",
+                  style: TextStyle(fontSize: 11.5, color: Colors.grey)),
               const SizedBox(height: 8),
               TextField(
                   controller: ctl,
-                  decoration: const InputDecoration(hintText: "强制继续必填原因"),
+                  decoration: const InputDecoration(hintText: "强制继续必填：写清真实原因"),
                   maxLines: 2),
             ]),
         actions: [
@@ -2250,10 +2256,28 @@ class _MainPageState extends State<MainPage>
             content: Text("强制继续必须填写原因"), backgroundColor: Colors.orange));
       return true;
     }
+    // ㉖v167 门槛只在服务端一处定义（forceWhyMinLen + 占位符判定），本机不复制规则——
+    // 两端各写一套必然漂移，服务端才是唯一权威；旧版 PDA 不带任何本机校验也绕不过。
+    // 关键修复：旧版这里 try { await ... } catch (_) {} 把服务端拒绝整个吞掉后照样放行，
+    // 任何服务端门槛都形同虚设；现在服务端说不合格 / 服务器不可达 → 一律不放行
+    // （拿不到取代凭证就放行，正是"同框两条有效流水、件数翻倍"的成因）。
+    final fr = await AuthApi.labelForce(code, why);
+    if (fr["ok"] != true) {
+      final msg = (fr["msg"] ??
+              (fr["net"] == true ? "服务器不可达，无法登记取代，请稍后重试" : "服务端拒绝本次强制继续"))
+          .toString();
+      LocalLog.op("重复标签强过被拒", "$code 原因:$why ｜ $msg");
+      if (mounted)
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text("⛔ $msg"), backgroundColor: Colors.red));
+      return true;
+    }
     LocalLog.op("重复标签强过", "$code 原因:$why");
-    try {
-      await AuthApi.labelForce(code, why);
-    } catch (_) {} // 强过留痕进服务器活动流
+    final supN = fr["supersedePending"];
+    if (mounted && supN is int && supN > 0)
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("已放行，本框旧采集流水 $supN 条将在入账后自动作废"),
+          backgroundColor: Colors.orange));
     return false;
   }
 

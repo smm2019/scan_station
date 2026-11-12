@@ -291,6 +291,11 @@ function loadDb() {
   for (const _k of ['lostCallAlert', 'coarseAlert', 'dupFlowAlert']) {
     if (typeof d[_k] !== 'object' || d[_k] === null || Array.isArray(d[_k])) { d[_k] = {}; added = true; }
   }
+  // ㉖v167 重复入库「取代凭证」登记表（键=标签码）：/api/label/force 写明真原因放行时，登记该标签此前的旧有效流水键；
+  // 待本次新记录经 /api/ledger/sync 真正落账后，由 settleSupersede 作废旧【流水】（只作废登记时已存在的键，不按时刻比）——
+  // 一个框任何时刻只留一条有效流水，件数不再虚高。绝不动账本行（改走 /api/scanlog/cancel 会连带整框消账、把在架实物抹掉）。
+  // 中途放弃/MES 失败/格式闸拒收 → 凭证到期作废失败自动清除，旧流水原样保留，不会出现"新旧两条都没了"。
+  if (typeof d.supersede !== 'object' || d.supersede === null || Array.isArray(d.supersede)) { d.supersede = {}; added = true; }
   // ㉖v61 出库流水乱码自愈：PDA/WMAS 推送编码丢失产生的 U+FFFD 与控制字符——name 按标签反查流水/账本/字典回填干净名，查不到则剥替换符；move 归一 AGV/人工
   {
     const _bad = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
@@ -1180,68 +1185,160 @@ function lostCallSweep() {
   } catch (e) { console.log('[lost-call] 失败：', e.message); logErr('lostCallSweep', e); }
 }
 setInterval(lostCallSweep, 30 * 60 * 1000).unref();
-// ---- ㉖v152 粗码未上账即时告警：地面流水 gl 仅区排粗码（v100 格式闸已拒其上账，但流水静默滞留）----
-// sync 落库后调用；同码同排 7 天去重，避免同一框反复推送刷屏
+// ---- ㉖v152 粗码未上账告警：地面流水 gl 仅区排粗码（v100 格式闸已拒其上账，但流水静默滞留）----
+// ⚠️v165 改为【持续滞留】判定（11-12 实测一天误报 7 次，含截图里的 N26K120113→H9）：
+// 粗码是【正常自愈中间态】——地面模式选区即写流水 gl=H9 → 自动分格回填完整格位 → 账本再经 30 秒
+// 防抖才推达。旧版在 sync 当场判"账本无此码即告警"，判定正好扫在这个窗口里：
+//   14:43:14 扫入(gl=H9) → 14:45:31 被告警 → 回填 NB03-H-09-03 后自行上账（现场什么都没做）。
+// 全库 28 条粗码流水【28/28 全部自愈、均已有出库留痕】，证实中间态成立。
+// 新口径三条同时成立才报（缺一不可）：
+//   ① 流水年龄 ≥ coarseAlertAgeMin（默认 5 分钟，远大于"分格+30秒推送"窗口）
+//   ② 账本无此框（重扫补全过的自愈）
+//   ③ 无出库留痕 seenOut（当时已补全格位并发走 = 不是滞留框；不加这条全库扫描会误报 28 框刷屏）
+// 发现方式：sync 增量 + 每 5 分钟全库兜底 —— 现场"扫完就放弃、不再重扫"的框没有下一次 sync，
+// 只靠 sync 会漏，必须周期扫描补上。同码同排 7 天去重保留。
 function coarseFlowAlert(snap) {
   try {
     if (!Number(P().coarseAlertOn)) return;
-    const hits = [];
-    for (const v of Object.values(snap || {})) {
-      if (v.cx || v.wt !== 1) continue;
+    const ageMin = Math.max(1, Number(P().coarseAlertAgeMin) || 5);
+    const nowMs = Date.now();
+    const FULL = /^NB03-[A-H]-\d{1,2}-\d{1,2}$/, SHORT = /^[A-Z]?\d{1,3}$/;
+    const onLed = new Set((db.ledger || []).map(x => String(x.c || '').toUpperCase()));
+    const seenOut = db.seenOut || {};
+    // 同一标签可能有多条粗码流水（反复扫），取【最老】那条计龄（滞留最久才是真相）
+    const byCode = new Map();
+    const src = snap ? Object.values(snap) : Object.values(db.scanlog || {});
+    for (const v of src) {
+      if (!v || v.cx || v.wt !== 1) continue;
       const g = String(v.gl || '').trim().toUpperCase(), c = String(v.code || '').trim().toUpperCase();
-      if (!c || !g) continue;
-      if (/^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(g)) continue; // 完整格位
-      if (!/^[A-Z]?\d{1,3}$/.test(g)) continue; // 只认"区/排"短粗码（F4/H9/C12），其余怪值交格式闸留痕即可
-      if ((db.ledger || []).some((x) => String(x.c || '').toUpperCase() === c)) continue; // 已上账（重扫补全过）
-      hits.push({ c, g, op: String(v.op || ''), t: Number(v.t) || Date.now() });
+      if (!c || !g || !SHORT.test(g) || FULL.test(g)) continue; // 只认"区/排"短粗码（F4/H9/C12），怪值交格式闸留痕
+      const t = Number(v.t) || 0;
+      if (!t) continue;
+      if (onLed.has(c) || seenOut[c]) continue;                 // ②③ 自愈/已发走
+      const prev = byCode.get(c);
+      if (!prev || t < prev.t) byCode.set(c, { c, g, op: String(v.op || ''), t });
+    }
+    const hits = [];
+    for (const h of byCode.values()) {
+      if (nowMs - h.t < ageMin * 60000) continue;               // ① 判龄：跳过自愈中间态窗口
+      hits.push({ c: h.c, g: h.g, op: h.op, age: Math.round((nowMs - h.t) / 60000) });
     }
     if (!hits.length) return;
     const seen = (db.coarseAlert = db.coarseAlert || {});
     const fresh = hits.filter((h) => { const k = h.c + '|' + h.g; if (Date.now() - (Number(seen[k]) || 0) < 7 * 86400000) return false; seen[k] = Date.now(); return true; });
     if (!fresh.length) return;
-    const lst = fresh.slice(0, 6).map((h) => h.c + '→' + h.g).join('、');
-    try { pushOps(null, '粗码未上账', fresh.slice(0, 10).map((h) => h.c).join('/'), fresh.length + ' 框货位仅填区排粗码，账本已按 v100 格式闸拒收，请到「位置登记」补完整格位：' + lst); } catch (_) { }
-    const _who = (db.users || []).filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin'));
-    _who.forEach((x) => { try { notify(x.id, 'ghost_out', '📦 粗码未上账：' + fresh.length + ' 框只填了区排粗码（' + lst + '）——账本未入账，请到「位置登记」按实物补完整格位', '', { solo: true }); } catch (_) { } });
-    console.log(`[coarse-alert] ⚠ 粗码未上账 ${fresh.length} 框: ${fresh.map((h) => h.c + '@' + h.g).slice(0, 6).join(' ')}`);
+    const lst = fresh.slice(0, 6).map((h) => h.c + '→' + h.g + '（滞留 ' + h.age + ' 分钟）').join('、');
+    try { pushOps(null, '粗码未上账', fresh.slice(0, 10).map((h) => h.c).join('/'), fresh.length + ' 框货位仅填区排粗码且持续未上账（判龄 ' + ageMin + ' 分钟），请到「位置登记」按实物补完整格位：' + lst); } catch (_) { }
+    const _who = (db.users || []).filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled);
+    _who.forEach((x) => { try { notify(x.id, 'ghost_out', '📦 粗码未上账：' + fresh.length + ' 框只填了区排粗码且持续未上账（' + lst + '）——账本未入账，请到「位置登记」按实物补完整格位', '', { solo: true }); } catch (_) { } });
+    console.log(`[coarse-alert] ⚠ 粗码持续未上账 ${fresh.length} 框: ${fresh.map((h) => h.c + '@' + h.g + '/' + h.age + 'min').slice(0, 6).join(' ')}`);
   } catch (e) { console.log('[coarse-alert] 失败：', e.message); }
 }
-// ---- ㉖v152 同标签重复有效流水告警（sync 增量：仅对本次推送的 code 查全库有效记录数）----
-// 背景（11-11 N26K100170）：同一标签存在两条 cx=false 流水且台站不一致（CK-08/CK-09）——网页流水重复计行，
-// 且将来作废任一条会静默退回另一条当"事实"。增量检测避免现网 43 个历史重复刷屏；
-// 台站/格位有分歧=必达点名人工裁决（可能是重扫修正，也可能真拿错框），位置一致=只留痕（多为重复推送同实）。
+// 周期兜底扫描：漏了它就只会被"扫完就放弃"的框永远沉默
+// ★ 必须补 save()：coarseFlowAlert 把 7 天去重标记写进 db.coarseAlert，但 notify() 内部不含 save()
+// （sync 路径由 ledgerSync/scanlogSync 自己落盘，sweep 路径没有任何人落盘）——不补则标记只活在内存，
+// 服务一重启标记全丢，同一批滞留框每次重启都被重新轰炸一遍。
+function coarseSweep() {
+  try {
+    const before = Object.keys(db.coarseAlert || {}).length;
+    coarseFlowAlert(null);
+    if (Object.keys(db.coarseAlert || {}).length !== before) save(); // 本轮新增过点名才落盘，空转不写
+  } catch (_) { }
+}
+setTimeout(coarseSweep, 10000).unref(); // 启动后 10 秒先跑一轮：现场重启即发现滞留框，不必等满 5 分钟
+setInterval(coarseSweep, 5 * 60 * 1000).unref();
+// ---- ㉖v152 同标签重复有效流水告警 ----
+// ⚠️v166 判据重构（现场消息中心被这类告警刷屏：一次 20+ 条，且用 ghost_out=必达+绕个人退订+夜间不静默）
+// 排查结论：【这不是重复采集的 bug，是判据选错了信号——它把"框被挪过位置/重新采集"当异常报】。
+// 全库实测（3107 标签）证据：
+//   · 未作废流水 ≥2 条的仅 70 个，其中位置不同 61 个 → 就是被刷屏的那批
+//   · 两次采集时间跨度：<1分钟 0 个、1~10分钟 0 个、10~60分钟 7、1~24小时 26、>24小时 28
+//     → 无一例毫秒级双写，全部是隔 10 分钟以上的再次采集（挪位/重扫），不存在"同一次操作被记两次"缺陷
+//   · 同一采集批次内出现多条：0 个（全部跨批次）→ 采集会话不会重复入账
+//   · 109/160 多流水标签有作废记录 → 作废机制在用；其余为挪位后旧流水按设计保留
+//   · 旧判据把【台站】(NB02-CK-xx)、【货架格】(NB02-A-05-3F)、【地面格】(NB03-C-12-05) 三类位置混在一起
+//     比"是否相同"，而台站只是中转点、同一框先后经过不同台站属正常 —— v152 当初的触发案例
+//     N26K100170 即如此（CK-08→CK-09 两次搬运），该告警本身就是误判
+// 新判据（有明确物理依据）：一个框在同一时刻只能占一个格位 → 仅【同一排/同一列内】出现 ≥2 个不同
+// 格位才算互斥冲突需人工裁决；跨排、跨楼层、跨模式、台站与存储位之间，一律视为挪位，不报。
+// 位置一致（重复推送同实）与挪位均只留痕不打扰；台站不参与分歧；7 天去重保留。
 function dupFlowAlert(snap) {
   try {
     if (!Number(P().dupFlowAlertOn)) return;
+    // ⚠️v166 判据变更后一次性重置旧去重标记（放在最前，确保任何 sync 都会执行到）：
+    // 旧判据曾给 61 个标签（多数是挪位噪音）写过 7 天标记，其中 16 个按新判据属【真格位互斥】。
+    // 不清就把真冲突一并静默最长 7 天 —— 等于修复上线即失效，现场永远看不到这批真矛盾。
+    if (!db.dupFlowJudgeV166) { db.dupFlowAlert = {}; db.dupFlowJudgeV166 = 1; }
+    const up = (s) => String(s || '').trim().toUpperCase();
+    // 存储位 = NB0X-区-排-格（货架格 NB02 / 地面格 NB03 / 来料格 NB04）；台站与怪值不参与分歧判定
+    const slotM = (l) => String(l || '').toUpperCase().match(/^(NB0[234]-[A-H]-\d{1,2})-(\d{1,2}|[1-4]F)$/);
+    // 先按标签建一次索引（O(全库流水行数)）。旧写法对每个标签都重扫一遍全库流水 = O(码×行)，
+    // 全库兜底模式下 3000+ 标签 × 3300 行 ≈ 千万次，每 5 分钟跑一次会卡住单线程。
+    const idx = new Map();
+    for (const s0 of Object.values(db.scanlog || {})) {
+      if (s0.cx) continue;
+      const cc = String(s0.code || '').trim().toUpperCase(); if (!cc) continue;
+      let e = idx.get(cc); if (!e) { e = { n: 0, slots: [] }; idx.set(cc, e); }
+      e.n++;
+      const m = slotM(up(s0.wt === 0 ? s0.st : s0.gl));
+      if (m) e.slots.push({ col: m[1], cell: m[2], t: Number(s0.t) || 0 });
+    }
+    // snap=本次推送（sync 增量）；snap=null=全库兜底扫描，只看有多条流水的标签
     const codes = new Set();
-    for (const v of Object.values(snap || {})) { if (!v.cx && String(v.code || '').trim()) codes.add(String(v.code).toUpperCase()); }
+    if (snap) { for (const v of Object.values(snap)) { if (!v.cx && String(v.code || '').trim()) codes.add(String(v.code).toUpperCase()); } }
+    else { for (const [cc, e] of idx) if (e.n >= 2) codes.add(cc); }
     if (!codes.size) return;
     const hits = [];
     for (const c of codes) {
-      const recs = [];
-      for (const s0 of Object.values(db.scanlog || {})) { if (s0.cx) continue; if (String(s0.code || '').toUpperCase() !== c) continue; recs.push({ loc: s0.wt === 0 ? String(s0.st || '').trim() : String(s0.gl || '').trim(), t: Number(s0.t) || 0 }); }
-      if (recs.length < 2) continue;
-      const locs = new Set(recs.map((r) => r.loc));
-      hits.push({ c, n: recs.length, diff: locs.size > 1, locs: [...locs].slice(0, 4).join('/'), t: Math.max(...recs.map((r) => r.t)) });
+      const e = idx.get(c); if (!e || e.n < 2) continue;
+      const slots = e.slots, n = e.n;
+      // 同排/同列内出现 ≥2 个不同格位 = 一个框同时自称占两个格位 = 真互斥冲突（必须人工裁决）
+      const byCol = {};
+      const cellCnt = {}; // ㉖v167 每个具体格位的流水条数（一个框在一个格位只该有一条有效流水）
+      for (const s of slots) { (byCol[s.col] = byCol[s.col] || new Set()).add(s.cell); const _ck = s.col + '@' + s.cell; cellCnt[_ck] = (cellCnt[_ck] || 0) + 1; }
+      const clash = Object.entries(byCol).filter(([, set]) => set.size > 1);
+      // ㉖v167 同格位重复兜底（旧版 PDA 绕过强过门槛时漏网的重复登记）：同一格位内 ≥2 条未作废流水也升必达。
+      // 这是 v166 的盲点——流水 gl 会被后续 sync 的 v85b 对齐改写到账本当前格位，重扫的两条最终 gl 相同，
+      // 不再触发"不同格位互斥"→ 恰恰最该报的同框双流水被静默（N26K120114 现在两条 gl 都是 NB03-H-09-05 即此）。
+      // 只点名【绝不自动作废】：A→B→A 挪回原格也会同格两条，无取代凭证无法证明是重扫还是挪回，必须人工核对。
+      const sameSlot = Object.entries(cellCnt).filter(([, n2]) => n2 >= 2);
+      const clashDesc = clash.map(([col, set]) => col + ':' + [...set].sort().join('/'));
+      for (const [ck] of sameSlot) clashDesc.push(ck.replace('@', '-') + '(同格重复)');
+      // 所有"≥2 条未作废流水"都留痕（审计线索不丢：挪位/重复推送也是事实，只是不值得吵人）；
+      // 格位互斥 或 同格重复 才升级为必达告警
+      hits.push({ c, n, clash: (clash.length + sameSlot.length) > 0, where: clashDesc.slice(0, 3).join(' '), t: Math.max(...slots.map((s) => s.t), 0) });
     }
     if (!hits.length) return;
     const seen = (db.dupFlowAlert = db.dupFlowAlert || {});
     const fresh = hits.filter((h) => { if (Date.now() - (Number(seen[h.c]) || 0) < 7 * 86400000) return false; seen[h.c] = Date.now(); return true; });
     if (!fresh.length) return;
-    const dif = fresh.filter((h) => h.diff), same = fresh.filter((h) => !h.diff);
-    if (fresh.length) {
-      const lst = fresh.slice(0, 8).map((h) => h.c + '×' + h.n + (h.diff ? '（' + h.locs + '）' : '')).join('、');
-      try { pushOps(null, '重复有效流水', fresh.slice(0, 10).map((h) => h.c).join('/'), fresh.length + ' 个标签存在多条未作废采集流水（网页流水将重复计行，作废任一条会退回另一条当事实）：' + lst); } catch (_) { }
-      console.log(`[dup-flow] ⚠ 重复有效流水 ${fresh.length} 码（分歧 ${dif.length}）: ${fresh.map((h) => h.c).slice(0, 6).join(' ')}`);
-    }
-    // 仅位置分歧的必达点名（一致只留痕不打扰）；ghost_out=绕退订+夜间不静达，solo 逐条不被合并吞明细
-    if (dif.length) {
-      const lst2 = dif.slice(0, 6).map((h) => h.c + '：' + h.n + ' 条流水台站不一致（' + h.locs + '）').join('；');
+    const clashHits = fresh.filter((h) => h.clash);
+    const lst = fresh.slice(0, 8).map((h) => h.c + '×' + h.n + (h.clash ? '（' + h.where + '）' : '')).join('、');
+    try { pushOps(null, '重复有效流水', fresh.slice(0, 10).map((h) => h.c).join('/'), fresh.length + ' 个标签存在多条未作废采集流水（其中同排/列格位互斥 ' + clashHits.length + ' 个需人工裁决）：' + lst); } catch (_) { }
+    console.log(`[dup-flow] 重复有效流水 ${fresh.length} 码（格位互斥 ${clashHits.length}）: ${fresh.map((h) => h.c).slice(0, 6).join(' ')}`);
+    // 仅格位互斥升级必达：ghost_out=绕个人退订+夜间不静默，solo=逐条不被聚合吞明细（真账实矛盾必须每人看到）
+    if (clashHits.length) {
+      const lst2 = clashHits.slice(0, 6).map((h) => h.c + '（' + h.where + '）').join('；');
       const _who = (db.users || []).filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin'));
-      _who.forEach((x) => { try { notify(x.id, 'ghost_out', '🔁 同标签重复采集且台站分歧：' + lst2 + (dif.length > 6 ? ' 等' + dif.length + '个' : '') + '｜请核实实物实际所在台站，到流水页作废错误那条（保留与实物一致的一条）', '', { solo: true }); } catch (_) { } });
+      _who.forEach((x) => { try { notify(x.id, 'ghost_out', '🔁 同一标签多条有效流水在同一排/列内指向不同格位：' + lst2 + (clashHits.length > 6 ? ' 等' + clashHits.length + '个' : '') + '｜一个框不可能同时占两个格位，请按实物核对，到流水页作废错误那条（保留与实物一致的一条）', '', { solo: true }); } catch (_) { } });
     }
   } catch (e) { console.log('[dup-flow] 失败：', e.message); }
 }
+// 周期兜底：重置标记后那 16 个历史真冲突【不会再被扫到】（都是旧数据，现场不会重扫），只靠 sync
+// 增量永远发现不了 → 必须全库扫一遍才会报出来。与粗码兜底同一范式，共用 5 分钟节拍。
+function dupSweep() {
+  try {
+    // 重置必须放在 sweep 里而不是 dupFlowAlert 内部：dupFlowAlert 开头有
+    // `if (!P().dupFlowAlertOn) return`，万一现场把该告警开关关了，重置就永远执行不到，
+    // 那 16 个真冲突会被旧噪音标记压住最长 7 天（开关关多久静默多久）。
+    if (!db.dupFlowJudgeV166) { db.dupFlowAlert = {}; db.dupFlowJudgeV166 = 1; save(); }
+    const before = Object.keys(db.dupFlowAlert || {}).length;
+    dupFlowAlert(null);
+    if (Object.keys(db.dupFlowAlert || {}).length !== before) save(); // 本轮新增点名才落盘，空转不写
+  } catch (_) { }
+}
+setTimeout(dupSweep, 12000).unref(); // 比粗码(10s)晚 2 秒：错开启动回调，避免同一 tick 叠两个全库扫
+setInterval(dupSweep, 5 * 60 * 1000).unref();
 // ---- ㉔每日自动导出：18点后落 D1库位表+D2库存汇总 到 data/exports/daily（留90天，对账免手工）----
 let _expLast = '';
 function dailyExport() {
@@ -1647,9 +1744,27 @@ function labelBlockReason(st, purpose, opts) { // purpose: in(采集入库)|out(
   if (purpose === 'in' && (st.inLedger.length || st.inScanlog.length || st.everIn || st.everOut)) {
     if (st.inLedger.length) {
       if (!opts || !opts.recv) { if (st.inLedger.every((x) => locRecv(x.l))) return ''; } // ㉖v118 来料区筐：转入是合法迁移不拦（只看是否 NB04 行，与开关无关——开关关时已有来料区货仍可被二楼搬走，不 stranded）；一楼登记模式(recv=1)不豁免——重复登记照常拦
-      return '该标签已在库（货位 ' + String(st.inLedger[0].l || '') + '），禁止重复录入';
+      // ㉖v167 提示补全：本分支是【现场重复扫入时真正弹出的那条】（框已在账 → inLedger 命中，不走下面 inScanlog 分支）。
+      // 旧文案只给货位，现场看不出"是不是我手上这一框、谁什么时候登的"，就随手点了强制继续
+      // （11-12 N26K120114：弹窗只显示"已在库（货位 NB03-H-09-04）"，操作员照旧填「1」强过）。
+      // 与 v164 修过的 inScanlog 分支同口径给全：时间 + 登记人 + 位置。
+      const _L0 = st.inLedger[0];
+      const _lt = Number(_L0.t) ? localDT(new Date(Number(_L0.t)).toISOString(), 16) : '时间未知';
+      return '该标签已在库（货位 ' + (String(_L0.l || '') || '未知') + '，' + (String(_L0.by || '') || '登记人未知') + ' 于 ' + _lt + ' 登记），禁止重复录入';
     }
-    if (st.inScanlog.length) return '该标签已有采集记录（批次 ' + String(st.inScanlog[0].gl || st.inScanlog[0].st || '') + '），禁止重复录入';
+    // ㉖v164 提示字段纠错（11-12 现场截图：弹窗写"批次 NB03-F-04-02"）：旧文案把 gl（地面货位）
+    // 当"批次"显示——字段与标签双错（全库 3295 条流水批次无一为 NB03- 样式，一眼可证不是批次）；
+    // 系统内"批次"既有指代=流水 lot（与网页流水页「批次」列同源），采集会话号 batch 另是一回事。
+    // 第二处错：Object.values(...).filter(...) 不带排序，[0] 是键序首条（通常最早那次），框挪过位
+    // 就会提示历史位置，现场照提示去找实物会找不到 → 改按 t 取【最近一次】。
+    // 提示目的是让现场判断"误拦还是真重复"，故给全四项：时间 / 登记人 / 位置 / 批次，各归各位。
+    if (st.inScanlog.length) {
+      const last = st.inScanlog.slice().sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0))[0];
+      const where = String(last.gl || last.st || '');
+      const lot = String(last.lot || '');
+      const when = Number(last.t) ? localDT(new Date(Number(last.t)).toISOString(), 16) : '时间未知';
+      return '该标签已有采集记录（' + when + (last.op ? ' ' + last.op : '') + ' 登在 ' + (where || '未知位置') + (lot ? '，批次 ' + lot : '') + '），禁止重复录入';
+    }
     if (st.everIn && !st.inLedger.length && !st.inScanlog.length) return '该标签此前已被录入过（' + (st.inMeta && st.inMeta.by ? st.inMeta.by + ' ' : '') + (st.inMeta && st.inMeta.t ? new Date(st.inMeta.t).toLocaleDateString('zh-CN') : '历史') + '，可能已出库），标签号不可复用，禁止重复录入';
     if (st.everOut) { if (opts && opts.ret) return ''; return '该标签历史上架并已出库（' + (st.everOut.at ? new Date(st.everOut.at).toLocaleDateString('zh-CN') : '历史') + '），标签不可回收复用，禁止重复录入'; } // ㉖v118 退库模式放行原码回扫
   }
@@ -1663,6 +1778,52 @@ function labelBlockReason(st, purpose, opts) { // purpose: in(采集入库)|out(
   }
   if (st.inInspect.length) return '该框正在检验流程中，暂不可操作';
   return '';
+}
+
+// ================= ㉖v167 重复入库「取代」机制（源头防重，11-12 现场 N26K120114 实锤） =================
+// 事故链：14:41 扫入只填区排粗码→v100 格式闸拒收未上账；14:47 补格位后入账 H-09-04；
+//        14:49 同一框【新开一个批次】重扫（本机 _isCodeDuplicate 按 batchIdEqualTo 只查当前批次，跨批次够不到）；
+//        14:50:05 服务器查重确实拦了，操作员点「强制继续」、原因只填一个字符「1」→ 放行；
+//        结果同一条框留下两条有效流水（H-09-05 / H-09-04 各 30 件），网页流水页重复计行、件数翻倍。
+// 真因不是"系统没拦"，是【拦了但出口无门槛】：一个字符的原因就能过，且过去后旧记录不作废 → 必然双记账。
+// 修在源头两刀：①强过原因必须写清（长度+非占位符双校验，见 forceWhyBad）；
+//               ②强过=声明"这次是取代"，新记录真正落账后自动作废旧流水（见 settleSupersede），一个框只留一条有效流水。
+// 关键安全线：兑现只改【流水】的 cx 标记，绝不删账本行——/api/scanlog/cancel 会连带整框消账，
+//            在架实物会被从账上抹掉，故此处不走那条路。
+function forceWhyBad(whyRaw) { // 返回 ''=合格；否则返回给现场的拒绝理由
+  const min = Number(P().forceWhyMinLen) || 0;
+  const s = String(whyRaw || '').trim();
+  if (min <= 0) return ''; // 0=关闭门槛（回退旧行为）
+  if (s.length < min) return '强制继续必须写明原因，至少 ' + min + ' 个字（当前 ' + s.length + ' 字）。例：位置录错，实物实际在 H-09-05';
+  // 占位符识别：整串只有数字/符号/空白（"1"、"。。。"、"-"、"123"）——现场历史上大量强过原因就填一个"1"，等于没填
+  if (/^[\d\p{P}\p{S}\s_]+$/u.test(s)) return '强制继续的原因不能只填数字或符号（如「1」「。」）。请写明真实原因，便于事后核对与追溯';
+  return '';
+}
+const SUPERSEDE_TTL_MS = 20 * 60 * 1000; // 取代凭证有效期：强过后 20 分钟内该标签新记录未落账即作废失效
+function pruneSupersede(nowMs) { // 过期凭证清除（防操作员强过后直接放弃，凭证长期挂着）
+  const sv = db.supersede = db.supersede || {};
+  let n = 0;
+  for (const [c, v] of Object.entries(sv)) { if (!v || !(Number(v.at) > 0) || nowMs - Number(v.at) > SUPERSEDE_TTL_MS) { delete sv[c]; n++; } }
+  return n;
+}
+// 兑现取代：该标签本次新记录已落账 → 把凭证里登记的旧有效流水作废。返回被作废的流水键数组（无则 null）
+// 安全性：只作废【登记凭证那一刻已存在】的键集合（keys 在 /api/label/force 时快照），
+// 本次新扫入的流水那时还不存在、天然不在集合里，故无需也不该再按时刻比较——
+// PDA 上报的 t 来自设备时钟，偏差可达分钟级，用它判"早于新记录"反而可能把新流水误作废（11-11 v154 已吃过设备时钟的亏）。
+function settleSupersede(codeU, byName) {
+  const sv = (db.supersede || {})[String(codeU || '').toUpperCase()];
+  if (!sv) return null;
+  delete db.supersede[String(codeU || '').toUpperCase()]; // 一次凭证只兑现一次，无论成败都不重放
+  const now = Date.now();
+  if (now - Number(sv.at) > SUPERSEDE_TTL_MS) return null; // 已过期（本函数前若未被 prune 清掉）
+  const done = [];
+  for (const k of (Array.isArray(sv.keys) ? sv.keys : [])) {
+    const rec0 = (db.scanlog || {})[k];
+    if (!rec0 || rec0.cx) continue;
+    rec0.cx = true; rec0.cxB = byName || sv.by || '系统'; rec0.cxA = now; rec0.sup = String(sv.why || '').slice(0, 120);
+    done.push(k);
+  }
+  return done.length ? done : null;
 }
 
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
@@ -1698,10 +1859,12 @@ const PARAMS = {
   lowBatMin:      { grp: '告警阈值', name: '低电未回充告警', unit: '分钟', min: 5, max: 240, d: 20, tip: '低电且空闲超此时长未回充→提醒安排充电' },
   nb01StaleH:     { grp: '告警阈值', name: '来料区滞留告警', unit: '小时', min: 1, max: 72, d: 4, tip: '㉖v118 来料区(NB04)框登记后超此小时数仍未二楼入库→站内通知全体仓管核对搬运上楼（每标签7天内只提醒一次）' },
   lostCallAlertM: { grp: '告警阈值', name: '入库丢单巡检', unit: '分钟', min: 0, max: 240, d: 15, tip: '㉖v152 账本 mv=AGV 已记"在架"、但入账超此分钟数仍查无叫车队列记录且无对应 AGV 任务（目标货位=该行货位、接令晚于入账）→ 判定"账称在架、车未叫"丢单，必达点名全体仓管回站台核对实物（11-11 N26K100170/N26K110142：扫码入账后叫车请求未达服务器，货在台上压了半小时无人知）。0=关闭。每标签7天只提醒一次；只查入账后2小时~28天，避开30天任务底仓边界的假阳性' },
-  coarseAlertOn:  { grp: '告警阈值', name: '粗码未上账告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 地面模式采集流水货位仅为区排粗码（如 F4/H9，非 NB03-B-13-07 完整格位）→ v100 格式闸本就拒其上账，但流水会静默滞留（累计25框"未上账"全靠网页流水页偶然发现）；本开关=1 时 sync 落库当场 ops 留痕+必达点名"请到位置登记补完整格位"，同码同排去重' },
+  coarseAlertOn:  { grp: '告警阈值', name: '粗码未上账告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 地面模式采集流水货位仅为区排粗码（如 F4/H9，非 NB03-B-13-07 完整格位）→ v100 格式闸本就拒其上账，但流水会静默滞留（累计25框"未上账"全靠网页流水页偶然发现）；本开关=1 时 ops 留痕+必达点名"请到位置登记补完整格位"，同码同排去重。⚠️v165 流水初值天然是粗码（地面选区即写流水，格位等自动分配后回填、账本再走 30 秒防抖推送），故粗码绝大多数是【会自愈的中间态】——判龄阈值见「粗码滞留告警判龄」' },
+  coarseAlertAgeMin: { grp: '告警阈值', name: '粗码滞留告警判龄', unit: '分钟', min: 1, max: 1440, d: 5, tip: '㉖v165 粗码流水存在【正常中间态】：14:43:14 扫入即写 gl=区码（H9）→ 自动分格回填完整格位 → 账本经 30 秒防抖才推达；旧版 sync 当场判定"账本无此码即告警"，正好扫在这个窗口里（11-12 实测一天误报 7 次，含 N26K120113→H9，该框 14:45:31 被告警、随后自行上账 H-09-03）。全库 28 条粗码流水【28/28 全部自愈】，证实粗码即中间态。新口径：流水年龄 ≥ 本值【且】账本无此框【且】无出库留痕（已出库=当时已补全格位并发走，非滞留）才告警；由每 5 分钟周期兜底扫描发现（现场扫完就放弃、不再重扫的框也能报出来，不会漏）' },
   wmasReloginGapS: { grp: '调度节奏', name: 'WMAS重登冷却', unit: '秒', min: 0, max: 300, d: 30, tip: '㉖v160 WMAS 登录失败后的重登冷却秒数（0=不节流）。凭证被挤下线时若不节流，实测 20 次取票=20 次真实登录，WMAS 可能因频繁失败锁定账号；且每次登录成功会把对方会话踢下线，双方互挤成死循环。默认 30 秒＝最长 30 秒内恢复、又不打爆对方。现场在 WMAS 改密后重新保存 WMAS 配置会立即重置本冷却，不受影响' },
   agvAuthYieldMin: { grp: '调度节奏', name: '退出登录让位时长', unit: '分钟', min: 1, max: 180, d: 15, tip: '㉖v161 人工点「退出登录」后，服务器在这段时间内【不自动登录】WMAS/AGV 调度系统，把单账号会话让给现场人员。两套系统都是同一账号后登录者踢掉前者：现场为改密/查数据人工登录 → 服务器会话被踢反复 401；服务器若立刻自动重登 → 又把现场人员的窗口踢掉，双方互挤谁都干不成。让位期内 AGV 叫车不可用（提示会写明剩余时间），到期自动恢复；重新保存 WMAS/RCS 配置=人工宣告已处理完，立即解除让位' },
-  dupFlowAlertOn: { grp: '告警阈值', name: '重复有效流水告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 同一标签存在多条未作废采集流水 → 网页流水重复计行，且将来作废任一条会静默退回另一条当事实（11-11 N26K100170 两条有效流水台站还不一致 CK-08/CK-09）。增量检测：仅对 sync 本次新引入的重复告警；台站/格位分歧=必达点名人工裁决，位置一致=只留痕不吵人（现网存量43个重复中33个位置分歧，全量开会刷屏）' },
+  dupFlowAlertOn: { grp: '告警阈值', name: '重复有效流水告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 同一标签存在多条未作废采集流水 → 留痕 ops（审计线索）。⚠️v166 判据重构：旧版按"≥2条未作废 + 位置不同"必达点名，把【框挪过位置/先后经过不同台站】当异常刷屏（现网 61 个全是这类噪音；台站只是中转点，同一框先后经 CK-06、CK-07 完全正常，v152 当初的触发案例 N26K100170 本身即误判；实测两次采集跨度 <1分钟 0 例、>10分钟 61 例，不存在毫秒级双写缺陷）。新判据只有【同一排/同列内出现 ≥2 个不同格位】（一个框不可能同时占两个格位）才升 ghost_out 必达点名人工裁决；挪位/跨模式/台站差异只留痕不吵人。判据变更后自动重置旧 7 天去重标记，避免真冲突被旧噪音标记静默一周' },
+  forceWhyMinLen: { grp: '领料闸门', name: '强过原因最少字数', unit: '字', min: 0, max: 30, d: 6, tip: '㉖v167 重复标签点「强制继续」时原因栏的最低字数（PDA 与服务端双端校验，旧版 PDA 也绕不过）。现网强过原因大量只填「1」「。」甚至「测试」，等于没有留痕——11-12 N26K120114 就是填一个「1」把同一框重复入账，流水翻倍。除字数外还拒绝【整串只有数字/符号】的占位填写。0=关闭门槛（回退旧行为，不建议）' },
   outConsumeLedger: { grp: '存储配置', name: '出库即消本地账', unit: '档', min: 0, max: 2, d: 1, tip: '㉖v151 出库单（直调/MES转单）落库时同步消掉本地账本行，根治"直调只调MES四接口、本地账无人消"造成的幽灵框（来料区/货架库存与待入库虚高）。1=仅真实出库单消账（移仓单不消，保留 v108 标签回流语义，默认）；2=移仓单一并消（去向为线边仓/成品仓之外的仓间转移也认离架）；0=关闭（回退旧行为，只留痕不改账）。同托兄弟码一律不连坐删除，改站内消息点名交人工处置' },
   batch:          { grp: '调度节奏', name: '单轮最多下发', unit: '单', min: 1, max: 8, d: 4, tip: '排队调度器每轮最多真实下发几单（保守节奏）' },
   agingMin:       { grp: '调度节奏', name: '排队防饿死升级', unit: '分钟', min: 2, max: 120, d: 10, tip: '普通队列项等待超此时长自动按急料优先级调度' },
@@ -3433,6 +3596,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         const tomb = new Map((db.ledgerTomb || []).map(x => [String(x.c).toUpperCase(), { t: Number(x.t) || 0, rec: Number(x.rec) || 0 }]));
         const histAll = (db.tombHist = db.tombHist || {});
         const seenNew = new Set(); // 本次合并真正新增上账的标签（急货入库提醒用）
+        const _wroteCodes = new Set(); // ㉖v167 本次合并【真正写进账本】的标签（新增或更新都算）——取代凭证只对这些兑现
         const dels = Array.isArray(b.del) ? b.del : [];
         const _fpAll = (db.syncFp = db.syncFp || {}); const _fpOld = _fpAll[u.id] || {}; const _fpNew = {};
         const _hash = ledgerHash;
@@ -3515,6 +3679,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           // by 的正确语义=【把框登记到当前货位的人】：货位没变就保留原登记人，只有新行/改位才写推送人。
           const _by = (old && String(old.l || '').toUpperCase() === String(it.l || '').toUpperCase()) ? (String(old.by || '') || u.name) : u.name;
           ledgerPut(cur, key, { ...it, by: _by, rec: rec0 }, old);
+          _wroteCodes.add(key); // ㉖v167 该行确已写入账本 → 它的取代凭证可以在本请求末尾兑现（被格式闸/冲突拒收的不会走到这里）
           if (tombT) { tomb.delete(key); if (db.tombReject) delete db.tombReject[key]; } // 新到达=重新登记，复活（拒弹记录一并清：该框将来再次出库时还能提醒一次）
         }
         db.syncFp[u.id] = Object.assign({}, _fpOld, _fpNew); // 合并保留：部分推送不清掉未含行的指纹
@@ -3542,6 +3707,23 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         db.ledgerRev = (db.ledgerRev || 0) + 1;
         db.ledgerAt = new Date().toISOString();
         db.ledgerBy = u.name;
+        // ㉖v167 兑现「取代」：本次【确实写进账本】的标签若挂着强过凭证 → 把它此前的旧有效流水作废，
+        // 一个框任何时刻只留一条有效流水（重复计行、件数翻倍到此为止）。
+        // 放在写账之后、save 之前：与本次账本变更同批落盘，不存在"账改了流水没作废"的中间态；
+        // 被格式闸/货位冲突拒收的行不会进 _wroteCodes，凭证留到过期待清，旧流水原样保留（不误伤）。
+        // 只写流水的 cx 标记，绝不删账本行——/api/scanlog/cancel 那条路会连带整框消账，在架实物会被抹掉。
+        const _supDone = [];
+        try {
+          pruneSupersede(rec0);
+          for (const c of _wroteCodes) {
+            const _v = (db.supersede || {})[c]; if (!_v) continue;
+            const _why = String(_v.why || '');
+            const _d = settleSupersede(c, u.name);
+            if (_d && _d.length) _supDone.push({ c, n: _d.length, why: _why });
+          }
+          for (const s of _supDone) pushOps(u, '重复入库取代', s.c, '本框旧采集流水已自动作废 ' + s.n + ' 条（原因：' + (s.why || '未填') + '），现只保留本次这条有效流水');
+          if (_supDone.length) console.log(`[supersede] ${u.name} 取代生效 ${_supDone.length} 个标签：${_supDone.map((s) => s.c + '×' + s.n).join(' ; ')}`);
+        } catch (e) { console.log('[supersede] 异常：', e.message); }
         save();
         console.log(`[ledger] ${u.name} 合并：+${added} 改${updated} 删${delApplied} 未变${kept} 忽略${skipped + delSkipped} → v${db.ledgerRev}（共 ${db.ledger.length} 条）`);
         pushOps(u,'账本合并','v'+db.ledgerRev,'+'+added+' 改'+updated+' 删'+delApplied+' 挡回'+(kept+skipped+delSkipped));
@@ -3651,6 +3833,10 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         db.scanlogAt = new Date().toISOString(); db.scanlogCount = Object.keys(db.scanlog).length;
         // ㉖v152 增量防线：粗码未上账即时告警 + 同标签重复有效流水告警（仅本次推送引入的重复，存量43个历史重复不追告）
         try { coarseFlowAlert(snap); dupFlowAlert(snap); } catch (_) { }
+        // ㉖v167 顺带清理过期的「取代」凭证：操作员点了强过但最终没保存/MES 查不到就放弃时，
+        // 凭证不会被任何 merge 兑现（那次录入根本没发生），靠 TTL 到期在这里和下次 merge 前清掉，
+        // 不会残留到下一批把无关的旧流水误作废。
+        try { const _sp = pruneSupersede(Date.now()); if (_sp) console.log(`[supersede] 清除过期凭证 ${_sp} 条`); } catch (_) { }
         save();
         return send(res, 200, { ok: true, count: db.scanlogCount, pushed: Object.keys(snap).length, cxKept: _cxKept }); // ㉖v122 cxKept=服务器权威作废/恢复压回推送的键，PDA 回写本机
       }
@@ -5537,12 +5723,22 @@ return send(res, 200, {
         return send(res, 200, { ok: true, code: cs, seen: !!(inReason || st.inLedger.length || st.inScanlog.length || st.everIn || st.everOut), blockIn: !!inReason, everIn: !!st.everIn, reason: inReason, loc: st.inLedger.length ? String(st.inLedger[0].l || '') : '', part: st.inLedger.length ? String(st.inLedger[0].p || '') : '', batch: st.inScanlog.length ? String(st.inScanlog[0].gl || st.inScanlog[0].st || '') : (st.everOut ? String(st.everOut.batch || '') : ''), by: st.inLedger.length ? String(st.inLedger[0].by || '') : (st.inScanlog.length ? String(st.inScanlog[0].op || '') : ''), everOut: st.everOut ? { at: st.everOut.at, batch: st.everOut.batch || '' } : null, recvLoc, seenOut: !!st.everOut }); // ㉖v118 recvLoc=在账且全为来料区位（二楼转入判据）；seenOut=曾出库（退库原码提示）
       }
       // ---- ㉖① 强制继续录入留痕（PDA 全局查重被拦后人工填原因放行）----
+      // ㉖v167 升级为「取代」通道：①原因必须写清（长度 + 非纯数字/符号占位符，服务端硬拦，旧版 PDA 也绕不过）；
+      // ②放行即登记取代凭证，把该标签此刻的全部有效流水键做快照——本次新记录经 /api/ledger/merge 真正落账后，
+      //   快照里的旧流水自动作废（新记录登记时还不存在、天然不在快照内，故无需按设备时钟比先后）。
+      // 现场语义由此变成"重扫即纠正"：录错位置重扫一次就完事，不必再去网页手工作废旧流水（过去漏作废→同框两条有效流水、件数翻倍）。
       if (req.method === "POST" && p === "/api/label/force") {
         const b = await readBody(req);
         const fc = String(b.code || "").trim().toUpperCase(); if (!fc) return send(res, 400, { ok: false, msg: "缺少 code" });
-        pushOps(u, "重复标签强过", fc, String(b.why || "").slice(0, 120));
+        const _why = String(b.why || "").trim().slice(0, 120);
+        const _bad = forceWhyBad(_why);
+        if (_bad) { pushOps(u, "重复标签强过被拒", fc, _why ? _why + ' ｜ ' + _bad : '（原因空白）｜ ' + _bad); return send(res, 400, { ok: false, msg: _bad }); }
+        // 凭证快照：此刻该标签的全部有效流水键（新记录尚未写入，快照必然只含旧记录）
+        const _oldKeys = Object.keys(db.scanlog || {}).filter((k) => { const v = (db.scanlog || {})[k]; return v && !v.cx && String(v.code || '').toUpperCase() === fc; });
+        (db.supersede = db.supersede || {})[fc] = { at: Date.now(), by: u.name, why: _why, keys: _oldKeys };
+        pushOps(u, "重复标签强过", fc, _why + (_oldKeys.length ? '（取代：待作废旧流水 ' + _oldKeys.length + ' 条，本次记录入账后生效）' : '（该标签当前无在库旧流水）'));
         save();
-        return send(res, 200, { ok: true });
+        return send(res, 200, { ok: true, supersedePending: _oldKeys.length });
       }
       // ---- ㉖⑭ 采集作废释放防重：该标签业务失效且未真实入库，撤回 seenIn 允许重扫（作废联动调用）----
       if (req.method === "POST" && p === "/api/label/unsee") {

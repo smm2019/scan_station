@@ -31,6 +31,8 @@ const mkScan = (c, st, t, op) => ({ k: c + '|B1|' + (t || NOW - 26 * H), code: c
 
 const C_LOST = 'N99H000101', C_Q = 'N99H000102', C_T = 'N99H000103', C_NEW = 'N99H000104', C_OLD = 'N99H000105', C_SICK = 'N99H000106';
 const C_C1 = 'N99H000201', C_C2 = 'N99H000202';
+// ⚠️v165 粗码告警新判据样本：C_C3 滞留【必须报】/ C_C5 已有出库留痕【不报】/ C_C6 账本已有【不报】
+const C_C3 = 'N99H000203', C_C5 = 'N99H000205', C_C6 = 'N99H000206';
 const C_D1 = 'N99H000301', C_D2 = 'N99H000302';
 const lostN = (d) => (d.notifications || []).filter((x) => /入库丢单/.test(String(x.text || '')));
 
@@ -60,7 +62,19 @@ const lostN = (d) => (d.notifications || []).filter((x) => /入库丢单/.test(S
   [mkScan(C_LOST, 'NB02-CK-05'), mkScan(C_Q, 'NB02-CK-05'), mkScan(C_T, 'NB02-CK-05'), mkScan(C_NEW, 'NB02-CK-05', NOW - H), mkScan(C_OLD, 'NB02-CK-05', NOW - 30 * 24 * H), mkScan(C_SICK, '', NOW - 26 * H)]
     .forEach((s) => { d0.scanlog[s.k] = s; });
   d0.lostCallAlert = {}; d0.coarseAlert = {}; d0.dupFlowAlert = {};
-  d0.params = Object.assign({}, d0.params, { lostCallAlertM: 15, coarseAlertOn: 1, dupFlowAlertOn: 1 });
+  // ⚠️v165 粗码告警改【持续滞留】判定所需的预置样本（ledger 只追加，不可清空——L1 用例依赖上方样本行）
+  // C_C5：流水滞留但【已有出库留痕】= 当时已补全格位并发走，非滞留框 → 必须不报（不加③这条，
+  //       全库兜底扫描会把历史上 28 条已自愈粗码流水一次全报出来刷屏——现网 28/28 全部已出库）
+  d0.seenOut = Object.assign({}, d0.seenOut || {}, { [C_C5]: { at: NOW - 2 * H, no: 'DT-TEST', by: '测试' } });
+  // C_C6：流水滞留但【账本已有此框】= 重扫补全自愈 → 必须不报（②）
+  d0.ledger.push({ c: C_C6, l: 'NB03-F-09-07', f: '筐', t: NOW - 10 * 60000, p: '6608225548', n: '测试件', q: 25, b: '2026-11-01', pid: '', mv: '登记', by: '测试' });
+  // 滞留样本（过判龄，必须报）
+  d0.scanlog[C_C3 + '|B9|1'] = { k: C_C3 + '|B9|1', code: C_C3, wt: 1, gl: 'F4', st: '', cx: false, t: NOW - 10 * 60000, pn: '6608225548', q: 25, op: '测试滞留', lot: '2026-11-11' };
+  // ★ C_C5/C_C6 也必须有【滞留粗码流水】：否则函数在前面的 filter 阶段就把它们跳过，
+  //   ②③ 两条豁免判据从未被执行，"不报"是恒真空过（假绿），测不出判据写错。
+  d0.scanlog[C_C5 + '|B9|1'] = { k: C_C5 + '|B9|1', code: C_C5, wt: 1, gl: 'F4', st: '', cx: false, t: NOW - 10 * 60000, pn: '6608225548', q: 25, op: '测试滞留', lot: '2026-11-11' };
+  d0.scanlog[C_C6 + '|B9|1'] = { k: C_C6 + '|B9|1', code: C_C6, wt: 1, gl: 'F4', st: '', cx: false, t: NOW - 10 * 60000, pn: '6608225548', q: 25, op: '测试滞留', lot: '2026-11-11' };
+  d0.params = Object.assign({}, d0.params, { lostCallAlertM: 15, coarseAlertOn: 1, coarseAlertAgeMin: 5, dupFlowAlertOn: 1 });
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(d0));
 
   const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
@@ -80,20 +94,30 @@ const lostN = (d) => (d.notifications || []).filter((x) => /入库丢单/.test(S
       T('L1f 告警发给全体仓管+管理员（每人一条 solo）', lostN(getDb()).length >= 2, true);
       T('L1g 类型=ghost_out（绕退订+夜间不静默）', [...new Set(lostN(getDb()).map((x) => x.type))].join(','), 'ghost_out'); }
 
-    // ===== L2 粗码未上账：sync 即时告警 =====
+    // ===== L2 粗码未上账（⚠️v165 新语义：【持续滞留】才报，自愈中间态不报）=====
+    // C_C1=滞留10分钟(>判龄5分钟) 必须报；C_C2=完整格位 不报；C_C4=刚扫入30秒 不报（★核心：
+    // 正是"选区写流水→自动分格→账本经30秒防抖才推达"的中间态窗口，旧版在此误报一天7次）
+    const C_C4 = 'N99H000204';
     await rq('/api/scanlog/sync', VT, { items: [
-      { k: C_C1 + '|B2|1', code: C_C1, wt: 1, gl: 'F4', st: '', cx: false, t: NOW - 60000, pn: '6608225548', q: 25, op: '测试粗码' },
-      { k: C_C2 + '|B2|2', code: C_C2, wt: 1, gl: 'NB03-F-04-12', st: '', cx: false, t: NOW - 60000, pn: '6608225548', q: 25, op: '测试粗码' },
+      { k: C_C1 + '|B2|1', code: C_C1, wt: 1, gl: 'F4', st: '', cx: false, t: Date.now() - 10 * 60000, pn: '6608225548', q: 25, op: '测试粗码' },
+      { k: C_C2 + '|B2|2', code: C_C2, wt: 1, gl: 'NB03-F-04-12', st: '', cx: false, t: Date.now() - 10 * 60000, pn: '6608225548', q: 25, op: '测试粗码' },
+      { k: C_C4 + '|B2|3', code: C_C4, wt: 1, gl: 'F4', st: '', cx: false, t: Date.now(), pn: '6608225548', q: 25, op: '测试粗码' },
     ] });
-    T('L2a 粗码未上账即时必达告警', await waitDb((d) => (d.notifications || []).some((n) => /粗码未上账/.test(String(n.text || '')) && String(n.text).includes(C_C1)), 30), true);
+    T('L2a 滞留过判龄→必达告警（点名标签号+滞留时长）', await waitDb((d) => (d.notifications || []).some((n) => /粗码未上账/.test(String(n.text || '')) && String(n.text).includes(C_C1)), 30), true);
     T('L2b 完整格位不误报', (getDb().notifications || []).some((x) => /粗码未上账/.test(String(x.text || '')) && String(x.text).includes(C_C2)), false);
+    T('L2e ★自愈中间态不报（刚扫入未过判龄，旧版此处误报）', (getDb().notifications || []).some((x) => /粗码未上账/.test(String(x.text || '')) && String(x.text).includes(C_C4)), false);
+    T('L2f ★已有出库留痕不报（当时已补全格位并发走，非滞留框）', (getDb().notifications || []).some((x) => /粗码未上账/.test(String(x.text || '')) && String(x.text).includes(C_C5)), false);
+    T('L2g ★账本已有此框不报（重扫补全自愈）', (getDb().notifications || []).some((x) => /粗码未上账/.test(String(x.text || '')) && String(x.text).includes(C_C6)), false);
     T('L2c 粗码留痕进 ops', await waitDb(() => { try { return fs.readdirSync(path.join(TMP, 'ops')).some((f) => fs.readFileSync(path.join(TMP, 'ops', f), 'utf8').includes('粗码未上账')); } catch (_) { return false } }, 30), true);
 
     // ===== L2d 同码同排 7 天去重 =====
-    { const before = (getDb().notifications || []).filter((x) => /粗码未上账/.test(String(x.text || ''))).length;
-      await rq('/api/scanlog/sync', VT, { items: [{ k: C_C1 + '|B3|1', code: C_C1, wt: 1, gl: 'F4', st: '', cx: false, t: NOW, pn: '6608225548', q: 25, op: '测试粗码' }] });
+    // ★ 第二次推送必须【仍过判龄】（t 用 10 分钟前，不能用 NOW）：否则函数在判龄那步就 return，
+    //   去重逻辑根本没被执行过，"数量不变"是恒真空过（假绿），去重写坏了也照样绿。
+    { const nOf = (d) => (d.notifications || []).filter((x) => /粗码未上账/.test(String(x.text || '')) && String(x.text).includes(C_C1)).length;
+      const before = nOf(getDb());
+      await rq('/api/scanlog/sync', VT, { items: [{ k: C_C1 + '|B3|1', code: C_C1, wt: 1, gl: 'F4', st: '', cx: false, t: Date.now() - 10 * 60000, pn: '6608225548', q: 25, op: '测试粗码' }] });
       await sleep(1500);
-      T('L2d 同码同排去重（重复推送不刷屏）', (getDb().notifications || []).filter((x) => /粗码未上账/.test(String(x.text || ''))).length, before); }
+      T('L2d 同码同排去重（重复推送不刷屏，且确已执行到去重判定）', nOf(getDb()), before); }
 
     // ===== L3 重复有效流水：分歧必达 / 一致只留痕 =====
     await rq('/api/scanlog/sync', VT, { items: [
@@ -102,8 +126,37 @@ const lostN = (d) => (d.notifications || []).filter((x) => /入库丢单/.test(S
     await rq('/api/scanlog/sync', VT, { items: [
       mkScan(C_D1, 'NB02-CK-07', NOW - 2 * H), mkScan(C_D2, 'NB02-CK-06', NOW - 2 * H),
     ] });
-    T('L3a 台站分歧→必达点名（CK-06 vs CK-07）', await waitDb((d) => (d.notifications || []).some((n) => /重复采集且台站分歧/.test(String(n.text || '')) && String(n.text).includes(C_D1)), 30), true);
-    T('L3b 台站一致→不点名', (getDb().notifications || []).some((x) => /重复采集且台站分歧/.test(String(x.text || '')) && String(x.text).includes(C_D2)), false);
+    // ⚠️v166 语义反转：v152 旧判据"未作废≥2条 + 位置不同"把【先后经过不同台站/挪过位】当异常必达，
+    // 现场一次刷出 20+ 条（台站只是中转点，同一框先后经 CK-06、CK-07 完全正常）。新判据只有
+    // 【同一排/同列内出现≥2个不同格位】（一个框不可能同时占两格）才必达。
+    // 故 L3a 从"必须必达"反转为"必须不再必达"——反向锁住这个 bug，防止有人改回去。
+    const NEWMSG = /同一标签多条有效流水在同一排\/列内指向不同格位/;
+    T('L3a ★台站分歧不再必达（v152 误判已修，反向锁回归）', (getDb().notifications || []).some((x) => NEWMSG.test(String(x.text || '')) && String(x.text).includes(C_D1)), false);
+    T('L3b 台站一致→不点名', (getDb().notifications || []).some((x) => NEWMSG.test(String(x.text || '')) && String(x.text).includes(C_D2)), false);
+    { // 真冲突 vs 挪位：同标签两条流水指向【同排不同格】必须点名；【跨排】= 挪位，不点名
+      const C_CLASH = 'N99H000303', C_MOVED = 'N99H000304';
+      await rq('/api/scanlog/sync', VT, { items: [
+        { k: C_CLASH + '|B6|1', code: C_CLASH, wt: 1, gl: 'NB03-D-77-01', st: '', cx: false, t: NOW - 3 * H, pn: '6608225548', q: 25, op: '测试互斥' },
+        { k: C_CLASH + '|B6|2', code: C_CLASH, wt: 1, gl: 'NB03-D-77-05', st: '', cx: false, t: NOW - 2 * H, pn: '6608225548', q: 25, op: '测试互斥' },
+        { k: C_MOVED + '|B6|1', code: C_MOVED, wt: 1, gl: 'NB03-D-77-02', st: '', cx: false, t: NOW - 3 * H, pn: '6608225548', q: 25, op: '测试挪位' },
+        { k: C_MOVED + '|B6|2', code: C_MOVED, wt: 1, gl: 'NB03-E-99-02', st: '', cx: false, t: NOW - 2 * H, pn: '6608225548', q: 25, op: '测试挪位' },
+      ] });
+      T('L3d ★同排不同格位→必达点名（一个框不可能占两格）', await waitDb((d) => (d.notifications || []).some((n) => NEWMSG.test(String(n.text || '')) && String(n.text).includes(C_CLASH)), 30), true);
+      T('L3e ★跨排挪位不升必达（正常业务，只留痕）', (getDb().notifications || []).some((x) => NEWMSG.test(String(x.text || '')) && String(x.text).includes(C_MOVED)), false);
+    }
+    // ㉖v167 L3f 同一格位出现≥2条有效流水 → 必达（补 v166 盲点）
+    // 盲点成因：流水 gl 会被后续 sync 的 v85b 对齐改写到账本【当前格位】，重扫的两条最终 gl 相同，
+    // 于是"不同格位互斥"永不触发 → 最该报的"同框双流水"被静默（现场 N26K120114 两条 gl 都是 NB03-H-09-05 即此）。
+    // 台站不参与此判定（slotM 只认 NB0X-区-排-格），故 L3b「台站一致不点名」不受影响。
+    {
+      const C_SAME = 'N99H000305';
+      await rq('/api/scanlog/sync', VT, { items: [
+        { k: C_SAME + '|B7|1', code: C_SAME, wt: 1, gl: 'NB03-D-77-08', st: '', cx: false, t: NOW - 3 * H, pn: '6608225548', q: 25, op: '测试同格' },
+        { k: C_SAME + '|B7|2', code: C_SAME, wt: 1, gl: 'NB03-D-77-08', st: '', cx: false, t: NOW - 2 * H, pn: '6608225548', q: 25, op: '测试同格' },
+      ] });
+      T('L3f ★同一格位两条有效流水→必达点名（v167 补盲点）', await waitDb((d) => (d.notifications || []).some((n) => NEWMSG.test(String(n.text || '')) && String(n.text).includes(C_SAME)), 30), true);
+      T('L3g ★同格重复在提示里显式标注（现场能区分于格位互斥）', (getDb().notifications || []).some((n) => NEWMSG.test(String(n.text || '')) && String(n.text).includes(C_SAME) && /同格重复/.test(String(n.text))), true);
+    }
     T('L3c 两类都留痕进 ops', await waitDb(() => { try { return fs.readdirSync(path.join(TMP, 'ops')).some((f) => { const t = fs.readFileSync(path.join(TMP, 'ops', f), 'utf8'); return t.includes('重复有效流水') && t.includes(C_D1) && t.includes(C_D2); }); } catch (_) { return false } }, 30), true);
 
     // ===== L4 开关=0 回退（参数接口需管理员角色 token）=====
