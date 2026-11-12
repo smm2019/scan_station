@@ -2756,15 +2756,20 @@ class _MainPageState extends State<MainPage>
       var loc = _ledgerLocCtrl.text.trim().toUpperCase();
       if (loc == 'AUTO') return; //AUTO 分配失败的情形，不写账本
       if (loc.isEmpty && wtSnap == 1 && groundZone.isNotEmpty) {
-        // 地面模式未填编码：在人选的区内自动分配第一个空格位
+        // 地面模式未填编码：在人选的区内由【服务器】原子分格并预占
         // ㉖v85c 读调用方清空前捕获的 groundZone（原读 _selectedGroundLoc 恒为空=死代码）
-        final auto = await this.nb03AutoSlot(groundZone);
-        if (auto == null) {
+        // ㉖v163 分配改走服务器（旧本机算位在 5~30 秒推送防抖窗内会与另一台 PDA 分到同一格）；
+        //      失败原因取服务器返回（旧文案把格数写死成"12 格位"，与各区排实际格数不符）
+        final ar = await this.nb03AutoSlot(groundZone, code);
+        final auto = ar[0], whyFail = ar.length > 1 ? ar[1] : '';
+        if (auto.isEmpty) {
           if (mounted)
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text("$groundZone 区 12 格位已满，请在货位账本登记框手动指定其他区"),
+                content: Text(whyFail.isEmpty
+                    ? "$groundZone 区无可分配格位，请在货位账本登记框手动指定其他区"
+                    : "$whyFail——或手动指定其他区排"),
                 backgroundColor: Colors.orange));
-          return;
+          return; // 未分到位即中止，不写账本（本筐保持未登记，可重扫）
         }
         loc = auto;
         if (mounted) setState(() => _ledgerLocCtrl.text = auto);

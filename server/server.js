@@ -1537,6 +1537,53 @@ function nb04AssignFree(code) {
   }
   return ''; // 满格
 }
+// ---- ㉖v163 地面(NB03)服务器原子分格（11-12 13:04~13:12 现场：胡明锵、刘向轩两台 PDA 交替扫
+// NB03-C-12 同一排，各自 PDA 端算"第一个空格"→ 双双把对方刚占的格当空格分出去）：
+// 12-05/12-08 跨零件被互斥闸拒（未上账+弹窗），12-06/12-09 同零件被"同零件=同框"豁免静默放行
+// （两框挤同格、件数 400，库存当成一个框）。根因=分配算法跑在 PDA 本机陈旧快照上：
+// nb03AutoSlot 读 _ledgerByLoc()（本机 Isar），而"账本从本机扫码到服务器可见"有 5~30 秒防抖延迟
+// （main.dart _scheduleLedgerSync 30 秒），期间对方 force pull 到的快照里那个格仍是空的。
+// NB02 早有 v54 服务器预占、NB04 有 v122 原子放格，唯独 NB03 落后 —— 本函数据此收口：
+// 判定+登记全在 Node 单线程同步段内完成（并发请求天然串行，不可能拿到同一格），分配即写 locReserve。
+// 格序与 PDA 旧算法同源（1→maxSlot 顺序取第一空格，不掺距离/热度打分）；格数同源 groundSlots
+// 覆盖表（缺省 gndCols 参数），停用排（gndRowOff）不再分新格。
+// "该格是否仍可放本框"沿用互斥闸口径：格内空、或格内仅同标签/同零件（一框双码）→ 可放；
+// 否则跳过。所以整托多码共用一格的既有场景不受影响（整托沿用输入框格位，不经本函数）。
+function nb03AssignFree(code, zone, partNo, by) {
+  pruneReserve();
+  const codeU = String(code || '').toUpperCase(), partNoU = String(partNo || '').toUpperCase();
+  const zm = String(zone || '').trim().toUpperCase().match(/^([A-H])-?(\d{1,2})$/); // 接受 "C12" 与 "C-12"
+  if (!zm) return { loc: '', msg: '地面区排格式不符（应形如 C12）' };
+  const prefix = 'NB03-' + zm[1] + '-' + zm[2].padStart(2, '0');
+  const preLen = prefix.length + 1; // 后接两位格号：NB03-C-12-07（+1 防 C-12 误匹配 C-120）
+  if ((db.gndRowOff || {})[prefix]) return { loc: '', msg: prefix + ' 排已停用，请另选区排' };
+  const rp = P();
+  const slotRaw = (db.groundSlots || {})[prefix];
+  const maxSlot = Math.max(1, Math.min(200, Number(slotRaw != null && slotRaw !== '' ? slotRaw : rp.gndCols) || 12));
+  const blocked = (l) => (db.ledger || []).some((x) => {
+    if (String(x.l || '').toUpperCase() !== l) return false;
+    if (String(x.c || '').toUpperCase() === codeU) return false;                     // 同标签自身（重扫/未推送批次）不算占用
+    if (partNoU && String(x.p || '').toUpperCase() === partNoU) return false;        // 一框双码：同零件=同框（与互斥闸同口径）
+    return true;
+  });
+  const R = db.locReserve = db.locReserve || {};
+  // 幂等：本标签在该排已有未过期预占且格仍可放 → 续期复用（重扫/重试不跳格、不重复占）
+  for (const l of Object.keys(R)) {
+    if (l.slice(0, preLen) !== prefix + '-' || String(R[l].code || '').toUpperCase() !== codeU) continue;
+    if (!blocked(l)) { R[l].at = Date.now(); R[l].by = R[l].by || by || ''; return { loc: l, kept: true }; }
+    delete R[l];
+  }
+  const used = new Set();
+  for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (l.slice(0, preLen) === prefix + '-') used.add(l); }
+  for (const l of Object.keys(R)) if (l.slice(0, preLen) === prefix + '-') used.add(l); // 别标签未推送预占一并避让
+  for (let s = 1; s <= maxSlot; s++) {
+    const loc = prefix + '-' + String(s).padStart(2, '0');
+    if (used.has(loc) || blocked(loc)) continue;
+    R[loc] = { code: codeU, by: by || '', at: Date.now() };
+    return { loc };
+  }
+  return { loc: '', msg: prefix + ' 排 ' + maxSlot + ' 格位已满，请另选区排或清理该排' };
+}
 
 // ---- ㉖v56 调度策略助手：A周转分 / B巷道在途 / C站台时间窗 ----
 function partTurnover() { // 周转分=窗口内出库件数 + 采集入库件数×0.1（出库主导）
@@ -3748,6 +3795,22 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (!loc4) return send(res, 200, { ok: false, msg: '来料区已满（当前 ' + P().recvRows + ' 排 × ' + P().recvCols + ' 格），请核对现场或调整参数' });
           save();
           return send(res, 200, { ok: true, loc: loc4 });
+        }
+        // ㉖v163 地面登记模式：传 zone（如 "C12"）即由服务器原子分 NB03 格并预占。
+        // 旧口径由 PDA 本机算位，两台设备在"扫码→账本推送"5~30 秒防抖窗内会把同一格各分一次
+        //（11-12 13:04~13:12 NB03-C-12 现场：12-05/12-08 跨零件被互斥闸拒→未上账，
+        //  12-06/12-09 同零件被豁免→静默挤同格、件数 400 被库存当成一个框）。
+        if (b && b.zone) {
+          const _zm = String(b.zone).trim().toUpperCase().match(/^([A-H])-?(\d{1,2})$/);
+          if (!_zm) return send(res, 200, { ok: false, msg: '地面区排格式不符（应形如 C12）' });
+          const _pfx = 'NB03-' + _zm[1] + '-' + _zm[2].padStart(2, '0');
+          const _il3 = (db.ledger || []).find(x => String(x.c || '').toUpperCase() === code);
+          // 本框已上账且现位就在这一排 → 回现位（重扫/补传不跳格、不再占新格）
+          if (_il3 && String(_il3.l || '').toUpperCase().startsWith(_pfx + '-')) return send(res, 200, { ok: true, loc: String(_il3.l || '').toUpperCase(), kept: true });
+          const _r3 = nb03AssignFree(code, _zm[1] + _zm[2], partNo, u.name);
+          if (!_r3.loc) return send(res, 200, { ok: false, msg: _r3.msg || '地面该排不可分配' });
+          save();
+          return send(res, 200, { ok: true, loc: _r3.loc, kept: !!_r3.kept });
         }
         const inLed = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code);
         if (inLed && !locRecv(inLed.l)) return send(res, 200, { ok: true, loc: String(inLed.l || '').toUpperCase(), kept: true }); // 已上账：回现位，不重复占

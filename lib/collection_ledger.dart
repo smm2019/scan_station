@@ -9,8 +9,13 @@ final ValueNotifier<int> kAgvQueueTick = ValueNotifier(0); // ㉖ 叫车成功�
 extension CollectionLedgerExt on _MainPageState {
   static const List<String> _lz = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
   static Map<String, int> _gSlots = {}; // ⑮地面排格数覆盖（服务器拉取，缺省12）
+  // ㉖v163 默认每排格数改取服务器 gndCols 参数（/api/ground-slots 的 def.cols）。旧版硬编码 12
+  // 兜底，与现场"每排格数"配置参数不同源：B-13 配 18 格时，配置未拉到的竞态窗内只按 1~12 找位
+  //（v122 注释记录的同一起事故：截图"空 -1/12"只画 12 格、13 号在账框不可见）。分配已收归服务端
+  // 原子分格后本机算法仅兜底，仍须同源，否则服务器不可达时会少分格、把框挤到已有框的格上。
+  static int _gndDefCols = 12;
   static int _lowTier = 3; // ㉖v80 入库常用层上限（服务器"调度策略"参数，1~4；AUTO分配硬约束层圈）
-  static int nb03SlotMax(String prefix) => _gSlots[prefix] ?? 12;
+  static int nb03SlotMax(String prefix) => _gSlots[prefix] ?? _gndDefCols;
 
   ///NB02 全主档 512 格位（区→架→层顺序，兜底分配即按此"集满靠前排"）
   List<String> nb02MasterAll() {
@@ -526,24 +531,49 @@ extension CollectionLedgerExt on _MainPageState {
     }
   }
 
-  /// 地面区内自动分配格位：zone 形如 "B13"；返回该排第一个空位编码，满则 null
-  Future<String?> nb03AutoSlot(String zone) async {
-    if (zone.isEmpty || zone.length < 2) return null;
-    // ㉖v98 分配前强制与服务器账本对齐（10/29 用户"显示G6没位置却还分配G6"根因）：
-    // 本机账本 20 秒节流+45 秒周期，别台 PDA 刚填满的排本机还显示有空→把满位分出去；
-    // 此处 force 拉一次（内部含失败容错），保证空位判定基于最新全厂占用
-    await ledgerPullMerge(force: true);
-    await pullGroundSlots(); // ㉖v122 分配前确保格数覆盖最新（同 picker：unawaited 顺带刷新有竞态空窗，会少分格）
+  /// 地面区内自动分配格位：zone 形如 "B13"/"C12"。返回 [格位编码, 失败原因]，成功时原因为空。
+  /// ㉖v163 分配权收归服务器（同 NB02 v54 预占 / NB04 v122 原子放格）：旧版本机算"第一个空格"，
+  /// 而"本机扫码→账本推给服务器"有 5~30 秒防抖延迟，两台 PDA 交替扫同一排时，各自快照里那个格
+  /// 都还是空的 → 11-12 13:04~13:12 NB03-C-12 现场：跨零件的 12-05/12-08 被互斥闸拒（未上账），
+  /// 同零件的 12-06/12-09 被"同零件=同框"豁免静默放行（两框挤同格、400 件被库存当成一个框）。
+  /// v98 的 force pull 治不了这个：它只能缩小窗口，消不掉推送延迟本身。
+  /// 失败口径：服务器【明确】说没格/停用 → 如实中止（降级只会拿陈旧快照去挤已有框的格）；
+  /// 仅服务器不可达 / 老服务器无此分支时降级本机算法，占用改读 _liveLocs()（服务器权威 + 预占），
+  /// 并且【格内已有任何他框即跳格】——降级时无从判准"同零件=同框"（ShelfPlacement 不存零件号，
+  /// 别机扫的框本机也无流水），保守跳格最多是分到新格，不会把两个框塞进同一格。
+  /// 整托多码共用一格不受影响：那条路径沿用输入框格位，从不调本函数。
+  Future<List<String>> nb03AutoSlot(String zone, String label) async {
+    if (zone.isEmpty || zone.length < 2) return ['', '地面区排参数异常'];
+    final codeU = label.trim().toUpperCase();
+    if (codeU.isNotEmpty) {
+      try {
+        final rec = await _globalIsar.scanRecords
+            .filter()
+            .goodsCodeEqualTo(codeU)
+            .findFirst();
+        final rv = await AuthApi.ledgerReserve(codeU, rec?.mesPartNo ?? "", zone: zone.toUpperCase());
+        if (rv["ok"] == true && (rv["loc"] as String?)?.isNotEmpty == true) return [(rv["loc"] as String).toUpperCase(), ''];
+        if (rv["_status"] == 200) // 服务器明确答复（满格/停用/格式不符）：如实中止，不降级
+          return ['', (rv["msg"] ?? '该排无可分配格位').toString()];
+      } catch (e) {
+        LocalLog.err('地面分格·服务器预占不可达降级本机', e); // 仅网络类异常才降级
+      }
+    }
+    // ---- 降级路径（服务器不可达 / 老服务器无 zone 分支）----
+    await ledgerPullMerge(force: true); // ㉖v98 尽量对齐全厂占用
+    await pullGroundSlots(); // ㉖v122 格数覆盖取最新（含 def.cols 默认格数）
     final g = zone.substring(0, 1);
     final nn = zone.substring(1).padLeft(2, '0');
     final prefix = 'NB03-$g-$nn';
     final maxSlot = nb03SlotMax(prefix);
-    final byLoc = await _ledgerByLoc();
+    final byLoc = await _liveLocs(); // ㉖v163 实时占用（旧版 _ledgerByLoc 只看本机缓存 → "看着空"）
     for (var s = 1; s <= maxSlot; s++) {
       final code = '$prefix-${s.toString().padLeft(2, '0')}';
-      if (!byLoc.containsKey(code)) return code;
+      final occ = (byLoc[code] ?? const <String>[]).where((c) => c.toUpperCase() != codeU).toList();
+      if (occ.isNotEmpty) continue; // 格内已有他框即跳过（保守，见函数头说明）
+      return [code, ''];
     }
-    return null;
+    return ['', '$prefix 排 $maxSlot 格位已满，请另选区排或手动指定'];
   }
 
   ///AUTO 解析：按本次 MES 零件号给 NB02 自动分配货位并回填；分配不到保留 AUTO 走格式提示。
@@ -1362,6 +1392,9 @@ Future<void> pullGroundSlots() async {
           .map((k, v) => MapEntry(k.toString(), (v as num).toInt())));
       final lt = r["lowTier"]; // ㉖v80 常用层上限随配置同步
       if (lt is num && lt >= 1 && lt <= 4) CollectionLedgerExt._lowTier = lt.toInt();
+      // ㉖v163 默认每排格数随配置同步（服务端 def.cols = gndCols 参数），不再写死 12
+      final dc = (r["def"] as Map?)?["cols"];
+      if (dc is num && dc >= 1 && dc <= 200) CollectionLedgerExt._gndDefCols = dc.toInt();
       final sp = await SharedPreferences.getInstance(); // ㉖v122 持久化：下次启动先恢复再等网络
       await sp.setString("gnd_slots_v122", jsonEncode(CollectionLedgerExt._gSlots));
     }
