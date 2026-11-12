@@ -27,8 +27,11 @@ function mk(db) {
     db, Date, Math, String, Number, Object, Array, JSON, Set, RegExp, isNaN, parseInt, parseFloat,
     P: () => ({ recvRows: 1, recvCols: 720 }), // 只走采集重复分支，不触发来料区闸
     receivingOn: () => false, locRecv: (l) => /^NB04-/.test(String(l || '')),
+    // ㉖v168 labelStatus 新增【预占表 locReserve】盲窗查重，内部依赖 resTtlMs，须一并抽出真实函数，
+    // 否则 ReferenceError。reserveTtlMin 不注入——真实 resTtlMs 对缺失参数自兜底 10 分钟（不写死数值以免漂移）。
+    // 本套件沙箱 db 无 locReserve，该分支恒不触发，原有断言不受影响。
   });
-  vm.runInContext(topFn('localDT') + '\n' + topFn('labelStatus') + '\n' + topFn('labelBlockReason'), ctx);
+  vm.runInContext(topFn('resTtlMs') + '\n' + topFn('localDT') + '\n' + topFn('labelStatus') + '\n' + topFn('labelBlockReason'), ctx);
   return ctx;
 }
 const reasonOf = (db, code) => { const c = mk(db); return vm.runInContext(`(function(){const st=labelStatus(${JSON.stringify(code)});return st?labelBlockReason(st,'in'):null})()`, c); };

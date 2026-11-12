@@ -130,7 +130,7 @@ const lostN = (d) => (d.notifications || []).filter((x) => /入库丢单/.test(S
     // 现场一次刷出 20+ 条（台站只是中转点，同一框先后经 CK-06、CK-07 完全正常）。新判据只有
     // 【同一排/同列内出现≥2个不同格位】（一个框不可能同时占两格）才必达。
     // 故 L3a 从"必须必达"反转为"必须不再必达"——反向锁住这个 bug，防止有人改回去。
-    const NEWMSG = /同一标签多条有效流水在同一排\/列内指向不同格位/;
+    const NEWMSG = /同一标签有 ≥2 条有效流水指向【不同格位】或【同一格位重复】/;
     T('L3a ★台站分歧不再必达（v152 误判已修，反向锁回归）', (getDb().notifications || []).some((x) => NEWMSG.test(String(x.text || '')) && String(x.text).includes(C_D1)), false);
     T('L3b 台站一致→不点名', (getDb().notifications || []).some((x) => NEWMSG.test(String(x.text || '')) && String(x.text).includes(C_D2)), false);
     { // 真冲突 vs 挪位：同标签两条流水指向【同排不同格】必须点名；【跨排】= 挪位，不点名

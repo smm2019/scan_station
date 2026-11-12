@@ -1320,7 +1320,7 @@ function dupFlowAlert(snap) {
     if (clashHits.length) {
       const lst2 = clashHits.slice(0, 6).map((h) => h.c + '（' + h.where + '）').join('；');
       const _who = (db.users || []).filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin'));
-      _who.forEach((x) => { try { notify(x.id, 'ghost_out', '🔁 同一标签多条有效流水在同一排/列内指向不同格位：' + lst2 + (clashHits.length > 6 ? ' 等' + clashHits.length + '个' : '') + '｜一个框不可能同时占两个格位，请按实物核对，到流水页作废错误那条（保留与实物一致的一条）', '', { solo: true }); } catch (_) { } });
+      _who.forEach((x) => { try { notify(x.id, 'ghost_out', '🔁 同一标签有 ≥2 条有效流水指向【不同格位】或【同一格位重复】：' + lst2 + (clashHits.length > 6 ? ' 等' + clashHits.length + '个' : '') + '｜一个框不可能同时占两个格位，同一格也不该有两条有效流水。请按实物核对后到流水页作废多余那条：格位不同的要按实物留对的那条；格位相同（同一次入库被扫两遍）的作废任一条都不影响件数', '', { solo: true }); } catch (_) { } });
     }
   } catch (e) { console.log('[dup-flow] 失败：', e.message); }
 }
@@ -1611,7 +1611,7 @@ function nb02AssignFree(partNo) {
 // 后两框拿到的还是 A-01-001，直到合并才被互斥闸拒回（弹窗"货位登记冲突"）。
 // 与 NB02 同款治法：分配即写 locReserve 预占（resTtlMs 过期），账本 NB04 行+预占一并避让，
 // 同标签幂等复用原格；顺序=排1格1→…→排×格上限（recvRows×recvCols，与 PDA 展示口径同源）。
-function nb04AssignFree(code) {
+function nb04AssignFree(code, by) {
   pruneReserve();
   const R = db.locReserve = db.locReserve || {};
   const rp = P();
@@ -1619,7 +1619,7 @@ function nb04AssignFree(code) {
   for (const l of Object.keys(R)) {
     if (String(R[l].code || '').toUpperCase() !== code || !/^NB04-/.test(l)) continue;
     const taken = (db.ledger || []).some((x) => String(x.l || '').toUpperCase() === l && String(x.c || '').toUpperCase() !== code);
-    if (!taken) { R[l].at = Date.now(); R[l].by = R[l].by || ''; return l; }
+    if (!taken) { R[l].at = Date.now(); R[l].by = R[l].by || String(by || ''); return l; } // ㉖v168 补填操作人（旧预占无 by 时盲窗提示会显示"另一台设备"）
     delete R[l];
   }
   const used = new Set();
@@ -1629,7 +1629,7 @@ function nb04AssignFree(code) {
   for (let rr = 1; rr <= rows; rr++) for (let cc = 1; cc <= cols; cc++) {
     const loc = 'NB04-A-' + String(rr).padStart(2, '0') + '-' + String(cc).padStart(3, '0');
     if (used.has(loc)) continue;
-    R[loc] = { code, by: '', at: Date.now() };
+    R[loc] = { code, by: String(by || ''), at: Date.now() }; // ㉖v168 记操作人：查重盲窗提示要写得出"谁占的"
     return loc;
   }
   return ''; // 满格
@@ -1729,10 +1729,38 @@ function labelStatus(codeRaw) {
   const inInspect = (db.inspects || []).filter((q) => String(q.code || '').toUpperCase() === code && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state));
   const everOut = (db.seenOut || {})[code] || null; // ㉖v68 保留登记对象（含 at/no）：旧版 !! 布尔化使下游 st.everOut.at 恒为 undefined，提示只能显示"历史"
   const everIn = !!(db.seenIn || {})[code]; // ㉖ 历史录过（当前不在架也可能曾在上游批次）
-  return { code, inLedger, inScanlog, inOutbound, inIssued, inQueue, inInspect, everOut, everIn, inMeta: (db.seenIn || {})[code] || null };
+  // ㉖v168 盲窗补漏：本标签已被某台 PDA 分格预占、但数据还没推上来的状态（账本/流水/防重登记全查不到的那 30~60 秒）。
+  // 预占表 locReserve 一直记着【谁、哪格、何时】，旧版查重从不看它 → B 机在这个窗口扫同一框畅通无阻，各存各的。
+  let reserved = null;
+  { const R = db.locReserve || {}, nowMs = Date.now(), ttl = resTtlMs();
+    for (const l of Object.keys(R)) {
+      const r = R[l]; if (!r || String(r.code || '').toUpperCase() !== code) continue;
+      const at0 = Number(r.at) || 0, age = nowMs - at0;
+      if (age > ttl || age < -60000) continue; // 过期预占不算（容忍设备时钟偏差 1 分钟）
+      if (!reserved || at0 > reserved.at) reserved = { loc: l, by: String(r.by || ''), at: at0 };
+    } }
+  return { code, inLedger, inScanlog, inOutbound, inIssued, inQueue, inInspect, everOut, everIn, inMeta: (db.seenIn || {})[code] || null, reserved };
 }
-function labelBlockReason(st, purpose, opts) { // purpose: in(采集入库)|out(出库/发料)|agvin|agvout；opts.ret=生产退库模式（豁免 everOut 复用拦）
+function labelBlockReason(st, purpose, opts) { // purpose: in(采集入库)|out(出库/发料)|agvin|agvout；opts.ret=生产退库模式（豁免 everOut 复用拦）；opts.me=当前操作人（判预占归属用）
   if (!st) return '';
+  // ㉖v168 并发盲窗拦截（用户诉求：多人同扫不要出现重复记录/未登记）
+  // 根因不在分配（地面 NB03 早已与 AGV 同一套服务器原子分格），而在【查重不看预占表】：
+  //   A 机 reserve 成功 → 本地保存 → 30~60 秒防抖后才推数据；这期间账本/流水/seenIn/seenOut 全查不到，
+  //   旧版 B 机扫同一框 blockIn=false 畅通无阻（v168 并发套件 Q2a 实锤），各存各的 → 两条有效流水。
+  // 预占表从 A 分配那一刻就存在、且覆盖整个盲窗，是唯一能在此刻识别冲突的信号。
+  // 只拦【账本/流水/防重登记全都没有、只有预占】这一种形态，且给强制继续出口（原因门槛 + 接手转交预占）。
+  if (purpose === 'in' && st.reserved && !st.inLedger.length && !st.inScanlog.length && !st.everIn && !st.everOut) {
+    const _rv = st.reserved;
+    const _me = String((opts && opts.me) || '');
+    // 预占是【扫的人自己】的 → 放行：本机 _isCodeDuplicate 会弹"该货码已登记"给本机处理（可选继续、不必写原因）。
+    // 服务器若再拦一道，最常见、最正常的"扫错了重扫改数量/改位置"就被迫填强过原因，纯添堵。只拦【别人】的预占。
+    if (_me && String(_rv.by || '') === _me) return '';
+    const _ago = Math.max(0, Math.round((Date.now() - (Number(_rv.at) || 0)) / 1000));
+    const _when = _ago < 60 ? _ago + ' 秒前' : Math.round(_ago / 60) + ' 分钟前';
+    return '本框已被【' + (String(_rv.by || '') || '另一台设备') + '】于 ' + _when + ' 扫入并预占货位 ' + String(_rv.loc || '')
+      + '，其数据尚未同步到服务器（PDA 推送有几十秒延迟）——很可能是同一框被两台设备重复扫入，请先与对方核对实物；'
+      + '确认对方已放弃录入、需由你接手时，点「强制继续」并写明原因（留痕，货位随即转交到你名下）';
+  }
   // ㉖v121 来料区源头闸（11-07 拍板路线A）：启用后来料必须"一楼登记过 或 曾出库（生产退料）"二选一，二楼才能直接采集上架。
   // 判据=全新标签（无账本行/无采集流水/无录入留痕/无出库留痕）——一楼已登记的框在账 NB04，走 1407 转入豁免；
   // 曾出库框放行到既有分支（退料行为与开关无关，不变差）；一楼登记模式(recv=1)不经过本闸；
@@ -3977,7 +4005,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (!receivingOn()) return send(res, 403, { ok: false, msg: '来料区未启用，无法分配来料格位' });
           const _il = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code);
           if (_il && locRecv(_il.l)) return send(res, 200, { ok: true, loc: String(_il.l || '').toUpperCase(), kept: true }); // 已在来料区：回现格（幂等重扫不跳格）
-          const loc4 = nb04AssignFree(code);
+          const loc4 = nb04AssignFree(code, u.name); // ㉖v168 带上操作人，供查重盲窗提示"谁占的"
           if (!loc4) return send(res, 200, { ok: false, msg: '来料区已满（当前 ' + P().recvRows + ' 排 × ' + P().recvCols + ' 格），请核对现场或调整参数' });
           save();
           return send(res, 200, { ok: true, loc: loc4 });
@@ -5718,7 +5746,8 @@ return send(res, 200, {
         if (recvMode && !receivingOn()) return send(res, 403, { ok: false, msg: '来料区未启用（设置页「来料区启用」开关关闭）——一楼登记不可用，请二楼直接按货架/地面位采集入库' });
         if (recvMode && !canFeature(u, 'receiving_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「来料区登记」权限' });
         const st = labelStatus(cs);
-        const inReason = labelBlockReason(st, 'in', { ret: retMode, recv: recvMode });
+        // ㉖v168 必须带 me：盲窗拦截靠它区分"自己重扫"与"他人已扫"，不传则本人正常重扫也被硬拦
+        const inReason = labelBlockReason(st, 'in', { ret: retMode, recv: recvMode, me: u.name });
         const recvLoc = st.inLedger.length && st.inLedger.every((x) => locRecv(x.l)) ? String(st.inLedger[0].l || '') : '';
         return send(res, 200, { ok: true, code: cs, seen: !!(inReason || st.inLedger.length || st.inScanlog.length || st.everIn || st.everOut), blockIn: !!inReason, everIn: !!st.everIn, reason: inReason, loc: st.inLedger.length ? String(st.inLedger[0].l || '') : '', part: st.inLedger.length ? String(st.inLedger[0].p || '') : '', batch: st.inScanlog.length ? String(st.inScanlog[0].gl || st.inScanlog[0].st || '') : (st.everOut ? String(st.everOut.batch || '') : ''), by: st.inLedger.length ? String(st.inLedger[0].by || '') : (st.inScanlog.length ? String(st.inScanlog[0].op || '') : ''), everOut: st.everOut ? { at: st.everOut.at, batch: st.everOut.batch || '' } : null, recvLoc, seenOut: !!st.everOut }); // ㉖v118 recvLoc=在账且全为来料区位（二楼转入判据）；seenOut=曾出库（退库原码提示）
       }
@@ -5735,8 +5764,13 @@ return send(res, 200, {
         if (_bad) { pushOps(u, "重复标签强过被拒", fc, _why ? _why + ' ｜ ' + _bad : '（原因空白）｜ ' + _bad); return send(res, 400, { ok: false, msg: _bad }); }
         // 凭证快照：此刻该标签的全部有效流水键（新记录尚未写入，快照必然只含旧记录）
         const _oldKeys = Object.keys(db.scanlog || {}).filter((k) => { const v = (db.scanlog || {})[k]; return v && !v.cx && String(v.code || '').toUpperCase() === fc; });
+        // ㉖v168 预占归属转交：B 机是被拦后来"接手"的（写原因=宣告对方已放弃），把该标签未过期预占的 by 转到 B 名下。
+        // 否则第三台设备来扫仍会提示"已被【并发甲】扫入"——甲其实已放弃，提示就把人往错方向带。
+        // 只改归属声明与续期，不改已分配的格位（格位是否最终归谁仍由谁先推送上账决定，与转交前一致）。
+        let _hand = '';
+        { const R = db.locReserve || {}; for (const l of Object.keys(R)) { const r0 = R[l]; if (!r0 || String(r0.code || '').toUpperCase() !== fc) continue; const _oldBy = String(r0.by || '') || '未知'; if (_oldBy === String(u.name)) continue; r0.by = u.name; r0.at = Date.now(); _hand = _oldBy; } }
         (db.supersede = db.supersede || {})[fc] = { at: Date.now(), by: u.name, why: _why, keys: _oldKeys };
-        pushOps(u, "重复标签强过", fc, _why + (_oldKeys.length ? '（取代：待作废旧流水 ' + _oldKeys.length + ' 条，本次记录入账后生效）' : '（该标签当前无在库旧流水）'));
+        pushOps(u, "重复标签强过", fc, _why + (_oldKeys.length ? '（取代：待作废旧流水 ' + _oldKeys.length + ' 条，本次记录入账后生效）' : '（该标签当前无在库旧流水）') + (_hand ? '（货位预占自 ' + _hand + ' 转交至本人）' : ''));
         save();
         return send(res, 200, { ok: true, supersedePending: _oldKeys.length });
       }
