@@ -57,8 +57,9 @@ server/*_data/
 deploy/watchdog-fail.count
 server/tmp_prob_smoke.js
 
-# ㉖v171 selftest 门禁产物：CI等价副本（含全仓拷贝，严禁入库）与本机会话基线
-server/_cisim*/
-server/_mkcisim.js
+# ㉖v171/v172 selftest 门禁产物：CI等价副本 + 各测试夹具/哨兵/冒烟的运行时隔离副本（含全仓拷贝，严禁入库）
+# server/ 下 _ 开头全是测试运行期隔离目录（git ls-files 确认无 _ 开头需入库文件），统一忽略；
+# 注意只忽略 _ 开头，绝不用 server/*/ —— 那会误伤 server/public 等需入库子目录
+server/_*
 server/.ci_baseline.txt
 server/.ci_out/

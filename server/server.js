@@ -1371,6 +1371,77 @@ function dupSweep() {
 }
 setTimeout(dupSweep, 12000).unref(); // 比粗码(10s)晚 2 秒：错开启动回调，避免同一 tick 叠两个全库扫
 setInterval(dupSweep, 5 * 60 * 1000).unref();
+// ---- ㉖v172 关键不变量常驻自检（第2层"止血"核心：把"等出事才发现"变成"当天自动报"）----
+// 用户诉求：把三条账实不变量做成后台每 5 分钟自动查+报警。三条里：
+//   ①「一个框同一格只该有一条有效流水」= dupFlowAlert（v167）已每 5 分钟跑，本函数【不重造】，
+//      只补下面两条尚无常驻检查的：
+//   ②「一个格位只该有一个框（托）」：此前靠人工一次性查，无常驻。
+//   ③「账本与在架实物一致」中的幽灵框（MES 已出库、本地账本仍在架=出库没消账）：出库落库时
+//      有即时检出，但那是"当时点"，v151 消账逻辑一旦被后续改动破坏不会有任何东西再报——需常驻哨兵。
+// 判据先用真实全库核对误报（11-13）：② 多码同格 44 处里 43 处是【同托多码共用一格=合法】、
+//   真·不同托号撞位 0 处；③ 幽灵框 0 个。即上线第一天不误报，命中即真事（哨兵平时无声）。
+function invariantSweep() {
+  try {
+    if (!Number(P().invariantAlertOn)) return;
+    const up = (s) => String(s || '').trim().toUpperCase();
+    const isCell = (l) => /^NB0[234]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$/.test(up(l)); // 只认完整格位，台站/粗码不参与
+    const seen = (db.invariantAlert = db.invariantAlert || {});
+    const isFresh = (key) => { if (Date.now() - (Number(seen[key]) || 0) < 7 * 86400000) return false; seen[key] = Date.now(); return true; };
+
+    // ===== 不变量②：一个格位只该有一个托 =====
+    // 整托多码共用一格是合法常态（现网 43 处），必须按【托号】判：只有同一格里出现 ≥2 个
+    // 不同非空托号才是真撞位（两托物理上不可能重叠）。托号缺失（WPS 导入常见）证据不足，
+    // 只留痕不吵人——否则会把 43+ 处合法场景全刷屏，功能第一次跑就被关掉。
+    const cellRows = {};
+    for (const x of ledgerView()) { const l = up(x.l); if (!isCell(l)) continue; (cellRows[l] = cellRows[l] || []).push(x); }
+    const locClash = [];
+    for (const [l, rows] of Object.entries(cellRows)) {
+      if (rows.length < 2) continue;
+      const pids = [...new Set(rows.map((r) => up(r.pid || '')))];
+      const realPids = pids.filter((p) => p); // 非空托号
+      if (realPids.length >= 2) locClash.push({ l, codes: rows.map((r) => r.c), pids: realPids });
+      else if (pids.includes('')) { try { pushOps(null, '格位托号缺失', rows.map((r) => r.c).join('/').slice(0, 60), '货位 ' + l + ' 有 ' + rows.length + ' 行且存在托号缺失，无法判定是否同托共用一格（导入数据常见），仅留痕不点名'); } catch (_) { } }
+    }
+    // ===== 不变量③：账本在架 vs MES 出库（幽灵框=出库未消账）=====
+    // 仅在"出库即消本地账"开启时判：关掉时出库本就不消账，全部出库框都会命中=纯误报。
+    // 时序：出库时刻(seenOut.at) 晚于 该码最后一次入库流水 → 该框最后一次入库之后被 MES 出库了，
+    // 本地账本却还有行 = 消账没发生 = 幽灵。反之若最后入库晚于出库，说明出库后又回流再入库，合法。
+    const ghost = [];
+    if ((Number(P().outConsumeLedger) || 0) >= 1) {
+      const lastIn = new Map(); // 码 → 最后一条未作废入库流水时刻（建一次索引，避免逐 ledger 行重扫全库=O(行×全库)）
+      for (const s of Object.values(db.scanlog || {})) { if (s.cx) continue; const c = up(s.code); if (!c) continue; const t = Number(s.t) || 0; if ((lastIn.get(c) || 0) < t) lastIn.set(c, t); }
+      const SO = db.seenOut || {};
+      for (const x of ledgerView()) {
+        const c = up(x.c); const so = SO[c]; if (!so) continue;
+        const outAt = Number(so.at) || 0; if (outAt <= 0) continue;
+        if (outAt > (lastIn.get(c) || 0)) ghost.push({ c, l: x.l, outNo: String(so.no || '') });
+      }
+    }
+    // 快照（供健康页/PDA 展示"最近一次自检结果"，也让"哨兵在岗"本身可观测）
+    db.lastInvariantCheck = { at: Date.now(), locClash: locClash.length, ghost: ghost.length };
+
+    const freshLoc = locClash.filter((h) => isFresh('loc:' + h.l));
+    const freshGhost = ghost.filter((h) => isFresh('ghost:' + h.c));
+    if (!freshLoc.length && !freshGhost.length) { if (locClash.length || ghost.length) save(); return; } // 老问题不重复吵，但快照仍落盘
+
+    const _who = (db.users || []).filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin'));
+    if (freshLoc.length) {
+      const lst = freshLoc.slice(0, 6).map((h) => h.l + '(' + h.pids.join('+') + ')').join('；');
+      try { pushOps(null, '库存自检-一格多托', freshLoc.slice(0, 10).map((h) => h.l).join('/'), freshLoc.length + ' 个格位上出现 ≥2 个不同托号（一个格物理放不下两托，请核对）：' + freshLoc.slice(0, 8).map((h) => h.l + '[' + h.codes.join(',') + '] 托' + h.pids.join('/')).join(' ')); } catch (_) { }
+      freshLoc.forEach((h) => { _who.forEach((x) => { try { notify(x.id, 'ghost_out', '🏗 库存自检：货位 ' + h.l + ' 上有 ' + h.pids.length + ' 个不同托（' + h.codes.slice(0, 4).join('、') + '）——一个格位放不下两托，必有一托位置记错。请按实物核对该格，把多出的那托用「位置登记」改到正确格位', '', { solo: true }); } catch (_) { } }); });
+      console.log(`[invariant] 一格多托 ${freshLoc.length} 处: ${lst}`);
+    }
+    if (freshGhost.length) {
+      const lst = freshGhost.slice(0, 6).map((h) => h.c + '@' + h.l + (h.outNo ? '(' + h.outNo + ')' : '')).join('、');
+      try { pushOps(null, '账实自检-幽灵框', freshGhost.slice(0, 10).map((h) => h.c).join('/'), freshGhost.length + ' 框 MES 已出库但本地账本仍在架（出库未消账，库存虚高）：' + lst); } catch (_) { }
+      freshGhost.slice(0, 5).forEach((h) => { _who.forEach((x) => { try { notify(x.id, 'ghost_out', '👻 账实自检：' + h.c + '（' + h.l + '）MES 已出库但本地账本仍显示在架' + (h.outNo ? '（出库单 ' + h.outNo + '）' : '') + '——出库没消本地账，货架/来料区库存会虚高。请核对是否发错货，确认后到库存页消掉该行或重新登记', '', { solo: true }); } catch (_) { } }); });
+      console.log(`[invariant] 幽灵框 ${freshGhost.length} 个: ${lst}`);
+    }
+    save();
+  } catch (e) { console.log('[invariant] 失败：', e.message); logErr('invariantSweep', e); }
+}
+setTimeout(invariantSweep, 14000).unref(); // 再晚 2 秒错开：启动时粗码/重复/不变量三个全库扫不在同一 tick
+setInterval(invariantSweep, 5 * 60 * 1000).unref();
 // ---- ㉔每日自动导出：18点后落 D1库位表+D2库存汇总 到 data/exports/daily（留90天，对账免手工）----
 let _expLast = '';
 function dailyExport() {
@@ -1924,6 +1995,7 @@ const PARAMS = {
   wmasReloginGapS: { grp: '调度节奏', name: 'WMAS重登冷却', unit: '秒', min: 0, max: 300, d: 30, tip: '㉖v160 WMAS 登录失败后的重登冷却秒数（0=不节流）。凭证被挤下线时若不节流，实测 20 次取票=20 次真实登录，WMAS 可能因频繁失败锁定账号；且每次登录成功会把对方会话踢下线，双方互挤成死循环。默认 30 秒＝最长 30 秒内恢复、又不打爆对方。现场在 WMAS 改密后重新保存 WMAS 配置会立即重置本冷却，不受影响' },
   agvAuthYieldMin: { grp: '调度节奏', name: '退出登录让位时长', unit: '分钟', min: 1, max: 180, d: 15, tip: '㉖v161 人工点「退出登录」后，服务器在这段时间内【不自动登录】WMAS/AGV 调度系统，把单账号会话让给现场人员。两套系统都是同一账号后登录者踢掉前者：现场为改密/查数据人工登录 → 服务器会话被踢反复 401；服务器若立刻自动重登 → 又把现场人员的窗口踢掉，双方互挤谁都干不成。让位期内 AGV 叫车不可用（提示会写明剩余时间），到期自动恢复；重新保存 WMAS/RCS 配置=人工宣告已处理完，立即解除让位' },
   dupFlowAlertOn: { grp: '告警阈值', name: '重复有效流水告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 同一标签存在多条未作废采集流水 → 留痕 ops（审计线索）。⚠️v166 判据重构：旧版按"≥2条未作废 + 位置不同"必达点名，把【框挪过位置/先后经过不同台站】当异常刷屏（现网 61 个全是这类噪音；台站只是中转点，同一框先后经 CK-06、CK-07 完全正常，v152 当初的触发案例 N26K100170 本身即误判；实测两次采集跨度 <1分钟 0 例、>10分钟 61 例，不存在毫秒级双写缺陷）。新判据只有【同一排/同列内出现 ≥2 个不同格位】（一个框不可能同时占两个格位）才升 ghost_out 必达点名人工裁决；挪位/跨模式/台站差异只留痕不吵人。判据变更后自动重置旧 7 天去重标记，避免真冲突被旧噪音标记静默一周' },
+  invariantAlertOn: { grp: '告警阈值', name: '库存账实自检', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v172 每 5 分钟常驻扫两条账实不变量并 ghost_out 必达点名：②一个格位只放一个托（同格出现≥2不同托号才报；整托多码共用一格=合法放过，现网 43 处；托号缺失只留痕不吵人）③幽灵框=MES 已出库但本地账本仍在架（出库未消账，仅 outConsumeLedger≥1 时判，关档全部出库框会误报故不判）。不变量①「同码同格一条有效流水」由「重复有效流水告警」已覆盖，此处不重复。判据上线前已用真实全库核对：真撞位 0、幽灵框 0，命中即真事。0=关哨兵（不建议，等于关掉账实自动体检）' },
   forceWhyMinLen: { grp: '领料闸门', name: '强过原因最少字数', unit: '字', min: 0, max: 30, d: 6, tip: '㉖v167 重复标签点「强制继续」时原因栏的最低字数（PDA 与服务端双端校验，旧版 PDA 也绕不过）。现网强过原因大量只填「1」「。」甚至「测试」，等于没有留痕——11-12 N26K120114 就是填一个「1」把同一框重复入账，流水翻倍。除字数外还拒绝【整串只有数字/符号】的占位填写。0=关闭门槛（回退旧行为，不建议）' },
   outConsumeLedger: { grp: '存储配置', name: '出库即消本地账', unit: '档', min: 0, max: 2, d: 1, tip: '㉖v151 出库单（直调/MES转单）落库时同步消掉本地账本行，根治"直调只调MES四接口、本地账无人消"造成的幽灵框（来料区/货架库存与待入库虚高）。1=仅真实出库单消账（移仓单不消，保留 v108 标签回流语义，默认）；2=移仓单一并消（去向为线边仓/成品仓之外的仓间转移也认离架）；0=关闭（回退旧行为，只留痕不改账）。同托兄弟码一律不连坐删除，改站内消息点名交人工处置' },
   batch:          { grp: '调度节奏', name: '单轮最多下发', unit: '单', min: 1, max: 8, d: 4, tip: '排队调度器每轮最多真实下发几单（保守节奏）' },
@@ -3518,7 +3590,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
     //   codeSha=启动时冻结的自身哈希；codeMismatch=已判好的"改了代码没重启"布尔旗，
     //   运维不必再心算 sha 是否相同。见顶部 codeFingerprint/codeMismatch。
     if (req.method === 'GET' && p === '/api/health') {
-      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), code: Object.assign({ startedAt: new Date(SERVER_STARTED_AT).toISOString() }, CODE_FP, codeMismatch(Date.now())), netmap: { lands: Object.keys(NetMap.lands).length, edges: Object.keys(NetMap.adj).length, ready: NetMap.ready(), builtAgo: NetMap.builtAt ? Math.round((Date.now() - NetMap.builtAt) / 1000) : -1 }, counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length } });
+      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), code: Object.assign({ startedAt: new Date(SERVER_STARTED_AT).toISOString() }, CODE_FP, codeMismatch(Date.now())), netmap: { lands: Object.keys(NetMap.lands).length, edges: Object.keys(NetMap.adj).length, ready: NetMap.ready(), builtAgo: NetMap.builtAt ? Math.round((Date.now() - NetMap.builtAt) / 1000) : -1 }, counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length }, invariant: db.lastInvariantCheck ? Object.assign({ ageSec: Math.round((Date.now() - db.lastInvariantCheck.at) / 1000) }, db.lastInvariantCheck) : null }); // ㉖v172 哨兵在岗可观测：最近一次账实自检的时刻/距今/命中数（null=启动未满14秒尚未首跑）
     }
     // ---- ㉖v108 看门狗探测端点：无鉴权轻量应答，返回循环心跳年龄（外部计划任务据此判"进程活着但假死"并自动重启服务） ----
     if (req.method === 'GET' && p === '/api/health-ping') {

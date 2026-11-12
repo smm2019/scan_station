@@ -105,3 +105,14 @@ jobs:
         with:
           name: scan‑station‑apk‑output
           path: build/app/outputs/apk/release/app-release.apk
+
+      # ㉖v172 第1层②：APK 构建后服务端冒烟（用户诉求"build 完顺手起个 server 打几个只读接口"）
+      # 现有 selftest 门禁只跑逻辑断言，没有一项验证【真实 server 能否从空库起来、HTTP 栈通不通、
+      # 鉴权链健不健康、health 返回体结构有没有被改坏】——这类"起不来/启动即崩/health 字段被改坏"
+      # 回归 flutter analyze 和逻辑测试都拦不住；而 v171/v172 恰恰改了 health 返回体，最需这道兜底。
+      # 只打只读+无外部依赖端点（空库无 rcs/wmas 配置→CI 沙箱内必不发外联），目的不是覆盖率，就一个：
+      # 这次改动有没有让服务根本起不来。放 Upload Artifact 之后：APK 先安全上传，冒烟失败让 job 红
+      # 但不阻塞核心产物交付。复用 v171 已装的 Node 20，不再装。本机实测 11/11。
+      - name: Server smoke test (boot + read-only endpoints)
+        working-directory: server
+        run: node selftest_smoke.js
