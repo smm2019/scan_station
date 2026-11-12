@@ -2,7 +2,10 @@
 // SharedPreferences 异步回调改写 _workType。本测试全区间扫描保存链源码，断言：
 // 校验/落库/叫车/登记链路不再有任何"实时可变状态读取"（界面清理赋值除外），全部改用入口快照。
 const fs = require('fs');
-const src = fs.readFileSync('D:/work_app/scan_station/lib/main.dart', 'utf8');
+const path = require('path');
+// ★跨机器可移植：用 __dirname 相对定位仓库内 main.dart，绝不写死盘符绝对路径
+//   （v172 CI 首跑即因写死 D:/... 在 Linux 上 readFileSync 抛错、退出码 1，教训见 selftest_ci_runner）
+const src = fs.readFileSync(path.join(__dirname, '..', 'lib', 'main.dart'), 'utf8');
 const lines = src.split(/\r?\n/);
 let pass = 0, fail = 0;
 const T = (id, cond, note) => {

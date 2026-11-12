@@ -88,9 +88,29 @@ function runOne(file) {
 async function main() {
   let files = fs.readdirSync(HERE).filter((f) => /^test_.*\.js$/.test(f)).sort();
   if (onlySet) files = files.filter((f) => onlySet.has(f) || onlySet.has(f.replace(/\.js$/, '')));
-  const needDbOf = (f) => {
-    try { return /data['"]?\s*[,+]\s*['"]?db\.json|data\/db\.json|readFileSync\(.*db\.json/.test(fs.readFileSync(path.join(HERE, f), 'utf8')); } catch (_) { return false; }
-  };
+  const readSrc = (f) => { try { return fs.readFileSync(path.join(HERE, f), 'utf8'); } catch (_) { return ''; } };
+  const needDbOf = (f) => /data['"]?\s*[,+]\s*['"]?db\.json|data\/db\.json|readFileSync\(.*db\.json/.test(readSrc(f));
+
+  // ★静态可移植性门禁（先于执行，任何机器都跑）：套件里写死盘符绝对路径（如 'D:/work_app/...'）
+  //   是"本机绿、真机崩"的元凶——本地副本测不出来（D 盘就在），只有换机器才暴露。
+  //   11-13 真 CI 首跑：test_race_v154 因写死 D:/... 在 Linux 上 readFileSync 抛错退出码 1，
+  //   本地等价副本因 D 盘仍在而判 PASS。静态扫不依赖执行，故能补上"同机测不出换机崩"这个盲区。
+  const ABS_WIN_RE = /["'`][A-Za-z]:[\\/]{1,2}/;
+  const absOffenders = files
+    .map((f) => {
+      const s = readSrc(f);
+      if (!ABS_WIN_RE.test(s)) return null;
+      const ln = s.split(/\r\n|\n/).findIndex((l) => ABS_WIN_RE.test(l));
+      return { f, ln: ln + 1, code: (ln >= 0 ? s.split(/\r\n|\n/)[ln] : '').trim().slice(0, 78) };
+    })
+    .filter(Boolean);
+  if (absOffenders.length) {
+    console.log('=== selftest 门禁：可移植性静态扫描 ===');
+    absOffenders.forEach((o) => console.log('   ★ ' + o.f + ':' + o.ln + ' 写死盘符绝对路径（跨机器必崩）→ ' + o.code));
+    console.log('\n❌❌ 门禁不通过：测试不可跨机器复现。请改用 __dirname 相对定位（path.join(__dirname, \'..\', \'lib\', ...)），不要用 --update-baseline 豁免——豁免解决不了"换机器就崩"。');
+    return 1;
+  }
+
 
   if (MODE_LIST) {
     const nd = files.filter(needDbOf).length;
