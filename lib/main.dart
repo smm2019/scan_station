@@ -1500,6 +1500,11 @@ class _MainPageState extends State<MainPage>
     {"db": "华强铁框", "show": "华强铁框"},
     {"db": "托盘", "show": "托盘"},
   ];
+  // ㉖v173 容器类型列表是否真来自服务器（11-12 14:49 事故防线）：
+  // 取数失败时 _containers 会静默留在上面内置默认5项，当事人无从分辨，点保存就整表覆盖掉服务器上的真实清单。
+  // 该标记为 false 时，容器类型管理弹窗显示红条警告并禁用保存。
+  bool _containersLive = false;
+  int _containersLoadedAt = 0; // 最近一次成功拉取时刻（>10分钟视为过期，编辑前需重新拉取）
   final TextEditingController _ledgerLocCtrl =
       TextEditingController(); //采集页顺手登记：货位账本编码（选填）
   Timer? _ledgerSyncTimer; //账本同步防抖：连扫攒一批再全量推
@@ -4425,13 +4430,15 @@ class _MainPageState extends State<MainPage>
     );
   }
 
-  /// ㉖ 容器类型从服务器拉取（失败静默保留默认5项）
+  /// ㉖ 容器类型从服务器拉取（失败静默保留默认5项 → ㉖v173 配套 _containersLive 标记：编辑弹窗据此禁保存）
   Future<void> _loadContainers() async {
     final r = await AuthApi.containersGet();
     if (!mounted || r["ok"] != true) return;
     final ts = List<Map>.from(r["types"] ?? []);
     if (ts.isEmpty) return;
     setState(() {
+      _containersLive = true;
+      _containersLoadedAt = DateTime.now().millisecondsSinceEpoch;
       _containers
         ..clear()
         ..addAll(ts
@@ -4446,6 +4453,15 @@ class _MainPageState extends State<MainPage>
 
   /// ㉖ 容器类型管理弹层（仓管/管理员）：增删改，保存全端生效
   Future<void> _manageContainers() async {
+    // ㉖v173 编辑前强制重新拉取（列表超过10分钟也重拉）：拉不到 = _containersLive=false，
+    //   此时列表只是内置默认5项，必须禁止保存——11-12 14:49 就是这么把14项冲成5项的。
+    if (!_containersLive ||
+        DateTime.now().millisecondsSinceEpoch - _containersLoadedAt >
+            10 * 60 * 1000) {
+      await _loadContainers();
+      if (!mounted) return;
+    }
+    final bool live = _containersLive;
     final edit = _containers.map((m) => Map<String, String>.of(m)).toList();
     // 每行两个 controller（显示名/落库值）：一次建好并随行增删同步维护，避免重建丢焦点与泄漏
     final ctrls = <List<TextEditingController>>[
@@ -4484,6 +4500,25 @@ class _MainPageState extends State<MainPage>
                       const Text("落库值同时用于 WMAS 容器编码匹配（容器编码包含该关键字即命中），请与主档命名对齐",
                           style: TextStyle(fontSize: 11, color: Colors.grey)),
                       const SizedBox(height: 8),
+                      // ㉖v173 取数失败 = 下面只是内置默认5项，绝非服务器现状，明写警告并禁保存
+                      if (!live)
+                        Container(
+                          width: double.infinity,
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                              color: const Color(0xFFFFEBEE),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.red)),
+                          child: const Text(
+                            "⚠ 连不上服务器，下面只是本机内置默认 5 项，不是服务器上的真实清单！\n保存会覆盖全端配置（已导致过一次 14 项被冲成 5 项）。请先恢复网络后重新打开本窗口。",
+                            style: TextStyle(
+                                fontSize: 12.5,
+                                height: 1.5,
+                                color: Color(0xFFB71C1C),
+                                fontWeight: FontWeight.bold),
+                          ),
+                        ),
                       Flexible(
                           child: ListView(
                               shrinkWrap: true,
@@ -4527,7 +4562,8 @@ class _MainPageState extends State<MainPage>
                             onPressed: () => Navigator.pop(mc2),
                             child: const Text("取消")),
                         FilledButton(
-                            onPressed: () {
+                            onPressed: live
+                                ? () {
                               final ok = <Map<String, String>>[];
                               final seen = <String>{};
                               for (final m in edit) {
@@ -4544,7 +4580,8 @@ class _MainPageState extends State<MainPage>
                                 return;
                               }
                               Navigator.pop(mc2, ok);
-                            },
+                            }
+                                : null, // ㉖v173 取不到服务器数据 → 列表不可信，保存按钮禁用
                             child: const Text("保存")),
                       ]),
                     ])))));

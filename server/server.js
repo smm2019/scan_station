@@ -5426,6 +5426,24 @@ return send(res, 200, {
           seen.add(dbv.toUpperCase()); clean.push({ db: dbv, show });
         }
         if (!clean.length) return send(res, 400, { ok: false, msg: '无有效条目（需 db 落库值 + show 显示名）' });
+        // ㉖v173 防误覆盖（11-12 14:49 事故）：PDA 取数失败时弹窗会静默回落到内置默认5项，
+        //   当事人以为是服务器现状，点保存整表覆盖 → 14 项被冲成 5 项，9 类消失、166 只在架实物失去类型口径。
+        //   故：账本仍有在架实物的类型一律禁止从字典删除（改名同样算删除，因为实物上的旧值会变孤儿）。
+        //   这条是服务端硬闸，不依赖 APK 版本，重启即生效；客户端另有一道提示（取数失败禁保存）。
+        const _kp = new Set();
+        for (const x of clean) { _kp.add(String(x.db).toUpperCase()); _kp.add(String(x.show).toUpperCase()); }
+        const _stranded = [];
+        for (const old of (db.containerTypes || [])) {
+          if (!old || !old.db) continue;
+          if (_kp.has(String(old.db).toUpperCase()) || _kp.has(String(old.show || '').toUpperCase())) continue;
+          let n = 0;
+          for (const r of db.ledger || []) { const f = String(r.f || ''); if (f && (f === old.db || f === old.show)) n++; }
+          if (n > 0) _stranded.push((old.show || old.db) + '(' + n + '只在架)');
+        }
+        if (_stranded.length) {
+          pushOps(u, '容器类型配置被拒', '删除会孤儿化在架实物', _stranded.join('、'));
+          return send(res, 400, { ok: false, msg: '保存被拒绝：以下类型账本仍有在架实物，删除会让这些框失去类型口径 —— ' + _stranded.join('、') + '。请把它们保留在列表里（可只新增不删除）；确需下线请先在库区把这批框改用其它类型。' });
+        }
         db.containerTypes = clean; cfgBump(); save();
         pushOps(u, '容器类型配置', clean.length + ' 项', clean.map((x) => x.show).join('、'));
         return send(res, 200, { ok: true, types: clean, msg: '已保存，全端下次进入采集页生效' });
