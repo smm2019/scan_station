@@ -4444,7 +4444,12 @@ class _MainPageState extends State<MainPage>
         ..addAll(ts
             .map((t) => {
                   "db": t["db"]?.toString() ?? "",
-                  "show": t["show"]?.toString() ?? ""
+                  "show": t["show"]?.toString() ?? "",
+                  // ㉖v173g 使用统计并入同 map（字符串承载，字段类型不变以免波及采集页按钮）：
+                  //   cnt=该类型累计采集次数、led=当前在架数（服务器 60 秒缓存口径）。
+                  //   仅管理弹窗显示/排序用；保存时服务端只取 db/show，多余键忽略。
+                  "cnt": t["cnt"]?.toString() ?? "",
+                  "led": t["onLed"]?.toString() ?? "",
                 })
             .where((m) => m["db"]!.isNotEmpty && m["show"]!.isNotEmpty));
     });
@@ -4462,6 +4467,8 @@ class _MainPageState extends State<MainPage>
       if (!mounted) return;
     }
     final bool live = _containersLive;
+    // ㉖v173g 统计（cnt=累计采集次数 / led=当前在架）已随 _loadContainers 并入每项 map，
+    //   edit 深拷贝自然带上，行内直接读 edit[i]["cnt"]，无需并行数组。
     final edit = _containers.map((m) => Map<String, String>.of(m)).toList();
     // 每行两个 controller（显示名/落库值）：一次建好并随行增删同步维护，避免重建丢焦点与泄漏
     final ctrls = <List<TextEditingController>>[
@@ -4524,15 +4531,59 @@ class _MainPageState extends State<MainPage>
                               shrinkWrap: true,
                               children: List.generate(edit.length, (i) {
                                 final m = edit[i];
+                                final _cnt = int.tryParse(m["cnt"] ?? "") ?? 0,
+                                    _led = int.tryParse(m["led"] ?? "") ?? 0;
+                                final _stat = (_cnt > 0 || _led > 0)
+                                    ? '用$_cnt·在架$_led'
+                                    : '未使用';
                                 return Row(children: [
+                                  // ㉖v173g 自定义顺序：上下移（数组顺序=采集页按钮顺序）
+                                  SizedBox(
+                                      width: 30,
+                                      child: IconButton(
+                                          padding: EdgeInsets.zero,
+                                          visualDensity: VisualDensity.compact,
+                                          tooltip: '上移',
+                                          onPressed: i == 0
+                                              ? null
+                                              : () => setSt(() {
+                                                    edit
+                                                        .insert(
+                                                            i - 1, edit.removeAt(i));
+                                                    ctrls
+                                                        .insert(
+                                                            i - 1, ctrls.removeAt(i));
+                                                  }),
+                                          icon: const Icon(Icons.arrow_upward,
+                                              size: 17))),
+                                  SizedBox(
+                                      width: 30,
+                                      child: IconButton(
+                                          padding: EdgeInsets.zero,
+                                          visualDensity: VisualDensity.compact,
+                                          tooltip: '下移',
+                                          onPressed: i == edit.length - 1
+                                              ? null
+                                              : () => setSt(() {
+                                                    edit
+                                                        .insert(
+                                                            i + 1, edit.removeAt(i));
+                                                    ctrls
+                                                        .insert(
+                                                            i + 1, ctrls.removeAt(i));
+                                                  }),
+                                          icon: const Icon(Icons.arrow_downward,
+                                              size: 17))),
                                   Expanded(
                                       child: TextField(
                                     controller: ctrls[i][0],
                                     onChanged: (v) => m["show"] = v,
-                                    decoration: const InputDecoration(
+                                    decoration: InputDecoration(
                                         labelText: "显示名",
+                                        // ㉖v173g 使用统计显示在标签里（行高不膨胀，PDA 小屏友好）
+                                        hintText: _stat,
                                         isDense: true,
-                                        border: OutlineInputBorder()),
+                                        border: const OutlineInputBorder()),
                                   )),
                                   const SizedBox(width: 6),
                                   Expanded(
@@ -4557,6 +4608,36 @@ class _MainPageState extends State<MainPage>
                             onPressed: () => setSt(addRow),
                             icon: const Icon(Icons.add, size: 18),
                             label: const Text("加一项")),
+                        // ㉖v173g 一键按使用次数排序（累计采集次数降序，同分按在架降序）；
+                        //   排序只动本地列表，点"保存"才生效——与手动上下移共存不冲突。
+                        TextButton.icon(
+                            onPressed: () => setSt(() {
+                              final idx = List.generate(edit.length, (i) => i)
+                                ..sort((a, b) {
+                                  final ca =
+                                      int.tryParse(edit[a]["cnt"] ?? "") ?? 0,
+                                      cb =
+                                      int.tryParse(edit[b]["cnt"] ?? "") ?? 0;
+                                  if (ca != cb) return cb - ca;
+                                  final la =
+                                      int.tryParse(edit[a]["led"] ?? "") ?? 0,
+                                      lb =
+                                      int.tryParse(edit[b]["led"] ?? "") ?? 0;
+                                  return lb - la;
+                                });
+                              // ★必须先物化再写回：setAll 消费惰性 map 会在覆写过程中读到
+                              //   已被覆盖的元素，部分置换（如 3 项轮转）时顺序直接错乱
+                              final newEdit = idx.map((i) => edit[i]).toList();
+                              final newCtrls = idx.map((i) => ctrls[i]).toList();
+                              edit
+                                ..clear()
+                                ..addAll(newEdit);
+                              ctrls
+                                ..clear()
+                                ..addAll(newCtrls);
+                            }),
+                            icon: const Icon(Icons.sort, size: 18),
+                            label: const Text("按次数排")),
                         const Spacer(),
                         TextButton(
                             onPressed: () => Navigator.pop(mc2),

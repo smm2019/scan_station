@@ -2212,10 +2212,25 @@ function logErr(where, e, extra) {
         || /\b(aborted|socket hang up|ECONNRESET|EPIPE|premature close|stream destroyed)\b/i.test(_msg)) return;
     db.sysErr = db.sysErr || [];
     const stack = e && e.stack ? String(e.stack).split('\n').slice(0, 4).join(' | ') : '';
-    db.sysErr.push({ id: newId('se'), at: Date.now(), where: String(where).slice(0, 60), msg: String((e && e.message) || e || '').slice(0, 400), stack: stack.slice(0, 600), extra: extra ? String(extra).slice(0, 200) : '' });
+    const _m = String((e && e.message) || e || '').slice(0, 400);
+    db.sysErr.push({ id: newId('se'), at: Date.now(), where: String(where).slice(0, 60), msg: _m, stack: stack.slice(0, 600), extra: extra ? String(extra).slice(0, 200) : '' });
     if (db.sysErr.length > SYS_ERR_MAX) db.sysErr = db.sysErr.slice(-SYS_ERR_MAX);
+    // ㉖v173g 异常同步进【事件流水】：sysErr 面板只留最近 SYS_ERR_MAX 条、且不进 180 天审计流，
+    //   现场"事件流水里看不到异常"即此因（11-13 用户实问）。补写 ops：by=系统、动作=服务器异常。
+    //   同 where+消息头 10 分钟抑制——saveDb 失败会每 120ms 重试一轮，不抑制则一轮故障刷爆流水。
+    try {
+      const _k = String(where) + '|' + _m.slice(0, 60);
+      const _last = _leOpsAt.get(_k) || 0;
+      if (Date.now() - _last > 600000) {
+        _leOpsAt.set(_k, Date.now());
+        if (_leOpsAt.size > 500) _leOpsAt.clear();
+        pushOps(null, '服务器异常', String(where).slice(0, 60), _m.slice(0, 200) + (extra ? ' ｜ ' + String(extra).slice(0, 120) : '') + (stack ? ' ｜ ' + stack.slice(0, 160) : ''));
+      }
+    } catch (_) { }
   } catch (_) {}
 }
+const _leOpsAt = new Map(); // where|msg头 → 上次入流水时刻（v173g 抑制窗）
+let _ctUsage = null; // ㉖v173g 容器类型使用统计缓存 {at,cnt,led}，60 秒 TTL（/api/containers GET 填充）
 
 // ---- ㉕T1 通知治理：同类5分钟静默聚合（并入原条"等N条"）/ 每人每分钟超5条跨类型强制聚合 / 夜间22-6点非急停类按人缓冲，早6点各自一条汇总 ----
 const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
@@ -5472,7 +5487,18 @@ return send(res, 200, {
         const zGet = (z) => zw[z] || (zw[z] = { boxes: 0, stale: 0, outT: 0, inT: 0 });
         for (const x of db.ledger || []) { const z = zKey(x.l); if (!z) continue; const w = zGet(z); w.boxes++; const t = Number(x.t || 0); if (t && _nowMs - t > 7 * 864e5) w.stale++; }
         for (const tk of Object.values(db.agvTasks || {})) { const fin = Number(tk.fin || 0); if (fin < _today0) continue; if (tk.ck === 'out') { const z = zKey(tk.sp); if (z) zGet(z).outT++; } else if (tk.ck === 'in') { const z = zKey(tk.ep); if (z) zGet(z).inT++; } }
-        return send(res, 200, { ok: true, types: db.containerTypes || defaultDb().containerTypes, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols, zoneRows: _gzr, lists: _glist, offs: _goff }, weather: { zones: zw, at: _nowMs } }); // ㉖v56 高架+地面格位规格下发（参数可调）
+        // ㉖v173g 每项带使用统计：cnt=该类型累计采集次数（scanlog.ct 口径，=用户说的"使用次数"），
+        //   onLed=账本当前在架数（ledger.f 口径）。60 秒缓存（全库扫两遍毫秒级，但采集页轮询会打到）。
+        //   PDA 管理弹窗据此显示"用 N 次·在架 M"、一键按次数排序；数组顺序本身仍是自定义显示序。
+        if (!_ctUsage || Date.now() - _ctUsage.at > 60000) {
+          const cnt = {}, led = {};
+          for (const s of Object.values(db.scanlog || {})) { const c0 = String(s.ct || '').trim(); if (c0) cnt[c0] = (cnt[c0] || 0) + 1; }
+          for (const x of db.ledger || []) { const f0 = String(x.f || '').trim(); if (f0) led[f0] = (led[f0] || 0) + 1; }
+          _ctUsage = { at: Date.now(), cnt, led };
+        }
+        const _pick = (m, t) => (m[String(t.db || '').trim()] || 0) + (t.show && t.show !== t.db ? (m[String(t.show).trim()] || 0) : 0);
+        const _types0 = (db.containerTypes || defaultDb().containerTypes).map((t) => Object.assign({}, t, { cnt: _pick(_ctUsage.cnt, t), onLed: _pick(_ctUsage.led, t) }));
+        return send(res, 200, { ok: true, types: _types0, rack: { count: P().rackCount, cols: P().rackCols, tiers: P().rackTiers }, gnd: { zones: P().gndZones, rows: P().gndRows, cols: P().gndCols, zoneRows: _gzr, lists: _glist, offs: _goff }, weather: { zones: zw, at: _nowMs } }); // ㉖v56 高架+地面格位规格下发（参数可调）
       }
       if (req.method === 'POST' && p === '/api/containers') {
         if (!canFeature(u, 'location_reg')) return send(res, 403, { ok: false, msg: '当前角色未开通「位置登记」权限' });
@@ -5504,8 +5530,24 @@ return send(res, 200, {
           pushOps(u, '容器类型配置被拒', '删除会孤儿化在架实物', _stranded.join('、'));
           return send(res, 400, { ok: false, msg: '保存被拒绝：以下类型账本仍有在架实物，删除会让这些框失去类型口径 —— ' + _stranded.join('、') + '。请把它们保留在列表里（可只新增不删除）；确需下线请先在库区把这批框改用其它类型。' });
         }
+        // ㉖v173g 增删改【明细】留痕（用户要求"添加或者删除要有记录"）：原只记"N 项+全名单"，
+        //   翻流水看不出这次动了哪个类型。★旧名单必须在赋值前捕获（内存当前值），
+        //   不能用进程级快照——否则服务重启后首次保存会把全部类型误记成"新增"。
+        const _prevArr = (db.containerTypes || []).map((x) => ({ db: String(x.db || ''), show: String(x.show || '') }));
         db.containerTypes = clean; cfgBump(); save();
-        pushOps(u, '容器类型配置', clean.length + ' 项', clean.map((x) => x.show).join('、'));
+        try {
+          const _prevM = new Map(_prevArr.map((x) => [x.db.toUpperCase(), x]));
+          const curM = new Map(clean.map((x) => [String(x.db).toUpperCase(), x]));
+          const adds = clean.filter((x) => !_prevM.has(String(x.db).toUpperCase())).map((x) => x.show + '[' + x.db + ']');
+          const dels = _prevArr.filter((x) => !curM.has(x.db.toUpperCase())).map((x) => x.show + '[' + x.db + ']');
+          const rens = clean.filter((x) => { const o = _prevM.get(String(x.db).toUpperCase()); return o && o.show && o.show !== x.show; }).map((x) => _prevM.get(String(x.db).toUpperCase()).show + '→' + x.show);
+          const chg = [];
+          if (adds.length) chg.push('新增 ' + adds.length + '：' + adds.join('、'));
+          if (dels.length) chg.push('删除 ' + dels.length + '：' + dels.join('、'));
+          if (rens.length) chg.push('改名 ' + rens.length + '：' + rens.join('、'));
+          if (chg.length) pushOps(u, '容器类型配置', clean.length + ' 项 ｜ ' + chg.join(' ; ').slice(0, 70), '全名单：' + clean.map((x) => x.show).join('、'));
+          else pushOps(u, '容器类型配置', clean.length + ' 项（顺序调整）', clean.map((x) => x.show).join('、')); // 无增删改名=纯排序变更，同样可回溯（顺序即采集页按钮布局）
+        } catch (_) { pushOps(u, '容器类型配置', clean.length + ' 项', clean.map((x) => x.show).join('、')); }
         return send(res, 200, { ok: true, types: clean, msg: '已保存，全端下次进入采集页生效' });
       }
       // ---- ㉖v69 零件全集背书：字典∪账本∪流水∪出库∪领料 出现过的全部零件号（缺料反馈判"零库存"的地基，不随流水清空而丢失）----
@@ -6492,7 +6534,7 @@ return send(res, 200, {
         if (db.errLogs.length > 2000) db.errLogs = db.errLogs.slice(-2000);
         save();
         const nErr = clean.filter((x) => String(x.e).includes('异常')).length;
-        if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'sys_err', '🛠 PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常（' + clean.length + ' 条记录）'); } // ㉖v173f 类型 car_alarm→sys_err：诊断上报不是车辆告警，此前借道 car_alarm 被网页"未处理车辆告警"红框置顶（11-13 用户截图实证分类错位），现归"其他与系统"组
+        if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'sys_err', '🛠 PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常 ｜ ' + clean.map((x) => String(x.d || x.e || '')).join(' ; ').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 560)); } // ㉖v173f 类型 car_alarm→sys_err：诊断上报不是车辆告警，此前借道 car_alarm 被网页"未处理车辆告警"红框置顶（11-13 用户截图实证分类错位），现归"其他与系统"组；㉖v173g 详情带上异常内容摘要（原只记条数，"流水里看不到消息内容"）
         return send(res, 200, { ok: true, count: clean.length });
       }
       if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/req-templates' || p.startsWith('/api/req-templates/') || p === '/api/notifications' || p.startsWith('/api/notifications/')) { // ㉖v62 模板路由并入领料块（此前落入管理员闸门）
