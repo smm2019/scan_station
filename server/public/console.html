@@ -152,13 +152,34 @@ window._dictCache=null;
 async function dictLoad(){if(window._dictCache)return window._dictCache;try{const j=await api('/api/dict');window._dictCache=j.list||[];}catch(_){window._dictCache=[];}return window._dictCache}
 window._nrowTpl=()=>'<div class="row nrow" style="gap:6px;margin:4px 0;position:relative"><input class="npn mono" placeholder="零件号 *" autocomplete="off" style="flex:2;min-width:120px" oninput="nrowPn(this)"><input class="nnm" placeholder="物料名（自动带出）" style="flex:2;min-width:110px"><input class="nqty" type="number" min="1" inputmode="numeric" placeholder="框数 *" title="填框数（1框=发料最小单位）；无每框均值的零件按所填数字当件数" style="flex:1;min-width:56px" oninput="nrowHint(this)" onfocus="nrowFocus(this)"><label style="display:flex;align-items:center;gap:2px;font-size:12px" title="加急此行（配合行序：靠前=加急）"><input class="nrs" type="checkbox">🔥</label><button class="pill q" style="padding:3px 7px" title="上移" onclick="nrowMove(this,-1)">↑</button><button class="pill q" style="padding:3px 7px" title="下移" onclick="nrowMove(this,1)">↓</button><button class="pill q" style="padding:3px 9px" onclick="this.parentNode.remove()">删</button><span class="nhint" style="flex:1 100%;font-size:11px;color:var(--sub);line-height:1.4"></span><div class="npop" style="display:none;position:absolute;top:34px;left:0;z-index:40;background:var(--card,#fff);border:1px solid var(--line,#ccc);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.18);max-height:170px;overflow:auto;min-width:280px"></div></div>';
 function nrowHint(inp){const row=inp.closest('.nrow'),h=row.querySelector('.nhint');if(!h)return;const pn=(row.querySelector('.npn').value||'').trim().toUpperCase(),q=Number(inp.value)||0,d=(window._dictCache||[]).find(x=>x.pn===pn),per=d&&Number(d.perBoxQty)||0,boxes=d&&Number(d.boxes)||0;
+ _pvSchedule(); // ㉖v175 行变化即防抖问预占（预览回来后覆盖均值提示为绿色实发）
  if(!q||!pn){h.textContent='';return}
  if(per>0){let s='≈'+(Math.round(q*per*10)/10)+'件（'+q+'框×'+per+'件/框）'+(boxes?' · 在架'+boxes+'框':'');if(boxes&&q>boxes)s+=' <b style="color:var(--warn)">⚠超在架框数</b>';h.innerHTML=s}
  else if(d&&!boxes)h.innerHTML='<span style="color:var(--warn)">⚠ 在架 0 框 · 无货可发（物料在途可继续提交）</span>'; // ㉖v134 字典有号但零在架：点破"无均值"的因由
  else h.innerHTML=pn.length>=4?'<span style="color:var(--sub)">无每框均值 · 按 '+q+' 件提交</span>':'';
 }
+// ===== ㉖v175 领料预占预览（网页端，与 PDA requisition_page 同端点同口径）=====
+// 填框数 → 服务器按发料同一 FIFO 贪心回"将发哪几筐/实数合计"，混框零件防 perBoxQty 均值幻数。
+// 边界：只读预计不锁框；预览框数≠当前框数（改框数后旧预览未回）不采信；请求失败静默=保持均值提示，绝不阻塞提交。
+let _pvT=null,_pvSeq=0;window._pvMap=window._pvMap||{};
+function _pvSchedule(){if(_pvT)clearTimeout(_pvT);_pvT=setTimeout(_pvRun,600)}
+async function _pvRun(){
+ const rows=[...document.querySelectorAll('.nrow')].map(r=>{const pn=(r.querySelector('.npn').value||'').trim().toUpperCase(),q=Number(r.querySelector('.nqty').value)||0;return pn&&q>0?pn+':'+q:null}).filter(Boolean);
+ if(!rows.length){window._pvMap={};_pvPaint();return}
+ const seq=++_pvSeq;
+ try{const j=await(await fetch('/api/req/preview?items='+encodeURIComponent(rows.join(',')),{headers:{'Authorization':'Bearer '+TK}})).json();
+  if(seq!==_pvSeq)return;const m={};((j&&j.rows)||[]).forEach(x=>{if(x&&x.pn)m[String(x.pn).toUpperCase()]=x});window._pvMap=m;_pvPaint();
+ }catch(_){} // 失败保留旧值/静默，提交走均值
+}
+function _pvPaint(){
+ document.querySelectorAll('.nrow').forEach(r=>{const h=r.querySelector('.nhint');if(!h)return;const pn=(r.querySelector('.npn').value||'').trim().toUpperCase(),q=Number(r.querySelector('.nqty').value)||0;const pv=window._pvMap[pn];
+  if(!pv||pv.boxesReq!==q)return; // 无预览/框数已改未回：保留 nrowHint 的均值提示
+  const bs=((pv.boxes)||[]);
+  if(pv.mode==='real'&&bs.length){const lots=[...new Set(bs.map(b=>{const s=(b.b||'').toString();return s.length>=10?s.slice(5,10):s}))].slice(0,2).join('、');const shortN=pv.shortN||0;h.innerHTML='<span style="color:#2E7D32;font-weight:600">实发 '+(Math.round((pv.estQty||0)*10)/10)+'件（'+bs.length+'筐'+(lots?'·批次'+lots:'')+(shortN>0?' · 在架缺'+shortN+'筐':'')+'）</span>'+(bs.length<=4?' <span style="color:var(--sub);font-size:10px">'+bs.map(b=>_esc(b.c)+' '+_esc((b.q||0))+'件').join('、')+'</span>':'');h.title=bs.map(b=>b.c+' '+b.l+' '+(b.q||0)+'件 批次'+(b.b||'无')).join('\n');}
+  else if(pv.mode==='fallback'){h.innerHTML='<span style="color:var(--warn)">⚠ '+(pv.note||'暂无在架可预占，按均值折算')+'</span>';}
+ })}
 function nrowFocus(el){setTimeout(()=>{try{const b=document.getElementById('nreqbtn');if(b&&b.scrollIntoView)b.scrollIntoView({block:'nearest',behavior:'smooth'})}catch(_){}},420)} // iPhone 键盘弹出时把提交按钮滚到可见
-function nrowPn(inp){const row=inp.closest('.nrow'),pop=row.querySelector('.npop'),v=inp.value.trim().toUpperCase();const nm=row.querySelector('.nnm');
+function nrowPn(inp){const row=inp.closest('.nrow'),pop=row.querySelector('.npop'),v=inp.value.trim().toUpperCase();const nm=row.querySelector('.nnm');_pvSchedule(); // ㉖v175 零件号变化也调度预占（命中下拉外手动输入同样要问）
  // 精确命中：静默带出名称（用户改过则不覆盖）
  const hit=v.length>=4&&((window._dictCache)||[]).find(x=>x.pn===v);
  if(hit&&hit.nm&&!nm.dataset.touched){nm.value=hit.nm;nm.style.borderColor='';}
@@ -230,6 +251,8 @@ function reqAgain(id){const r=(window._reqs||[]).find(x=>x.id==id)||{};if(!r.id)
  const pf={};(r.items||[]).forEach(i=>{if(i.partNo)pf[String(i.partNo).toUpperCase()]=String(Number(i.qty)||0)});
  if(!Object.keys(pf).length){T('原单无有效零件行');return}
  newReqDlg(pf);} // 原单 qty=件数，弹窗内换算回框数预填
+// ㉖v175 提交件数：预占实数优先（框数一致才采信，防改框后旧预览过期）→ 无预览回退 v128 框×均值
+function pvQty(pnRaw,q,per){const K=(pnRaw||'').trim().toUpperCase(),pv=window._pvMap[K];if(pv&&pv.mode==='real'&&pv.boxesReq===q&&pv.estQty!=null)return Math.round(pv.estQty);return per>0?Math.round(q*per):q}
 async function newReqGo(btn){ // ㉖v128 框数→件数换算（对齐 PDA requisition_page:687：有每框均值则 框×均值，无均值兜底原值当件数）
  const items=[...document.querySelectorAll('.nrow')].map(r=>{const pn=r.querySelector('.npn').value.trim(),q=Number(r.querySelector('.nqty').value)||0,d=(window._dictCache||[]).find(x=>x.pn===pn.toUpperCase()),per=Number(d&&d.perBoxQty)||0;
   return {partNo:pn,itemName:r.querySelector('.nnm').value.trim(),qty:per>0?Math.round(q*per):q,boxes:q,perBox:per,avail:Number(d&&d.boxes)||0,rush:r.querySelector('.nrs').checked}}).filter(i=>i.partNo&&i.qty>0);
@@ -418,19 +441,48 @@ async function tplCardLoad(){const box=$('#tplcard');if(!box)return;
  if(!d||!d.ok){box.innerHTML='<div class="card" style="color:var(--sub);font-size:12px">产线模板：接口未响应（服务重启后可用）</div>';return}
  const L=(d.list||[]).slice().sort((a,b)=>(b.use||0)-(a.use||0));
  box.innerHTML=`<div class="card"><div class="row" style="align-items:center"><b style="font-size:13px">📁 产线模板</b><span style="font-size:11.5px;color:var(--sub)">共 ${L.length} 个（我的+同事共享）· 按使用次数排序 · PDA 建单页可一键载入</span></div>
- ${L.length?`<div style="overflow:auto;max-height:34vh;margin-top:6px"><table><thead><tr><th>模板</th><th>归属</th><th>范围</th><th>行数</th><th>用过</th><th>创建</th><th></th></tr></thead><tbody>${L.map(t=>`<tr style="border-top:1px solid var(--line)"><td><b>${_esc(t.name)}</b></td><td style="font-size:12px">${_esc(t.byName||'')}</td><td><span class="tag ${t.shared?'t-r':'t-x'}" style="font-size:10.5px">${t.shared?'共享':'私有'}</span></td><td>${(t.items||[]).length}</td><td>${t.use||0} 次</td><td style="font-size:11px;color:var(--sub)">${(t.at||'').slice(5,10)}</td><td style="white-space:nowrap"><a href="javascript:void 0" onclick="tplRows('${_esc(t.id)}')">看行</a>${(t.by===U.id||U.role==='admin')?` · <a href="javascript:void 0" onclick="tplEdit('${_esc(t.id)}')">改名/共享</a> · <a href="javascript:void 0" style="color:var(--bad)" onclick="tplDel('${_esc(t.id)}','${_esc(t.name)}')">删</a>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--sub);font-size:12px;margin-top:6px">还没有模板。在 PDA 建单页选好物料后点「存为产线模板」即可创建（可勾选共享给同事）。</div>'}</div>`;
+ ${L.length?`<div style="overflow:auto;max-height:34vh;margin-top:6px"><table><thead><tr><th>模板</th><th>归属</th><th>范围</th><th>行数</th><th>用过</th><th>创建</th><th></th></tr></thead><tbody>${L.map(t=>`<tr style="border-top:1px solid var(--line)"><td><b>${_esc(t.name)}</b></td><td style="font-size:12px">${_esc(t.byName||'')}</td><td><span class="tag ${t.shared?'t-r':'t-x'}" style="font-size:10.5px">${t.shared?'共享':'私有'}</span></td><td>${(t.items||[]).length}</td><td>${t.use||0} 次</td><td style="font-size:11px;color:var(--sub)">${(t.at||'').slice(5,10)}</td><td style="white-space:nowrap"><a href="javascript:void 0" onclick="tplRows('${_esc(t.id)}')">看行</a>${(t.by===U.id||U.role==='admin')?` · <a href="javascript:void 0" onclick="tplEdit('${_esc(t.id)}')">编辑</a> · <a href="javascript:void 0" style="color:var(--bad)" onclick="tplDel('${_esc(t.id)}','${_esc(t.name)}')">删</a>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--sub);font-size:12px;margin-top:6px">还没有模板。在 PDA 建单页选好物料后点「存为产线模板」即可创建（可勾选共享给同事）。</div>'}</div>`;
  window._tplAll=L;
 }
 function tplRows(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t){T('模板已刷新，请重试');return}
  dlg(`<h3>📁 ${_esc(t.name)}（${(t.items||[]).length} 行）</h3><div style="overflow:auto;max-height:50vh"><table><thead><tr><th>零件号</th><th>物料名</th><th>默认数量</th></tr></thead><tbody>${(t.items||[]).map(i=>`<tr><td class="mono">${_esc(i.partNo)}</td><td>${_esc(i.itemName||'')}</td><td>${i.qty}</td></tr>`).join('')}</tbody></table></div><div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill" onclick="$('#mask').classList.add('hide')">关闭</button></div>`,1)}
-function tplEdit(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t)return;
- dlg(`<h3>✏ 编辑模板</h3><label>名称</label><input id="te_n" value="${_esc(t.name)}" maxlength="20"><label style="margin-top:8px"><input type="checkbox" id="te_s" ${t.shared?'checked':''}> 共享给同事</label><div class="row" style="margin-top:6px;font-size:11.5px;color:var(--sub)">改物料行请在 PDA 建单页操作：载入模板→调整→存为新模板（或直接编辑你自己的）。</div><div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill" onclick="tplEditSave('${_esc(t.id)}')">保存</button></div>`)}
-async function tplEditSave(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t)return;
- const name=$('#te_n').value.trim(),shared=$('#te_s').checked;
- if(!name){T('名称不能为空');return}
- const j=await api('/api/req-templates',{method:'POST',body:{id,name,shared,items:t.items}});
+// ㉖v175b 编辑模板：原地改名/共享 + 增删零件 + 改框数（与 PDA 编辑弹层同能力，保存走 tplSave(id) 更新母本）
+let _teItems=[],_teDict=[];
+async function tplEdit(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t)return;
+ _teItems=(t.items||[]).map(i=>({partNo:String(i.partNo||'').toUpperCase(),itemName:String(i.itemName||''),qty:Number(i.qty)||1}));
+ _teDict=await dictLoad(); // 与建单同款在架字典源（pn/nm/boxes/perBoxQty）
+ dlg(`<h3>✏ 编辑模板</h3><label>名称</label><input id="te_n" value="${_esc(t.name)}" maxlength="20"><label style="margin-top:8px"><input type="checkbox" id="te_s" ${t.shared?'checked':''}> 共享给同事（公共模板：他人可载入后按需改并另存，但不能改本母本）</label><div class="row" style="margin-top:10px;align-items:center;justify-content:space-between"><b style="font-size:12.5px">物料行 · 填框数（1框=发料最小单位）</b><span id="te_cnt" style="font-size:11px;color:var(--sub)"></span></div><div id="te_rows" style="max-height:38vh;overflow:auto;margin-top:4px"></div><div style="margin-top:8px;position:relative"><input id="te_addq" placeholder="＋ 加零件：输入零件号 / 物料名搜索在架库存" autocomplete="off" style="width:100%" oninput="tePick(this.value)" onfocus="tePick(this.value)"><div id="te_pop" class="npop" style="display:none;position:absolute;top:34px;left:0;z-index:40;background:var(--card,#fff);border:1px solid var(--line,#ccc);border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.18);max-height:160px;overflow:auto;min-width:300px"></div></div><div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill" onclick="tplEditSave('${_esc(t.id)}')">保存</button></div>`,1);
+ tePaint();
+}
+function tePaint(){const b=$('#te_rows');if(!b)return;
+ if(!_teItems.length)b.innerHTML='<div style="padding:8px 2px;color:var(--sub);font-size:12px">还没有零件，用下方搜索框添加</div>';
+ else b.innerHTML=_teItems.map((it,i)=>`<div class="row" style="gap:6px;margin:3px 0;align-items:center"><span class="mono" style="flex:2;min-width:110px;font-size:12.5px">${_esc(it.partNo)}</span><span style="flex:2;min-width:80px;font-size:11px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(it.itemName||'')}</span><input class="te-q" type="number" min="1" inputmode="numeric" value="${it.qty}" data-i="${i}" style="flex:0 0 62px;min-width:56px;text-align:center"><span style="font-size:10.5px;color:var(--sub)">框</span><button class="pill q" style="padding:3px 8px" title="删除该零件" onclick="teDel(${i})">✕</button></div>`).join('');
+ const c=$('#te_cnt');if(c)c.textContent=_teItems.length+' 行';
+}
+function teDel(i){_teItems.splice(i,1);tePaint()}
+function tePick(v){const pop=$('#te_pop');if(!pop)return;const q=String(v||'').trim().toUpperCase();
+ if(q.length<2){pop.style.display='none';return}
+ const have=new Set(_teItems.map(i=>i.partNo));
+ const list=(_teDict||[]).filter(x=>!have.has(String(x.pn).toUpperCase())&&(String(x.pn).toUpperCase().includes(q)||String(x.nm||'').toUpperCase().includes(q))).slice(0,12);
+ pop.innerHTML=list.length?list.map(x=>`<div style="padding:6px 10px;font-size:12px;cursor:pointer;display:flex;gap:8px" onmousedown="event.preventDefault();teAdd('${_esc(String(x.pn).toUpperCase())}')"><b class="mono">${_esc(String(x.pn))}</b><span style="color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_esc(x.nm||'')}</span><span style="color:var(--pri);font-size:11px;white-space:nowrap">在架${Number(x.boxes)||0}框</span></div>`).join(''):'<div style="padding:8px 10px;color:var(--sub);font-size:12px">无匹配的在架零件（或已全部加入）</div>';
+ pop.style.display='block';
+}
+function teAdd(pn){if(_teItems.length>=20){T('单模板最多20行');return}
+ pn=String(pn||'').toUpperCase();if(!pn||_teItems.some(i=>i.partNo===pn))return;
+ const d=(_teDict||[]).find(x=>String(x.pn).toUpperCase()===pn); // 名称从字典取，不经 HTML 属性传参（防物料名含引号破坏）
+ _teItems.push({partNo:pn,itemName:String(d&&d.nm||''),qty:1});
+ const q=$('#te_addq');if(q)q.value='';const p=$('#te_pop');if(p)p.style.display='none';
+ tePaint();
+}
+async function tplEditSave(id){
+ const nEl=$('#te_n');const name=nEl?nEl.value.trim():'';if(!name){T('名称不能为空');return}
+ const sEl=$('#te_s');const shared=!!(sEl&&sEl.checked);
+ const items=_teItems.map((it,i)=>{const el=document.querySelector('.te-q[data-i="'+i+'"]');return {partNo:it.partNo,itemName:it.itemName,qty:Number(el&&el.value)||0}}).filter(i=>i.partNo&&i.qty>0);
+ if(!items.length){T('至少保留一个零件且框数>0');return}
+ if(items.length>20){T('单模板最多20行');return}
+ const j=await api('/api/req-templates',{method:'POST',body:{id,name,shared,items}});
  $('#mask').classList.add('hide');
- T(j.ok?'✅ 已更新':'❌ '+(j.msg||'失败'),j.ok?1:0);if(j.ok)tplCardLoad()}
+ T(j.ok?'✅ 已更新（'+items.length+' 行）':'❌ '+(j.msg||'失败'),j.ok?1:0);if(j.ok)tplCardLoad()}
 async function tplDel(id,name){if(!confirm('删除模板「'+name+'」？同事将不能再载入。'))return;
  const j=await api('/api/req-templates?id='+encodeURIComponent(id),{method:'DELETE'});
  T(j.ok?'✅ 已删除':'❌ '+(j.msg||'失败'),j.ok?1:0);if(j.ok)tplCardLoad()}

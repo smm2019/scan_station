@@ -774,6 +774,8 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   List<Map> _sug = [];
   bool _sugOn = true;
   int _sugWin = 14, _sugCover = 3;
+  // ㉖v175 预占预览：填框数 → 服务器按发料同一 FIFO 贪心回"将发哪几筐/实数合计"（混框零件防均值失真）
+  Timer? _pvT; int _pvSeq = 0; final Map<String, Map> _pv = {}; // partNo -> {mode,estQty,boxes:[{c,l,b,q,cs}],note,perBox,boxesReq,pickedN,shortN}
 
   /// v55 数量变化同步已选区：填>0入选（追加到队尾），清空即除名；零件下架由提交时兜底过滤
   void _syncChosen(String partNo) {
@@ -783,7 +785,62 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
     } else if (_order.contains(partNo)) {
       _order.remove(partNo);
       _rushLines.remove(partNo);
+      _pv.remove(partNo.toUpperCase()); // 行清掉预览同步撤（key 大写对齐，防旧预览混进提交件数）
     }
+    _reqPv(); // ㉖v175 数量任一变化即防抖重问预览
+  }
+
+  /// ㉖v175 防抖 600ms 拉预览：一次请求带全部已选行；seq 只认最新响应（防乱序覆盖）；失败静默=回退均值模式
+  void _reqPv() {
+    _pvT?.cancel();
+    _pvT = Timer(const Duration(milliseconds: 600), () async {
+      final rows = _order.map((pn) { final b = int.tryParse(_qtyCtrl[pn]?.text.trim() ?? "") ?? 0; return b > 0 ? "$pn:$b" : null; }).whereType<String>().toList();
+      if (rows.isEmpty) { if (mounted) setState(() => _pv.clear()); return; }
+      final reqPns = rows.map((s) => s.split(":").first).toList(); // ㉖v175 请求行的原 key（服务器返回 pn 已大写，按行序映射回本地下标，防大小写不一致静默失效）
+      final seq = ++_pvSeq;
+      try {
+        final r = await AuthApi.reqPreview(rows.join(","));
+        if (!mounted || seq != _pvSeq) return;
+        final rl = ((r["rows"] as List?) ?? const []);
+        setState(() {
+          final next = <String, Map>{};
+          for (var i = 0; i < rl.length && i < reqPns.length; i++) { next[reqPns[i].toUpperCase()] = Map<String, dynamic>.from(rl[i] as Map); } // 同请求同序同行数；key 大写与两处读取侧(_chosenItems/_pvBoxText)对齐
+          _pv
+            ..clear()
+            ..addAll(next); // 全量替换：未再请求的行（已移除/清零）自然撤下
+        });
+      } catch (_) { } // 网络失败保留旧值/静默，提交走 fallback 均值，绝不阻塞下单
+    });
+  }
+
+  /// ㉖v175 行右侧换算显示：有预占→按将发筐实数（绿，混框防均值幻数）+ 将发批次；否则回退"≈件/框均值"。
+  /// 仅当预览框数=当前输入才采信（防改框数后旧预览未回显示过期数）。tooltip 给逐筐明细。
+  Widget _pvBoxText(String pn, int q, double perBox) {
+    final pv = _pv[pn.toUpperCase()]; // 写入侧已大写，读侧同口径（防小写 partNo 静默失效）
+    final fresh = pv != null && (pv["boxesReq"] as num?)?.toInt() == q;
+    if (q > 0 && fresh && pv["mode"] == "real") {
+      final bs = ((pv["boxes"] as List?) ?? const []).cast<Map>();
+      final tot = ((pv["estQty"] as num?) ?? 0).toInt();
+      final lots = bs.map((b) { final s = b["b"].toString(); return s.length >= 10 ? s.substring(5, 10) : s; }).toSet().take(2).join("、");
+      final shortN = ((pv["shortN"] as num?) ?? 0).toInt();
+      final tip = "将发 ${bs.length} 筐（第 ${pv["boxesReq"]} 筐请求）：\n" +
+          bs.map((b) => "  ${b["c"]}  ${b["l"]}  ${_fmtInvNum((b["q"] as num?)?.toDouble() ?? 0)}件  批次${b["b"]?.toString().isEmpty ?? true ? "无日期" : b["b"]}${((b["cs"] as num?) ?? 1).toInt() > 1 ? "（同托${(b["cs"] as num).toInt()}码）" : ""}").join("\n") +
+          "\n合计 ${_fmtInvNum(tot.toDouble())} 件（整筐发料，签收以此为准）" +
+          (shortN > 0 ? "\n⚠ 在架不足：还有 $shortN 筐需等入库" : "");
+      return SizedBox(width: 62, child: Tooltip(
+          waitDuration: const Duration(milliseconds: 350),
+          richMessage: WidgetSpan(child: ConstrainedBox(constraints: const BoxConstraints(maxWidth: 320), child: Text(tip, style: const TextStyle(fontSize: 11.5, height: 1.5)))),
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(_fmtInvNum(tot.toDouble()) + "件", maxLines: 1, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32))),
+            Text(lots.isEmpty ? "在架不足" : lots, maxLines: 1, style: const TextStyle(fontSize: 8.5, color: Color(0xFF2E7D32))),
+          ])));
+    }
+    if (q > 0 && fresh && pv["mode"] == "fallback") {
+      return SizedBox(width: 62, child: Tooltip(
+          message: pv["note"]?.toString() ?? "暂无在架可预占",
+          child: Text(q > 0 && perBox > 0 ? "≈${_fmtInvNum(q * perBox)}件" : "$q 框", textAlign: TextAlign.right, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: Color(0xFFEF6C00)))));
+    }
+    return SizedBox(width: 62, child: Text(q > 0 && perBox > 0 ? "≈${_fmtInvNum(q * perBox)}件" : (q > 0 ? "$q 框" : ""), textAlign: TextAlign.right, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10.5, color: Color(0xFF78909C))));
   }
 
   /// v55 提交行集：按已选顺序输出，零件中途清零/下架跳过（沿用 v53 防崩口径）
@@ -796,7 +853,12 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
       final q = int.tryParse(_qtyCtrl[pn]?.text.trim() ?? "") ?? 0;
       if (q <= 0) continue;
       final p = found.first;
-      final qtyPieces = p.perBoxQty > 0 ? (q * p.perBoxQty).round() : q; // 框数→件数（无框均值时兜底原值）
+      // ㉖v175 仅当预览框数与当前输入一致才采用（防改框数后旧预览未回即提交→写进过期件数）；key 大写对齐服务端返回
+      final pvR = _pv[pn.toUpperCase()];
+      final pvOk = pvR != null && pvR["mode"] == "real" && (pvR["boxesReq"] as num?)?.toInt() == q && (pvR["estQty"] as num?) != null;
+      final int qtyPieces = pvOk
+          ? (pvR["estQty"] as num).round() // 预占实数：按将发筐真实件数（混框防均值失真，与签收对账同源）
+          : (p.perBoxQty > 0 ? (q * p.perBoxQty).round() : q); // 无预览/框数已改未回→回退 v71b 均值换算
       out.add({"partNo": p.partNo, "itemName": p.itemName, "qty": qtyPieces, "rush": _rushLines.contains(pn)});
     }
     return out;
@@ -1085,10 +1147,12 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   }
 
 
-  /// ㉖v62 存/编辑产线模板：edit=null 新建（取当前已选行）；edit=模板 原地编辑我的（显示模板自身行，只改名/共享；要改行请用载入后另存）
+  /// ㉖v62 存/编辑产线模板：edit=null 新建（取当前已选行）；edit=模板 原地编辑我的母本
+  /// ㉖v175b 升级：编辑弹层内可直接「加零件 / 删零件 / 改框数」，保存走 tplSave(id) 原地更新（保留使用计数），
+  ///   不再逼用户"载入到清单→另存为新模板"（那会撞名且产生冗余副本）。行口径固定=框数（v71b，与载入端一致）。
+  ///   加零件从在架库存 widget.parts 搜选、排除已在行内的；上限 20 行（与服务端同）。深拷贝，编辑不影响原模板。
   void _saveAsTpl({Map? edit}) {
-    // ㉖v71b 模板口径固定=框数（与载入端直接填框一致，兼容 v62 旧模板）；_chosenItems 已改存件数，此处不可复用
-    final items = edit != null
+    final src = edit != null
         ? List<Map>.from(edit["items"] ?? [])
         : _order
             .map((pn) {
@@ -1099,77 +1163,318 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
             })
             .whereType<Map>()
             .toList();
-    if (items.isEmpty) return;
+    final rows = src
+        .map((m) => {
+              "partNo": m["partNo"].toString(),
+              "itemName": (m["itemName"] ?? "").toString(),
+              "qty": (m["qty"] as num?)?.toInt() ?? 1,
+            })
+        .toList();
+    final rowCtrls = <String, TextEditingController>{
+      for (final r in rows) r["partNo"] as String: TextEditingController(text: "${r["qty"]}")
+    };
     final nameCtrl = TextEditingController(text: edit?["name"]?.toString() ?? "");
     bool shared = edit == null ? false : edit["shared"] == true;
+    bool addOpen = false;
+    String addQ = "";
     showModalBottomSheet(
         context: context,
         isScrollControlled: true,
         builder: (mctx) => Padding(
             padding: EdgeInsets.fromLTRB(
                 16, 14, 16, MediaQuery.of(mctx).viewInsets.bottom + 16),
-            child: StatefulBuilder(builder: (mctx2, setS) => Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text("${edit == null ? "存为" : "编辑"}产线模板（${items.length} 行）",
-                      style: const TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.bold)),
-                  if (edit != null)
-                    const Padding(
-                        padding: EdgeInsets.only(top: 2),
-                        child: Text("此处改名称/共享；要增删物料行：先点模板载入到清单，再「存为产线模板」",
+            child: SizedBox(
+                height: MediaQuery.of(mctx).size.height * 0.82,
+                child: StatefulBuilder(builder: (mctx2, setS) {
+                  final exist = rows
+                      .map((r) => (r["partNo"] as String).toUpperCase())
+                      .toSet();
+                  final kw = addQ.trim().toUpperCase();
+                  final cands = kw.isEmpty
+                      ? <dynamic>[]
+                      : widget.parts
+                          .where((p) =>
+                              !exist.contains(p.partNo.toUpperCase()) &&
+                              (p.partNo.toUpperCase().contains(kw) ||
+                                  p.itemName.contains(addQ.trim())))
+                          .take(30)
+                          .toList();
+                  return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(children: [
+                          Expanded(
+                              child: Text(
+                                  "${edit == null ? "存为" : "编辑"}产线模板（${rows.length} 行）",
+                                  style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.bold))),
+                          IconButton(
+                              visualDensity: VisualDensity.compact,
+                              onPressed: () => Navigator.pop(mctx),
+                              icon: const Icon(Icons.close,
+                                  size: 20, color: Colors.grey)),
+                        ]),
+                        TextField(
+                            controller: nameCtrl,
+                            maxLength: 20,
+                            decoration: const InputDecoration(
+                                labelText: "模板名",
+                                hintText: "如：焊装一线常领",
+                                isDense: true,
+                                counterText: "",
+                                border: OutlineInputBorder())),
+                        CheckboxListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            value: shared,
+                            onChanged: (v) => setS(() => shared = v ?? false),
+                            title: const Text("共享给同事（公共模板，同产线的人可直接用/按需改后另存）",
+                                style: TextStyle(fontSize: 12.5))),
+                        const Divider(height: 14),
+                        const Text("物料行 · 填框数（1 框=发料最小单位）",
                             style: TextStyle(
-                                fontSize: 11, color: Color(0xFF78909C)))),
-                  const SizedBox(height: 8),
-                  TextField(
-                      controller: nameCtrl,
-                      maxLength: 20,
-                      decoration: const InputDecoration(
-                          hintText: "模板名，如：焊装一线常领",
-                          isDense: true,
-                          counterText: "",
-                          border: OutlineInputBorder())),
-                  CheckboxListTile(
-                      dense: true,
-                      contentPadding: EdgeInsets.zero,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      value: shared,
-                      onChanged: (v) => setS(() => shared = v ?? false),
-                      title: const Text("共享给同事（同产线的人可直接用）",
-                          style: TextStyle(fontSize: 13))),
-                  const SizedBox(height: 4),
-                  Row(children: [
-                    Expanded(
-                        child: OutlinedButton(
-                            onPressed: () => Navigator.pop(mctx),
-                            child: const Text("取消"))),
-                    const SizedBox(width: 10),
-                    Expanded(
-                        flex: 2,
-                        child: ElevatedButton(
-                            onPressed: () async {
-                              final nm = nameCtrl.text.trim();
-                              if (nm.isEmpty) {
-                                _toast("请给模板起个名字", err: false);
-                                return;
-                              }
-                              final r = await AuthApi.tplSave(nm, items, shared,
-                                  id: edit?["id"]?.toString() ?? "");
-                              if (!mctx.mounted) return;
-                              Navigator.pop(mctx);
-                              if (r["ok"] == true) {
-                                _toast("模板「$nm」已${edit == null ? "保存" : "更新"}", err: false);
-                                final g = await AuthApi.tplList();
-                                if (mounted && g["ok"] == true) setState(() =>
-                                    _tpls = List<Map>.from(g["list"] ?? []));
-                              } else {
-                                _toast(r["msg"]?.toString() ?? "保存失败");
-                              }
-                            },
-                            child: Text(edit == null ? "保存" : "更新"))),
-                  ]),
-                ]))));
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF3949AB))),
+                        const SizedBox(height: 2),
+                        Expanded(
+                            child: rows.isEmpty
+                                ? const Center(
+                                    child: Text("还没有零件，点下方「＋加零件」",
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey)))
+                                : ListView.builder(
+                                    shrinkWrap: true,
+                                    itemCount: rows.length,
+                                    itemBuilder: (_, i) {
+                                      final r = rows[i];
+                                      final pn = r["partNo"] as String;
+                                      return Row(children: [
+                                        Expanded(
+                                            child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  Text(pn,
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: const TextStyle(
+                                                          fontSize: 13,
+                                                          fontWeight:
+                                                              FontWeight.w600,
+                                                          fontFamily:
+                                                              "monospace")),
+                                                  Text(
+                                                      (r["itemName"] as String)
+                                                          .isEmpty
+                                                          ? "—"
+                                                          : r["itemName"]
+                                                              as String,
+                                                      maxLines: 1,
+                                                      overflow:
+                                                          TextOverflow.ellipsis,
+                                                      style: const TextStyle(
+                                                          fontSize: 10.5,
+                                                          color:
+                                                              Color(0xFF78909C))),
+                                                ])),
+                                        SizedBox(
+                                            width: 54,
+                                            child: TextField(
+                                                controller: rowCtrls[pn],
+                                                keyboardType:
+                                                    TextInputType.number,
+                                                textAlign: TextAlign.center,
+                                                style: const TextStyle(
+                                                    fontSize: 13,
+                                                    fontWeight:
+                                                        FontWeight.w600),
+                                                decoration:
+                                                    const InputDecoration(
+                                                        isDense: true,
+                                                        contentPadding:
+                                                            EdgeInsets
+                                                                .symmetric(
+                                                                horizontal: 2,
+                                                                vertical: 7),
+                                                        suffixText: "框",
+                                                        suffixStyle:
+                                                            TextStyle(
+                                                                fontSize: 9,
+                                                                color: Colors
+                                                                    .grey),
+                                                        border:
+                                                            OutlineInputBorder()),
+                                            )),
+                                        IconButton(
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            tooltip: "删除该零件",
+                                            onPressed: () => setS(() {
+                                              rows.removeAt(i);
+                                              rowCtrls
+                                                  .remove(pn)
+                                                  ?.dispose();
+                                            }),
+                                            icon: const Icon(
+                                                Icons.remove_circle_outline,
+                                                size: 20,
+                                                color: Colors.redAccent)),
+                                      ]);
+                                    })),
+                        InkWell(
+                            onTap: () => setS(() => addOpen = !addOpen),
+                            child: Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 6),
+                                child: Row(children: [
+                                  Icon(
+                                      addOpen
+                                          ? Icons.expand_less
+                                          : Icons.add_circle_outline,
+                                      size: 20,
+                                      color: const Color(0xFF2E7D32)),
+                                  const SizedBox(width: 6),
+                                  const Text("＋ 加零件（在架库存搜索）",
+                                      style: TextStyle(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w600,
+                                          color: Color(0xFF2E7D32))),
+                                ]))),
+                        if (addOpen) ...[
+                          TextField(
+                              onChanged: (v) => setS(() => addQ = v),
+                              decoration: const InputDecoration(
+                                  isDense: true,
+                                  prefixIcon: Icon(Icons.search, size: 18),
+                                  hintText: "输入零件号 / 物料名搜索",
+                                  border: OutlineInputBorder()),
+                          ),
+                          ConstrainedBox(
+                              constraints: const BoxConstraints(maxHeight: 150),
+                              child: ListView(
+                                  shrinkWrap: true,
+                                  children: [
+                                    if (cands.isEmpty)
+                                      Padding(
+                                          padding: const EdgeInsets.all(10),
+                                          child: Text(
+                                              kw.isEmpty
+                                                  ? "输入关键词搜索在架零件"
+                                                  : "无匹配的在架零件（可能已被加入或无库存）",
+                                              style: const TextStyle(
+                                                  fontSize: 11.5,
+                                                  color: Colors.grey))),
+                                    ...cands.map((p) => ListTile(
+                                        dense: true,
+                                        visualDensity: VisualDensity.compact,
+                                        title: Text(p.partNo,
+                                            style: const TextStyle(
+                                                fontSize: 13,
+                                                fontFamily: "monospace")),
+                                        subtitle: Text(p.itemName,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                                fontSize: 10.5)),
+                                        trailing: Text(
+                                            "在架${p.inBoxes}框",
+                                            style: const TextStyle(
+                                                fontSize: 10.5,
+                                                color:
+                                                    Color(0xFF2E7D32))),
+                                        onTap: () {
+                                          if (rows.length >= 20) {
+                                            _toast("单模板最多20行", err: false);
+                                            return;
+                                          }
+                                          setS(() {
+                                            rows.add({
+                                              "partNo": p.partNo,
+                                              "itemName": p.itemName,
+                                              "qty": 1
+                                            });
+                                            rowCtrls[p.partNo] =
+                                                TextEditingController(
+                                                    text: "1");
+                                          });
+                                        })),
+                                  ])),
+                        ],
+                        const SizedBox(height: 8),
+                        Row(children: [
+                          Expanded(
+                              child: OutlinedButton(
+                                  onPressed: () => Navigator.pop(mctx),
+                                  child: const Text("取消"))),
+                          const SizedBox(width: 10),
+                          Expanded(
+                              flex: 2,
+                              child: ElevatedButton(
+                                  onPressed: () async {
+                                    final nm = nameCtrl.text.trim();
+                                    if (nm.isEmpty) {
+                                      _toast("请给模板起个名字", err: false);
+                                      return;
+                                    }
+                                    final out = <Map>[];
+                                    for (final r in rows) {
+                                      final q = int.tryParse(
+                                              rowCtrls[r["partNo"]]
+                                                  ?.text
+                                                  .trim() ??
+                                          "") ??
+                                          0;
+                                      if (q > 0)
+                                        out.add({
+                                          "partNo": r["partNo"],
+                                          "itemName": r["itemName"],
+                                          "qty": q
+                                        });
+                                    }
+                                    if (out.isEmpty) {
+                                      _toast("至少一个零件且框数>0", err: false);
+                                      return;
+                                    }
+                                    if (out.length > 20) {
+                                      _toast("单模板最多20行", err: false);
+                                      return;
+                                    }
+                                    final r = await AuthApi.tplSave(nm, out,
+                                        shared,
+                                        id: edit?["id"]?.toString() ?? "");
+                                    if (!mctx.mounted) return;
+                                    Navigator.pop(mctx);
+                                    if (r["ok"] == true) {
+                                      _toast(
+                                          "模板「$nm」已${edit == null ? "保存" : "更新"}（${out.length} 行）",
+                                          err: false);
+                                      final g = await AuthApi.tplList();
+                                      if (mounted && g["ok"] == true)
+                                        setState(() => _tpls =
+                                            List<Map>.from(g["list"] ?? []));
+                                    } else {
+                                      _toast(r["msg"]?.toString() ?? "保存失败");
+                                    }
+                                  },
+                                  child: Text(edit == null
+                                      ? "保存"
+                                      : "更新模板"))),
+                        ]),
+                      ]);
+                }))))
+        .whenComplete(() {
+          nameCtrl.dispose();
+          for (final c in rowCtrls.values) {
+            c.dispose();
+          }
+        });
   }
 
   /// ㉖v62 把他人共享模板载入当前清单并提示另存为自己的（可改行改量后存）
@@ -1219,9 +1524,11 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
               trailing: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    if (t["by"] == _myUid) ...[
+                    if (t["by"] == _myUid || Auth.isAdmin) ...[
                       IconButton(
-                          tooltip: "编辑名称/共享",
+                          tooltip: t["by"] == _myUid
+                              ? "编辑模板（改名/共享、增删零件、改框数）"
+                              : "管理员编辑他人模板",
                           icon: const Icon(Icons.edit_outlined,
                               size: 20, color: Color(0xFF3949AB)),
                           onPressed: () {
@@ -1582,25 +1889,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                                       () => _syncChosen(pn)); // 框数清零自动除名
                                                 },
                                               )),
-                                          SizedBox(
-                                              width: 52,
-                                              child: FittedBox(
-                                                  fit: BoxFit.scaleDown,
-                                                  alignment: Alignment.centerRight,
-                                                  child: Text(
-                                                  q > 0 &&
-                                                          (p?.perBoxQty ?? 0) >
-                                                              0
-                                                      ? "≈${_fmtInvNum(q * (p!.perBoxQty))}件"
-                                                      : q > 0
-                                                          ? "$q 框"
-                                                          : "",
-                                                  maxLines: 1,
-                                                  textAlign: TextAlign.right,
-                                                  style: const TextStyle(
-                                                      fontSize: 10.5,
-                                                      color:
-                                                          Color(0xFF78909C))))),
+                                          _pvBoxText(pn, q, (p?.perBoxQty ?? 0).toDouble()), // ㉖v175 预占实数（绿）/fallback≈均值/无在架橙提示
                                           IconButton(
                                               tooltip: r ? "取消加急" : "加急此行",
                                               visualDensity:
