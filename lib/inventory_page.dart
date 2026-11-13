@@ -882,11 +882,14 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(backgroundColor: const Color(0xFF515BD4), title: Text("新建盘点任务（${_step + 1}/4）")),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      body: Column(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
             if (_step == 0) ...[
               TextField(
                 controller: _nameCtrl,
@@ -1025,8 +1028,17 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                 ),
               ),
             ],
-            const SizedBox(height: 16),
-            Row(
+                ],
+              ),
+            ),
+          ),
+          // ㉖v174f 向导按钮固定屏幕底部：此前按钮排在内容最末，第二步选 AGV货架/地面库位 时
+          // 长列表把按钮推出屏幕，且手势落在区域列表上只滚内层（限高300）、外层滚不动 →
+          // 按钮"消失"无法进入下一步（混合/全盘内容短侥幸可见=用户截图三张实证）。固定后永在。
+          Container(
+            padding: EdgeInsets.fromLTRB(14, 10, 14, 10 + MediaQuery.of(context).padding.bottom),
+            decoration: BoxDecoration(color: Theme.of(context).scaffoldBackgroundColor, border: Border(top: BorderSide(color: Colors.black12))),
+            child: Row(
               children: [
                 if (_step > 0) Expanded(child: OutlinedButton(onPressed: () => setState(() => _step--), child: const Text("上一步"))),
                 if (_step > 0) const SizedBox(width: 10),
@@ -1039,8 +1051,8 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                 ),
               ],
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
