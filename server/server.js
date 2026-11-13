@@ -6104,25 +6104,57 @@ return send(res, 200, {
       }
       // ===== ㉖v123 货架AGV盘点（盲区随机抽盘）端点块 =====
       const isWhC = u.role === 'warehouse' || u.role === 'admin';
-      if (req.method === 'POST' && p === '/api/count/start') { // 发起随机抽盘会话：从盲区候选按抽样比例随机抽、受会话上限截断，逐框建工单
+      if (req.method === 'POST' && p === '/api/count/start') { // 发起盲区抽盘会话：从盲区候选按抽样比例随机抽、受会话上限截断，逐框建工单
+        // ㉖v174c 双入口整合：b.codes 非空=【点名盘指定框发起】（PDA 盘点模块"货架AGV盲区抽盘"统一通道，
+        //   指定框复用同一双腿搬运/到台核对/钉死归位状态机）；codes 空=原随机抽盘，行为不变。
+        //   指定框允许不在盲区候选（用户指名要盘，7天滞留阈值不适用）：按账本直建，滞留≥阈值者标注"盲区命中"。
         if (!isWhC) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可发起货架盘点' });
         const b = await readBody(req).catch(() => ({}));
-        const pct = Math.min(100, Math.max(1, Number(b.pct) || Number(P().countSamplePct) || 10));
-        const cap = Math.max(1, Number(P().countMax) || 12);
         const cands = countCandidates();
-        if (!cands.length) return send(res, 200, { ok: false, msg: '当前无盲区候选框（滞留≥' + (Number(P().countStaleDays) || 7) + '天的货架框为零，或全部已在盘点/在途）' });
-        const want = Math.max(1, Math.min(cap, Math.round(cands.length * pct / 100)));
-        for (let i = cands.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = cands[i]; cands[i] = cands[j]; cands[j] = t; } // Fisher-Yates 洗牌=均匀随机抽样
-        const picked = cands.slice(0, want);
+        const reqCodes = [...new Set((Array.isArray(b.codes) ? b.codes : []).map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))].slice(0, 200);
+        const pickBatch = String(b.pickBatch || '').trim().slice(0, 60);
         db.counts = db.counts || [];
+        const out = []; // 逐框结果：成功进 list，失败带原因回传（现场要看得见为什么没发出去）
+        const okList = [];
+        for (const code of reqCodes) {
+          const active = (db.counts || []).find((q) => String(q.code).toUpperCase() === code && !['done', 'canceled'].includes(q.state));
+          if (active) { out.push({ code, ok: false, msg: '已有盘点工单在途[' + active.state + ']，勿重复发起' }); continue; }
+          if (countFrozen(code)) { out.push({ code, ok: false, msg: '框已冻结（搬运/检验中），不能发起盘点' }); continue; }
+          const cand = cands.find((c) => c.code === code || (c.codes || []).includes(code));
+          let mk = null;
+          if (cand) mk = { from: cand.loc, part: cand.part, nm: cand.nm, f: cand.f, qty: cand.q, ageDays: cand.ageDays, src: 'pick+blind' };
+          else {
+            const rows = ledgerView().filter((x) => String(x.c || '').toUpperCase() === code);
+            if (!rows.length) { out.push({ code, ok: false, msg: '账本无此框（已出库或查无），无法搬运盘点' }); continue; }
+            const l0 = String(rows[0].l || '').toUpperCase();
+            if (!/^NB02-/.test(l0) || /-CK-/.test(l0)) { out.push({ code, ok: false, msg: '非高位货架框（位置 ' + (l0 || '?') + '），地面/来料/台站请走人工或点名盘直扫' }); continue; }
+            const t0 = Math.max(...rows.map((x) => Number(x.t) || 0));
+            mk = { from: l0, part: String(rows[0].p || ''), nm: String(rows[0].n || ''), f: String(rows[0].f || ''), qty: rows.reduce((s, x) => s + (Number(x.q) || 0), 0), ageDays: Math.floor((Date.now() - t0) / 864e5), src: 'pick' };
+          }
+          const rec = { id: newId('cnt'), sid: '', code, from: mk.from, part: mk.part, nm: mk.nm, f: mk.f, qty: mk.qty, ageDays: mk.ageDays, state: 'pending', station: '', uid: u.id, by: u.name, at: Date.now(), updAt: Date.now(), taskNo: '', taskNo2: '', outQueued: 0, backQueued: 0, diff: null, src: mk.src, pickBatch };
+          okList.push(rec);
+        }
+        let picked = [], cTotal = cands.length;
+        if (!reqCodes.length) { // —— 原随机抽盘路径（行为逐字不变）——
+          const pct = Math.min(100, Math.max(1, Number(b.pct) || Number(P().countSamplePct) || 10));
+          const cap = Math.max(1, Number(P().countMax) || 12);
+          if (!cands.length) return send(res, 200, { ok: false, msg: '当前无盲区候选框（滞留≥' + (Number(P().countStaleDays) || 7) + '天的货架框为零，或全部已在盘点/在途）' });
+          const want = Math.max(1, Math.min(cap, Math.round(cands.length * pct / 100)));
+          for (let i = cands.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const t = cands[i]; cands[i] = cands[j]; cands[j] = t; } // Fisher-Yates 洗牌=均匀随机抽样
+          picked = cands.slice(0, want);
+        }
         const sid = 'CS' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + String(Date.now()).slice(-4);
         const recs = [];
+        const pickedCodes = new Set(reqCodes); // 本批已点名框：随机模式若同请求混给则排除，防一框两单
         for (const c of picked) {
+          if (pickedCodes.has(c.code)) continue;
           const rec = { id: newId('cnt'), sid, code: c.code, from: c.loc, part: c.part, nm: c.nm, f: c.f, qty: c.q, ageDays: c.ageDays, state: 'pending', station: '', uid: u.id, by: u.name, at: Date.now(), updAt: Date.now(), taskNo: '', taskNo2: '', outQueued: 0, backQueued: 0, diff: null };
           db.counts.push(rec); recs.push(rec);
         }
-        save(); pushOps(u, '发起盘点', sid, recs.length + ' 框（候选' + cands.length + '，比例' + pct + '%，上限' + cap + '）');
-        return send(res, 200, { ok: true, sid, total: cands.length, picked: recs.length, list: recs });
+        for (const rec of okList) { rec.sid = pickBatch || sid; db.counts.push(rec); recs.push(rec); out.push({ code: rec.code, ok: true, id: rec.id, src: rec.src }); }
+        save();
+        pushOps(u, reqCodes.length ? '点名盘发起AGV盘点' : '发起盘点', sid || pickBatch, recs.length + ' 框' + (out.filter((x) => !x.ok).length ? '，跳过' + out.filter((x) => !x.ok).length + '：' + out.filter((x) => !x.ok).slice(0, 5).map((x) => x.code + '(' + x.msg + ')').join('、') : '') + (reqCodes.length ? '' : '（候选' + cTotal + '，比例' + (Number(b.pct) || Number(P().countSamplePct) || 10) + '%）'));
+        return send(res, 200, { ok: recs.length > 0, sid: pickBatch || sid, total: cTotal, picked: recs.length, list: recs, out, msg: recs.length ? '' : (out[0] || {}).msg || '无有效框可发起' });
       }
       if (req.method === 'POST' && p === '/api/count/deploy') { // ㉖v141 人工拉取发车：人点「发车」才下发下架腿（默认模式下状态机不自动发）。{id=单框} 或 {sid=整会话逐个发}，受双腿并发上限
         if (!isWhC) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可发车' });
@@ -8112,7 +8144,7 @@ function countCandidates() {
     const code = [...r.codes][0]; if (!code) continue;
     if (countFrozen(code)) continue;
     if ((db.agvQueue || []).some((q) => q.type !== 'transfer' && [...r.codes].some((c) => String(q.code || '').toUpperCase() === c) && ['排队', '下发中', '已下发', '到站'].includes(q.state))) continue;
-    out.push({ code, loc: r.loc, part: r.part, nm: r.nm, f: r.f, q: r.q, ageDays: Math.floor((T - r.lastT) / 864e5) });
+    out.push({ code, codes: [...r.codes], loc: r.loc, part: r.part, nm: r.nm, f: r.f, q: r.q, lastT: r.lastT, ageDays: Math.floor((T - r.lastT) / 864e5) });
   }
   return out;
 }

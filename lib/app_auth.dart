@@ -491,8 +491,9 @@ class AuthApi {
   // ㉖v123 货架AGV盘点（盲区随机抽盘）：发起会话/工单看板/到台核对/归位/取消
   static Future<Map> countList({bool all = false}) async =>
       _req("GET", "/api/count/list" + (all ? "?all=1" : ""), token: await AuthStore.token());
-  static Future<Map> countStart({int pct = 0}) async =>
-      _req("POST", "/api/count/start", body: {if (pct > 0) "pct": pct}, token: await AuthStore.token());
+  /// ㉖v174c 双入口：codes 非空=点名盘指定框发起AGV盘点（sid 归集用 pickBatch）；codes 空=随机抽盘
+  static Future<Map> countStart({int pct = 0, List<String> codes = const [], String pickBatch = ''}) async =>
+      _req("POST", "/api/count/start", body: {if (pct > 0) "pct": pct, if (codes.isNotEmpty) "codes": codes, if (pickBatch.isNotEmpty) "pickBatch": pickBatch}, token: await AuthStore.token());
   static Future<Map> countScan(String id, String barcode, {int mesQty = -1}) async =>
       _req("POST", "/api/count/scan", body: {"id": id, "barcode": barcode, if (mesQty >= 0) "mesQty": mesQty}, token: await AuthStore.token());
   static Future<Map> countReturn(String id) async =>

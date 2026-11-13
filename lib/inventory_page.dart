@@ -366,12 +366,21 @@ String buildInvDiffCsv(BatchInfo task, InvDiffResult d) {
     try {
       if (task.invMissJson.isNotEmpty) {
         final miss = jsonDecode(task.invMissJson) as List;
-        // ㉖v174b 按最新账本定性拆两类：st=miss 仍在架却没扫到（真需复核）/ st=gone 已出库或已消账（正常流转）
-        final real = miss.where((m) => (m as Map)['st'] != 'gone').toList();
+        // ㉖v174b/c 按最新账本+AGV工单结果三分类：miss 仍在架未扫到 / gone 已出库（正常）/ agvDiff AGV核对不符（须处理）
+        final agvBad = miss.where((m) => (m as Map)['st'] == 'agvDiff').toList();
+        final real = miss.where((m) { final st = (m as Map)['st']; return st != 'gone' && st != 'agvDiff'; }).toList();
         final gone = miss.where((m) => (m as Map)['st'] == 'gone').toList();
         s += miss.isEmpty
             ? ",全部盘到\n"
-            : ",仍在架未扫到${real.length}框,已出库${gone.length}框\n";
+            : ",仍在架未扫到${real.length}框,已出库${gone.length}框${agvBad.isNotEmpty ? ",AGV核对不符${agvBad.length}框" : ""}\n";
+        if (agvBad.isNotEmpty) {
+          s += "\n===AGV通道核对不符(须人工处理后方可结案)===\n";
+          s += "货物标签,零件号,账本货位,不符原因\n";
+          for (final m in agvBad) {
+            final mm = m as Map;
+            s += "${_invCsvField(mm['c'])},${_invCsvField(mm['p'])},${_invCsvField(mm['l'])},${_invCsvField(mm['r'])}\n";
+          }
+        }
         if (real.isNotEmpty) {
           s += "\n===点名盘未盘到清单(账本仍在架却没扫到:疑似缺失/串位/架未拉到位,请现场复核)===\n";
           s += "货物标签,零件号,账本货位,处理建议\n";
@@ -501,27 +510,30 @@ Future<Map<String, dynamic>> buildPickPlan(String raw) async {
   // ㉖v174b 搬运计划（AGV 货架要整架拉到台站才能扫）：按【货架单元】分组计拉架趟数。
   //   NB02 货架框：一个货架单元(NB02-A-05 这种)整架拉一趟，架内 1F~4F 多框共享一趟；
   //   NB03/NB04 地面框：人到格位直扫，无搬运；台站框(loc 含 CK)：本就在站台，顺手盘。
+  List<String> shelfCodes = const []; // ㉖v174c 应扫中的 AGV 货架框（整合发起"盲区抽盘"通道搬运用）
   {
     int gnd = 0, stn = 0, shelfBox = 0;
     final shelfCnt = <String, int>{};
+    final sCodes = <String>[];
     for (final c in codes) {
       final p = spByCode[c];
       if (p == null) continue;
       final loc = p.loc.trim().toUpperCase();
       if (loc.contains('-CK-')) { stn++; }
-      else if (loc.startsWith('NB02-')) { shelfBox++; final sh = invShelfOf(loc); shelfCnt[sh] = (shelfCnt[sh] ?? 0) + 1; }
+      else if (loc.startsWith('NB02-')) { shelfBox++; sCodes.add(c); final sh = invShelfOf(loc); shelfCnt[sh] = (shelfCnt[sh] ?? 0) + 1; }
       else gnd++;
     }
+    shelfCodes = sCodes;
     if (shelfCnt.isNotEmpty) {
       final sl = shelfCnt.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
       warn.add('🚛 搬运计划：AGV货架 $shelfBox 框在 ${shelfCnt.length} 个货架上 → 需拉 ${shelfCnt.length} 趟（${sl.take(5).map((e) => '${e.key}:${e.value}框').join('、')}${sl.length > 5 ? ' 等' : ''}）');
-      warn.add('　→ 建议先集中叫车拉架，架到台站再开始扫；搬运期间账本位置不漂移，不影响清单判定');
+      warn.add('　→ 可在任务卡点「AGV搬运」指定这些框发起盲区抽盘通道（拉架到台站→核对→钉死归位），也可人工先叫车拉架再扫');
     }
     if (gnd > 0) warn.add('👣 地面/来料区 $gnd 框：人到格位直接扫，无需叫车');
     if (stn > 0) warn.add('🏭 已在站台 $stn 框：顺手盘');
   }
   warn.insert(0, '输入 ${toks.length} 条（零件$nPart · 货位$nLoc · 标签$nCode）→ 应扫 ${codes.length} 框');
-  return {'codes': codes.toList()..sort(), 'warn': warn};
+  return {'codes': codes.toList()..sort(), 'warn': warn, 'shelf': shelfCodes};
 }
 
 // ===================== 盘点·首页（任务列表） =====================
@@ -818,7 +830,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
     final name = _nameCtrl.text.trim().isEmpty ? "盘点${DateTime.now().toString().substring(5, 10).replaceAll("-", "")}" : _nameCtrl.text.trim();
     final ts = DateTime.now();
     // ㉖v174 点名盘：建任务前把输入展开成应扫清单，展开为空则拦停（防建成空点名任务白盘一场）
-    List<String> pickCodes = const [];
+    List<String> pickCodes = const [], pickShelf = const [];
     if (_pickMode == 1) {
       if (_pickBusy) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("正在展开清单，请稍候…"), backgroundColor: Colors.blueGrey));
@@ -826,6 +838,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
       }
       final r = await buildPickPlan(_pickCtrl.text);
       pickCodes = List<String>.from(r['codes'] ?? const []);
+      pickShelf = List<String>.from(r['shelf'] ?? const []); // ㉖v174c 其中属 AGV 货架的框（整合"盲区抽盘"通道发起搬运用）
       if (pickCodes.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("点名清单展开后为空：请检查零件号/货位/标签号是否正确"), backgroundColor: Colors.orange));
@@ -844,6 +857,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
       invPickMode: _pickMode,
       invPickRaw: _pickMode == 1 ? _pickCtrl.text.trim() : "",
       invPickCodes: pickCodes,
+      invPickShelf: pickShelf,
     );
     try {
       await _globalIsar.writeTxn(() async {
@@ -1453,6 +1467,50 @@ class _InvScanPageState extends State<_InvScanPage> {
         _ => Colors.grey,
       };
 
+  // ㉖v174c 整合：点名任务中的 AGV 货架框 → 走"盲区抽盘"通道发起拉架（同一双腿/核对/钉死归位状态机）。
+  //   工单挂 pickBatch=本任务号，结束任务时核对结果自动回流未盘到清单（相符=算盘到，不符=单列）。
+  Future<void> _agvTransport() async {
+    final codes = widget.task.invPickShelf;
+    if (codes.isEmpty) return;
+    final go = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+              title: const Text("AGV 搬运发起"),
+              content: Text("本任务有 ${codes.length} 个 AGV 货架框（在架清单中）。\n"
+                  "将逐框建搬运工单：AGV 取框到站台 → 到台扫码核对 → 归位回原格（钉死原格位）。\n"
+                  "· 到台核对在工单看板做；核对相符的框，结束任务时自动算「已盘到」\n"
+                  "· 已在盘点/搬运中的框会自动跳过并说明原因\n\n确认发起？"),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
+                FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("发起")),
+              ],
+            ));
+    if (go != true || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      final r = await AuthApi.countStart(codes: codes, pickBatch: widget.task.batchId);
+      if (!mounted) return;
+      final okN = ((r["list"] as List?) ?? const []).length;
+      final fails = ((r["out"] as List?) ?? const []).where((x) => (x as Map)["ok"] != true).toList();
+      String msg;
+      if (r["ok"] == true) {
+        msg = "已发起 $okN 框";
+        if (fails.isNotEmpty) {
+          final det = fails.take(3).map((f) { final fm = f as Map; return '${fm["code"]}(${fm["msg"]})'; }).join('、');
+          msg += "，跳过 ${fails.length}：$det${fails.length > 3 ? ' 等' : ''}";
+        }
+      } else {
+        msg = "发起失败：${r["msg"] ?? "无有效框"}";
+      }
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: r["ok"] == true ? const Color(0xFF2E7D32) : Colors.orange, duration: const Duration(seconds: 5)));
+      if (okN > 0 && mounted) await Navigator.push(context, MaterialPageRoute(builder: (_) => const ShelfCountPage())); // 跳工单看板跟进发车/核对/归位
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("AGV 搬运发起异常：$e"), backgroundColor: Colors.red));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _finishTask() async {
     final task = widget.task;
     // ㉖v174 点名盘：结束前算「未盘到」= 应扫清单 − 本任务有效扫到（重复码/MES无码不算扫到）
@@ -1463,7 +1521,7 @@ class _InvScanPageState extends State<_InvScanPage> {
     //     miss=账本仍在架却没扫到 → 真需现场复核（缺失/串位/还没拉过来）
     //   不这么做的后果：搬运耗时越久误报越多，点名盘会被现场当成"净报错"而弃用。
     String missJson = task.invMissJson;
-    int missN = 0, goneN = 0;
+    int missN = 0, goneN = 0, agvOkN = 0, agvBadN = 0;
     if (task.invPickMode == 1) {
       await ledgerPullMerge(force: true); // 取全厂最新账（含本任务期间的出库/移位）
       final scans = await _globalIsar.inventoryScans.filter().taskIdEqualTo(task.batchId).findAll();
@@ -1475,9 +1533,40 @@ class _InvScanPageState extends State<_InvScanPage> {
       final pnOf = <String, String>{for (final e in lp) e.goodsCode.trim().toUpperCase(): e.partNo};
       final spp = await _globalIsar.shelfPlacements.where().findAll();
       final locOf = <String, String>{for (final e in spp) e.goodsCode.trim().toUpperCase(): e.loc};
+      // ㉖v174c 整合回流：本任务经"盲区抽盘通道"发起的 AGV 工单结果（到台核对由服务器工单记录，
+      //   不进本地 inventoryScans）——已核对相符=等同盘到剔除；核对不符=单列 agvDiff 待处理；
+      //   在途/未完=保持未盘到并标注工单状态。拉取失败=按无 AGV 通道处理（离线场景不卡死）。
+      final agvBy = <String, Map>{};
+      try {
+        final cr = await AuthApi.countList(all: true);
+        for (final q in ((cr["list"] as List?) ?? const [])) {
+          final m = q as Map;
+          if ((m["pickBatch"] ?? "").toString() != task.batchId) continue;
+          final cd = (m["code"] ?? "").toString().trim().toUpperCase();
+          final prev = agvBy[cd];
+          if (prev == null || (num.tryParse('${m["at"]}') ?? 0) > (num.tryParse('${prev["at"]}') ?? 0)) agvBy[cd] = m; // 同码多单取最新
+        }
+      } catch (_) {}
       final rows = <Map<String, String>>[];
       for (final c in task.invPickCodes.map((e) => e.trim().toUpperCase()).toSet()) {
         if (got.contains(c)) continue;
+        final q = agvBy[c];
+        if (q != null) {
+          final st = (q["state"] ?? "").toString();
+          final df = q["diff"] is Map ? q["diff"] as Map : null;
+          if ((st == "done" || st == "returning") && df == null) { agvOkN++; continue; } // AGV 通道核对相符（归位中/已归位）=已盘到
+          if (st == "mismatch" || (st == "scanned" && df != null)) {
+            agvBadN++;
+            rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? "", "st": "agvDiff",
+              "r": df == null ? "AGV核对不符" : (df["kind"] == "qty" ? "数量不符：账${df["expect"]}/实${df["actual"]}" : "站台实扫 ${df["scanned"]}（非本单框）")});
+            continue;
+          }
+          // 工单未完（待发车/在途/到台未扫/超时/取消）：仍算未盘到，标注卡在哪一步
+          final stillInQ = locOf.containsKey(c);
+          if (stillInQ) missN++; else goneN++;
+          rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? "", "st": stillInQ ? "miss" : "gone", "r": "AGV工单未完成[${st}]"});
+          continue;
+        }
         final stillIn = locOf.containsKey(c);
         if (stillIn) missN++; else goneN++;
         rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? "", "st": stillIn ? "miss" : "gone"});
@@ -1489,10 +1578,12 @@ class _InvScanPageState extends State<_InvScanPage> {
       builder: (ctx) => AlertDialog(
         title: const Text("结束盘点任务"),
         content: Text(task.invPickMode == 1
-            ? "点名盘：应扫 ${task.invPickCodes.length} 框，未扫到 ${missN + goneN} 框\n"
+            ? "点名盘：应扫 ${task.invPickCodes.length} 框"
+                "${agvOkN > 0 ? "，其中 AGV 通道已核对 $agvOkN 框" : ""}\n"
                 "· 仍在架未扫到：$missN 框 ${missN > 0 ? "（需现场复核：缺失/串位/架还没拉过来）" : ""}\n"
                 "· 已出库或已消账：$goneN 框（盘点期间正常流转，不算缺失）"
-                "${missN == 0 && goneN == 0 ? "\n全部盘到 ✅" : ""}\n\n结束后进入差异报表，之后不可再扫描。确认结束？"
+                "${agvBadN > 0 ? "\n· ⚠ AGV 核对不符：$agvBadN 框（请看清单备注，人工处理后方可结案）" : ""}"
+                "${missN == 0 && goneN == 0 && agvBadN == 0 ? "\n全部盘到 ✅" : ""}\n\n结束后进入差异报表，之后不可再扫描。确认结束？"
             : "结束后进入差异报表，之后不可再扫描。确认结束？"),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("继续盘点")),
@@ -1553,6 +1644,9 @@ class _InvScanPageState extends State<_InvScanPage> {
                           Icon(_curLoc.isEmpty ? Icons.dashboard : Icons.location_on, size: 18, color: _bound ? const Color(0xFF515BD4) : Colors.red),
                           const SizedBox(width: 6),
                           Expanded(child: Text(_curLoc.isNotEmpty ? "当前货位：$_curLoc（点击更换）" : (_curZone.isNotEmpty ? "整区盘点：$_curZone · 自动归位（点击更换）" : "未绑定，点击选择货区（整区·推荐）或货位"), style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _bound ? const Color(0xFF3949AB) : Colors.red))),
+                          // ㉖v174c 整合：点名任务含 AGV 货架框 → 一键经"盲区抽盘"通道发起拉架（拉架→核对→钉死归位），进度在工单看板
+                          if (widget.task.invPickMode == 1 && widget.task.invPickShelf.isNotEmpty)
+                            IconButton(tooltip: "AGV搬运（${widget.task.invPickShelf.length} 货架框）", onPressed: _agvTransport, icon: const Icon(Icons.local_shipping, size: 20, color: Color(0xFF3949AB))),
                           const Icon(Icons.swap_horiz, size: 18),
                         ],
                       ),
@@ -1855,26 +1949,34 @@ class _InvDiffPageState extends State<_InvDiffPage> {
                 () {
                   List<dynamic> miss = const [];
                   try { if (widget.task.invMissJson.isNotEmpty) miss = jsonDecode(widget.task.invMissJson) as List; } catch (_) {}
-                  final real = miss.where((m) => (m as Map)['st'] != 'gone').toList();
+                  final agvBad = miss.where((m) => (m as Map)['st'] == 'agvDiff').toList(); // ㉖v174c AGV 通道核对不符（须人工处理）
+                  final real = miss.where((m) { final s = (m as Map)['st']; return s != 'gone' && s != 'agvDiff'; }).toList();
                   final gone = miss.where((m) => (m as Map)['st'] == 'gone').toList();
                   final allGot = miss.isEmpty;
                   final row = (dynamic m, {bool dim = false}) {
                     final mm = m as Map;
+                    final rr = (mm['r'] ?? "").toString();
                     return Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Text("▸ ${mm['c']}", style: TextStyle(fontFamily: "monospace", fontSize: 12.5, fontWeight: FontWeight.w600, color: dim ? Colors.grey : null, decoration: dim ? TextDecoration.lineThrough : null)),
                       const SizedBox(width: 8),
-                      Expanded(child: Text("${mm['p']?.toString().isEmpty ?? true ? "零件未知" : mm['p']}${dim ? "（已出库/消账）" : "  @${mm['l']?.toString().isEmpty ?? true ? "账本无货位" : mm['l']}"}", style: TextStyle(fontSize: 12, color: dim ? Colors.grey : Colors.black87))),
+                      Expanded(child: Text("${mm['p']?.toString().isEmpty ?? true ? "零件未知" : mm['p']}${dim ? "（已出库/消账）" : "  @${mm['l']?.toString().isEmpty ?? true ? "账本无货位" : mm['l']}"}${rr.isNotEmpty ? "\n　　$rr" : ""}", style: TextStyle(fontSize: 12, color: dim ? Colors.grey : (mm['st'] == 'agvDiff' ? const Color(0xFFC62828) : Colors.black87)))),
                     ]));
                   };
                   return Card(
-                    color: allGot ? const Color(0xFFE8F5E9) : real.isEmpty ? const Color(0xFFF1F8E9) : const Color(0xFFFFF3E0),
+                    color: allGot ? const Color(0xFFE8F5E9) : agvBad.isNotEmpty ? const Color(0xFFFFEBEE) : real.isEmpty ? const Color(0xFFF1F8E9) : const Color(0xFFFFF3E0),
                     child: Padding(
                       padding: const EdgeInsets.all(12),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         Text(allGot ? "点名盘点：应扫 ${widget.task.invPickCodes.length} 框，全部盘到 ✅"
+                            : agvBad.isNotEmpty ? "点名盘：⚠ ${agvBad.length} 框 AGV 核对不符（红列，须人工处理后方可结案）${real.isNotEmpty ? "，另 ${real.length} 框仍在架未扫到" : ""}"
                             : real.isEmpty ? "点名盘点：应扫 ${widget.task.invPickCodes.length} 框，未扫到 ${gone.length} 框均为盘点期间正常出库/消账，无缺失 ✅"
                             : "点名盘：应扫 ${widget.task.invPickCodes.length} 框，${real.length} 框仍在架未扫到（需复核），另 ${gone.length} 框期间已出库（正常）",
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: allGot || real.isEmpty ? Colors.green : const Color(0xFFE65100))),
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: agvBad.isNotEmpty ? const Color(0xFFC62828) : allGot || real.isEmpty ? Colors.green : const Color(0xFFE65100))),
+                        if (agvBad.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text("AGV 通道核对不符（${agvBad.length} 框）：", style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFFC62828))),
+                          ConstrainedBox(constraints: const BoxConstraints(maxHeight: 160), child: SingleChildScrollView(child: Column(children: agvBad.map((m) => row(m)).toList()))),
+                        ],
                         if (real.isNotEmpty) ...[
                           const SizedBox(height: 6),
                           ConstrainedBox(constraints: const BoxConstraints(maxHeight: 220), child: SingleChildScrollView(child: Column(children: real.map((m) => row(m)).toList()))),
@@ -2071,7 +2173,8 @@ class _ShelfCountPageState extends State<ShelfCountPage> {
     String tn(dynamic v) { final n = v is num ? v.toInt() : 0; if (n <= 0) return ""; final d = DateTime.fromMillisecondsSinceEpoch(n); final p = (int x) => x.toString().padLeft(2, "0"); return "${d.month}/${d.day} ${p(d.hour)}:${p(d.minute)}:${p(d.second)}"; }
     final N = <List<Object?>>[]; // [标题, 时间文本, 说明, Color?]
     void add(String t, dynamic ms, {String sub = "", Color? col}) => N.add([t, tn(ms), sub, col]);
-    add("📋 发起盲区抽盘", q["at"], sub: "${q["by"] ?? ""} · 原格 ${q["from"]} · 账面 ${q["qty"]}件 · 滞留${q["ageDays"]}天", col: const Color(0xFF3949AB));
+    final _pb = (q["pickBatch"] ?? "").toString();
+    add(_pb.isNotEmpty ? "📋 点名盘发起AGV搬运" : "📋 发起盲区抽盘", q["at"], sub: (_pb.isNotEmpty ? "点名批次 $_pb · " : "") + "${q["by"] ?? ""} · 原格 ${q["from"]} · 账面 ${q["qty"]}件 · 滞留${q["ageDays"]}天", col: const Color(0xFF3949AB));
     for (final e in outT) add("🚚 下架调度", null, sub: e.toString());
     if (tn(q["arriveAt"]).isNotEmpty) add("🏁 框已到站台 ${q["station"] ?? ""}", q["arriveAt"], col: const Color(0xFF00897B));
     else if (st == "toStation" || st == "pending") add("⏳ 取货在途 / 待发车（尚未到台）", null, sub: "AGV 正把框取往站台");

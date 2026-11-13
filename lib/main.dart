@@ -335,7 +335,8 @@ class BatchInfo {
   int invPickMode = 0; //0=范围盘（原逻辑，空值兼容全部旧任务）1=点名盘
   String invPickRaw = ""; //原始输入（每行一个：零件号 / 完整货位 / 标签号）
   List<String> invPickCodes = []; //展开后的应扫标签号清单（大写，去重）
-  String invMissJson = ""; //结束后回写：未盘到清单 JSON [{c,p,l,q}]
+  List<String> invPickShelf = []; //㉖v174c 应扫清单中属 AGV 货架(NB02)的框：整合走"盲区抽盘"双腿搬运通道
+  String invMissJson = ""; //结束后回写：未盘到清单 JSON [{c,p,l,st}]
   BatchInfo({
     required this.batchId,
     required this.createTime,
@@ -349,6 +350,7 @@ class BatchInfo {
     this.invPickMode = 0,
     this.invPickRaw = "",
     this.invPickCodes = const [],
+    this.invPickShelf = const [],
     this.invMissJson = "",
   });
 }
