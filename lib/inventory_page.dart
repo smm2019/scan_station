@@ -366,13 +366,26 @@ String buildInvDiffCsv(BatchInfo task, InvDiffResult d) {
     try {
       if (task.invMissJson.isNotEmpty) {
         final miss = jsonDecode(task.invMissJson) as List;
-        s += miss.isEmpty ? ",未盘到0框,全部盘到\n" : ",未盘到${miss.length}框\n";
-        if (miss.isNotEmpty) {
-          s += "\n===点名盘未盘到清单(疑似缺失/串位/未同步,请现场复核)===\n";
+        // ㉖v174b 按最新账本定性拆两类：st=miss 仍在架却没扫到（真需复核）/ st=gone 已出库或已消账（正常流转）
+        final real = miss.where((m) => (m as Map)['st'] != 'gone').toList();
+        final gone = miss.where((m) => (m as Map)['st'] == 'gone').toList();
+        s += miss.isEmpty
+            ? ",全部盘到\n"
+            : ",仍在架未扫到${real.length}框,已出库${gone.length}框\n";
+        if (real.isNotEmpty) {
+          s += "\n===点名盘未盘到清单(账本仍在架却没扫到:疑似缺失/串位/架未拉到位,请现场复核)===\n";
           s += "货物标签,零件号,账本货位,处理建议\n";
-          for (final m in miss) {
+          for (final m in real) {
             final mm = m as Map;
-            s += "${_invCsvField(mm['c'])},${_invCsvField(mm['p'])},${_invCsvField(mm['l'])},${_invCsvField("找到实物→位置登记重扫归位；确不在架→库存页消账")}\n";
+            s += "${_invCsvField(mm['c'])},${_invCsvField(mm['p'])},${_invCsvField(mm['l'])},${_invCsvField("找到实物→位置登记重扫归位；确不在架→库存页消账；架还没拉来→叫车拉架后补扫")}\n";
+          }
+        }
+        if (gone.isNotEmpty) {
+          s += "\n===盘点期间已出库或已消账(正常流转,不计缺失)===\n";
+          s += "货物标签,零件号\n";
+          for (final m in gone) {
+            final mm = m as Map;
+            s += "${_invCsvField(mm['c'])},${_invCsvField(mm['p'])}\n";
           }
         }
       } else { s += ",未结束(无未盘到数据)\n"; }
@@ -485,6 +498,28 @@ Future<Map<String, dynamic>> buildPickPlan(String raw) async {
     }
   }
   if (codes.isEmpty) warn.add('⚠️ 展开后应扫清单为空：请检查输入');
+  // ㉖v174b 搬运计划（AGV 货架要整架拉到台站才能扫）：按【货架单元】分组计拉架趟数。
+  //   NB02 货架框：一个货架单元(NB02-A-05 这种)整架拉一趟，架内 1F~4F 多框共享一趟；
+  //   NB03/NB04 地面框：人到格位直扫，无搬运；台站框(loc 含 CK)：本就在站台，顺手盘。
+  {
+    int gnd = 0, stn = 0, shelfBox = 0;
+    final shelfCnt = <String, int>{};
+    for (final c in codes) {
+      final p = spByCode[c];
+      if (p == null) continue;
+      final loc = p.loc.trim().toUpperCase();
+      if (loc.contains('-CK-')) { stn++; }
+      else if (loc.startsWith('NB02-')) { shelfBox++; final sh = invShelfOf(loc); shelfCnt[sh] = (shelfCnt[sh] ?? 0) + 1; }
+      else gnd++;
+    }
+    if (shelfCnt.isNotEmpty) {
+      final sl = shelfCnt.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+      warn.add('🚛 搬运计划：AGV货架 $shelfBox 框在 ${shelfCnt.length} 个货架上 → 需拉 ${shelfCnt.length} 趟（${sl.take(5).map((e) => '${e.key}:${e.value}框').join('、')}${sl.length > 5 ? ' 等' : ''}）');
+      warn.add('　→ 建议先集中叫车拉架，架到台站再开始扫；搬运期间账本位置不漂移，不影响清单判定');
+    }
+    if (gnd > 0) warn.add('👣 地面/来料区 $gnd 框：人到格位直接扫，无需叫车');
+    if (stn > 0) warn.add('🏭 已在站台 $stn 框：顺手盘');
+  }
   warn.insert(0, '输入 ${toks.length} 条（零件$nPart · 货位$nLoc · 标签$nCode）→ 应扫 ${codes.length} 框');
   return {'codes': codes.toList()..sort(), 'warn': warn};
 }
@@ -1422,9 +1457,15 @@ class _InvScanPageState extends State<_InvScanPage> {
     final task = widget.task;
     // ㉖v174 点名盘：结束前算「未盘到」= 应扫清单 − 本任务有效扫到（重复码/MES无码不算扫到）
     //   意义：把"该在的都在吗"这个此前只能靠人记忆的判断题，变成系统当场给出的清单。
+    // ㉖v174b AGV 货架盘点要"拉架到台站→扫→送回"，一轮可能几十分钟，期间框可能被正常领走；
+    //   故结束前【重新与服务器账本对齐】再按最新状态定性，分两类：
+    //     gone=最新账本已无此框（已出库/已消账）→ 正常流转，不算缺失、只告知
+    //     miss=账本仍在架却没扫到 → 真需现场复核（缺失/串位/还没拉过来）
+    //   不这么做的后果：搬运耗时越久误报越多，点名盘会被现场当成"净报错"而弃用。
     String missJson = task.invMissJson;
-    int missN = 0;
+    int missN = 0, goneN = 0;
     if (task.invPickMode == 1) {
+      await ledgerPullMerge(force: true); // 取全厂最新账（含本任务期间的出库/移位）
       final scans = await _globalIsar.inventoryScans.filter().taskIdEqualTo(task.batchId).findAll();
       final got = <String>{};
       for (final s in scans) {
@@ -1437,9 +1478,10 @@ class _InvScanPageState extends State<_InvScanPage> {
       final rows = <Map<String, String>>[];
       for (final c in task.invPickCodes.map((e) => e.trim().toUpperCase()).toSet()) {
         if (got.contains(c)) continue;
-        rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? ""});
+        final stillIn = locOf.containsKey(c);
+        if (stillIn) missN++; else goneN++;
+        rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? "", "st": stillIn ? "miss" : "gone"});
       }
-      missN = rows.length;
       missJson = jsonEncode(rows);
     }
     final ok = await showDialog<bool>(
@@ -1447,7 +1489,10 @@ class _InvScanPageState extends State<_InvScanPage> {
       builder: (ctx) => AlertDialog(
         title: const Text("结束盘点任务"),
         content: Text(task.invPickMode == 1
-            ? "点名盘：应扫 ${task.invPickCodes.length} 框，未扫到 $missN 框${missN > 0 ? "（将列入报表「未盘到」清单，请现场复核是否缺失/串位）" : "（全部盘到 ✅）"}。\n结束后进入差异报表，之后不可再扫描。确认结束？"
+            ? "点名盘：应扫 ${task.invPickCodes.length} 框，未扫到 ${missN + goneN} 框\n"
+                "· 仍在架未扫到：$missN 框 ${missN > 0 ? "（需现场复核：缺失/串位/架还没拉过来）" : ""}\n"
+                "· 已出库或已消账：$goneN 框（盘点期间正常流转，不算缺失）"
+                "${missN == 0 && goneN == 0 ? "\n全部盘到 ✅" : ""}\n\n结束后进入差异报表，之后不可再扫描。确认结束？"
             : "结束后进入差异报表，之后不可再扫描。确认结束？"),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("继续盘点")),
@@ -1793,36 +1838,53 @@ class _InvDiffPageState extends State<_InvDiffPage> {
                     Text("零件差异 ${diffParts.length} 项", style: TextStyle(color: Colors.deepOrange.shade700)),
                     Text("货位差异 ${diffLocs.length} 行", style: TextStyle(color: Colors.deepOrange.shade700)),
                     if (widget.task.invScope.isNotEmpty) Text("范围：${widget.task.invScope.join("/")}", style: const TextStyle(color: Color(0xFF0891B2), fontWeight: FontWeight.bold)),
+                    if (widget.task.invPickMode == 1) () {
+                      // ㉖v174b 点名盘摘要：按结束前最新账本拆"仍在架未扫到(真需复核)/期间已出库(正常)"
+                      int r = 0, g = 0;
+                      try { if (widget.task.invMissJson.isNotEmpty) { for (final m in (jsonDecode(widget.task.invMissJson) as List)) { if ((m as Map)['st'] == 'gone') { g++; } else { r++; } } } } catch (_) {}
+                      return Text("点名盘 应扫 ${widget.task.invPickCodes.length}${widget.task.invMissJson.isEmpty ? "" : (r + g == 0 ? "/全部盘到" : "/未扫到${r + g}(真$r·出库$g)")}", style: TextStyle(color: r > 0 ? const Color(0xFFE65100) : const Color(0xFF0891B2), fontWeight: FontWeight.bold));
+                    }(),
                     if (d.outsideScope.isNotEmpty) Text("范围外 ${d.outsideScope.length} 码", style: const TextStyle(color: Color(0xFF0891B2))),
                   ]),
                 ),
               ),
               // ㉖v174 点名盘：未盘到清单（结束任务时已回写 invMissJson）——点名盘的核心产出
+              // ㉖v174b 按结束前最新账本拆两类：st=miss 仍在架却没扫到（真需复核）/ st=gone 盘点期间
+              //   已出库或已消账（AGV 拉架耗时长，期间被正常领走属正常流转，不算缺失、只告知）
               if (widget.task.invPickMode == 1) ...[
                 () {
                   List<dynamic> miss = const [];
                   try { if (widget.task.invMissJson.isNotEmpty) miss = jsonDecode(widget.task.invMissJson) as List; } catch (_) {}
+                  final real = miss.where((m) => (m as Map)['st'] != 'gone').toList();
+                  final gone = miss.where((m) => (m as Map)['st'] == 'gone').toList();
                   final allGot = miss.isEmpty;
+                  final row = (dynamic m, {bool dim = false}) {
+                    final mm = m as Map;
+                    return Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text("▸ ${mm['c']}", style: TextStyle(fontFamily: "monospace", fontSize: 12.5, fontWeight: FontWeight.w600, color: dim ? Colors.grey : null, decoration: dim ? TextDecoration.lineThrough : null)),
+                      const SizedBox(width: 8),
+                      Expanded(child: Text("${mm['p']?.toString().isEmpty ?? true ? "零件未知" : mm['p']}${dim ? "（已出库/消账）" : "  @${mm['l']?.toString().isEmpty ?? true ? "账本无货位" : mm['l']}"}", style: TextStyle(fontSize: 12, color: dim ? Colors.grey : Colors.black87))),
+                    ]));
+                  };
                   return Card(
-                    color: allGot ? const Color(0xFFE8F5E9) : const Color(0xFFFFF3E0),
+                    color: allGot ? const Color(0xFFE8F5E9) : real.isEmpty ? const Color(0xFFF1F8E9) : const Color(0xFFFFF3E0),
                     child: Padding(
                       padding: const EdgeInsets.all(12),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                        Text(allGot ? "点名盘点：应扫 ${widget.task.invPickCodes.length} 框，全部盘到 ✅" : "点名盘未盘到 ${miss.length} 框（应扫 ${widget.task.invPickCodes.length}）—— 疑似缺失/串位/未同步，请现场复核",
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: allGot ? Colors.green : const Color(0xFFE65100))),
-                        if (!allGot) ...[
+                        Text(allGot ? "点名盘点：应扫 ${widget.task.invPickCodes.length} 框，全部盘到 ✅"
+                            : real.isEmpty ? "点名盘点：应扫 ${widget.task.invPickCodes.length} 框，未扫到 ${gone.length} 框均为盘点期间正常出库/消账，无缺失 ✅"
+                            : "点名盘：应扫 ${widget.task.invPickCodes.length} 框，${real.length} 框仍在架未扫到（需复核），另 ${gone.length} 框期间已出库（正常）",
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: allGot || real.isEmpty ? Colors.green : const Color(0xFFE65100))),
+                        if (real.isNotEmpty) ...[
                           const SizedBox(height: 6),
-                          ConstrainedBox(constraints: const BoxConstraints(maxHeight: 260), child: SingleChildScrollView(
-                            child: Column(children: miss.map((m) {
-                              final mm = m as Map;
-                              return Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                Text("▸ ${mm['c']}", style: const TextStyle(fontFamily: "monospace", fontSize: 12.5, fontWeight: FontWeight.w600)),
-                                const SizedBox(width: 8),
-                                Expanded(child: Text("${mm['p']?.toString().isEmpty ?? true ? "零件未知" : mm['p']}  @${mm['l']?.toString().isEmpty ?? true ? "账本无货位" : mm['l']}", style: const TextStyle(fontSize: 12, color: Colors.black87))),
-                              ]));
-                            }).toList()))),
+                          ConstrainedBox(constraints: const BoxConstraints(maxHeight: 220), child: SingleChildScrollView(child: Column(children: real.map((m) => row(m)).toList()))),
                           const SizedBox(height: 4),
-                          const Text("处理：找到实物→用「位置登记」重扫归位；确不在架→到库存页消账；账实本就未同步→先同步再复查一遍。", style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                          const Text("处理：找到实物→用「位置登记」重扫归位；确不在架→到库存页消账；货架还没拉到台站→叫车拉架后补扫。", style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                        ],
+                        if (gone.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text("盘点期间已出库/消账 $gone.length 框（正常流转，不计缺失）：", style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
+                          ConstrainedBox(constraints: const BoxConstraints(maxHeight: 120), child: SingleChildScrollView(child: Column(children: gone.map((m) => row(m, dim: true)).toList()))),
                         ],
                       ]),
                     ),
