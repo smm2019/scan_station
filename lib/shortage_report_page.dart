@@ -19,6 +19,10 @@ class _ShortageItem {
   double needQty; // 在途需求（未满足件数）
   String needFrom; // 需求来源单号摘要
   String kind = ""; // ㉖v75 口径徽章：零库存/欠料/低水位
+  // ㉖v179 末次领用（全厂口径，服务端 /api/req/last）：lastT>0 有记录 / ==0 窗口内无人领过 / <0 未知（不显示）
+  int lastT = -1;
+  double lastQty = 0;
+  String lastBy = "", lastNo = "";
   List<String> proj = const []; // ㉖v75 归属项目（原单值String）；㉖v101 升级多值：字典可挂多码，空=其他
   bool checked; // 是否纳入本次分享
   TextEditingController descC = TextEditingController();
@@ -60,11 +64,13 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       _kConf = "sr_confirmer",
       _kAt = "sr_at_names",
       _kLow = "sr_low_line",
-      _kProj = "sr_projects";
+      _kProj = "sr_projects",
+      _kShowLast = "sr_show_last"; // ㉖v179 分享模板自定义：是否随文案显示末次领用（日期+数量）
   String _unit = "鄞州豪斯特生产部",
       _duty = "鄞州豪斯特运营部",
       _conf = "宋明明",
       _at = "Eleven、星光熠熠、雪哥儿";
+  bool _showLast = true; // ㉖v179 默认显示末次领用（现场最想知道的就是"多久没来过货"）
   double _lowLine = 0; // 低水位阈值（0=不启用）
   bool _showZero = true, _showShort = true, _showLow = true; // 口径开关（低水位阈值未开时不显示该chip）
   // ㉖v75 项目分类：物料名包含关键字（不区分大小写）即命中；默认表可在设置里增删
@@ -93,6 +99,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         _at = sp.getString(_kAt) ?? _at;
         _lowLine = (sp.getDouble(_kLow) ?? 0);
         _projects = sp.getStringList(_kProj) ?? _defProjects;
+        _showLast = sp.getBool(_kShowLast) ?? true; // ㉖v179 分享模板：末次领用行开关（默认显示）
       });
     });
     _load();
@@ -231,6 +238,28 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       if (an != bn) return an - bn; // ㉖v75 有在途需求的排前（产线在等，比单纯零库存更急）
       return b.needQty.compareTo(a.needQty); // 需求大的排前
     });
+    // ㉖v179 末次领用（全厂口径）：一次批量查排序后前 200 项（服务端单请求上限 200；
+    // 分享基本取自"零库存→有需求→需求大"的头部，取不到的保持未知态=文案整行不出现，不谎报）
+    if (out.isNotEmpty) {
+      try {
+        final lj = await AuthApi.reqLast(out.take(200).map((e) => e.partNo).join(','));
+        if (lj["ok"] == true) {
+          final mp = lj["map"] is Map ? lj["map"] as Map : const {};
+          _shortLastWindow = (lj["windowDays"] as num?)?.toInt() ?? _shortLastWindow;
+          for (final it in out.take(200)) {
+            final m = mp[it.partNo];
+            if (m is Map) {
+              it.lastT = (m["t"] as num?)?.toInt() ?? 0;
+              it.lastQty = (m["qty"] as num?)?.toDouble() ?? 0;
+              it.lastBy = (m["by"] ?? "").toString();
+              it.lastNo = (m["no"] ?? "").toString();
+            } else {
+              it.lastT = 0; // 服务端查过=确实窗口内无人领过
+            }
+          }
+        }
+      } catch (_) {} // 服务未重启/网络差：全员保持 -1 未知态，文案与卡片整行不出现
+    }
     for (final old in _items) {
       old.dispose();
     }
@@ -281,6 +310,16 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       .map((s) => "@${s.trim()}")
       .join(" ");
 
+  /// ㉖v179 末次领用行：>0 有记录 / ==0 服务端查过窗口内无人领过 / <0 未知（服务未重启等）→ 整行不出现
+  String _lastLine(_ShortageItem it) {
+    if (!_showLast || it.lastT < 0) return "";
+    if (it.lastT == 0) return "末次领用：近$_shortLastWindow 天内全厂无人领过";
+    final d = DateTime.fromMillisecondsSinceEpoch(it.lastT);
+    final days = DateTime.now().difference(d).inDays;
+    return "末次领用：${d.month.toString().padLeft(2, "0")}-${d.day.toString().padLeft(2, "0")} "
+        "${_fmtInvNum(it.lastQty)} 件（$days 天前 · ${it.lastBy}${it.lastNo.isNotEmpty ? " ${it.lastNo}" : ""}）";
+  }
+
   String _feedText(_ShortageItem it) => [
         "【缺料反馈】",
         "反馈日期：$_today",
@@ -288,6 +327,9 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         "批次号：${it.lotC.text}",
         "物料号：${it.partNo}",
         "物料名称：${it.itemName}",
+        "全厂在库：${it.inBoxes} 框 · ${_fmtInvNum(it.inStockQty)} 件", // ㉖v179 群内判断轻重的主依据
+        if (it.needQty > 0) "待领需求：${_fmtInvNum(it.needQty)} 件${it.needFrom.isNotEmpty ? "（${it.needFrom}）" : ""}",
+        ...(_lastLine(it).isEmpty ? const <String>[] : [_lastLine(it)]), // ㉖v179 可自定义开关；空则整行不出现
         "异常描述：${it.descC.text}",
         "反馈单位：$_unit",
         "反馈人：${Auth.user?.name ?? ''}",
@@ -305,6 +347,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     await sp.setString(_kAt, _at);
     await sp.setDouble(_kLow, _lowLine);
     await sp.setStringList(_kProj, _projects); // ㉖v75 自定义项目表
+    await sp.setBool(_kShowLast, _showLast); // ㉖v179 分享模板：末次领用开关
   }
 
   Future<void> _editGlobals() async {
@@ -330,6 +373,14 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                   TextField(controller: a, decoration: const InputDecoration(labelText: "@人员（顿号分隔）", isDense: true)),
                   TextField(controller: pj, decoration: const InputDecoration(labelText: "项目分类（顿号/逗号分隔）", isDense: true, helperText: "物料名包含关键字即归入该项目，如 EX11、E281、V446K", helperStyle: TextStyle(fontSize: 10))),
                   TextField(controller: l, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "低水位阈值（件，0=不启用）", isDense: true, helperText: "在库低于此值也算缺料纳入清单", helperStyle: TextStyle(fontSize: 10))),
+                  // ㉖v179 分享模板自定义：末次领用行（日期+数量+多少天没领过）
+                  SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      value: _showLast,
+                      onChanged: (v) => setState(() => _showLast = v),
+                      title: const Text("显示末次领用（日期+数量）", style: TextStyle(fontSize: 13)),
+                      subtitle: Text("全厂口径（含同事领的），按${_shortLastWindow}天窗口；窗口内无人领过会如实标注", style: const TextStyle(fontSize: 10.5))),
                 ]))),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),

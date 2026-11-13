@@ -490,6 +490,13 @@ class _RequisitionPageState extends State<RequisitionPage>
               tooltip: "缺料反馈分享（微信）",
               onPressed: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const ShortageReportPage()))),
+          // ㉖v179 我的预约来料：物料员无库存权限（库存页"我的预约"页签进不去），在此给独立入口
+          if (Auth.can("requisition"))
+            IconButton(
+                icon: const Icon(Icons.local_shipping_outlined),
+                tooltip: "我的预约来料（到料通知/够数自动开领料单）",
+                onPressed: () => Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const WatchListPage()))),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _load), // ㉖ 顶栏铃铛按用户要求移除（消息入口保留在底部"消息"页签）
         ],
       ),
@@ -1573,8 +1580,21 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                 }
                 setState(() {});
                 AuthApi.tplUse(t["id"].toString());
-                if (miss.isNotEmpty)
-                  _toast("模板中 ${miss.join("、")} 当前无在架，已跳过", err: false);
+                if (miss.isNotEmpty) {
+                  // ㉖v177 缺料行不再只提示后丢弃：给一键反馈出口（算完全厂缺口再分享，物料员不用换页重来）
+                  final tn = t["name"].toString();
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                      duration: const Duration(seconds: 10),
+                      backgroundColor: const Color(0xFF455A64),
+                      content: Text("模板「$tn」中 ${miss.length} 行当前无在架，已跳过：${miss.take(3).join("、")}${miss.length > 3 ? "…" : ""}", style: const TextStyle(fontSize: 12.5)),
+                      action: SnackBarAction(
+                          label: "反馈缺料",
+                          textColor: const Color(0xFFFFCC80),
+                          onPressed: () => shortageFeedback(context, miss,
+                              title: "模板缺料反馈（${miss.length} 项）",
+                              defaultDesc: "产线模板「$tn」所需物料当前全厂无在架，请安排到货",
+                              hint: "来自产线模板 · 已自动附全厂在架与在途需求"))));
+                }
               },
             );
           }),
@@ -1953,7 +1973,10 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                     color: Color(0xFF3949AB),
                     fontWeight: FontWeight.w600)),
             Expanded(
-                child: ListView.builder( // ㉖v149 懒加载：旧 ListView(children:) 一次构建全部行（约250行×输入框），
+                // ㉖v177 搜不到不再空白：给"档案核查+缺料反馈"诊断卡（区分 真缺货/快照滞后/查无此号）
+                child: (list.isEmpty && _search.trim().length >= 3)
+                    ? SingleChildScrollView(child: ShortNotFoundCard(keyword: _search.trim(), extraHint: "零件不在本机在架清单里（下单只能从在架零件选，故搜不到≠系统坏了）"))
+                    : ListView.builder( // ㉖v149 懒加载：旧 ListView(children:) 一次构建全部行（约250行×输入框），
               // 填框数每次 setState 整表重建=手机卡顿主因；builder 只渲染可视窗口，控制器经 putIfAbsent 与行生命周期解耦不丢
               controller: _stockScroll,
               itemCount: list.length,
@@ -2876,7 +2899,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     String? scanErr;
     bool emEligible = false; // MES取不到数才允许应急；零件号不符等真实冲突仍硬拦
     double boxQty = 0;
-    String scanLot = ""; // 扫入框批次（MES LOT_NO），FIFO 比对用
+    // ㉖v176：原此处取 MES 批次供黄窗比对，通道已删（清单外直接拦），批次不再参与端上判定
     _lastBoxData = null;
     try {
       // 查 MES 拿该箱件数与零件号（复用采集页查询通道：失效自动重登）
@@ -2890,7 +2913,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
           scanErr = "该箱零件号 $mp 与所选行 ${target["partNo"]} 不符";
         }
         boxQty = (mes["qty"] as num?)?.toDouble() ?? 0;
-        scanLot = (mes["lotNo"] ?? "").toString().trim();
+        // ㉖v176：原此处记录 MES 批次供黄窗比对，通道已删（清单外直接拦），批次不再参与端上判定
         // 抓转MES所需完整标签数据（物料ID/编码/名称/UOM）；失败不阻塞发料记账，转单时再补查
         try {
           final d =
@@ -2942,65 +2965,11 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       } // 用户放弃应急
       boxQty = (em["qty"] as num?)?.toDouble() ?? 0;
     }
-    // 🟡 FIFO 提醒（v98 按用户拍板保持人工裁决）：扫入批次晚于建议最早批次 → 黄窗确认，确认即放行+双留痕；
-    // 本单已叫车框不提醒（车不能白跑）；应急登记时批次未知不判
-    // ㉖v98c 建议集内框不提醒：现场找料先碰到新批属正常动线，先扫新框再扫老框都是"扫建议的码"；
-    // 只有扫【建议清单之外】的晚批框才弹（那才是真跳批）
-    Map<String, dynamic>? fifoMark; // 非空=用户确认过跳批，随scan上报留痕
-    if (em == null) {
-      final sg = target["suggest"];
-      String oldest = "";
-      if (sg is Map) {
-        final called = <String>{
-          ...List<Map>.from(target["agvCalled"] ?? []).map((e) => (e["c"] ?? "").toString().toUpperCase()),
-          ...List<Map>.from(sg["calledPending"] ?? []).map((f) => (f["c"] ?? "").toString().toUpperCase()),
-        };
-        final sugSet = <String>{
-          ...List<Map>.from(sg["flatBoxes"] ?? []).map((f) => (f["c"] ?? "").toString().toUpperCase()),
-          for (final bx in List<Map>.from(sg["boxes"] ?? [])) ...(List.from(bx["codes"] ?? const []).map((c) => c.toString().toUpperCase())),
-        };
-        for (final bx in List<Map>.from(sg["boxes"] ?? [])) {
-          final bb = (bx["b"] ?? "").toString().trim();
-          if (bb.isNotEmpty) {
-            oldest = bb;
-            break;
-          }
-        }
-        if (scanLot.isNotEmpty &&
-            oldest.isNotEmpty &&
-            scanLot.compareTo(oldest) > 0 &&
-            !called.contains(code.toUpperCase()) &&
-            !sugSet.contains(code.toUpperCase())) {
-          if (!mounted) return;
-          setState(() => _busy = false);
-          final go = await showDialog<bool>(
-              context: context,
-              builder: (ctx) => AlertDialog(
-                    icon: const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 36),
-                    backgroundColor: const Color(0xFFFFF8E1),
-                    title: const Text("非最早批次（先进先出提醒）"),
-                    content: Text("标签 $code 批次 $scanLot\n该零件最早批次为 $oldest\n\n正常应先发最早批。确认仍发 $scanLot？（写入审计留痕；最早批仍会留在建议区可继续拣）"),
-                    actions: [
-                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消，改拣最早批")),
-                      FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black87), onPressed: () => Navigator.pop(ctx, true), child: const Text("确认继续"))
-                    ],
-                  ));
-          if (go != true) {
-            if (mounted) {
-              widget.toast("已取消：请按先进先出先拣批次 $oldest");
-              _refocusScan();
-            }
-            return;
-          }
-          fifoMark = {"lot": scanLot, "oldest": oldest, "ok": 1};
-          LocalLog.op('FIFO违反', '$code 批$scanLot（最早$oldest）确认继续');
-          if (!mounted) return;
-          setState(() => _busy = true);
-        }
-      }
-    }
-    // ㉖v98b 崩溃修复（10-27 PDA-34660 v97 实锤）：上方 MES 查询/黄窗均为 await，期间弹层被关闭
-    // 则此处 setState 打在已销毁 element 上抛 Null check；补守卫静默退出（scan 结果服务器已幂等，重扫即可）
+    // 🟡 已删除（㉖v176 用户裁定 2026-11-13）：扫入晚批次时弹黄窗、点"确认继续"放行的通道。
+    // 裁定原文「不在本单接单锁定建议框，严格拦截，不要弹黄窗，不要人工确认，直接拦截」。
+    // 服务端同版本起忽略人工确认标记，清单外码一律 400 —— 端上不再做任何前置询问，
+    // 被拦时直接展示服务端红窗（含"该拣哪一批/当前可扫哪些码"）。
+    // ㉖v98b 崩溃修复（10-27 PDA-34660 v97 实锤）：上方 MES 查询均为 await，期间弹层被关闭
     if (!mounted) return;
     setState(() => _busy = true);
     Future<Map> doScan({bool overOk = false}) => AuthApi.reqAction(_r["id"].toString(), "scan", {
@@ -3010,7 +2979,6 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       "fromLoc": fromLoc,
       if (em != null) "emergency": true,
       if (em != null) "why": em["why"],
-      if (fifoMark != null) "fifo": fifoMark,
       if (overOk) "overOk": 1,
     });
     var res = await doScan();

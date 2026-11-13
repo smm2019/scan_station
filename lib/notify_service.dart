@@ -596,6 +596,7 @@ class RemindPrefs {
         'watch_in' => _kWatch,
         'stock_out' => _kStock,
         'ghost_out' => _kStock, // ㉖v151 幽灵出库（MES已出库但本地无入库记录）复用断料预警档：未知类型 _ => null 会被判"不订阅"，关键账实告警不许静默
+        'shortage' || 'shortage_done' => _kStock, // ㉖v178 缺料反馈/认领/核销回执复用断料预警档（同为库存语义；未知类型默认不弹=反馈人收不到闭环回执）
         'car_alarm' => _kCar,
         'wmas_auth' => _kCar, // ㉖v160 WMAS凭证失效：车辆/调度类，复用 _kCar 使 PDA 能弹横幅
         'inspect' => _kInsp,

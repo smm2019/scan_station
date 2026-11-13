@@ -86,6 +86,7 @@ function defaultDb() {
     inspects: [], seenIn: {}, seenOut: {}, // ㉖④检验工单 / ①②标签生命周期索引 [{userId,partNo,at}]
     groundSlots: {}, // ⑮地面排格数覆盖 {"NB03-A-11":13}，缺省12
     reqTemplates: [], // ㉖v62 产线领料模板 {id,name,by,byName,shared,items,use,at}
+    shortages: [], // ㉖v178 缺料反馈闭环（二期）：一零件一条 {id,pn,nm,note,src,n,byList:[{id,name,at}],status:open|claimed|resolved,claimBy,claimByName,eta,doneBy,doneByName,doneAt,way,firstAt,at,seen:[]}
     gndZoneRows: {}, // ㉖v59 地面按区排数覆盖 {"A":15,"B":10}，缺省=每区排数参数；0=整区不用
     gndRowOff: {}, // ㉖v59 地面停用排 {"NB03-A-01":1}，停用排地图灰显、不计入格位统计（账本有货仍显示提醒）
   gndZoneList: {}, // ㉖v90 地面真实排号清单 {"A":[11,12,...],"G":[4,5,6,7,8,9,11]}——现场各区排号不连续（如A区只有11-18），配置后地图/统计按清单画；未配置区沿用按区排数
@@ -2161,7 +2162,7 @@ const PARAMS = {
   stnWinPct:      { grp: '调度策略', name: '站台时间窗系数', unit: '%', min: 50, max: 300, d: 100, tip: '预约窗=路网行程+60秒缓冲+该台平均清台时长×系数；窗内站台不派新单，防两车前后脚撞台' },
   lowTier:        { grp: '调度策略', name: '入库常用层上限', unit: '层', min: 1, max: 4, d: 3, tip: 'AUTO自动分配的硬性层约束：只在1~N层找空位（同架/同区集中也在层圈内生效），圈内全满才上更高层；4=不限。AGV叉高层耗时且重心高风险大，建议3' },
   pickMaxBoxes:   { grp: '调度策略', name: '选框建议框数上限', unit: '框', min: 4, max: 60, d: 24, tip: '㉖v138 发料「取货建议」一次最多建议的框数（够数即停之外的硬封顶，防超大单建议清单刷屏+仓管跑断腿）。现场实锤有单件建议已逼近24上限——大单多可调大到40~60；站台周转紧维持24。只影响建议清单长度，不改够数即停与超发判定' },
-  strictFifo:     { grp: '调度策略', name: '严格FIFO发料', unit: '开关', min: 0, max: 1, d: 1, tip: '1=扫码发料只允许「取货建议」清单里的标签（含同托兄弟码与已叫车框）。晚批次码：PDA黄窗确认→服务端复核放行（工单+事件双留痕）。㉖v98 发齐不藏框：行发齐后该零件仍在架未扫的框继续显示在建议区（灰框），仓管点扫=弹超发确认，确认后放行留痕；不确认则留待下次。幽灵码（不在任何清单）仍拒绝。0=回退旧行为（服务端不拦，仅PDA提醒）' },
+  strictFifo:     { grp: '调度策略', name: '严格FIFO发料', unit: '开关', min: 0, max: 1, d: 1, tip: '1=扫码发料只允许「取货建议」清单里的标签（含同托兄弟码与已叫车框）。清单外的码（含晚批次）一律直接拦截，不发弹窗、不接受人工确认（㉖v176 用户裁定：黄窗确认放行通道已删除）。㉖v98 发齐不藏框：行发齐后该零件仍在架未扫的框继续显示在建议区（灰框），仓管点扫=弹超发确认，确认后放行留痕；不确认则留待下次。幽灵码（不在任何清单）拒绝。0=回退旧行为（服务端不拦，仅PDA提醒）' },
   // ㉖v123 货架AGV盘点（盲区随机抽盘：AGV取框到站台→扫码核对→归位原格；只盘滞留≥N天从未被日常出入验证的框）
   countMax:       { grp: '调度策略', name: '盘点会话框数上限', unit: '框', min: 1, max: 30, d: 12, tip: '单次随机抽盘会话最多生成的盘点工单数（一框=2个AGV任务，控制对生产调度的挤占）' },
   countConc:      { grp: '调度策略', name: '盘点双腿并发上限', unit: '任务', min: 0, max: 4, d: 3, tip: '盘点下架/归位腿同时在途任务总数上限（8台通用站台至少留4台给生产出库；0=暂停盘点发车，已建工单排队等待）' },
@@ -2306,7 +2307,7 @@ let _ctUsage = null; // ㉖v173g 容器类型使用统计缓存 {at,cnt,led}，6
 // ---- ㉕T1 通知治理：同类5分钟静默聚合（并入原条"等N条"）/ 每人每分钟超5条跨类型强制聚合 / 夜间22-6点非急停类按人缓冲，早6点各自一条汇总 ----
 const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
 const URGENT_TYPES = new Set(['car_alarm', 'inspect', 'req_rush', 'ghost_out', 'wmas_auth']);   // 车辆告警（含急停）与急料单永不夜间静默（v88：夜班急料等早6点才汇总=失去急的意义）；㉖v151 ghost_out 幽灵出库同列——账实分叉夜间静默会拖到次日才暴露；㉖v160 wmas_auth 凭证失效=AGV 全线瘫痪，静默一夜等于整班人工搬运
-const NTYPE = { req_new: 'req_new', req_timeout: 'req_new', req_reassign: 'req_new', req_urge: 'req_urge', req_arrive: 'req_arrive', req_accept: 'req_flow', req_ready: 'req_flow', req_ready_wh: 'req_flow', req_done: 'req_flow', req_reject: 'req_flow', req_cancel: 'req_flow', watch_in: 'watch_in', stock_out: 'stock_out' }; // ㉕F5 订阅粒度（car_alarm不在表内=强制必达）
+const NTYPE = { req_new: 'req_new', req_timeout: 'req_new', req_reassign: 'req_new', req_urge: 'req_urge', req_arrive: 'req_arrive', req_accept: 'req_flow', req_ready: 'req_flow', req_ready_wh: 'req_flow', req_done: 'req_flow', req_reject: 'req_flow', req_cancel: 'req_flow', watch_in: 'watch_in', stock_out: 'stock_out', shortage: 'stock_out', shortage_done: 'stock_out' }; // ㉕F5 订阅粒度（car_alarm不在表内=强制必达）；㉖v178 缺料反馈/核销归"断料与预约"组（同为库存告警语义，不新增订阅开关）
 // ㉖v174 事故复盘六问：mechanism（什么机制让它溜过去）为用户点名强制栏，与其余五问同为必填
 const INC_FIELDS = ['title', 'what', 'impact', 'whyRoot', 'mechanism', 'fix', 'prevent'];
 const INC_LABEL = { title: '事故标题', what: '发生了什么', impact: '影响范围', whyRoot: '直接根因', mechanism: '什么机制让它溜过去（防线为何没拦住）', fix: '本次怎么修的', prevent: '同类怎么防（机制层面）' };
@@ -2519,9 +2520,95 @@ function partBoxCounts() {
   }
   return m;
 }
+// ===== ㉖v178 缺料反馈闭环（二期·用户拍板"分两期：先入口，再闭环"）=====
+// 一期只做"四个入口 + 一键分享"，反馈发完即蒸发：服务端零实体、无回执、谁在处理/到货没有都不知道。
+// 二期建 shortages 实体做闭环：提交（同零件归并计热度 n）→ 仓管认领（填预计到货）→ 到料自动核销或人工核销
+//        → 通知全部反馈人。反馈从"在群里喊"变成"有一条能被响应、能核销的工作项"。
+// 边界（如实）：①按零件号归并计热度，不造工单流——认领语义是"谁在跟这件事"，不是派单考核；
+//   ②用户未勾选"领料被拒自动转缺料"，故不做自动灌入：拒单原因常是规格不符/单开错而非缺货，
+//      自动转入会把热度冲歪（宁可少一条，不污染一条）；
+//   ③自动核销只认"在架从 0 变有"（与断料预警同源判定），不去猜"补够没有"——多货少货都算到货。
+const SHORT_KEEP = 500; // 滚动上限：超限先淘汰最早核销的，再淘汰最早反馈的
+function shortDemandMap() { // 在途需求（活跃单未发件数）：与 PDA 一期 shortGapLoad 同口径
+  const m = {}, d = {};
+  for (const r of db.requisitions || []) {
+    if (!['pending', 'accepted', 'ready'].includes(r.status)) continue;
+    for (const it of r.items || []) {
+      const p = String(it.partNo || '').toUpperCase(); if (!p) continue;
+      const iss = (Array.isArray(it.issued) ? it.issued : []).reduce((s, e) => s + (Number((e && e.q) || (typeof e === 'number' ? e : 0)) || 0), 0);
+      const left = (Number(it.qty) || 0) - iss;
+      if (left > 0) { m[p] = (m[p] || 0) + left; d[p] = (d[p] || 0) + 1; }
+    }
+  }
+  return { qty: m, docs: d };
+}
+function shortView(s, boxOf, qtyOf, dem) { // 列表富化：现架框/件/均值/在途需求/建议补框（无均值不折框，与一期同规则）
+  const boxes = Number(boxOf[s.pn]) || 0, q = Number(qtyOf[s.pn]) || 0;
+  const per = boxes > 0 && q > 0 ? Math.round(q / boxes * 10) / 10 : 0; // 零在架=算不出均值（不折框数，与一期同规则）
+  const need = dem.qty[s.pn] || 0;
+  const gap = need - q > 0 ? need - q : (boxes <= 0 ? need : 0);
+  return Object.assign({}, s, {
+    boxes, qty: Math.round(q * 100) / 100, perBox: per, demand: Math.round(need * 100) / 100, demandDocs: dem.docs[s.pn] || 0,
+    gapQty: Math.round(gap * 100) / 100, suggestBoxes: gap > 0 && per > 0 ? Math.min(999, Math.ceil(gap / per)) : 0,
+    ageDays: Math.floor((Date.now() - (Number(s.firstAt) || Date.now())) / 86400000),
+  });
+}
+function shortQtyMap() { // 件数逐行累加（与缺料页 _load / 一期 shortGapLoad 同口径；框数去重另有 partBoxCounts）
+  const m = {};
+  for (const x of db.ledger || []) { const p = String(x.p || '').toUpperCase(); if (!p) continue; m[p] = (m[p] || 0) + (Number(x.q) || 0); }
+  return m;
+}
+function shortageNotifyOwners(s, text) { // 通知全部反馈人（去重、跳过禁用号）
+  // ★ solo=逐条独立：认领回执与核销回执同为 shortage_done，同人 5 分钟内会被 notify() 聚合成
+  //   "（等 N 条，已合并）"且【新文本被丢弃】——实测核销那条"已到料"消失，反馈人只看到认领、
+  //   永远等不到闭环终点。账实/闭环类文本被合并等于没通知，故与幽灵出库同走 solo。
+  const ids = new Set((s.byList || []).map((b) => b.id));
+  for (const id of ids) { const x = db.users.find((z) => z.id === id); if (x && x.enabled) notify(id, 'shortage_done', text, '', { solo: true }); }
+}
+function shortageUpsert(u, pn, nm, note, src) {
+  db.shortages = db.shortages || [];
+  const now = Date.now();
+  const open = db.shortages.filter((s) => s.pn === pn && s.status !== 'resolved');
+  const hit = open[0];
+  if (hit) {
+    if ((hit.byList || []).some((b) => b.id === u.id)) return { item: hit, dup: true, created: false }; // 同人重复提交=幂等，不刷热度
+    hit.n = (hit.n || 1) + 1;
+    (hit.byList = hit.byList || []).push({ id: u.id, name: u.name, at: now });
+    hit.at = now;
+    if (nm && !hit.nm) hit.nm = String(nm).slice(0, 60);
+    return { item: hit, dup: false, created: false };
+  }
+  const s = {
+    id: newId('sh'), pn, nm: String(nm || '').slice(0, 60), note: String(note || '').slice(0, 200), src: String(src || '').slice(0, 20),
+    n: 1, byList: [{ id: u.id, name: u.name, at: now }], status: 'open',
+    firstAt: now, at: now, // 不存 lastPer：账本只在架有行，零在架（恰恰最常反馈）算不出均值——宁缺不假，均值一律取实时在架口径
+  };
+  db.shortages.push(s);
+  if (db.shortages.length > SHORT_KEEP) {
+    const rank = (x) => (x.status === 'resolved' ? 0 : 1) * 1e15 + (x.status === 'resolved' ? Number(x.doneAt) || Number(x.at) || 0 : Number(x.firstAt) || 0);
+    db.shortages.sort((a, b) => rank(a) - rank(b)).splice(0, db.shortages.length - SHORT_KEEP);
+  }
+  const tip = `🧯 缺料反馈：${pn}${s.nm ? ' ' + s.nm : ''}（${u.name}${s.note ? '：' + s.note : ''}）`;
+  db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin')).forEach((x) => notify(x.id, 'shortage', tip, ''));
+  return { item: s, dup: false, created: true };
+}
+function shortageAutoResolve(pre, post, byName) { // 到料自动核销：在架从 0 变有
+  const open = (db.shortages || []).filter((s) => s.status !== 'resolved');
+  if (!open.length) return;
+  let n = 0;
+  for (const s of open) {
+    if ((Number(pre[s.pn]) || 0) > 0 || (Number(post[s.pn]) || 0) <= 0) continue;
+    s.status = 'resolved'; s.doneAt = Date.now(); s.doneBy = '系统'; s.doneByName = '到料自动核销';
+    s.way = `到料自动核销（${byName || '入库'}后在架 ${post[s.pn]} 框）`;
+    shortageNotifyOwners(s, `✅ 你反馈的缺料零件 ${s.pn}${s.nm ? ' ' + s.nm : ''} 已到料（在架 ${post[s.pn]} 框），反馈自动核销`);
+    n++;
+  }
+  if (n) console.log('[shortage] 到料自动核销 ' + n + ' 条');
+}
 function stockWatchScan(pre, byName) {
   try {
     const post = partBoxCounts();
+    shortageAutoResolve(pre, post, byName); // ㉖v178 缺料到料自动核销（与断料预警同快照同入口；下方 save 落盘）
     const t0 = new Date(); t0.setHours(0, 0, 0, 0);
     // 预约到料：今日新上账框命中 watchlist // ㉖v94n 升级：带数量预订的=算进度→够数自动开领料单(留痕+双方通知)；纯提醒型走旧"每零件每天一次"通知
     const wl = db.watchlist || [];
@@ -6659,7 +6746,7 @@ return send(res, 200, {
         if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'sys_err', '🛠 PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常 ｜ ' + clean.map((x) => String(x.d || x.e || '')).join(' ; ').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 560)); } // ㉖v173f 类型 car_alarm→sys_err：诊断上报不是车辆告警，此前借道 car_alarm 被网页"未处理车辆告警"红框置顶（11-13 用户截图实证分类错位），现归"其他与系统"组；㉖v173g 详情带上异常内容摘要（原只记条数，"流水里看不到消息内容"）
         return send(res, 200, { ok: true, count: clean.length });
       }
-      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/req-templates' || p.startsWith('/api/req-templates/') || p === '/api/notifications' || p.startsWith('/api/notifications/') || p === '/api/req/preview') { // ㉖v62 模板路由并入领料块（此前落入管理员闸门）；㉖v175 预占预览并入本块（不列则落 requireAdmin，物料员无法预览）
+      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/req-templates' || p.startsWith('/api/req-templates/') || p === '/api/notifications' || p.startsWith('/api/notifications/') || p === '/api/req/preview' || p === '/api/shortages' || p.startsWith('/api/shortages/') || p === '/api/req/last') { // ㉖v62 模板路由并入领料块（此前落入管理员闸门）；㉖v175 预占预览并入本块（不列则落 requireAdmin，物料员无法预览）；㉖v178 缺料反馈同（物料员要能提交）；㉖v179 末次领料同（物料员预约/缺料分享要用）
         const canReq = (db.features[u.role] || {}).requisition === true;
         const canRcv = (db.features[u.role] || {}).receive_confirm === true;
         const isWh = u.role === 'warehouse' || u.role === 'admin';
@@ -6830,6 +6917,99 @@ return send(res, 200, {
             out.push({ pn: row.pn, boxesReq: row.boxes, mode: 'real', perBox: per, estQty: total, pickedN: picked.length, shortN: Math.max(0, row.boxes - picked.length), capped, availN: Math.min(avail.length, capN), boxes: picked.map((b) => ({ c: b.codes[0], l: b.l, b: b.b, q: Math.round((Number(b.q) || 0) * 100) / 100, cs: b.codes.length })) });
           }
           return send(res, 200, { ok: true, rows: out });
+        }
+        // ===== ㉖v178 缺料反馈闭环（二期）：提交→认领→核销（到料自动/人工） =====
+        // 一期反馈只生成微信文案、发完即蒸发（无回执、无状态）；本块建 shortages 实体把反馈变成
+        // 可响应、可核销的工作项：同零件归并计热度 n（不造工单流，认领=谁在跟这件事，非派单考核）。
+        // 权限：查询/提交=登录即可（物料员必须能提交）；认领/核销=仓管或管理员（与接单发料同级）。
+        if (p === '/api/shortages' && req.method === 'GET') {
+          const flt = String(url.searchParams.get('status') || 'open');
+          const boxOf = partBoxCounts(), qtyOf = shortQtyMap(), dem = shortDemandMap(); // 三份映射各建一次，勿逐条扫账本
+          const all = (db.shortages || []).slice().sort((a, b) => ((b.n || 1) - (a.n || 1)) || (Number(b.at) || 0) - (Number(a.at) || 0));
+          const list = (flt === 'resolved' ? all.filter((s) => s.status === 'resolved') : all.filter((s) => s.status !== 'resolved'))
+            .slice(0, 200).map((s) => shortView(s, boxOf, qtyOf, dem));
+          const mine = []; // 我反馈过的零件（入口据此显示"已反馈·进度"，避免重复提交后看不见状态）
+          for (const s of db.shortages || []) if ((s.byList || []).some((x) => x.id === u.id)) { mine.push(s.pn); if (mine.length >= 500) break; }
+          return send(res, 200, { ok: true, list, mine, openN: (db.shortages || []).filter((s) => s.status !== 'resolved').length });
+        }
+        if (p === '/api/shortages' && req.method === 'POST') {
+          const bd = await readBody(req);
+          const pn = String(bd.partNo || '').trim().toUpperCase().slice(0, 40);
+          if (!pn) return send(res, 400, { ok: false, msg: '缺少零件号' });
+          const rs = shortageUpsert(u, pn, bd.itemName, bd.note, bd.src);
+          save();
+          pushOps(u, '缺料反馈', pn, `${rs.created ? '新建' : rs.dup ? '同人重复(幂等)' : '热度+1'} ｜ ${String(bd.note || '').slice(0, 80)}`);
+          return send(res, 200, { ok: true, id: rs.item.id, dup: rs.dup, created: rs.created, n: rs.item.n, status: rs.item.status, eta: rs.item.eta || '', claimByName: rs.item.claimByName || '' });
+        }
+        if (p === '/api/shortages/claim' && req.method === 'POST') {
+          if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可认领' });
+          const bd = await readBody(req);
+          const s = (db.shortages || []).find((x) => x.id === String(bd.id || ''));
+          if (!s) return send(res, 404, { ok: false, msg: '反馈不存在（可能已被滚动清理）' });
+          if (s.status === 'resolved') return send(res, 400, { ok: false, msg: '该反馈已核销，无需认领' });
+          const etaRaw = String(bd.eta || '').trim();
+          if (etaRaw && !/^\d{4}-\d{2}-\d{2}$/.test(etaRaw)) return send(res, 400, { ok: false, msg: '预计到货日期格式应为 YYYY-MM-DD' });
+          s.status = 'claimed'; s.claimBy = u.id; s.claimByName = u.name; s.eta = etaRaw; s.at = Date.now();
+          shortageNotifyOwners(s, `🙋 你反馈的缺料零件 ${s.pn}${s.nm ? ' ' + s.nm : ''} 已由 ${u.name} 认领${etaRaw ? '，预计到货 ' + etaRaw : ''}（到料后自动核销）`);
+          save();
+          pushOps(u, '缺料认领', s.pn, `预计到货 ${etaRaw || '未填'} ｜ id=${s.id}`);
+          return send(res, 200, { ok: true });
+        }
+        if (p === '/api/shortages/resolve' && req.method === 'POST') {
+          if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可核销' });
+          const bd = await readBody(req);
+          const s = (db.shortages || []).find((x) => x.id === String(bd.id || ''));
+          if (!s) return send(res, 404, { ok: false, msg: '反馈不存在' });
+          if (s.status === 'resolved') return send(res, 200, { ok: true, already: true }); // 幂等：重复核销不报错不重复通知
+          s.status = 'resolved'; s.doneAt = Date.now(); s.doneBy = u.id; s.doneByName = u.name;
+          s.way = String(bd.way || '').slice(0, 100) || '人工核销';
+          shortageNotifyOwners(s, `✅ 你反馈的缺料零件 ${s.pn}${s.nm ? ' ' + s.nm : ''} 已核销（${u.name}：${s.way}）`);
+          save();
+          pushOps(u, '缺料核销', s.pn, s.way + ' ｜ id=' + s.id);
+          return send(res, 200, { ok: true });
+        }
+        // ===== ㉖v179 末次领料批量查询：缺料分享/预约页显示"上次什么时候领了多少" =====
+        // 为什么必须服务端算：领料列表对物料员只返回本人单（server 7325 行 role 过滤），
+        //   端上自己算会把"同事上个月领过"显示成"无记录"，物料员据此判断补货量必然偏少。
+        // 口径（如实）：全厂 · 只算真实发生过的（排除 cancelled/rejected）· 时刻取签收>备齐>接单>下单
+        //   中已存在的最晚者 · 件数优先实发(issued 合计)、无实发用申请数 ·
+        //   窗口=主库（领料单归档窗口 reqArchDays，默认 365 天），超期已终结单已归档不在内，
+        //   故"无记录"只表示"近一年内没领过"，端上文案须照此表述，不得说成"从未领过"。
+        if (req.method === 'GET' && p === '/api/req/last') {
+          const want = String(url.searchParams.get('items') || '').split(/[,;]+/)
+            .map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 200);
+          const out = {};
+          const _wd = Number(P().reqArchDays) || 365;
+          // ㉖v179 顺带返回【全厂】在途未发需求：PDA 的 reqList 对物料员只给本人单，
+          //   端上自算"在途需求"会系统性偏少（同事在等的单看不见）→ 缺料分享/预约页改用本口径。
+          if (!want.length) return send(res, 200, { ok: true, map: out, demand: {}, windowDays: _wd });
+          const _dm = shortDemandMap();
+          const dem = {};
+          for (const pn of want) {
+            const q = _dm.qty[pn], d = _dm.docs[pn];
+            if (q || d) dem[pn] = { qty: Math.round((q || 0) * 100) / 100, docs: d || 0 };
+          }
+          const wantSet = new Set(want);
+          const _issOf = (it) => (it.issued || []).reduce((a, e2) => a + (Number(typeof e2 === "string" ? 0 : e2.q) || 0), 0);
+          const scan = (db.requisitions || []).slice(-4000); // 倒序近 4000 张足够覆盖一年窗口，防全表扫描
+          for (const r of scan) {
+            if (['cancelled', 'rejected'].includes(r.status)) continue;
+            // ★ 只认真实发过货的：ready/done（到齐/已签收）或该行有实发（备料中途接新单中断的历史单）。
+            //   pending/accepted 一件没发、未发行的行都不算"领用"——否则"刚下单还没发"会被显示成上次领用
+            const real = r.status === 'ready' || r.status === 'done';
+            const t = Date.parse(r.confirmedAt) || Number(r.readyAt) || Date.parse(r.acceptedAt) || Date.parse(r.createdAt) || 0;
+            if (!t) continue;
+            for (const it of r.items || []) {
+              const pn = String(it.partNo || '').toUpperCase();
+              if (!wantSet.has(pn)) continue;
+              const iss = _issOf(it);
+              if (!real && iss <= 0) continue;
+              const q = iss > 0 ? iss : (Number(it.qty) || 0);
+              const cur = out[pn];
+              if (!cur || t > cur.t) out[pn] = { t, qty: q, by: r.byName || r.by || '', no: r.no || '' };
+            }
+          }
+          return send(res, 200, { ok: true, map: out, demand: dem, windowDays: _wd });
         }
         // 下单（可选 assigneeId 指定仓管员：通知只推指定人，30分钟未接自动放开给全员）
         if (req.method === 'POST' && p === '/api/requisitions') {
@@ -7119,9 +7299,8 @@ return send(res, 200, {
             // 本单叫过车的框是仓管自己点的，货必然送到台，必须放行；跳批拦截只针对"没叫过车、不在建议里"的码。
             // 不在名单内=跳批拣货或扫错框，直接拒绝并告知该拣哪个批次；旧版只有黄色提醒、确认即放行，等于没有强制力。
             // 应急登记(emergency)可旁路但写工单历史留痕——账本滞后致建议为空时的唯一逃生口，防彻底卡死发料。
-            // ㉖v94s 晚批次确认旁路（用户拍板）：旧体验是"弹黄提醒→点确认继续→服务端又拦→再弹红窗"两道窗绕。
-            // 现在：客户端FIFO黄窗的确认标记(b.fifo.ok)随scan上报，服务端复核"扫入批次确实晚于建议最早批次"才放行（晚批次属人工可裁决的
-            // 正常业务），并写"🟡FIFO违反"审计留痕；而"同批次却不在清单"（扫错单/账本外幽灵码）不给旁路，照拦——不信任未经验证的确认标记。
+            // ㉖v94s 晚批次确认旁路曾于 2026-11-13 前存在（黄窗确认→服务端复核批次→放行留痕）。
+            // ㉖v176 已按用户裁定整条删除：清单外的码不发弹窗、不接受人工确认标记(b.fifo 忽略)、直接 400。
             if (P().strictFifo === 1 && b.emergency !== true) {
               const _excl = new Set(normIssued(target).map((e) => String(e.c).toUpperCase()));
               const _need = Math.max(0, (Number(target.qty) || 0) - issuedQty(target));
@@ -7154,17 +7333,21 @@ return send(res, 200, {
               if (!_overPass && _allow.size && !_allow.has(code.toUpperCase())) {
                 const _oldestLot = (_sg.boxes || []).map((x) => String(x.b || '').trim()).find(Boolean) || '';
                 const _scanLot = String((((db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code.toUpperCase())) || {}).b || '').trim();
-                const _isLater = !!(_oldestLot && _scanLot && _scanLot > _oldestLot); // 晚批次=黄窗场景；同批/未知批=幽灵码场景
-                if (_isLater && b.fifo && b.fifo.ok === 1) { // 客户端已人工确认+服务端复核批次成立 → 放行
-                  hpush(`🟡FIFO违反放行 ${target.partNo} 标签 ${code}（批${_scanLot}，本单最早建议批${_oldestLot}，人工确认继续）（${u.name}）`);
-                  pushEvent('FIFO违反', String(target.partNo || ''), `标签 ${code} 扫入批次${_scanLot}（本单建议最早批${_oldestLot}）人工确认继续（${u.name}）`);
-                } else {
+                const _isLater = !!(_oldestLot && _scanLot && _scanLot > _oldestLot); // 仅用于文案说清"该拣哪批"，不再决定能否放行
+                // ㉖v176 晚批次确认放行通道已按用户裁定删除（2026-11-13）：
+                // 裁定原文「不在本单接单锁定建议框的码，严格拦截，不要弹黄窗，不要人工确认，直接拦截」。
+                // 删除前：b.fifo.ok===1 + 服务端复核批次更晚 → 放行并记『FIFO违反』（v94s 通道，近30天放行 50 次、
+                //   且 50 次全部由同一人点击确认——通道实际退化为单人一键放行，强制力已被自己消解）。
+                // 删除后：白名单（接单盖章集∪同托兄弟码∪本单已叫车）之外的码一律 400，b.fifo 字段忽略不用。
+                // ★ 有意保留：不发弹窗请求、不给确认入口，也不区分"晚批次"与"幽灵码"两种不在名单的原因——
+                //   原因只影响提示文案（晚批次告知该拣哪批，幽灵码给可扫清单），不影响拦截结果。
+                {
                   // ㉖v114·C 文案对齐 A 新语义：清单已在接单时锁定、不再漂移，被拦=这框确实不在本单接单建议范围。
                   // 晚批次直说该拣哪批；同批/幽灵码给全可扫清单（A 后这份清单稳定，照扫即可，不再"刚才让扫现在又不让"）。
                   const _allArr = [..._allow];
                   const _scanHint = _allArr.length > 6 ? _allArr.slice(0, 6).join('/') + ' 等 ' + _allArr.length + ' 码' : _allArr.join('/');
                   const _hint = _isLater
-                    ? `——这是 ${_scanLot} 批，本单建议先拣 ${_oldestLot} 批的框${b.fifo && b.fifo.ok === 1 ? '' : '（如确需发这批，点弹窗确认后放行并留痕）'}`
+                    ? `——这是 ${_scanLot} 批，本单建议先拣 ${_oldestLot} 批的框（严格FIFO：不发弹窗、不可确认放行）`
                     : `——这框不在本单接单时锁定的建议框内${_allArr.length ? '；当前可扫：' + _scanHint : ''}`;
                   hpush(`⛔ 严格FIFO拦截：扫入 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 不在本单建议清单（${_isLater ? '晚批次，应拣' + _oldestLot : '非本单建议框'}；可扫 ${_allArr.length} 码：${_scanHint}）`);
                   // ㉖v169 拦截也要进「事件流水」（11-12 现场实锤）：旧版只有【放行】那支调 pushEvent，
@@ -7172,6 +7355,7 @@ return send(res, 200, {
                   // 「今日FIFO违反」恒为 0，看板把拦截量系统性读成零（现场当天实拦 2 次仍显示 0）。
                   // 用新 kind『FIFO拦截』而非复用『FIFO违反』：后者 KPI 标签是"跳批发料"（放行才有业务含义），
                   // 混进去会让"跳批次数"被拦截数顶高，两个指标各自的含义都废掉。
+                  // ㉖v176 起本类型成为唯一新增来源（放行通道已删，故『FIFO违反』不再产生新条目，历史条目保留不改）。
                   // 事件页类型下拉是 all0.map(kind) 动态生成，新类型自动出现在筛选项里。
                   pushEvent('FIFO拦截', String(target.partNo || ''), `领料单 ${r.no} 扫入标签 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 被严格FIFO拦下：${_isLater ? '晚批次，应拣' + _oldestLot : '不在本单接单锁定建议框'}（${u.name}）`);
                   save(); // 留痕立即落盘：旧写法只改内存，靠无关周期存盘才落库，重启即丢审计痕迹
@@ -7204,8 +7388,9 @@ return send(res, 200, {
             }
             const got = issuedQty(target);
             hpush(`${em ? '⚠️应急发料' : '发料'} ${b.partNo} 标签 ${code}（${q}件，累计 ${got}/${target.qty}）${em ? ' · MES不可用改人工录入（' + u.name + (String(b.why || '').trim() ? '：' + String(b.why || '').trim() : '') + '）' : ''}`);
-            const ff = b.fifo; if (ff && ff.ok) pushEvent('FIFO违反', String(b.partNo || ''), `标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);
-            const ff2 = b.fifo; if (ff2 && ff2.ok) hpush(`🟡FIFO违反 ${b.partNo} 标签 ${code} 扫入批次${String(ff.lot || '')}（最早${String(ff.oldest || '')}）人工确认继续（${u.name}）`);
+            // ㉖v176：此处原有「按 b.fifo.ok 补记 FIFO违反 事件/历史」两行，随黄窗通道一并删除。
+            // 闸门已不读该标记，保留只会制造假记录：旧版 PDA（现网 174 及以下仍在用）仍会上报 fifo.ok，
+            // 扫的若是正常建议框，发料成功却被记成"跳批发料"→ 看板跳批 KPI 被假数据顶高。
             // 不再自动置 ready：ready 由每行 transfer/skip 到终态后 finalize 决定
           } else if (act === 'unscan') {
             // ㉖v82 撤扫（转单确认窗取消勾选=不发的框）：从 issued 移除该码 + 账本复挂原位 + 清墓碑——scan 的对称逆操作

@@ -790,7 +790,13 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
             ],
           ])),
       Expanded(
-          child: rows.isEmpty
+          // ㉖v177 搜索有词但零结果时不再甩"暂无库存数据"（与搜索无关的误导文案）：
+          // 给档案诊断卡——分清 真缺货(可反馈) / 本机快照滞后 / 档案查无此号
+          child: rows.isEmpty && widget.search.trim().length >= 3
+              ? SingleChildScrollView(
+                  padding: const EdgeInsets.all(12),
+                  child: ShortNotFoundCard(keyword: widget.search.trim(), extraHint: "库存清单里没有这个号；下列结果按服务器全厂档案核（比本机快照新）"))
+              : rows.isEmpty
               ? const Center(
                   child: Text("暂无库存数据", style: TextStyle(color: Colors.grey)))
               : ListView.builder(
@@ -2460,7 +2466,14 @@ class _PartProfilePageState extends State<PartProfilePage> {
                         ? "已预约 ${(_watchRow?["arrived"] as num?)?.toInt() ?? 0}/${(_watchRow?["target"] as num?)?.toInt() ?? 0}筐"
                         : "已预约")
                     : "预约来料",
-                    style: const TextStyle(fontSize: 12)))
+                    style: const TextStyle(fontSize: 12))),
+            // ㉖v177 入口③：档案页信息最全（累计出入库/当前库存/在途需求），在此反馈质量最高
+            TextButton.icon(
+                style: TextButton.styleFrom(foregroundColor: Colors.white),
+                onPressed: () => shortageFeedback(context, [widget.partNo],
+                    hint: "来自零件档案 · 已自动附全厂在架与在途需求"),
+                icon: const Icon(Icons.campaign_outlined, size: 18, color: Colors.white),
+                label: const Text("反馈缺料", style: TextStyle(fontSize: 12)))
           ]),
       body: FutureBuilder<_PPData>(
           future: _f,

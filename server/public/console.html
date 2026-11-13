@@ -269,7 +269,7 @@ function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.re
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
-const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['proj','📦 项目'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['trace','🔗 追溯'],['fool','🛡 防呆'],['admin','⚙️ 控制后台']]; // ㉖v125 顶层「工作量」并入分析报告子页（go('rpt') 别名兼容）
+const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['short','🧯 缺料反馈'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['proj','📦 项目'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['trace','🔗 追溯'],['fool','🛡 防呆'],['admin','⚙️ 控制后台']]; // ㉖v125 顶层「工作量」并入分析报告子页（go('rpt') 别名兼容）
 // ㉖v113 保险③深链：hash 支持 'agv/gantt' 形式，分享链接、浏览器前进/后退都能直达指挥舱二级页
 function agvCurHash(){return (TAB==='agv'&&AGVKEY[AGVTAB])?('agv/'+AGVTAB):TAB}
 function go(t){t=String(t||'');const _s=t.indexOf('/');const _base=_s<0?t:t.slice(0,_s);const _sub=_s<0?'':t.slice(_s+1);
@@ -277,7 +277,7 @@ function go(t){t=String(t||'');const _s=t.indexOf('/');const _base=_s<0?t:t.slic
  if(_base=='rpt'){ANA.tab='work';_tgt='ana'}
  TAB=_tgt||TAB||'dash';
  if(TAB==='agv'&&_sub&&AGVKEY[_sub])AGVTAB=AGVKEY[_sub][1]; // 深链指定子页；无子页则沿用上次所在页（保险①）
- if((location.hash||'').slice(1)!=agvCurHash())location.hash='#'+agvCurHash();UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,me:pgMe,reqs:pgReqs,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,proj:pgProj,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,trace:pgTrace,fool:pgFool,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
+ if((location.hash||'').slice(1)!=agvCurHash())location.hash='#'+agvCurHash();UiTune.renderNav();UiTune.enter(TAB);navBadge(window._lastRed||0);const _p=({dash:pgDash,me:pgMe,reqs:pgReqs,short:pgShort,queue:pgQueue,ledger:pgLedger,ctn:pgCtn,parts:pgParts,proj:pgProj,flow:pgFlow,inv:pgInv,fix:pgFix,insp:pgInsp,agv:pgAgv,rpt:pgRpt,ana:pgAna,exp:pgExp,dict:pgDict,trace:pgTrace,fool:pgFool,admin:pgAdmin})[TAB]();if(_p&&_p.catch)_p.catch((e)=>{try{$('#main').innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'网络问题或服务未重启')+'　<button class="pill" onclick="go(\''+TAB+'\')">重试</button></div>'}catch(_){}})}
 function navBadge(n){const b=document.querySelector('#nav button');if(!b)return;let bd=b.querySelector('.navbd');if(n>0){if(!bd){bd=document.createElement('span');bd.className='navbd';b.appendChild(bd)}bd.textContent=n>9?'9+':n}else if(bd)bd.remove()}
 // ===== ㉖v52 静默刷新调度器：后台照常取数，前台不打扰 =====
 // 规则：①你正在输入/选中文字/弹窗开着/刚有过鼠标键盘动作(3秒内) → 本轮直接跳过，不取数也不改画面
@@ -486,6 +486,44 @@ async function tplEditSave(id){
 async function tplDel(id,name){if(!confirm('删除模板「'+name+'」？同事将不能再载入。'))return;
  const j=await api('/api/req-templates?id='+encodeURIComponent(id),{method:'DELETE'});
  T(j.ok?'✅ 已删除':'❌ '+(j.msg||'失败'),j.ok?1:0);if(j.ok)tplCardLoad()}
+// ===== ㉖v178 缺料反馈处理页（二期闭环）=====
+// 一零件一条（同零件多人反馈归并计热度 n，按热度排序=谁喊得多先处理，替代"谁嗓门大先处理"）；
+// 认领=谁在跟这件事（可填预计到货，自动通知全部反馈人）；核销=到料自动核销或人工核销（幂等）。
+// 权限与领料接单同级：查询/反馈人人可见，认领与核销仅仓管/管理员（服务端二次强制，此处只隐藏按钮）。
+let _shSt='open';
+async function pgShort(){
+ $('#main').innerHTML=`<div class="card"><div class="row">
+ <button class="pill ${_shSt=='open'?'':'q'}" onclick="_shSt='open';pgShort()">未处理</button>
+ <button class="pill ${_shSt=='resolved'?'':'q'}" onclick="_shSt='resolved';pgShort()">已核销</button>
+ <span id="shSum" style="font-size:12px;color:var(--sub)"></span>
+ <span style="flex:1"></span>
+ <button class="pill" onclick="pgShort()">⟳ 刷新</button>
+ </div><div id="shList">加载中…</div></div>`;
+ let j;try{j=await api('/api/shortages?status='+_shSt)}catch(e){$('#shList').innerHTML='<div style="color:var(--warn)">加载失败：'+_esc(e&&e.message?String(e.message):'网络问题或服务未重启')+'</div>';return}
+ const L=j.list||[];const _wh=U.role=='warehouse'||U.role=='admin';
+ const mine=window._shMine=j.mine||[];
+ $('#shSum').innerHTML=`共 ${L.length} 条${_shSt=='open'?'（按反馈人数排序，越靠前越急）':'（最近 200 条）'}${mine.length?`　<span style="color:var(--pri)">你反馈过 ${mine.length} 项</span>`:''}`;
+ if(!L.length){$('#shList').innerHTML='<div style="color:var(--sub);padding:14px">暂无'+(_shSt=='open'?'未处理':'已核销')+'的缺料反馈</div>';return}
+ $('#shList').innerHTML=`<div style="overflow:auto;max-height:72vh"><table><thead><tr><th>零件号</th><th>物料名</th><th>热度</th><th>全厂在架</th><th>在途需求</th><th>建议补</th><th>状态</th><th>反馈人</th><th>备注</th><th></th></tr></thead><tbody>${L.map((s,i)=>{
+  const who=(s.byList||[]).map(b=>b.name).slice(0,3).join('、')+((s.byList||[]).length>3?' 等'+s.byList.length+'人':'');
+  const st=s.status=='resolved'?`<span class="tag t-d">已核销</span><div style="font-size:10.5px;color:var(--sub)">${_esc(s.doneByName||'')}${s.way?' · '+_esc(s.way):''}</div>`
+    :s.status=='claimed'?`<span class="tag t-a">已认领</span><div style="font-size:10.5px;color:var(--sub)">${_esc(s.claimByName||'')}${s.eta?' · 预计 '+_esc(s.eta):' · 未填到货日'}</div>`
+    :`<span class="tag t-p">待认领</span><div style="font-size:10.5px;color:var(--sub)">${s.ageDays>6?`<b style="color:var(--bad)">已挂 ${s.ageDays} 天</b>`:'已挂 '+s.ageDays+' 天'}</div>`;
+  const act=_wh&&s.status!='resolved'?`<button class="pill g" style="padding:3px 8px;font-size:11.5px" onclick="shClaim('${s.id}','${_esc(s.pn)}')">认领</button> ${s.status=='claimed'?`<button class="pill" style="padding:3px 8px;font-size:11.5px" onclick="shResolve('${s.id}','${_esc(s.pn)}')">核销</button>`:`<button class="pill q" style="padding:3px 8px;font-size:11.5px" onclick="shResolve('${s.id}','${_esc(s.pn)}')">核销</button>`}`:'';
+  return `<tr class="fin" style="animation-delay:${Math.min(i*22,500)}ms"><td class="mono">${_esc(s.pn)}${(j.mine||[]).includes(s.pn)?' <span style="color:var(--pri);font-size:10px" title="你反馈过">你</span>':''}</td><td style="max-width:160px">${_esc(s.nm||'')}</td>
+   <td><b style="color:${s.n>=3?'var(--bad)':'var(--ink)'}">${s.n}人</b></td>
+   <td>${s.boxes>0?`${s.boxes}框 / ${s.qty}件`:'<b style="color:var(--bad)">0 框</b>'}</td>
+   <td>${s.demand>0?`${s.demand}件（${s.demandDocs}单）`:'—'}</td>
+   <td>${s.suggestBoxes>0?`≥${s.suggestBoxes}框`:(s.gapQty>0?`${s.gapQty}件(无均值)`:'—')}</td>
+   <td>${st}</td><td style="font-size:11.5px;max-width:150px">${_esc(who)}</td>
+   <td style="font-size:11.5px;max-width:180px;color:var(--sub)" title="${_esc(s.note||'')}">${_esc((s.note||'').slice(0,24))}</td>
+   <td style="white-space:nowrap">${act} <a href="javascript:void 0" onclick="go('parts');setTimeout(()=>ppOpen&&ppOpen('${_esc(s.pn)}'),300)">档案</a></td></tr>`}).join('')||'<tr><td colspan=10 style="color:var(--sub)">无数据</td></tr>'}</tbody></table></div>`}
+async function shClaim(id,pn){const eta=prompt(`认领缺料零件 ${pn}\n\n预计到货日期（YYYY-MM-DD，可留空）：`,'');if(eta===null)return;
+ const j=await api('/api/shortages/claim',{method:'POST',body:{id,eta:eta.trim()}});
+ if(j.ok){T('✅ 已认领 '+pn+'，反馈人已收到通知',1);pgShort()}else T('❌ '+(j.msg||'失败'))}
+async function shResolve(id,pn){const way=prompt(`核销缺料零件 ${pn}\n\n请填写处理结果（如：已到货 3 框 / 采购中改约 / 需求已取消）：`,'');if(way===null)return;
+ const j=await api('/api/shortages/resolve',{method:'POST',body:{id,way:way.trim()}});
+ if(j.ok){T('✅ 已核销 '+pn+'，反馈人已收到通知',1);pgShort()}else T('❌ '+(j.msg||'失败'))}
 async function pgReqs(){const q=TM.q||'';
  $('#main').innerHTML=`<div class="card"><div class="row"><input id="rq" placeholder="搜单号/零件/人" value="${q}" style="flex:1;min-width:180px"><select id="rs"><option value="">全部状态</option>${Object.entries(ST).map(([k,v])=>`<option ${TM.s==k?'selected':''} value="${k}">${v[0]}</option>`).join('')}</select><button class="pill" onclick="TM.q=$('#rq').value;TM.s=$('#rs').value;pgReqs()">查询</button><button class="pill q" title="清空关键字/状态/过滤，回到全部" onclick="TM.q='';TM.s='';TM.mine=0;TM.rush=0;TM.late=0;pgReqs()">↺ 重置</button><button class="pill ${TM.mine?'':'q'}" title="只看与我相关的单" onclick="TM.mine=!TM.mine;pgReqs()">👤我的待办</button><button class="pill ${TM.rush?'':'q'}" title="只看急料" onclick="TM.rush=!TM.rush;pgReqs()">🔥急料</button><button class="pill ${TM.late?'':'q'}" title="待签收超30分" onclick="TM.late=!TM.late;pgReqs()">⏰超30分</button><button class="pill ${TM.view=='kanban'?'':'q'}" onclick="TM.view=TM.view=='kanban'?'list':'kanban';pgReqs()">${TM.view=='kanban'?'☰ 列表':'▦ 看板'}</button>${(U.features||{}).requisition?'<button class="pill g" onclick="newReqDlg()">＋ 新建领料单</button>':''}</div><div id="rlist">加载中…</div></div><div id="tplcard" style="margin-top:10px"></div>`;
  const j=await api('/api/requisitions');window._reqs=j.reqs||[];tplCardLoad();let rs=j.reqs||[];
@@ -525,7 +563,7 @@ function sTh(st,key,label,num,fn){const on=st.k==key;const arr=on?(st.d<0?'▼':
 function pgBar(st,total,fn){st=st||{pg:1,sz:100};const sz=st.sz||1e9;const pgs=Math.max(1,Math.ceil(total/sz));if(st.pg>pgs)st.pg=pgs;const a=(st.pg-1)*sz,b=Math.min(total,a+sz);return `<div class="row" style="align-items:center;gap:8px;margin-top:6px;font-size:12px;color:var(--sub)"><select style="padding:2px 6px;font-size:12px" onchange="${fn}Sz(this.value)">${[[50,'每页50行'],[100,'每页100行'],[200,'每页200行'],[0,'全部']].map(([v,n])=>`<option value="${v}" ${(sz>=1e9?v==0:v==sz)?'selected':''}>${n}</option>`).join('')}</select><button class="pill q" style="padding:2px 10px;font-size:11px" ${st.pg<=1?'disabled':''} onclick="${fn}Pg(-1)">‹ 上一页</button><b style="color:var(--ink)">${st.pg} / ${pgs}</b><span>共 ${total} 条${total?` · 显示 ${a+1}–${b}`:''}</span><button class="pill q" style="padding:2px 10px;font-size:11px" ${st.pg>=pgs?'disabled':''} onclick="${fn}Pg(1)">下一页 ›</button></div>`}
 function closeDrawer(){$('#drawer').classList.remove('dw-on');$('#drawer').classList.remove('dw-full');{const b=$('#dw_fs');if(b){b.textContent='⛶';b.title='全屏'}}const m=$('#dwmask');m.style.opacity='0';m.style.pointerEvents='none';window._msgOpen=0}
 // ===== ㉖⑯ 网页消息中心（PDA 创意功能搬来：分组+红点+精准直达，复用现成抽屉天然响应式）=====
-const NGRP=[['work','📋','派单与超时',['req_new','req_timeout','req_reassign'],'#515BD4'],['urge','⏰','催单',['req_urge'],'#E65100'],['flow','🚚','接单与进度',['req_accept','req_ready','req_ready_wh','req_done','req_confirm','req_reject','req_cancel','req_flow'],'#00897B'],['arrive','📥','到站与移库',['req_arrive','transfer_done'],'#FF8F00'],['car','⚠️','车辆告警',['car_alarm','wmas_auth'],'#D32F2F'],['insp','🔎','检验协助',['inspect'],'#7B1FA2'],['stock','📦','断料与预约',['stock_out','watch_in'],'#546E7A'],['audit','🧾','账实核对',['ghost_out'],'#B71C1C'],['other','🔔','其他与系统',['sys_err','night_digest'],'#9E9E9E']]; // ㉖v151 新增"账实核对"组：幽灵出库（MES已出库、本地无入库记录）独立归类，不与断料预警混在一起。㉖v173f sys_err(PDA异常上报，此前借道 car_alarm 被车辆告警红框置顶=分类错位)与 night_digest(夜间汇总，原落空组)收编入"其他与系统"
+const NGRP=[['work','📋','派单与超时',['req_new','req_timeout','req_reassign'],'#515BD4'],['urge','⏰','催单',['req_urge'],'#E65100'],['flow','🚚','接单与进度',['req_accept','req_ready','req_ready_wh','req_done','req_confirm','req_reject','req_cancel','req_flow'],'#00897B'],['arrive','📥','到站与移库',['req_arrive','transfer_done'],'#FF8F00'],['car','⚠️','车辆告警',['car_alarm','wmas_auth'],'#D32F2F'],['insp','🔎','检验协助',['inspect'],'#7B1FA2'],['stock','📦','断料与预约',['stock_out','watch_in','shortage','shortage_done'],'#546E7A'],['audit','🧾','账实核对',['ghost_out'],'#B71C1C'],['other','🔔','其他与系统',['sys_err','night_digest'],'#9E9E9E']]; // ㉖v151 新增"账实核对"组：幽灵出库（MES已出库、本地无入库记录）独立归类，不与断料预警混在一起。㉖v173f sys_err(PDA异常上报，此前借道 car_alarm 被车辆告警红框置顶=分类错位)与 night_digest(夜间汇总，原落空组)收编入"其他与系统"
 function ngrpOf(t){for(const g of NGRP)if(g[3].includes(t))return g[0];return 'other'}
 async function notifPoll(){try{const j=await api('/api/notifications/unread');const n=j.unread||0;const b=$('#nbdg');if(b){b.textContent=n>99?'99+':n;b.classList.toggle('hide',!n)}window._notifUnread=n;if(n&&window._msgOpen)openMsgs()}catch(_){}}
 function openReqById(id){(async()=>{try{if(!(window._reqs||[]).some(x=>x.id==id)){const j=await api('/api/requisitions');window._reqs=j.reqs||[]}reqDrawer(id)}catch(_){T('单据加载失败')}})()}
@@ -536,6 +574,8 @@ function notifRoute(n){closeDrawer();const id=n.reqId||'',ty=n.type||'';
  if(ty=='stock_out'){go('inv');return}
  if(ty=='ghost_out'){go('flow');TF={k:'out'};pgFlow();return} // ㉖v151 幽灵出库：点击直达出库流水页，配合消息里的标签号核对哪笔出库本地无账
  if(ty=='watch_in'){go('parts');return}
+ if(ty=='shortage'){_shSt='open';go('short');return} // ㉖v178 缺料反馈：直达处理页未处理列表
+ if(ty=='shortage_done'){_shSt='resolved';go('short');return} // 核销回执：直达已核销列表
  if(ty=='transfer_done'||ty=='req_arrive'||ty=='req_flow'){go('flow');return}
  T('该消息无关联详情')}
 async function openMsgs(){window._msgOpen=1;

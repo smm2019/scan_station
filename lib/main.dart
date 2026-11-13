@@ -58,6 +58,8 @@ part 'notify_service.dart'; // ⑭系统通知+语音播报
 part 'shortage_report_page.dart'; // ㉖v74 缺料反馈：一键生成生产部格式缺料单，分享微信
 part 'req_ledger_page.dart'; // ㉖v76 领料账本：时间窗消耗聚合/撑几天预警/一键续领/呆滞榜/报告分享
 part 'mitem_backfill_page.dart'; // ㉖v98c 物料号补录：扫标签查MES取MITEM_CODE上收，字典回补老标签导出列
+part 'shortage_entry.dart'; // ㉖v177 缺料入口：建单/库存/档案/模板四处一键反馈，自动带全厂真实缺口数（一期·服务端零改动）
+part 'watch_list_page.dart'; // ㉖v179 我的预约来料：物料员独立页（候选/列表全走服务器口径，与缺料反馈打通）
 
 /// 未读消息计数（30秒轮询累加，打开消息中心清零；领料页铃铛角标用）
 final ValueNotifier<int> kUnreadMsgs = ValueNotifier<int>(0);

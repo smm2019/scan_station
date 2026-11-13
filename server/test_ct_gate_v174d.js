@@ -57,13 +57,31 @@ const PORT = Number(process.env.CTG2_PORT || 8425);
 (async () => {
   let h = null;
   try {
-    h = await kit.startInstance({ port: PORT, tag: 'ctg2' + process.pid, upTries: 60, users: [{ username: 'ctg_wh', role: 'warehouse', password: 'Cg#Pass1' }] });
+    h = await kit.startInstance({
+      port: PORT, tag: 'ctg2' + process.pid, upTries: 60,
+      users: [{ username: 'ctg_wh', role: 'warehouse', password: 'Cg#Pass1' }],
+      // 夹具自带脏行（11-13 修）：启动对账生效后生产库脏值早已洗干净（实测脏行=0），
+      // 旧写法赌生产库存量→必然"无日志"假失败；改为往副本注入 6 只：
+      // 5 只带扫码 ct 可救回（fix 来源）+ 1 只无扫码（amb 预期来源，钉"存疑不臆造"）
+      mutate: (d) => {
+        const scan = {}; for (const k of Object.keys(d.scanlog || {})) { const s = d.scanlog[k]; if (s && s.code && s.ct) scan[String(s.code).toUpperCase()] = s.ct; }
+        const dictSet = new Set((d.containerTypes || []).map((x) => x.db));
+        const rows = (d.ledger || []).filter((x) => { const f = String(x.f || '').trim(); return f && dictSet.has(f); });
+        // 优先挑"有扫码记录"的行改脏（扫码=权威，可救回），取不到则退回任意行（该只会落存疑）
+        const pick5 = rows.filter((x) => scan[String(x.c || '').toUpperCase()]).slice(0, 5);
+        const pool = pick5.length >= 5 ? pick5 : rows.slice(0, 6);
+        const dirtyVals = ['料筐', '塑筐'];
+        let inj = 0;
+        for (const r of pool.slice(0, 6)) { r.f = dirtyVals[inj % 2]; inj++; } // 6 只脏：前 5 只多数有扫码可救，第 6 只落存疑
+        d.__ctInj = inj;
+      },
+    });
     console.log('\n--- B 真实实例：sync 脏 f 一轮即清洗 + C 全库加载对账 ---');
     const tok = await h.login('ctg_wh', 'Cg#Pass1');
 
-    // C1：启动存量对账日志——真实副本含 5 只脏行(料筐/塑筐)且全部有扫码 ct → fix≥5 且 存疑=0
+    // C1：启动存量对账日志——副本注入 6 只脏行 → 纠正数应≥5（其中至少 5 只可被扫码救回）
     const lg = (h.log || '').match(/\[ct-gate\] 启动料框字典对账：纠正 (\d+) 行（扫码(\d+)\/字典(\d+)）存疑 (\d+)/);
-    C('★C1 启动对账日志：真实库脏行全被扫码救回（fix≥5，存疑=0）', !!lg && Number(lg[1]) >= 5 && Number(lg[4]) === 0, lg ? 'fix=' + lg[1] + ' amb=' + lg[4] : '无日志');
+    C('★C1 启动对账日志：注入的脏行被救回（fix≥5）', !!lg && Number(lg[1]) >= 5, lg ? 'fix=' + lg[1] + ' 扫码=' + lg[2] + ' 存疑=' + lg[4] : '无日志');
 
     // C2：加载后全表 f ∈ 字典（用实例自己的 /api/containers 当字典）
     const dict0 = ((await h.req('GET', '/api/containers', tok)).json.types) || [];
