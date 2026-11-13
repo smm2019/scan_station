@@ -176,9 +176,14 @@ function localTs(d) { d = d || new Date(); const p = (n) => String(n).padStart(2
 // 一方 rename 会把另一方刚写好的同名临时文件"偷走"，后者 rename 即 ENOENT（2026-10-22 22:40~23:41 saveDb×30 事故根因；
 // 双实例本身已由 v69 幻影守卫拦截，本改动把文件级串扰整类消除）。失败换名重试一次（防杀软瞬时锁），仍败上抛由 _dirty 重试兜底。
 let _tmpSeq = 0;
+// ㉖v173e 退避表：总尝试次数 = 1 + 本表长度 = 4。原为「试 2 次、固定等 60ms」，
+//   11-13 10:41:53 实测 10MB 库文件 rename 撞 EPERM（杀软/Windows 索引器瞬时打开文件）时
+//   60ms×1 不够即放弃并记 sysErr；改为 60/200/600 递增退避（累计 860ms）覆盖常见扫描时长。
+//   同步版与异步版共用本表，语义保持逐字对齐。
+const _AW_WAITS = [60, 200, 600];
 function atomicWrite(target, data) {
   let lastErr = null;
-  for (let _try = 0; _try < 2; _try++) {
+  for (let _try = 0; _try <= _AW_WAITS.length; _try++) {
     const tmp = target + '.tmp-' + process.pid + '-' + (++_tmpSeq);
     try {
       fs.writeFileSync(tmp, data, 'utf8');
@@ -189,7 +194,8 @@ function atomicWrite(target, data) {
     } catch (e) {
       try { fs.unlinkSync(tmp); } catch (_) {} // 清掉本次半成品，不留孤儿
       lastErr = e;
-      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60); } catch (_) {} // 瞬时锁短等60ms后换名重试
+      // ㉖v173e 递增退避（不再固定 60ms），末次尝试失败后直接抛错不空等
+      if (_try < _AW_WAITS.length) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, _AW_WAITS[_try]); } catch (_) {} }
     }
   }
   throw lastErr;
@@ -199,7 +205,7 @@ function atomicWrite(target, data) {
 // 唯一临时名 + 失败换名重试语义与同步版逐字对齐；重试等待用 setTimeout 不阻塞。
 async function atomicWriteAsync(target, data) {
   let lastErr = null;
-  for (let _try = 0; _try < 2; _try++) {
+  for (let _try = 0; _try <= _AW_WAITS.length; _try++) { // ㉖v173e 与同步版同表同次数
     const tmp = target + '.tmp-' + process.pid + '-' + (++_tmpSeq);
     try {
       await fs.promises.writeFile(tmp, data, 'utf8');
@@ -210,7 +216,7 @@ async function atomicWriteAsync(target, data) {
     } catch (e) {
       try { await fs.promises.unlink(tmp); } catch (_) {}
       lastErr = e;
-      await new Promise((r) => setTimeout(r, 60));
+      if (_try < _AW_WAITS.length) await new Promise((r) => setTimeout(r, _AW_WAITS[_try])); // ㉖v173e 递增退避
     }
   }
   throw lastErr;
