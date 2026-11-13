@@ -98,9 +98,9 @@ const getj = async (p2, tk) => (await fetch(BASE + p2, { headers: tk ? { Authori
 
     const evBefore = await getj("/api/agv/events?limit=3000", tkW);
     const list0 = evBefore.events || evBefore.list || evBefore.items || [];
-    const cnt0 = list0.filter((e) => e.kind === "FIFO拦截").length;
+    const cnt0 = list0.filter((e) => e.kind === "FIFO拦截").length; // 基线：生产副本本就带历史拦截（v169 昨天才上线，今天已 5 条），"=0"假设过期（11-13 实测），改差值口径
     const cntViol0 = list0.filter((e) => e.kind === "FIFO违反").length; // 库内已有历史放行事件，"不被污染"须按差值判
-    C("护栏 触发前无 FIFO拦截 事件（证明稍后那条确为本次产生）", cnt0 === 0, "现有 " + cnt0);
+    C("护栏 记录触发前拦截基线（差值口径，环境无关）", true, "历史已有 " + cnt0 + " 条（含生产实况）");
     C("护栏 触发前已有 FIFO违反 历史条数（作污染比对基线）", true, cntViol0 + " 条");
 
     // ④ 扫那个框 → 期望被 400 拦下，且【不能 500】
@@ -114,7 +114,7 @@ const getj = async (p2, tk) => (await fetch(BASE + p2, { headers: tk ? { Authori
     const evAfter = await getj("/api/agv/events?limit=3000", tkW);
     const list1 = evAfter.events || evAfter.list || evAfter.items || [];
     const hit = list1.filter((e) => e.kind === "FIFO拦截" && String(e.msg || "").includes(bad.c));
-    C("★★ 事件流水已出现该条 FIFO拦截", hit.length >= 1, "命中 " + hit.length + " 条");
+    C("★★ 事件流水已出现该条 FIFO拦截（净增≥1 且含本次标签）", hit.length >= 1 && list1.filter((e) => e.kind === "FIFO拦截").length - cnt0 >= 1, "命中 " + hit.length + " 条，净增 " + (list1.filter((e) => e.kind === "FIFO拦截").length - cnt0));
     if (hit[0]) {
       console.log("   事件对象: kind=" + hit[0].kind + " who=" + hit[0].who + " msg=" + String(hit[0].msg).slice(0, 92));
       // 业务单号（LL…）而非内部 id（rq…）：现场按单号找单，事件里必须是 LL 号
@@ -122,11 +122,12 @@ const getj = async (p2, tk) => (await fetch(BASE + p2, { headers: tk ? { Authori
         String(hit[0].msg).includes(rNo) && String(hit[0].msg).includes(bad.c) && String(hit[0].msg).includes("FIFO仓管"),
         "单号命中=" + String(hit[0].msg).includes(rNo));
     }
-    // 反向验证"不污染"用差值：库里本来就有历史 FIFO违反 放行事件（现场 41 条），
-    // 断言总数为 0 是我的断言错；正确口径＝本次拦截不得新增一条『FIFO违反』。
-    C("★★ 放行类指标未被污染（本次拦截未新增 FIFO违反）",
-      list1.filter((e) => e.kind === "FIFO违反").length === cntViol0,
-      "前 " + cntViol0 + " → 后 " + list1.filter((e) => e.kind === "FIFO违反").length);
+    // 反向验证"拦截未变旁路"用标签绑定不变量：事件接口为派生视图（含账本合并类条目），
+    // 前后总数相等会因快照窗口漂移误报（11-13 实测 35→34）；正确命题＝被拦的这框绝没有
+    // 同时留下一条『FIFO违反』旁路记录（有=拦截形同虚设），与本单号绑定可精确判定。
+    C("★★ 放行类指标未被污染（本框无 FIFO违反 旁路记录=拦截未变旁路）",
+      !list1.some((e) => e.kind === "FIFO违反" && String(e.msg || "").includes(bad.c)),
+      "旁路记录=" + list1.filter((e) => e.kind === "FIFO违反" && String(e.msg || "").includes(bad.c)).length + " 条");
     C("★★ 该框未被误发（拦截仍然有效，只是多了一条记录）",
       !((await getj(`/api/requisitions/${rid}`, tkW).catch(() => ({}))) || {}).ok ||
       !(((await getj(`/api/requisitions/${rid}`, tkW)).req || {}).items || []).some((i) => (i.issued || []).some((e) => U(typeof e === "string" ? e : e.c) === U(bad.c))),

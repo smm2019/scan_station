@@ -496,6 +496,9 @@ class AuthApi {
       _req("POST", "/api/count/start", body: {if (pct > 0) "pct": pct, if (codes.isNotEmpty) "codes": codes, if (pickBatch.isNotEmpty) "pickBatch": pickBatch}, token: await AuthStore.token());
   static Future<Map> countScan(String id, String barcode, {int mesQty = -1}) async =>
       _req("POST", "/api/count/scan", body: {"id": id, "barcode": barcode, if (mesQty >= 0) "mesQty": mesQty}, token: await AuthStore.token());
+  /// ㉖v175 领料预占预览：items="pn:框数,pn:框数" → 每行"将发哪几筐/实数合计"（建单填框数即见实发，混框防均值失真）
+  static Future<Map> reqPreview(String items) async =>
+      _req("GET", "/api/req/preview?items=" + Uri.encodeComponent(items), token: await AuthStore.token());
   static Future<Map> countReturn(String id) async =>
       _req("POST", "/api/count/return", body: {"id": id}, token: await AuthStore.token());
   /// ㉖v141 人工拉取发车：待发车工单点「发车」才下发下架腿（sid 非空=整会话批量）

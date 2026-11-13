@@ -2689,7 +2689,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                   ? (noInfo > 0
                       ? "⚠ 账本有 $noInfo 框但缺物料信息，PDA「位置登记」批量补齐后可出建议"
                       : (afterScan
-                          ? "⚠ 已扫出 ${_fmtInvNum(got)} 件（所扫框已正常拣下账本），账本里该零件没有其他在架框了，还差 ${_fmtInvNum(need - got)} 件——实物若还没入账可走「应急登记」，或点「转单短装」/「无货跳过」收尾"
+                          ? "⚠ 已扫出 ${_fmtInvNum(got)} 件（所扫框已正常拣下账本），账本里该零件没有其他在架框了，还差 ${_fmtInvNum(need - got)} 件——实物未入账的框不能扫发（严格先进先出：只能扫本单建议框），请走「位置登记」入账或点「转单短装」/「无货跳过」收尾"
                           : "⚠ 同步账本中没有该零件的在架框（可能未同步或无货，可跳过）"))
                   : "⚠ 账本有 ${inStock + noInfo} 框但都缺件数信息，建议先补齐",
               style: const TextStyle(fontSize: 11, color: Colors.deepOrange)),

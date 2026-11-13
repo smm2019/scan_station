@@ -6659,7 +6659,7 @@ return send(res, 200, {
         if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'sys_err', '🛠 PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常 ｜ ' + clean.map((x) => String(x.d || x.e || '')).join(' ; ').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 560)); } // ㉖v173f 类型 car_alarm→sys_err：诊断上报不是车辆告警，此前借道 car_alarm 被网页"未处理车辆告警"红框置顶（11-13 用户截图实证分类错位），现归"其他与系统"组；㉖v173g 详情带上异常内容摘要（原只记条数，"流水里看不到消息内容"）
         return send(res, 200, { ok: true, count: clean.length });
       }
-      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/req-templates' || p.startsWith('/api/req-templates/') || p === '/api/notifications' || p.startsWith('/api/notifications/')) { // ㉖v62 模板路由并入领料块（此前落入管理员闸门）
+      if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/req-templates' || p.startsWith('/api/req-templates/') || p === '/api/notifications' || p.startsWith('/api/notifications/') || p === '/api/req/preview') { // ㉖v62 模板路由并入领料块（此前落入管理员闸门）；㉖v175 预占预览并入本块（不列则落 requireAdmin，物料员无法预览）
         const canReq = (db.features[u.role] || {}).requisition === true;
         const canRcv = (db.features[u.role] || {}).receive_confirm === true;
         const isWh = u.role === 'warehouse' || u.role === 'admin';
@@ -6800,6 +6800,36 @@ return send(res, 200, {
           const t = db.reqTemplates.find(x => x.id === p.split('/')[3]);
           if (t) { t.use = (t.use || 0) + 1; save(); }
           return send(res, 200, { ok: true });
+        }
+        // ===== ㉖v175 领料预占预览：建单填【框数】→ 告知"将发哪几筐、实数合计"（两端共用）=====
+        // 动因（用户实锤）：建单换算件数=框数×perBoxQty(在架均值)——混框零件（同零件 100 件框与
+        //   1000 件框并存，均值 550）下"要1框"被记成 550 件，FIFO 够不了便连发 2 筐（意图被均值
+        //   吃掉），签收对账与实发脱节。修法=把发料选框提前到建单时刻跑：预览不复制算法，直接
+        //   复用 pickSuggest——need 传天文数（1e12）令"够数即停"永不触发，贪心纯按 FIFO 顺序走完
+        //   （仅受 v138 建议封顶约束），取前 N 框＝「按 FIFO 取 N 框」的真实预演；同 FIFO 同末段修剪
+        //   同封顶，零新算法=零口径漂移。★不可传 框数×封顶数：那样首框一旦够这个件数就提前 break，
+        //   要 2 框却只回 1 框（11-13 自查实锤：首框 100 件 ≥ 2×24=48 即停）。
+        // 边界如实：预览是"预计"不锁框不冻结（他人可能先扫走，备料端自会重算）；零在架/无框可
+        //   预占 → fallback 均值折算（保持现行可下单语义）。登录即可（建单页=物料员），只读不写。
+        if (req.method === 'GET' && p === '/api/req/preview') {
+          const capN = Math.max(4, Number(P().pickMaxBoxes) || 24);
+          const raw = String(url.searchParams.get('items') || '').slice(0, 2000);
+          const rows = raw.split(/[,;]+/).map((seg) => { const [pn, bx] = seg.split(':'); return { pn: String(pn || '').trim().toUpperCase(), boxes: Math.min(50, Math.max(0, Math.round(Number(bx) || 0))) }; }).filter((x) => x.pn && x.boxes > 0).slice(0, 20);
+          if (!rows.length) return send(res, 200, { ok: true, rows: [] });
+          // 均值（与字典下发同口径）：fallback 与"零在架仍可下单"的现行语义都靠它
+          const _avg = {}; for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); if (!pn) continue; const g = _avg[pn] || (_avg[pn] = { s: new Set(), q: 0 }); g.s.add(boxKeyOf(x)); g.q += Number(x.q) || 0; }
+          const out = [];
+          for (const row of rows) {
+            const per = (() => { const g = _avg[row.pn]; return g && g.s.size ? Math.round(g.q / g.s.size * 10) / 10 : 0; })();
+            const sg = pickSuggest(row.pn, 1e12, undefined, undefined, undefined); // 天文需求→够数即停失效，纯 FIFO 顺序（受封顶）
+            const avail = (sg.boxes || []);
+            const picked = avail.slice(0, row.boxes);
+            if (!picked.length) { out.push({ pn: row.pn, boxesReq: row.boxes, mode: 'fallback', perBox: per, estQty: Math.round(row.boxes * (per || 1)), boxes: [], note: per > 0 ? '暂无在架可预占，按档案均值折算（入库后发料端自动按实际筐）' : '该零件无在架且无档案均值，按原值计' }); continue; }
+            const total = Math.round(picked.reduce((s, b) => s + (Number(b.q) || 0), 0) * 100) / 100;
+            const capped = avail.length >= capN && row.boxes > capN; // 不足框数的两种因由要分开说，绝不把"封顶"报成"缺货"
+            out.push({ pn: row.pn, boxesReq: row.boxes, mode: 'real', perBox: per, estQty: total, pickedN: picked.length, shortN: Math.max(0, row.boxes - picked.length), capped, availN: Math.min(avail.length, capN), boxes: picked.map((b) => ({ c: b.codes[0], l: b.l, b: b.b, q: Math.round((Number(b.q) || 0) * 100) / 100, cs: b.codes.length })) });
+          }
+          return send(res, 200, { ok: true, rows: out });
         }
         // 下单（可选 assigneeId 指定仓管员：通知只推指定人，30分钟未接自动放开给全员）
         if (req.method === 'POST' && p === '/api/requisitions') {
@@ -7118,7 +7148,7 @@ return send(res, 200, {
                   return send(res, 400, { ok: false, code: 'over-confirm', msg: `行 ${target.partNo} 已发齐（${issuedQty(target)}/${target.qty} 件），标签 ${code} 属超发——确认连这框一起发请再扫一次（端上弹确认）；不想要就留待下次领用` });
                 } else {
                   const _onLed = (db.ledger || []).some((x) => String(x.c || '').toUpperCase() === code.toUpperCase());
-                  return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已发齐（${issuedQty(target)}/${target.qty} 件），标签 ${code} ${_onLed ? '不在本行取货建议框内（未建议的在架框留待下次领用；确需连它一起发走「应急登记」）' : '不在该零件在架清单内'}，拒绝录入` });
+                  return send(res, 400, { ok: false, msg: `行 ${target.partNo} 已发齐（${issuedQty(target)}/${target.qty} 件），标签 ${code} ${_onLed ? '不在本行取货建议框内（严格先进先出：只能扫本单建议框，未建议的在架框留待下次领用；实物未入账请先走「位置登记」入账）' : '不在该零件在架清单内'}，拒绝录入` });
                 }
               }
               if (!_overPass && _allow.size && !_allow.has(code.toUpperCase())) {
@@ -7145,12 +7175,12 @@ return send(res, 200, {
                   // 事件页类型下拉是 all0.map(kind) 动态生成，新类型自动出现在筛选项里。
                   pushEvent('FIFO拦截', String(target.partNo || ''), `领料单 ${r.no} 扫入标签 ${code}${_scanLot ? '（批' + _scanLot + '）' : ''} 被严格FIFO拦下：${_isLater ? '晚批次，应拣' + _oldestLot : '不在本单接单锁定建议框'}（${u.name}）`);
                   save(); // 留痕立即落盘：旧写法只改内存，靠无关周期存盘才落库，重启即丢审计痕迹
-                  return send(res, 400, { ok: false, msg: `标签 ${code} 不在本单建议框内（严格FIFO：只能扫接单时锁定的建议框）${_hint}。若账本与实际不符，请先核对货位账本，或走「应急登记」并注明原因` });
+                  return send(res, 400, { ok: false, msg: `标签 ${code} 不在本单建议框内（严格FIFO：只能扫接单时锁定的建议框）${_hint}。请先核对货位账本：该框未登记/已出库则按实物到「位置登记」入账，下轮按建议框扫码即可` });
                 }
               }
               if (!_allow.size) { // 建议为空（该行已发齐或账本无在架框）：不做拦截，交给既有"已发齐/转单锁定"等闸处理
                 const _cp = _sg.calledPending || [];
-                if (!_cp.length && _need > 0) return send(res, 400, { ok: false, msg: `零件 ${target.partNo} 账本无在架可拣框，取货建议为空——请先核对货位账本（该框可能未登记或已出库），或用「应急登记」` });
+                if (!_cp.length && _need > 0) return send(res, 400, { ok: false, msg: `零件 ${target.partNo} 账本无在架可拣框，取货建议为空——请先核对货位账本（该框可能未登记或已出库，登记入账后即可按建议扫码）；确属账本与实物不符再走「应急登记」并注明原因（严格FIFO：不在建议框内禁止扫发）` });
               }
             } else if (P().strictFifo === 1 && b.emergency === true) {
               hpush(`⚠️ 严格FIFO应急旁路：框 ${code}（${u.name}${String(b.why || '').trim() ? '：' + String(b.why || '').trim() : ''}）`);
