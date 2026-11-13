@@ -327,7 +327,8 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         "批次号：${it.lotC.text}",
         "物料号：${it.partNo}",
         "物料名称：${it.itemName}",
-        "全厂在库：${it.inBoxes} 框 · ${_fmtInvNum(it.inStockQty)} 件", // ㉖v179 群内判断轻重的主依据
+        // ㉖v179b 删除"全厂在库：N框·N件"一行（用户实锤没用）：该数值已被下面"异常描述"
+        // 完整包含（欠料类描述本身写"全厂在库仅X件，低于待领需求"），两行说的是同一件事。
         if (it.needQty > 0) "待领需求：${_fmtInvNum(it.needQty)} 件${it.needFrom.isNotEmpty ? "（${it.needFrom}）" : ""}",
         ...(_lastLine(it).isEmpty ? const <String>[] : [_lastLine(it)]), // ㉖v179 可自定义开关；空则整行不出现
         "异常描述：${it.descC.text}",
@@ -357,9 +358,14 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         a = TextEditingController(text: _at),
         l = TextEditingController(text: _lowLine > 0 ? _fmtInvNum(_lowLine) : ""),
         pj = TextEditingController(text: _projects.join("、")); // ㉖v75 项目自定义（顿号/逗号分隔，物料名包含即命中）
+    // ㉖v179b 开关值必须是弹窗自己的局部状态：showDialog 的内容属独立路由，
+    // 外层 State 的 setState 刷不到它——原先直接写 value:_showLast + setState，
+    // 表现为"点了没反应"（值其实改了，但开关外观不跳，用户以为没生效）。
+    bool sl = _showLast;
     final ok = await showDialog<bool>(
         context: context,
-        builder: (ctx) => AlertDialog(
+        builder: (ctx) => StatefulBuilder(
+            builder: (bctx, setDlg) => AlertDialog(
             title: const Text("缺料单默认字段（记住，下次自动带出）"),
             content: SizedBox(
                 width: 340,
@@ -377,15 +383,15 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                   SwitchListTile(
                       contentPadding: EdgeInsets.zero,
                       dense: true,
-                      value: _showLast,
-                      onChanged: (v) => setState(() => _showLast = v),
+                      value: sl,
+                      onChanged: (v) => setDlg(() => sl = v),
                       title: const Text("显示末次领用（日期+数量）", style: TextStyle(fontSize: 13)),
                       subtitle: Text("全厂口径（含同事领的），按${_shortLastWindow}天窗口；窗口内无人领过会如实标注", style: const TextStyle(fontSize: 10.5))),
                 ]))),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
               FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("保存")),
-            ]));
+            ])));
     if (ok == true && mounted) {
       setState(() {
         _unit = u.text.trim().isEmpty ? _unit : u.text.trim();
@@ -393,6 +399,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         _conf = c.text.trim().isEmpty ? _conf : c.text.trim();
         _at = a.text.trim().isEmpty ? _at : a.text.trim();
         _lowLine = double.tryParse(l.text.trim()) ?? 0;
+        _showLast = sl; // ㉖v179b 采纳弹窗内的开关值
         final np = pj.text
             .split(RegExp(r"[、,，;；\s]+"))
             .map((e) => e.trim())
