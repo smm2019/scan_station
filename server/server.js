@@ -595,6 +595,21 @@ function apiStatMark(p, ms) {
 function apiStatTop() { // 近段最慢 TOP8（按 p95）
   return Object.entries(_apiStat).map(([k, s]) => { const r = s.ring.slice().sort((a, b) => a - b); return { p: k, n: s.n, max: s.max, p95: r.length ? r[Math.min(r.length - 1, Math.floor(r.length * 0.95))] : 0, avg: r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : 0 }; }).sort((a, b) => b.p95 - a.p95).slice(0, 8);
 }
+// ㉖v174e 慢接口按"病根归属"分组（用户实问"都慢成这样健康分怎么还100"定案）：
+//   旧版整行 items.push 纯观测不扣分——外部接口慢（rcs/wmas/carry…耗时含对方系统，不是本服务
+//   的病，外部真断有 RCS/WMAS 通道项各扣15分兜着）和本地接口慢（ledger/sync 等=真信号）混在一行，
+//   谁都不扣分 → "100分+需关注"低估。拆两组：ext 保持观测；local 进健康分真扣分。
+//   ★判定基于全路径而非 apiStatTop 的 TOP8——8 个外部慢会把本地慢挤出榜单，扣分口径不能被截断吞。
+const API_EXT_RE = /(?:^|\/)(rcs|wmas|wms|carry|agv)(?:\/|$)/i; // 含外部系统调用的路径段（整段匹配防误伤 /api/average 之类）
+function apiIsExt(p) { return API_EXT_RE.test(String(p || '')); }
+function apiStatSplit(minP95) { // → {ext:[], local:[]}，各自按 p95 降序；仅收 p95≥minP95（默认300ms，与面板展示线一致）
+  minP95 = Number(minP95) || 300;
+  const all = Object.entries(_apiStat).map(([k, s]) => { const r = s.ring.slice().sort((a, b) => a - b); return { p: k, n: s.n, max: s.max, p95: r.length ? r[Math.min(r.length - 1, Math.floor(r.length * 0.95))] : 0, avg: r.length ? Math.round(r.reduce((a, b) => a + b, 0) / r.length) : 0 }; }).filter((x) => x.p95 >= minP95);
+  const ext = [], local = [];
+  for (const x of all) (apiIsExt(x.p) ? ext : local).push(x);
+  ext.sort((a, b) => b.p95 - a.p95); local.sort((a, b) => b.p95 - a.p95);
+  return { ext, local };
+}
 function _serializeDb(db) { // 加密暂换→序列化→还原（主线程同步，异步/同步两路共用；34ms 地板，不可省）
   const _sv = [];
   try { walkSec(db, (o, k) => { const e = encSec(o[k]); if (e !== o[k]) { _sv.push([o, k, o[k]]); o[k] = e; } }); } catch (_) {}
@@ -7618,9 +7633,16 @@ return send(res, 200, {
         // 判定按阻塞口径——磁盘被抢只推高总耗时（正常，请求不受累），阻塞>500ms 才是真卡；同步模式阻塞=总耗时，行为与旧版一致。
         cut(15, '落盘写耗时', (_saveStat.n ? '近' + _saveStat.ring.length + '次 总max' + _saveStat.max + '/avg' + _saveStat.avg + 'ms · 主线程阻塞max' + _saveStat.blockMax + '/avg' + _saveStat.blockAvg + 'ms' + (P().asyncSave ? '（异步）' : '（同步）') + '（阻塞触发线500）' : '尚无写入'), _saveStat.blockMax <= 500, '主线程阻塞>500ms=请求被落盘拖住→①确认「异步落盘」开关（存储引擎组，1=磁盘等待不占主线程）②Windows Defender 把 data 目录与 node.exe 加排除项 ③确认 SSD 非 SMR；总耗时高但阻塞低=异步正常工作，磁盘慢只影响落盘快慢不卡服务');
         // ㉖v98 卡顿量化两探针：事件循环延迟（>200ms=主线程被同步任务堵住，用户体感"卡"）+ 慢接口TOP
-        cut(15, '事件循环延迟', '当前' + _lag.cur + 'ms/峰值' + _lag.max + 'ms/超时' + _lag.over + '次（>200ms算卡）', _lag.max <= 1000, '峰值>1秒=主线程曾被同步操作吊住（落盘/大扫描）→对照「落盘写耗时」与「慢接口TOP」时间点；偶发单次多为磁盘被抢，持续出现才需改造；超时次数为开机累计不清零');
-        const _top = apiStatTop().filter((x) => x.p95 >= 300);
-        if (_top.length) { const _slowBad = !_top.every((x) => x.p95 < 2000); items.push({ name: '慢接口TOP', val: _top.slice(0, 4).map((x) => x.p + ' p95=' + x.p95 + 'ms×' + x.n).join('；'), ok: !_slowBad, fix: _slowBad ? 'p95>2秒的接口→含 rcs/carry/wmas=外部系统慢（看 RCS/WMAS 通道项）；纯本地接口(ledger/sync等)慢=主线程被堵（看事件循环延迟+落盘耗时）；下载「诊断快照」发维护人定位最快' : '' }); }
+        cut(15, '事件循环延迟', '当前' + _lag.cur + 'ms/峰值' + _lag.max + 'ms/超时' + _lag.over + '次（>200ms算卡）', _lag.max <= 1000, '峰值>1秒=主线程曾被同步操作吊住（落盘/大扫描）→对照「落盘写耗时」与「慢接口·本服务」时间点；偶发单次多为磁盘被抢，持续出现才需改造；超时次数为开机累计不清零');
+        // ㉖v174e 慢接口拆两组定性（用户实问"都慢成这样健康分怎么还100"）：外部依赖慢=纯观测
+        // （扣分由 RCS/WMAS 通道项兜底，避免分数被对方系统抖动扭曲）；本服务接口慢=真扣分。
+        // 持续判定=样本≥5 且 p95≥2s：刚开机/单发冷缓存慢一下不冤枉（面板仍如实展示）。
+        const _sp = apiStatSplit(300);
+        if (_sp.ext.length) items.push({ name: '慢接口·外部依赖(观测)', val: _sp.ext.slice(0, 4).map((x) => x.p + ' p95=' + x.p95 + 'ms×' + x.n).join('；') + (_sp.ext.length > 4 ? '…共' + _sp.ext.length + '个' : ''), ok: true, fix: '耗时含 rcs/wmas/carry 等对方系统响应，本项只观测不扣分；对方真不通由「RCS/WMAS 通道」项扣分报警' });
+        {
+          const _bad = _sp.local.filter((x) => x.n >= 5 && x.p95 >= 2000);
+          cut(8, '慢接口·本服务', _sp.local.length ? _sp.local.slice(0, 4).map((x) => x.p + ' p95=' + x.p95 + 'ms×' + x.n + (_bad.includes(x) ? '⚠' : '')).join('；') + (_sp.local.length > 4 ? '…共' + _sp.local.length + '个' : '') : '无(≥300ms)', _bad.length === 0, 'p95≥2s 且样本≥5=本服务接口持续慢→先看同页「事件循环延迟」「落盘写耗时」是否同期红（被堵/被拖），都绿则多为接口自身体量（如 ledger/sync 全量拉取），下载「诊断快照」发维护人定位');
+        }
         // ㉖v56 断电纵深防御健康项：主文件完好性/安全副本新鲜度/自动恢复次数
         const mainChk = dbIntact(DB_FILE);
         cut(20, '主数据完好', mainChk.ok ? '校验通过' : ('异常：' + mainChk.reason), mainChk.ok, '主库损坏=最高优先级！①不要重启（重启会覆盖现场）②立即把 data 目录整体复制一份到别处留证 ③从 data\\backups 最新快照恢复：停服务→删坏 db.json→复制最新备份改名 db.json→起服务；拿不准就下载诊断快照联系维护人');
