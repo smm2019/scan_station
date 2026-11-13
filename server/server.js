@@ -1400,7 +1400,11 @@ function invariantSweep() {
       const pids = [...new Set(rows.map((r) => up(r.pid || '')))];
       const realPids = pids.filter((p) => p); // 非空托号
       if (realPids.length >= 2) locClash.push({ l, codes: rows.map((r) => r.c), pids: realPids });
-      else if (pids.includes('')) { try { pushOps(null, '格位托号缺失', rows.map((r) => r.c).join('/').slice(0, 60), '货位 ' + l + ' 有 ' + rows.length + ' 行且存在托号缺失，无法判定是否同托共用一格（导入数据常见），仅留痕不点名'); } catch (_) { } }
+      // ㉖v173d 此条原为【每 5 分钟无条件留痕】，11-13 现场反馈"操作人和设备都看不到"：
+      //   它 2.5 小时刷出 31 条（占当天全部留痕 18%），且后台自检无登录上下文→操作人恒为"-"、
+      //   设备/IP 恒空，把真正的人工操作记录挤出首屏。补 7 天去重（与本函数另两条同口径），
+      //   act 加"库存自检-"前缀便于筛除，文案给出可执行处置。
+      else if (pids.includes('') && isFresh('pidmiss:' + l)) { try { pushOps(null, '库存自检-托号缺失', rows.map((r) => r.c).join('/').slice(0, 60), '格位 ' + l + ' 有 ' + rows.length + ' 行且托号为空，无法判定是同托共用一格（WPS 导入常见）还是真撞托。系统自检留痕，7 天内同一格位不重复记录；如需消除本条：到「位置登记」按实物给该格补托号，或确认属导入遗留可忽略。'); } catch (_) { } }
     }
     // ===== 不变量③：账本在架 vs MES 出库（幽灵框=出库未消账）=====
     // 仅在"出库即消本地账"开启时判：关掉时出库本就不消账，全部出库框都会命中=纯误报。

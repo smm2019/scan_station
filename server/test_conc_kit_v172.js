@@ -64,6 +64,7 @@ async function startInstance(opts = {}) {
   //   访问 d.features[role] 崩溃(11-13 实测)。代价：空库只有 admin 一个身份，需多身份的夹具
   //   selftest/effect 用例须在无生产库时自行 SKIP（见各文件顶部判断），CI 里与其余依赖库测试同类。
   let log = '';
+  const t0 = Date.now(); // 就绪检测基线：用于识别"应答来自残留旧实例"而非本次新进程
   const child = cp.spawn(process.execPath, [path.join(HERE, 'server.js')], { cwd: HERE, env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: tdir }, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
   const cap = (d) => { log += d; if (log.length > 4e6) log = log.slice(-2e6); };
   child.stdout.on('data', cap); child.stderr.on('data', cap);
@@ -71,7 +72,21 @@ async function startInstance(opts = {}) {
   let up = false; const tries = opts.upTries || 60;
   for (let i = 0; i < tries && !up; i++) {
     await sleep(300);
-    try { up = (await fetch(base + '/api/health')).ok; } catch (_) {}
+    // ★不能只判 fetch().ok：端口若被上一次崩溃残留的 server 占着，应答照样 200，夹具会误认
+    //   "本次实例已就绪"，随后用例连的其实是那个【没有本次注入数据】的旧实例 →
+    //   表现为"哨兵/断言没检出"的假失败（11-13 实测：默认端口 8419 被调试残留实例占用，
+    //   test_invariant_sweep 连挂 4 条，换端口立刻 26/26）。
+    //   新实例的 health.code.startedAt 必然晚于本次 spawn 前时刻，旧残留实例更早 → 据此识别。
+    try {
+      const rr = await fetch(base + '/api/health');
+      if (rr.ok) {
+        const j = await rr.json().catch(() => ({}));
+        const st = j && j.code && Date.parse(j.code.startedAt || '');
+        if (!Number.isFinite(st)) up = true; // 服务端无 code 指纹（老版本），退回旧行为
+        else if (st >= t0 - 5000) up = true; // 是本次新起的
+        else { log += '\n[KIT] 端口 ' + port + ' 被残留实例占用（startedAt 早于本次启动），等待其退出…'; }
+      }
+    } catch (_) {}
     if (child.exitCode !== null && child.exitCode !== undefined) break;
   }
   if (!up) { // ★防假绿：起不来绝不返回半残 handle 让调用方"继续跑判通过"

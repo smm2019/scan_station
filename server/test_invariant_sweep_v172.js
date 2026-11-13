@@ -117,6 +117,13 @@ const PORT = Number(process.env.INV_PORT || 8419); // 独立默认端口，env �
       users: [{ username: 'inv_wh', role: 'warehouse', password: 'Kit#Pass1' }],
       params: { invariantAlertOn: 1, outConsumeLedger: 1 },
       mutate: (dbC) => { // 起实例前注入撞位 + 幽灵框（夹具钩子，免"改库→stop→重启"）
+        // ★必须清掉生产库副本里的 lastInvariantCheck：它是【生产服务器上一轮自检】的结果
+        //   （locClash/ghost 都是生产的真实计数，与本实例注入的数据无关）。不清则本测试
+        //   轮询 health.invariant 会先读到这份旧快照——旧值 ageSec 恰 <120 时立刻 break，
+        //   读到 locClash=0/ghost=0（生产计数）→ 判"哨兵没检出"，表现为随机失败
+        //   （随生产自检 5 分钟周期与测试启动时刻的相位而时好时坏，11-13 实测同端口时挂时过）。
+        delete dbC.lastInvariantCheck;
+        dbC.invariantAlert = {}; // 同理：生产的通知去重集会让本实例预置的撞位被判"7天内已报过"而不发通知
         dbC.ledger = dbC.ledger || [];
         dbC.ledger.push({ c: "INVGHO0001", l: "NB02-A-88-1F", q: 10, pid: "INVPA", p: "66TEST", t: Date.now() - 864000000 });
         dbC.ledger.push({ c: "INVCL10001", l: "NB02-A-87-1F", q: 5, pid: "INVPX", p: "66TEST", t: Date.now() - 864000000 });
