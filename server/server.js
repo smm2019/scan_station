@@ -1285,6 +1285,54 @@ function coarseSweep() {
 }
 setTimeout(coarseSweep, 10000).unref(); // 启动后 10 秒先跑一轮：现场重启即发现滞留框，不必等满 5 分钟
 setInterval(coarseSweep, 5 * 60 * 1000).unref();
+// ---- ㉖v173f 完整格位流水持续未上账告警（11-13 两起现场问题合成一条判据）----
+// 事故A（v93 老 PDA）：10:20:07 扫入带完整格位 → 账本卡"世代对齐"关卡 5 分 41 秒才推达，
+//   期间网页流水页一直橙标"未上账"，全靠人盯网页碰见（用户原话："靠肉眼盯网页才发现"）。
+// 事故B（粗码告警的反面）：粗码有常驻巡检，完整格位反而没有——v154 快照竞态、v168 盲窗这类
+//   "扫了但账本永远推不上去"的框，只有等下一次人工发现。
+// 判据四条同时成立才报（对照真实全库 11-13 核对：排除墓碑后现状 0 命中，上线第一天零误报）：
+//   ① 流水 gl 已是 NB02/NB03 完整格位（排除 NB04 来料区——账本无该区，判它必误报）
+//   ② 流水年龄 ≥ fullAlertAgeMin（默认 2 分钟；正常链=扫码即写流水→账本 ≤30 秒防抖推达，
+//      2 分钟已含 4 倍余量；不等更长是因为 v154 型缺陷拖 3~6 分钟就会被现场看见）
+//   ③ 账本无此框  ④ 无出库留痕 seenOut 且 无墓碑 ledgerTomb
+//      （★墓碑必须有：实测现状 2 个候选框 N26J310085/N26J310080 全是"已正常拣下架"，
+//       不排除则上线即对 2 个正常流转框发假告警——墓碑=本机/PDA 已消位的合法痕迹）
+// 与粗码巡检同骨架：每 5 分钟全库兜底 + 同码 7 天去重落库 + ops 留痕 + ghost_out solo 点名。
+function fullFlowAlert() {
+  try {
+    if (!Number(P().fullAlertOn)) return;
+    const ageMin = Math.max(1, Number(P().fullAlertAgeMin) || 2);
+    const nowMs = Date.now();
+    const FULL = /^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$/; // 刻意不含 NB04：来料区登记本就不进账本
+    const onLed = new Set((db.ledger || []).map((x) => String(x.c || '').toUpperCase()));
+    const so = db.seenOut || {};
+    const tomb = new Set((db.ledgerTomb || []).map((x) => String(x.c || '').toUpperCase()));
+    const byCode = new Map(); // 同码多条流水取最老计龄（反复扫=滞留最久才是真相）
+    for (const v of Object.values(db.scanlog || {})) {
+      if (!v || v.cx) continue;
+      const c = String(v.code || '').trim().toUpperCase(), g = String(v.gl || '').trim().toUpperCase();
+      if (!c || !FULL.test(g)) continue;
+      if (onLed.has(c) || so[c] || tomb.has(c)) continue;
+      const t = Number(v.t) || 0; if (!t || nowMs - t < ageMin * 60000) continue;
+      const prev = byCode.get(c);
+      if (!prev || t < prev.t) byCode.set(c, { c, g, op: String(v.op || ''), t });
+    }
+    const hits = [...byCode.values()];
+    if (!hits.length) return;
+    const seen = (db.fullAlert = db.fullAlert || {});
+    const fresh = hits.filter((h) => { if (nowMs - (Number(seen[h.c]) || 0) < 7 * 864e5) return false; seen[h.c] = nowMs; return true; });
+    if (!fresh.length) { save(); return; } // 老问题不重复吵，去重标记仍落盘
+    const lst = fresh.slice(0, 6).map((h) => h.c + '@' + h.g + '（滞留 ' + Math.round((nowMs - h.t) / 60000) + ' 分钟' + (h.op ? '·' + h.op : '') + '）').join('、');
+    try { pushOps(null, '格位未上账', fresh.slice(0, 10).map((h) => h.c).join('/'), fresh.length + ' 框流水已带完整格位但持续未进账本（判龄 ' + ageMin + ' 分钟）——PDA 账本推送可能卡死（世代/断网/旧版本缺陷），请让该设备打开库存页触发一次同步，或到「位置登记」重扫该框：' + lst); } catch (_) { }
+    const _who = (db.users || []).filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled);
+    _who.forEach((x) => { try { notify(x.id, 'ghost_out', '📥 未上账滞留：' + fresh.length + ' 框扫码时货位是完整格位，但超过 ' + ageMin + ' 分钟仍未进账本（' + lst + '）——多半是该台 PDA 账本没推上来：让它在库存页下拉触发同步；仍不行就重扫补登', '', { solo: true }); } catch (_) { } });
+    console.log(`[full-alert] ⚠ 完整格位持续未上账 ${fresh.length} 框: ${fresh.map((h) => h.c + '@' + h.g).slice(0, 6).join(' ')}`);
+    save(); // 去重标记必须落盘（同 coarseSweep 教训：notify 不含 save，不补则重启后重轰）
+  } catch (e) { console.log('[full-alert] 失败：', e.message); logErr('fullFlowAlert', e); }
+}
+function fullSweep() { try { fullFlowAlert(); } catch (_) { } }
+setTimeout(fullSweep, 13000).unref(); // 与 coarse(10s)/invariant(14s) 错开 tick，启动三个全库扫不同时挤盘
+setInterval(fullSweep, 5 * 60 * 1000).unref();
 // ---- ㉖v152 同标签重复有效流水告警 ----
 // ⚠️v166 判据重构（现场消息中心被这类告警刷屏：一次 20+ 条，且用 ghost_out=必达+绕个人退订+夜间不静默）
 // 排查结论：【这不是重复采集的 bug，是判据选错了信号——它把"框被挪过位置/重新采集"当异常报】。
@@ -2002,6 +2050,8 @@ const PARAMS = {
   lostCallAlertM: { grp: '告警阈值', name: '入库丢单巡检', unit: '分钟', min: 0, max: 240, d: 15, tip: '㉖v152 账本 mv=AGV 已记"在架"、但入账超此分钟数仍查无叫车队列记录且无对应 AGV 任务（目标货位=该行货位、接令晚于入账）→ 判定"账称在架、车未叫"丢单，必达点名全体仓管回站台核对实物（11-11 N26K100170/N26K110142：扫码入账后叫车请求未达服务器，货在台上压了半小时无人知）。0=关闭。每标签7天只提醒一次；只查入账后2小时~28天，避开30天任务底仓边界的假阳性' },
   coarseAlertOn:  { grp: '告警阈值', name: '粗码未上账告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 地面模式采集流水货位仅为区排粗码（如 F4/H9，非 NB03-B-13-07 完整格位）→ v100 格式闸本就拒其上账，但流水会静默滞留（累计25框"未上账"全靠网页流水页偶然发现）；本开关=1 时 ops 留痕+必达点名"请到位置登记补完整格位"，同码同排去重。⚠️v165 流水初值天然是粗码（地面选区即写流水，格位等自动分配后回填、账本再走 30 秒防抖推送），故粗码绝大多数是【会自愈的中间态】——判龄阈值见「粗码滞留告警判龄」' },
   coarseAlertAgeMin: { grp: '告警阈值', name: '粗码滞留告警判龄', unit: '分钟', min: 1, max: 1440, d: 5, tip: '㉖v165 粗码流水存在【正常中间态】：14:43:14 扫入即写 gl=区码（H9）→ 自动分格回填完整格位 → 账本经 30 秒防抖才推达；旧版 sync 当场判定"账本无此码即告警"，正好扫在这个窗口里（11-12 实测一天误报 7 次，含 N26K120113→H9，该框 14:45:31 被告警、随后自行上账 H-09-03）。全库 28 条粗码流水【28/28 全部自愈】，证实粗码即中间态。新口径：流水年龄 ≥ 本值【且】账本无此框【且】无出库留痕（已出库=当时已补全格位并发走，非滞留）才告警；由每 5 分钟周期兜底扫描发现（现场扫完就放弃、不再重扫的框也能报出来，不会漏）' },
+  fullAlertOn:    { grp: '告警阈值', name: '格位未上账告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v173f 流水已带 NB02/NB03 完整格位但持续未进账本（账本无+无出库留痕+无墓碑）→ ops 留痕+必达点名仓管"让该设备触发同步或重扫补登"。动因：v93 世代卡死拖 5分41秒、v154 快照竞态这类"扫了但账本推不上"全靠人盯网页发现；判据经真实全库核对现状 0 命中，上线第一天零误报' },
+  fullAlertAgeMin: { grp: '告警阈值', name: '格位未上账判龄', unit: '分钟', min: 1, max: 240, d: 2, tip: '㉖v173f 正常链=扫码即写流水→账本 ≤30 秒防抖推达，默认 2 分钟已含 4 倍余量（再长现场就会先于系统看见橙标"未上账"）。排除项缺一不可：账本已有=已上账 / seenOut 有出库史=正常流转走掉 / ledgerTomb 有墓碑=PDA 已消位（实测不排除墓碑会把 2 个正常拣下架框当滞留报出）；NB04 来料区不判（账本无该区）' },
   wmasReloginGapS: { grp: '调度节奏', name: 'WMAS重登冷却', unit: '秒', min: 0, max: 300, d: 30, tip: '㉖v160 WMAS 登录失败后的重登冷却秒数（0=不节流）。凭证被挤下线时若不节流，实测 20 次取票=20 次真实登录，WMAS 可能因频繁失败锁定账号；且每次登录成功会把对方会话踢下线，双方互挤成死循环。默认 30 秒＝最长 30 秒内恢复、又不打爆对方。现场在 WMAS 改密后重新保存 WMAS 配置会立即重置本冷却，不受影响' },
   agvAuthYieldMin: { grp: '调度节奏', name: '退出登录让位时长', unit: '分钟', min: 1, max: 180, d: 15, tip: '㉖v161 人工点「退出登录」后，服务器在这段时间内【不自动登录】WMAS/AGV 调度系统，把单账号会话让给现场人员。两套系统都是同一账号后登录者踢掉前者：现场为改密/查数据人工登录 → 服务器会话被踢反复 401；服务器若立刻自动重登 → 又把现场人员的窗口踢掉，双方互挤谁都干不成。让位期内 AGV 叫车不可用（提示会写明剩余时间），到期自动恢复；重新保存 WMAS/RCS 配置=人工宣告已处理完，立即解除让位' },
   dupFlowAlertOn: { grp: '告警阈值', name: '重复有效流水告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 同一标签存在多条未作废采集流水 → 留痕 ops（审计线索）。⚠️v166 判据重构：旧版按"≥2条未作废 + 位置不同"必达点名，把【框挪过位置/先后经过不同台站】当异常刷屏（现网 61 个全是这类噪音；台站只是中转点，同一框先后经 CK-06、CK-07 完全正常，v152 当初的触发案例 N26K100170 本身即误判；实测两次采集跨度 <1分钟 0 例、>10分钟 61 例，不存在毫秒级双写缺陷）。新判据只有【同一排/同列内出现 ≥2 个不同格位】（一个框不可能同时占两个格位）才升 ghost_out 必达点名人工裁决；挪位/跨模式/台站差异只留痕不吵人。判据变更后自动重置旧 7 天去重标记，避免真冲突被旧噪音标记静默一周' },
@@ -6442,7 +6492,7 @@ return send(res, 200, {
         if (db.errLogs.length > 2000) db.errLogs = db.errLogs.slice(-2000);
         save();
         const nErr = clean.filter((x) => String(x.e).includes('异常')).length;
-        if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'car_alarm', ' PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常（' + clean.length + ' 条记录）'); }
+        if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'sys_err', '🛠 PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常（' + clean.length + ' 条记录）'); } // ㉖v173f 类型 car_alarm→sys_err：诊断上报不是车辆告警，此前借道 car_alarm 被网页"未处理车辆告警"红框置顶（11-13 用户截图实证分类错位），现归"其他与系统"组
         return send(res, 200, { ok: true, count: clean.length });
       }
       if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/req-templates' || p.startsWith('/api/req-templates/') || p === '/api/notifications' || p.startsWith('/api/notifications/')) { // ㉖v62 模板路由并入领料块（此前落入管理员闸门）
