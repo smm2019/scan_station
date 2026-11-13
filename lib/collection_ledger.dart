@@ -1416,7 +1416,23 @@ Future<void> gSlotsRestore() async {
 
 int _ledgerPullAtMs = 0; // ㉖ 上次【成功】拉取合并的毫秒时刻（跨页面共享，防多页重复打服务器）
 DateTime? ledgerLastSyncAt; // 上次成功同步时刻（库存页头展示）
-Future<Map> ledgerPullMerge({bool force = false}) async {
+
+// ㉖v173c 并发合并互斥：调用点有 10+ 处（库存页 45 秒定时、扫描保存、盘点、货位图兜底…），
+//   force:true 时 20 秒防抖不生效，两次合并可同时进入：都按各自快照算删除集再先后写库，
+//   后写的会撞先写刚插入的行 → IsarError: Unique index violated。合并本身幂等，
+//   并发时直接共用同一次结果即可（比各自跑一遍更省，也杜绝互踩）。
+Future<Map>? _pullInflight;
+Future<Map> ledgerPullMerge({bool force = false}) {
+  final running = _pullInflight;
+  if (running != null) return running;
+  final f = _ledgerPullMergeInner(force: force);
+  _pullInflight = f;
+  return f.whenComplete(() {
+    if (_pullInflight == f) _pullInflight = null;
+  });
+}
+
+Future<Map> _ledgerPullMergeInner({bool force = false}) async {
   try {
     final _nowMs = DateTime.now().millisecondsSinceEpoch;
     if (!force && _nowMs - _ledgerPullAtMs < 20000) {
