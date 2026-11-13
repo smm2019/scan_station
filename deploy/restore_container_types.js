@@ -3,11 +3,12 @@
 // 背景：11-12 14:49 一次误保存把 14 项容器类型冲成 5 项，9 类消失、166 只在架实物失去类型口径。
 // 本工具做的事：读服务器当前清单 → 按「事故前 14 项 + 事故后新增项」合并 → 写回 → 回读校验。
 //   · 只做加法，绝不删除任何现有项（要删仍受服务端 v173 防线保护）
-//   · 去重口径与服务端一致：落库值大小写不敏感
+//   · 幂等：清单已齐时直接退出、不重复写，可随时重跑
 //   · 任何一步不对就停下不写，不会写一半
 //
-// 用法：双击 恢复容器类型.cmd，按提示输入服务器地址与你的仓管/管理员账号
-//       （账号密码只用于登录你们自己的服务器，不写入任何文件）
+// 用法：双击 RestoreContainerTypes.cmd，按提示输服务器地址与仓管/管理员账号
+//   只看不动（预览）：双击 RestoreContainerTypes_预览.cmd，或 node restore_container_types.js --check
+//   账号密码只用于登录你们自己的服务器，不写入任何文件。
 'use strict';
 const http = require('http');
 const https = require('https');
@@ -24,64 +25,41 @@ const OLD14 = [
   { db: '纵梁内部料架', show: '纵梁内板料架' }, { db: '纸箱', show: '纸箱' },
 ];
 const K = (x) => String(x.db || '').toUpperCase();
+const DRY = process.argv.slice(2).some((a) => a === '--check' || a === '--preview');
+const DEFAULT_BASE = 'http://10.96.7.200:8099'; // 现场实际地址（11-13 截图实证可达），回车即用
 
-// ===== 输入：两种模式，都不许静默丢行 =====
-// 踩过的坑：非交互（管道）下用 readline 逐题 question，在等网络响应的空隙里 readline 会把
-//   后续行连同 EOF 一起消费掉、接口 close，下一题 question() 直接抛 "readline was closed"。
-//   故非交互必须【一次性读完 stdin 排队】；交互 TTY 才用 readline 逐行问。
-let queue = null; // 非交互：排队的行
-const loadQueue = () => new Promise((res) => {
-  if (queue) return res(queue);
-  let buf = '';
-  process.stdin.on('data', (d) => buf += d);
-  process.stdin.on('end', () => { queue = buf.split(/\r\n|\n|\r/); while (queue.length && queue[queue.length - 1] === '') queue.pop(); res(queue); });
-  process.stdin.on('error', () => res(queue || []));
+// ===== 输入层：一条 readline + 自建队列，绝不碰 rawMode =====
+// 两次现场翻车都出在这里，记下来：
+//  ① 逐键读取(rawMode)隐藏密码：读完 pause(stdin) 却没 resume → 下一次 question 永远读不到按键，
+//     事件循环无待办 → node 静默退出(0)。现场表现就是"输入 y 就闪退"，且批处理误报 [DONE]。
+//     （11-13 截图：确认那行后面直接 [DONE]，连"已取消"都没打印 = 根本没读到输入）
+//  ② 用 rl.question 逐题问 + 管道输入：第一个 question 期间，readline 已把后面几行连 EOF 一起
+//     消费掉，无人接收 → 后续 question 拿不到值或直接 "readline was closed"。
+// 做法：自启动就挂一个常驻 line 监听，早到的行先进队列，问到就取；EOF 让 waiter 拿到空串，
+//     由上层明确报错退出，杜绝静默退出。键盘逐行输入与文件重定向走同一条路。
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+const earlyLines = [];
+let waiter = null;
+let inputClosed = false;
+rl.on('line', (l) => {
+  const v = String(l).trim();
+  if (waiter) { const w = waiter; waiter = null; w(v); }
+  else earlyLines.push(v);
 });
-const nextLine = async () => { const q = await loadQueue(); return q.length ? String(q.shift()).trim() : ''; };
-
-let rl = null;
-const ensureRl = () => {
-  if (rl) return rl;
-  rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  rl.on('close', () => { if (pending) { const f = pending; pending = null; f(null); } }); // 输入耗尽：让调用方判错而非静默退出
-  return rl;
-};
-let pending = null;
-const askTty = (q) => new Promise((res) => {
-  const r = ensureRl();
-  pending = (v) => res(v === null ? '' : v);
-  r.question(q, (a) => { const f = pending; pending = null; if (f) f(String(a).trim()); });
+rl.on('close', () => {
+  inputClosed = true;
+  if (waiter) { const w = waiter; waiter = null; w(''); }
 });
-
-// TTY 下自读键，可做「密码不回显」
-const askHiddenTty = (q) => new Promise((res) => {
-  process.stdout.write(q);
-  const stdin = process.stdin;
-  let pw = '';
-  const done = (v) => {
-    stdin.removeListener('data', onData);
-    try { stdin.setRawMode(false); } catch (_) {}
-    stdin.pause();
-    process.stdout.write('\n');
-    res(v);
-  };
-  function onData(buf) {
-    for (const c of buf.toString()) {
-      const code = c.charCodeAt(0);
-      if (code === 3) { process.stdout.write('\n已取消\n'); process.exit(0); }
-      if (c === '\r' || c === '\n' || code === 4) return done(code === 4 ? '' : pw);
-      if (code === 8 || code === 127) { pw = pw.slice(0, -1); continue; }
-      if (code >= 32) pw += c;
-    }
+const ask = (q) => {
+  if (q) process.stdout.write(q);
+  if (earlyLines.length) {
+    const v = earlyLines.shift();
+    process.stdout.write(v + '\n'); // 重定向输入时回显一行，日志里看得清输入了什么
+    return Promise.resolve(v);
   }
-  try { stdin.setRawMode(true); } catch (_) { return done(''); }
-  stdin.resume();
-  stdin.on('data', onData);
-});
-
-const ask = (q, hide) => process.stdin.isTTY
-  ? (hide ? askHiddenTty(q) : askTty(q))
-  : nextLine();
+  if (inputClosed) return Promise.resolve('');
+  return new Promise((res) => { waiter = res; });
+};
 
 function req(method, urlStr, body, tok) {
   return new Promise((res) => {
@@ -107,12 +85,15 @@ function req(method, urlStr, body, tok) {
   });
 }
 
-const bad = (msg) => { console.log('\n❌ ' + msg + '\n（服务器未做任何改动）'); if (rl) rl.close(); process.exit(1); };
+const bad = (msg) => { console.log('\n❌ ' + msg + '\n（服务器未做任何改动）'); rl.close(); process.exit(1); };
 
 (async () => {
-  console.log('=== 容器类型恢复（事故前 14 项 + 现有新增项，只做加法，不删除）===\n');
-  let base = await ask('服务器地址 [回车 http://192.168.1.100:8099]: ');
-  if (!base) base = 'http://192.168.1.100:8099';
+  console.log(DRY
+    ? '=== 容器类型检查（只看不动，不写服务器）===\n'
+    : '=== 容器类型恢复（事故前 14 项 + 现有新增项，只做加法，不删除）===\n');
+
+  let base = await ask('服务器地址 [回车 ' + DEFAULT_BASE + ']: ');
+  if (!base) base = DEFAULT_BASE;
   base = base.replace(/\/+$/, '');
   if (!/^https?:\/\//.test(base)) base = 'http://' + base;
 
@@ -121,7 +102,7 @@ const bad = (msg) => { console.log('\n❌ ' + msg + '\n（服务器未做任何�
   console.log('  √ 已连上服务器\n');
 
   const user = await ask('仓管/管理员账号: ');
-  const pass = await ask('密码（输入不回显）: ', true);
+  const pass = await ask('密码（会显示在屏幕上，输完按回车；不会写入任何文件）: ');
   if (!user || !pass) bad('未输入完整账号密码（需要能改容器类型的仓管/管理员账号）。');
   const lg = await req('POST', base + '/api/login', { username: user, password: pass, dev: 'CT-RESTORE', kind: 'pda' });
   if (!lg.json || !lg.json.ok || !lg.json.token) bad('登录失败：' + String((lg.json || {}).msg || lg.raw || '').slice(0, 80) + '\n（需要能改容器类型的账号：仓管或管理员）');
@@ -142,16 +123,15 @@ const bad = (msg) => { console.log('\n❌ ' + msg + '\n（服务器未做任何�
   const curKeys = new Set(cur.map(K));
   const back = OLD14.filter((x) => !curKeys.has(K(x)));
 
-  if (!back.length) { console.log('\n✅ 服务器清单已含全部 14 项，无需恢复，未做任何改动。'); if (rl) rl.close(); process.exit(0); }
+  console.log('\n将恢复 ' + back.length + ' 项：' + (back.map((x) => x.show).join('、') || '无（已齐全）'));
+  console.log('将保留 ' + added.length + ' 项（现有新增，不动）：' + (added.map((x) => x.show).join('、') || '无'));
+  console.log('合并后共 ' + merged.length + ' 项。');
+
+  if (!back.length) { console.log('\n✅ 服务器清单已含全部 14 项，无需恢复，未做任何改动。'); rl.close(); process.exit(0); }
   if (merged.length > 20) bad('合并后 ' + merged.length + ' 项超过接口上限 20，请联系开发调整后再执行。');
+  if (DRY) { console.log('\n（预览模式：未写入服务器。去掉 --check 再运行才会写入）'); rl.close(); process.exit(0); }
 
-  console.log('\n将恢复 ' + back.length + ' 项：' + back.map((x) => x.show).join('、'));
-  console.log('将保留 ' + added.length + ' 项（事故后新增，不动）：' + (added.map((x) => x.show).join('、') || '无'));
-  console.log('合并后共 ' + merged.length + ' 项。\n');
-
-  const go = await ask('确认写入服务器？输入 yes 执行，其他任意内容取消: ');
-  if (String(go).toLowerCase() !== 'yes') { console.log('\n已取消，服务器未改动。'); if (rl) rl.close(); process.exit(0); }
-
+  console.log('\n正在写入服务器…');
   const p = await req('POST', base + '/api/containers', { types: merged }, tok);
   if (!p.json || p.json.ok !== true) bad('写入被拒：' + String((p.json || {}).msg || p.raw || '').slice(0, 240));
 
@@ -162,6 +142,6 @@ const bad = (msg) => { console.log('\n❌ ' + msg + '\n（服务器未做任何�
   console.log('\n' + (okBack && okKeep ? '✅ 恢复成功，回读校验通过' : '⚠ 已写入，但回读校验未全通过，请人工核对') + '：现在共 ' + after.length + ' 项');
   after.forEach((x, i) => console.log('  ' + String(i + 1).padStart(2) + '. ' + x.show + '   [db=' + x.db + ']'));
   console.log('\nPDA 退出采集页重新进入即可看到恢复的按钮（下次进入生效）。');
-  if (rl) rl.close();
+  rl.close();
   process.exit(okBack && okKeep ? 0 : 2);
 })().catch((e) => bad('异常：' + (e && e.message)));
