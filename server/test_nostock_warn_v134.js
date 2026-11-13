@@ -15,7 +15,9 @@ const grab = (startSig, endSig) => { const i = html.indexOf(startSig); if (i < 0
 console.log('== A组 nrowHint 三分支（真实源码执行） ==');
 {
   const hintSrc = grab('function nrowHint(inp){', '\nfunction nrowFocus');
-  const ctx = vm.createContext({ window: {}, Math, Number, String });
+  // ㉖v175 起 nrowHint 会调 _pvSchedule（内部 setTimeout 防抖拉预占预览）。本用例只测提示
+  // 三分支文案，预览行为由 test_req_preview_v175 单独覆盖 → 注入空桩即可，沙箱无需定时器。
+  const ctx = vm.createContext({ window: {}, Math, Number, String, setTimeout: () => 0, _pvSchedule: () => {} });
   vm.runInContext(hintSrc + ';this.hint=nrowHint;', ctx);
   const mkRow = (pn, q, dict) => {
     const h = { textContent: '', innerHTML: '' };

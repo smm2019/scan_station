@@ -23,8 +23,10 @@ console.log('== B组 懒加载结构 ==');
   chkT('B3 控制器字段+dispose 释放在位', dart.includes('final ScrollController _stockScroll = ScrollController();') && dart.includes('_stockScroll.dispose();'), '');
   chkT('B4 行输入框仍 putIfAbsent 解耦', seg.includes('_qtyCtrl.putIfAbsent'), '');
   chkT('B5 常领chip仍带零件号后缀（非卡顿源，保留可辨识）', dart.includes('pn.substring(pn.length - 6)'), '');
-  // 全文件 builder 出现次数=既有2处+新增1处=3（防误改别处）
-  chkT('B6 ListView.builder 全文恰3处（600/1667/4297 区域）', (dart.match(/ListView\.builder\(/g) || []).length === 3, (dart.match(/ListView\.builder\(/g) || []).length);
+  // ㉖v179 修：原判"恰3处"是脆断言——任何合法新增列表都会破线（v175b 模板编辑器已破一次）。
+  // 本断言真正要守的是"懒加载不被回退"（总数减少），故改为下限：v149 落地时 3 处，此后只增不减。
+  const nb = (dart.match(/ListView\.builder\(/g) || []).length;
+  chkT('B6 懒加载 builder 不少于 3 处（防回退，合法新增不拦）', nb >= 3, nb + ' 处');
 }
 console.log(`\n===== v149 库存列表懒加载实例证明 ${total - fail}/${total} PASS =====`);
 process.exit(fail ? 1 : 0);
