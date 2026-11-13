@@ -93,6 +93,7 @@ function defaultDb() {
     prefs: {}, // ㉕F5 个人偏好 {userId:{key:{v,at}}}（后写覆盖=方案"到达序新者胜"）
     prefTemplates: [], // ㉕F5 管理员配置模板 [{name,prefs,by,at}]
     errLogs: [], // ㉖⑩ PDA异常日志自动上报 [{id,at,by,dev,app,items:[{t,e,d,u}]}]（180天/2000批滚动）
+    incidents: [], // ㉖v174 事故复盘单 [{id,at,by,createdBy,status,title,what,impact,whyRoot,mechanism,fix,prevent,ts}]（mechanism=强制回答"什么机制让它溜过去"，滚动留档500条）
     stnMeta: {}, // ㉖⑫ 站台身份自定义 {编码:{alias:别名,role:any|out|in|insp,off:停用布尔,by,at}}
     projGroundMap: {}, // ㉖v118 项目→地面区映射 {项目码:'D'}：二楼人工直送路线的建议区（未配置项目=建议走AGV站台）
     nb01Alert: {}, // ㉖v118 来料区滞留提醒去重 {标签: 提醒时刻}（7天重置）
@@ -532,6 +533,7 @@ function loadDb() {
   if (typeof d.prefs !== 'object' || d.prefs === null || Array.isArray(d.prefs)) { d.prefs = {}; added = true; }
   if (!Array.isArray(d.prefTemplates)) { d.prefTemplates = []; added = true; }
   if (!Array.isArray(d.errLogs)) { d.errLogs = []; added = true; } // ㉖ PDA异常上报表（旧库补齐）
+  if (!Array.isArray(d.incidents)) { d.incidents = []; added = true; } // ㉖v174 事故复盘单（旧库补齐）
   if (typeof d.stnMeta !== 'object' || d.stnMeta === null || Array.isArray(d.stnMeta)) { d.stnMeta = {}; added = true; } // ㉖⑫ 站台身份配置（旧库补齐）
   if (!d.locReserve || typeof d.locReserve !== 'object' || Array.isArray(d.locReserve)) { d.locReserve = {}; added = true; } // ㉖v54 货位预占表（旧库补齐）
   if (!d.inspSeen || typeof d.inspSeen !== 'object' || Array.isArray(d.inspSeen)) { d.inspSeen = {}; added = true; } // ㉖v55 检验历史索引（标签→最近结论）
@@ -2236,6 +2238,9 @@ let _ctUsage = null; // ㉖v173g 容器类型使用统计缓存 {at,cnt,led}，6
 const _nq = new Map(); const _nrate = new Map(); let _nightFlushed = '';
 const URGENT_TYPES = new Set(['car_alarm', 'inspect', 'req_rush', 'ghost_out', 'wmas_auth']);   // 车辆告警（含急停）与急料单永不夜间静默（v88：夜班急料等早6点才汇总=失去急的意义）；㉖v151 ghost_out 幽灵出库同列——账实分叉夜间静默会拖到次日才暴露；㉖v160 wmas_auth 凭证失效=AGV 全线瘫痪，静默一夜等于整班人工搬运
 const NTYPE = { req_new: 'req_new', req_timeout: 'req_new', req_reassign: 'req_new', req_urge: 'req_urge', req_arrive: 'req_arrive', req_accept: 'req_flow', req_ready: 'req_flow', req_ready_wh: 'req_flow', req_done: 'req_flow', req_reject: 'req_flow', req_cancel: 'req_flow', watch_in: 'watch_in', stock_out: 'stock_out' }; // ㉕F5 订阅粒度（car_alarm不在表内=强制必达）
+// ㉖v174 事故复盘六问：mechanism（什么机制让它溜过去）为用户点名强制栏，与其余五问同为必填
+const INC_FIELDS = ['title', 'what', 'impact', 'whyRoot', 'mechanism', 'fix', 'prevent'];
+const INC_LABEL = { title: '事故标题', what: '发生了什么', impact: '影响范围', whyRoot: '直接根因', mechanism: '什么机制让它溜过去（防线为何没拦住）', fix: '本次怎么修的', prevent: '同类怎么防（机制层面）' };
 function notify(toUserId, type, text, reqId, opts) {
   // ㉖v151 opts.solo=逐单独立成条，不参与同类聚合/限流合并：账实点名类告警（幽灵出库/来料区直调/同托兄弟码）
   // 每条都带具体单号与标签清单，被"等 N 条，已合并"吞掉文本就等于没告警——仓管看到合并条无从处置
@@ -5075,6 +5080,9 @@ return send(res, 200, {
         const parts = (Array.isArray(b.parts) ? b.parts : []).slice(0, 3000).map((x) => ({ pn: String(x.pn || '').toUpperCase().slice(0, 40), nm: String(x.nm || '').replace(/\uFFFD/g, '').slice(0, 80), book: num(x.book), real: num(x.real), boxes: num(x.boxes), out: num(x.out), warn: num(x.warn) }));
         const locs = (Array.isArray(b.locs) ? b.locs : []).slice(0, 5000).map((x) => { const r = { loc: String(x.loc || '').toUpperCase().slice(0, 40), pn: String(x.pn || '').toUpperCase().slice(0, 40), book: num(x.book), real: num(x.real), boxes: num(x.boxes) }; const _c = lbls(x.codes), _o = lbls(x.outCodes), _b = lbls(x.bookCodes); if (_c && _c.length) r.codes = _c; if (_o && _o.length) r.outCodes = _o; if (_b && _b.length) r.bookCodes = _b; return r; });
         const rec = { batchId, remark: String(b.remark || '').slice(0, 80), scope: String(b.scope || '').slice(0, 120), blind: !!b.blind, bookKey: String(b.bookKey || '').slice(0, 60), locKey: String(b.locKey || '').slice(0, 60), by: u.name, at: num(b.at) || Date.now(), totalScans: num(b.totalScans), validScans: num(b.validScans), mesFail: num(b.mesFail), dup: num(b.dup), outside: num(b.outside), applied: !!b.applied, applyTime: num(b.applyTime), parts, locs };
+        // ㉖v174 点名盘字段（白名单透传）：原始输入 + 未盘到清单（解析限 500 项、字段定长，防整包膨胀）
+        if (b.pickRaw) rec.pickRaw = String(b.pickRaw).replace(/\uFFFD/g, '').slice(0, 2000);
+        if (b.pickMiss) { try { const mm = JSON.parse(b.pickMiss); if (Array.isArray(mm)) rec.pickMiss = mm.slice(0, 500).map((r) => ({ c: String((r || {}).c || '').slice(0, 20), p: String((r || {}).p || '').toUpperCase().slice(0, 40), l: String((r || {}).l || '').toUpperCase().slice(0, 20) })); } catch (_) {} }
         // ㉖v95 实时基准快照留痕透传（白名单定长清洗，旧版PDA不带该字段=undefined不影响）
         if (b.liveMeta && typeof b.liveMeta === 'object') {
           rec.liveMeta = {
@@ -7451,6 +7459,41 @@ return send(res, 200, {
         const okc = re === saved.sha && rows.length === saved.rows;
         pushOps(u, '断链校验', day, okc ? '通过' : `不符！存档${saved.rows}行 现${rows.length}行`);
         return send(res, 200, { ok: true, day, pass: okc, savedRows: saved.rows, nowRows: rows.length, shaHead: String(saved.sha || '').slice(0, 12), reHead: re.slice(0, 12) });
+      }
+      // ===== ㉖v174 事故复盘单（模板化 + 强制回答"什么机制让它溜过去"）=====
+      // 动因（用户点名）：复盘一直是"群里聊完就散"，同类缺陷反复复发（v168/v169/v170 都是
+      //   "本机派生状态/换机器才崩"这一类）。光有文档禁不住人，故做成系统内强制表单：
+      //   mechanism（什么机制让它溜过去）为必填硬闸——留空即 400，写不进复盘单=复盘没做完。
+      //   其余五问同样必填（what/impact/whyRoot/fix/prevent），一次填全 6 问才算闭环。
+      //   建单人自动记 ops；结论落 db.incidents（滚动留档），网页/后续需求可查、可跨条复盘共性。
+      //   六问字段与标签定义在模块级 INC_FIELDS/INC_LABEL（通知治理区）。
+      if (req.method === 'GET' && p === '/api/incidents') {
+        const lim = Math.min(300, Math.max(1, parseInt(url.searchParams.get('limit') || '100') || 100));
+        const st = String(url.searchParams.get('status') || '').trim();
+        let list = (db.incidents || []).slice().sort((a, b) => (b.at || 0) - (a.at || 0));
+        if (st) list = list.filter((x) => String(x.status) === st);
+        return send(res, 200, { ok: true, total: (db.incidents || []).length, list: list.slice(0, lim), fields: INC_FIELDS });
+      }
+      if (req.method === 'POST' && p === '/api/incidents') {
+        const b = await readBody(req);
+        const miss = INC_FIELDS.filter((k) => !String(b[k] || '').trim());
+        // ★强制闸：6 问任一空缺即拒——尤其 mechanism（用户点名要强制回答的那一栏）
+        if (miss.length) return send(res, 400, { ok: false, msg: '复盘未闭环，以下必填项为空：' + miss.map((k) => INC_LABEL[k] || k).join('、'), missing: miss });
+        const id = String(b.id || '').trim() || newId('inc');
+        db.incidents = db.incidents || [];
+        const cur = db.incidents.find((x) => String(x.id) === id);
+        const rec = Object.assign(cur || {}, {
+          id, at: (cur && cur.at) || Date.now(),
+          by: (cur && cur.by) || u.name, createdBy: (cur && cur.createdBy) || u.name,
+          status: cur ? String(b.status || cur.status || 'open') : 'open',
+          ts: Date.now(),
+        });
+        INC_FIELDS.forEach((k) => { rec[k] = String(b[k] || '').trim().slice(0, k === 'title' ? 120 : 1200); });
+        if (!cur) { db.incidents.push(rec); pushOps(u, '事故复盘建单', rec.title.slice(0, 60), '机制：' + (rec.mechanism || '').slice(0, 80)); }
+        else { pushOps(u, '事故复盘更新', rec.title.slice(0, 60), (b.status && b.status !== cur.status) ? ('状态→' + b.status) : ('补充：' + INC_FIELDS.filter((k) => String(b[k] || '').trim() !== String(cur[k] || '').trim()).join('、'))); }
+        if (db.incidents.length > 500) db.incidents = db.incidents.slice(-500);
+        save();
+        return send(res, 200, { ok: true, incident: rec });
       }
       // ---- ㉕B4 系统健康分0-100：uptime/内存/备份新鲜/路网/队列/账本同步 ----
       if (req.method === 'GET' && p === '/api/admin/healthscore') {

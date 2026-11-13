@@ -91,7 +91,9 @@ console.log('--- A 判据边界（抽函数）---');
 }
 
 console.log('\n--- C 真实全库回归（上线第一天 0 误报的前提）---');
-try {
+if (!fs.existsSync(path.join(__dirname, 'data', 'db.json'))) {
+  console.log('⏭ C 段跳过：CI 无 data/db.json（A 段判据回归不依赖库，照常全跑）');
+} else try {
   const real = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'db.json'), 'utf8'));
   const db = JSON.parse(JSON.stringify(real));
   db.fullAlert = {}; // 副本从零去重，看真实命中面

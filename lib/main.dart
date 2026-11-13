@@ -326,6 +326,16 @@ class BatchInfo {
   String invLocKey = ""; //绑定的货位基准 fileKey
   bool blindMode = true; //盲盘：现场不显示账面数量对照
   List<String> invScope = []; //循环盘点范围：货架前缀列表（如 MB02-A-01），空=全盘
+  //====㉖v174 点名盘点（货架盘点指定零件号/标签号/货位）====
+  // 用户诉求：不只按货架圈一大片，还要"就盘这几个零件号/这几张标签/这几个货位"，
+  //   并给出【应扫清单 vs 实扫】→ 没扫到的即"未盘到"（疑似缺失/串位/账外），当场可见。
+  // 设计：三种输入最终统一展开成 invPickCodes（应扫标签号清单），扫描判定只需比对一份清单；
+  //   invPickRaw 存用户原始输入（零件号/货位/标签混排，可回显编辑）；invMissJson 结束任务时
+  //   回写未盘到明细（报表与 CSV 直接用，不重算——账本在盘点期间可能变动）。
+  int invPickMode = 0; //0=范围盘（原逻辑，空值兼容全部旧任务）1=点名盘
+  String invPickRaw = ""; //原始输入（每行一个：零件号 / 完整货位 / 标签号）
+  List<String> invPickCodes = []; //展开后的应扫标签号清单（大写，去重）
+  String invMissJson = ""; //结束后回写：未盘到清单 JSON [{c,p,l,q}]
   BatchInfo({
     required this.batchId,
     required this.createTime,
@@ -336,6 +346,10 @@ class BatchInfo {
     this.invLocKey = "",
     this.blindMode = true,
     this.invScope = const [],
+    this.invPickMode = 0,
+    this.invPickRaw = "",
+    this.invPickCodes = const [],
+    this.invMissJson = "",
   });
 }
 

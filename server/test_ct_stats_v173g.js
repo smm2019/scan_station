@@ -10,6 +10,13 @@ const path = require('path');
 const vm = require('vm');
 const kit = require('./test_conc_kit_v172.js');
 
+// CI 无生产库时整份 SKIP：B 段断言依赖真实使用统计（最热类型 cnt 量级）与账本在架项，
+// 空库实例只有默认 5 类型且 cnt 全 0，硬跑必红（与 test_conc_kit_effect 同口径守卫）。
+if (!fs.existsSync(path.join(__dirname, 'data', 'db.json'))) {
+  console.log('⏭ SKIP test_ct_stats_v173g：需生产库副本提供真实使用统计/在架数据（CI 无库，本机带库时覆盖）');
+  process.exit(0);
+}
+
 const SRC = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8').replace(/\r\n/g, '\n');
 let fail = 0, total = 0;
 const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '❌'} ${n}${i !== undefined ? '  [' + String(i).slice(0, 100) + ']' : ''}`); };

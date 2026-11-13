@@ -360,6 +360,24 @@ String _invCsvField(String v) {
 String buildInvDiffCsv(BatchInfo task, InvDiffResult d) {
   final mv = invPairMoveSuggest(d);
   String s = "盘点任务,${_invCsvField(task.batchId)},${_invCsvField(task.batchRemark)},基准版本 账面:${_invCsvField(task.invBookKey)} 货位:${_invCsvField(task.invLocKey)},范围:${_invCsvField(task.invScope.isEmpty ? "全盘" : task.invScope.join("/"))}\n";
+  // ㉖v174 点名盘：头行加应扫/未盘到摘要，并单列未盘到清单（导出即带"该在的都在吗"结论）
+  if (task.invPickMode == 1) {
+    s += "点名盘,应扫${task.invPickCodes.length}框";
+    try {
+      if (task.invMissJson.isNotEmpty) {
+        final miss = jsonDecode(task.invMissJson) as List;
+        s += miss.isEmpty ? ",未盘到0框,全部盘到\n" : ",未盘到${miss.length}框\n";
+        if (miss.isNotEmpty) {
+          s += "\n===点名盘未盘到清单(疑似缺失/串位/未同步,请现场复核)===\n";
+          s += "货物标签,零件号,账本货位,处理建议\n";
+          for (final m in miss) {
+            final mm = m as Map;
+            s += "${_invCsvField(mm['c'])},${_invCsvField(mm['p'])},${_invCsvField(mm['l'])},${_invCsvField("找到实物→位置登记重扫归位；确不在架→库存页消账")}\n";
+          }
+        }
+      } else { s += ",未结束(无未盘到数据)\n"; }
+    } catch (_) { s += "\n"; }
+  } else { s += "\n"; }
   s += "\n===零件号级差异(对齐基础数据表)===\n";
   s += "零件号,物料名称,期末库存,实盘数量,差异数量,账外扫入,差异类型,最新账本在架,双基准矛盾,定位/建议\n";
   for (final p in d.parts) {
@@ -408,6 +426,67 @@ Future<String> saveInvDiffCsv(BatchInfo task, InvDiffResult d) async {
   final file = File("${dir.path}/盘点_${task.batchId}.csv");
   await file.writeAsString(csv, encoding: utf8);
   return file.path;
+}
+
+// ===== ㉖v174 点名盘点：三种输入统一展开成【应扫标签清单】 =====
+// 用户诉求：货架盘点能指定"零件号 / 标签号 / 货位"点名盘，盘完必须回答"该在的都在吗"。
+// 设计：零件号与货位最终都落到本机在架占位（shelfPlacements，刚与服务器账本合并）上取码，
+//   零件号→码经 LabelInfo.partNo 反查；标签号直接校验在架。展开成一份码清单后，
+//   扫码判定与"未盘到"计算只需比对这一份清单，三种输入在数据层归一、UI 不分裂。
+// 返回 {codes: 应扫清单(大写去重)，warn: 人读警示行（查无/无在架/不在架的说明）}
+Future<Map<String, dynamic>> buildPickPlan(String raw) async {
+  final toks = raw
+      .split(RegExp(r'[\s,;，、；\n]+'))
+      .map((e) => e.trim().toUpperCase())
+      .where((e) => e.isNotEmpty)
+      .toSet()
+      .toList();
+  final codes = <String>{};
+  final warn = <String>[];
+  if (toks.isEmpty) return {'codes': <String>[], 'warn': ['未输入任何零件号/货位/标签号']};
+  // 与服务器账本对齐后再取清单：点名盘的意义=核对"账上该在的"，基准必须是全厂最新
+  await ledgerPullMerge(force: true);
+  final sp = await _globalIsar.shelfPlacements.where().findAll();
+  final spByCode = <String, ShelfPlacement>{};
+  for (final p in sp) {
+    spByCode[p.goodsCode.trim().toUpperCase()] = p;
+  }
+  final labelRows = await _globalIsar.labelInfos.where().findAll();
+  final pnToCodes = <String, List<String>>{};
+  for (final e in labelRows) {
+    final pn = e.partNo.trim().toUpperCase();
+    if (pn.isEmpty) continue;
+    (pnToCodes[pn] ??= <String>[]).add(e.goodsCode.trim().toUpperCase());
+  }
+  final locRe = RegExp(r'^NB0[234]-[A-H]-\d{1,2}(-(\d{1,2}|[1-4]F))?$');
+  final codeRe = RegExp(r'^N[A-Z0-9]{9}$');
+  int nPart = 0, nLoc = 0, nCode = 0;
+  for (final t in toks) {
+    if (locRe.hasMatch(t)) {
+      nLoc++;
+      // 货位：区/排（NB02-A）按前缀，完整格位精确等值——与 invLocInScope 语义一致的宽口径
+      final hits = sp.where((p) => p.loc.trim().toUpperCase() == t || p.loc.trim().toUpperCase().startsWith('$t-')).toList();
+      if (hits.isEmpty) { warn.add('货位 $t 当前无在架框（账本无或已全部出库）'); }
+      for (final h in hits) { codes.add(h.goodsCode.trim().toUpperCase()); }
+      if (hits.isNotEmpty) warn.add('货位 $t → ${hits.length} 框');
+    } else if (codeRe.hasMatch(t)) {
+      nCode++;
+      if (spByCode.containsKey(t)) { codes.add(t); } else { warn.add('标签 $t 账本无在架记录（可能已出库/未同步），仍列入应扫（扫到=账外实物，重要信号）'); codes.add(t); }
+    } else {
+      nPart++;
+      final cs = (pnToCodes[t] ?? <String>[]).where((c) => spByCode.containsKey(c)).toList();
+      final off = (pnToCodes[t] ?? <String>[]).where((c) => !spByCode.containsKey(c)).length;
+      if (cs.isEmpty) {
+        warn.add(pnToCodes.containsKey(t) ? '零件 $t 有 ${pnToCodes[t]!.length} 个标签但均无在架记录（已全部出库？）' : '零件 $t 本机标签档案查无（请核对零件号）');
+      } else {
+        codes.addAll(cs);
+        warn.add('零件 $t → ${cs.length} 框在架${off > 0 ? "（另有 $off 个标签不在架，未列入）" : ""}');
+      }
+    }
+  }
+  if (codes.isEmpty) warn.add('⚠️ 展开后应扫清单为空：请检查输入');
+  warn.insert(0, '输入 ${toks.length} 条（零件$nPart · 货位$nLoc · 标签$nCode）→ 应扫 ${codes.length} 框');
+  return {'codes': codes.toList()..sort(), 'warn': warn};
 }
 
 // ===================== 盘点·首页（任务列表） =====================
@@ -554,12 +633,82 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
   int _step = 0;
   bool _useLive = false; // 基准来源：true=系统实时在库账本快照（免上传CSV），false=上传两份台账CSV
   String _liveInfo = ""; // 实时快照结果描述（零件数/货位行数）
+  // ㉖v174 点名盘点：step2 顶部切换 范围盘(0)/点名盘(1)
+  int _pickMode = 0;
+  final _pickCtrl = TextEditingController(); // 零件号/货位/标签号混贴（每行或逗号分隔）
+  bool _pickBusy = false; // 正在展开清单
+  List<String> _pickCodes = const []; // 展开出的应扫清单
+  List<String> _pickWarn = const []; // 展开警示行（查无/无在架/命中框数）
 
   @override
   void dispose() {
     _nameCtrl.dispose();
+    _pickCtrl.dispose();
     super.dispose();
   }
+
+  // ㉖v174 展开点名清单：把输入框里的零件号/货位/标签号统一展开成应扫标签清单（含警示行）
+  Future<void> _expandPick() async {
+    setState(() => _pickBusy = true);
+    try {
+      final r = await buildPickPlan(_pickCtrl.text);
+      if (!mounted) return;
+      setState(() {
+        _pickCodes = List<String>.from(r['codes'] ?? const []);
+        _pickWarn = List<String>.from(r['warn'] ?? const []);
+        _pickBusy = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _pickBusy = false);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("展开清单失败：$e"), backgroundColor: Colors.orange));
+    }
+  }
+
+  // ㉖v174 点名盘 step2 界面：零件号/货位/标签号混贴输入 + 展开预览（应扫数 + 命中/警示）
+  List<Widget> _pickStep2() => [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text("输入要盘的货（每行一个或逗号分隔；零件号 / 完整货位 / 标签号 可混贴）", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _pickCtrl,
+                maxLines: 5,
+                minLines: 2,
+                decoration: const InputDecoration(
+                  hintText: "6608225326\nNB02-A-05-1F\nN26K120203",
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(children: [
+                FilledButton.icon(
+                  onPressed: _pickBusy ? null : _expandPick,
+                  icon: _pickBusy ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.rule_folder, size: 18),
+                  label: const Text("展开清单"),
+                  style: FilledButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
+                ),
+                const SizedBox(width: 10),
+                Text(_pickCodes.isEmpty ? "尚未展开" : "应扫 ${_pickCodes.length} 框", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _pickCodes.isEmpty ? Colors.grey : const Color(0xFF2E7D32))),
+              ]),
+              if (_pickWarn.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(color: const Color(0xFFF1F5F9), borderRadius: BorderRadius.circular(8)),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: _pickWarn.map((w) => Text(w, style: const TextStyle(fontSize: 12, height: 1.6, fontFamily: "monospace"))).toList()),
+                ),
+              ],
+              const SizedBox(height: 6),
+              const Text("结束盘点时，清单内未扫到的会列为「未盘到」（疑似缺失/串位/未同步）。", style: TextStyle(fontSize: 12, color: Colors.grey)),
+            ]),
+          ),
+        ),
+      ];
 
   Future<void> _pickBaseline(bool isBook) async {
     final files = await listBaselineFiles();
@@ -633,6 +782,21 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
   Future<void> _create() async {
     final name = _nameCtrl.text.trim().isEmpty ? "盘点${DateTime.now().toString().substring(5, 10).replaceAll("-", "")}" : _nameCtrl.text.trim();
     final ts = DateTime.now();
+    // ㉖v174 点名盘：建任务前把输入展开成应扫清单，展开为空则拦停（防建成空点名任务白盘一场）
+    List<String> pickCodes = const [];
+    if (_pickMode == 1) {
+      if (_pickBusy) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("正在展开清单，请稍候…"), backgroundColor: Colors.blueGrey));
+        return;
+      }
+      final r = await buildPickPlan(_pickCtrl.text);
+      pickCodes = List<String>.from(r['codes'] ?? const []);
+      if (pickCodes.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("点名清单展开后为空：请检查零件号/货位/标签号是否正确"), backgroundColor: Colors.orange));
+        return;
+      }
+    }
     final task = BatchInfo(
       batchId: "INV${ts.millisecondsSinceEpoch}",
       createTime: ts.toString(),
@@ -642,6 +806,9 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
       invLocKey: _locKey,
       blindMode: _blind,
       invScope: _scope.toList(),
+      invPickMode: _pickMode,
+      invPickRaw: _pickMode == 1 ? _pickCtrl.text.trim() : "",
+      invPickCodes: pickCodes,
     );
     try {
       await _globalIsar.writeTxn(() async {
@@ -715,6 +882,22 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
               ],
             ],
             if (_step == 2) ...[
+              // ㉖v174 盘点方式：范围盘（圈货架/排）或 点名盘（指定零件号/标签号/货位）
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text("盘点方式", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Wrap(spacing: 8, children: [
+                      ChoiceChip(label: const Text("范围盘（按货架/排圈定）"), selected: _pickMode == 0, onSelected: (_) => setState(() => _pickMode = 0)),
+                      ChoiceChip(label: const Text("点名盘（指定零件号/标签/货位）"), selected: _pickMode == 1, onSelected: (_) => setState(() => _pickMode = 1)),
+                    ]),
+                  ]),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_pickMode == 1) ..._pickStep2() else ...[
               if (_locKey.isEmpty)
                 const Card(child: Padding(padding: EdgeInsets.all(14), child: Text("未绑定货位基准，无法圈定范围，本次为全盘盘点。\n想做循环盘点请在第二步绑定货位基准。", style: TextStyle(fontSize: 13))))
               else
@@ -759,6 +942,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                 ),
               const SizedBox(height: 8),
               const Text("范围外货架/排的零件即使账面有数，也不会出现在差异报表里，不会造成假盘亏。", style: TextStyle(fontSize: 12, color: Colors.grey)),
+              ],
             ],
             if (_step == 3) ...[
               Card(
@@ -775,10 +959,17 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                       const SizedBox(height: 6),
                       Text("货位基准：${_locName.isEmpty ? "未选择（不做串位/超量判定）" : "$_locName（$_locInfo）"}"),
                       const SizedBox(height: 6),
-                      Text("盘点类型：${_scopeType == 'shelf' ? "AGV货架" : _scopeType == 'ground' ? "地面库位" : _scopeType == 'recv' ? "来料区" : "混合/全盘"}"),
-                      const SizedBox(height: 6),
-                      Text("盘点范围：${_scope.isEmpty ? "全盘" : "循环盘 · ${_scope.join("、")}"}"),
-                      const SizedBox(height: 6),
+                      if (_pickMode == 1) ...[
+                        Text("盘点方式：点名盘 · 应扫 ${_pickCodes.length} 框"),
+                        const SizedBox(height: 6),
+                        Text("点名输入：${_pickCtrl.text.trim().replaceAll(RegExp(r'\s+'), " / ")}", style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
+                        const SizedBox(height: 6),
+                      ] else ...[
+                        Text("盘点类型：${_scopeType == 'shelf' ? "AGV货架" : _scopeType == 'ground' ? "地面库位" : _scopeType == 'recv' ? "来料区" : "混合/全盘"}"),
+                        const SizedBox(height: 6),
+                        Text("盘点范围：${_scope.isEmpty ? "全盘" : "循环盘 · ${_scope.join("、")}"}"),
+                        const SizedBox(height: 6),
+                      ],
                       const Text("⚠️ 盘点期间请冻结出入库，否则产生虚假盘亏。", style: TextStyle(color: Colors.red, fontSize: 12)),
                     ],
                   ),
@@ -807,7 +998,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
 
   /// 下一步：实时模式在离开基准步时生成快照（口径=库存页在库合计；空账本拦截防误盘）
   Future<void> _next() async {
-    if (_step == 2 && _scopeType.isNotEmpty && _scope.isEmpty) {
+    if (_step == 2 && _pickMode == 0 && _scopeType.isNotEmpty && _scope.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("已选盘点类型但未勾选任何区域：请至少勾一个，或改选「混合/全盘」"), backgroundColor: Colors.orange));
       return;
     }
@@ -961,6 +1152,27 @@ class _InvScanPageState extends State<_InvScanPage> {
     if (!_bound) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请先绑定盘点货位或货区！")));
       return;
+    }
+    // ㉖v174 点名盘：扫到【应扫清单外】的框 → 弹窗确认（仍记录=清单外实物，照常入账+备注；取消=不记）
+    bool pickOffList = false;
+    if (widget.task.invPickMode == 1) {
+      final upCode = code.trim().toUpperCase();
+      if (!widget.task.invPickCodes.map((e) => e.trim().toUpperCase()).contains(upCode)) {
+        pickOffList = true;
+        final keep = await showDialog<bool>(
+          context: context,
+          builder: (dc) => AlertDialog(
+            icon: const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 34),
+            title: const Text("不在点名清单内"),
+            content: Text("标签 $upCode 不在本任务应扫清单（${widget.task.invPickCodes.length} 框）内。\n可能是：串位/挪架/清单展开后新入的框。\n\n「仍记录」= 照常入账并备注清单外；「不记录」= 丢弃本次扫码。"),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dc, false), child: const Text("不记录")),
+              FilledButton(onPressed: () => Navigator.pop(dc, true), child: const Text("仍记录")),
+            ],
+          ),
+        ) ?? false;
+        if (!keep || !mounted) return;
+      }
     }
     _busy = true;
     try {
@@ -1134,6 +1346,7 @@ class _InvScanPageState extends State<_InvScanPage> {
           }
         }
       }
+      if (pickOffList) rec.remark = (rec.remark.isEmpty ? "" : "${rec.remark} ") + "清单外扫入"; // ㉖v174 点名盘：清单外仍记录→留痕（拼接防被后续留证备注覆盖）
       await _globalIsar.writeTxn(() async {
         await _globalIsar.inventoryScans.put(rec);
       });
@@ -1206,11 +1419,36 @@ class _InvScanPageState extends State<_InvScanPage> {
       };
 
   Future<void> _finishTask() async {
+    final task = widget.task;
+    // ㉖v174 点名盘：结束前算「未盘到」= 应扫清单 − 本任务有效扫到（重复码/MES无码不算扫到）
+    //   意义：把"该在的都在吗"这个此前只能靠人记忆的判断题，变成系统当场给出的清单。
+    String missJson = task.invMissJson;
+    int missN = 0;
+    if (task.invPickMode == 1) {
+      final scans = await _globalIsar.inventoryScans.filter().taskIdEqualTo(task.batchId).findAll();
+      final got = <String>{};
+      for (final s in scans) {
+        if (s.flag != 1 && s.flag != 2) got.add(s.goodsCode.trim().toUpperCase());
+      }
+      final lp = await _globalIsar.labelInfos.where().findAll();
+      final pnOf = <String, String>{for (final e in lp) e.goodsCode.trim().toUpperCase(): e.partNo};
+      final spp = await _globalIsar.shelfPlacements.where().findAll();
+      final locOf = <String, String>{for (final e in spp) e.goodsCode.trim().toUpperCase(): e.loc};
+      final rows = <Map<String, String>>[];
+      for (final c in task.invPickCodes.map((e) => e.trim().toUpperCase()).toSet()) {
+        if (got.contains(c)) continue;
+        rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? ""});
+      }
+      missN = rows.length;
+      missJson = jsonEncode(rows);
+    }
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text("结束盘点任务"),
-        content: const Text("结束后进入差异报表，之后不可再扫描。确认结束？"),
+        content: Text(task.invPickMode == 1
+            ? "点名盘：应扫 ${task.invPickCodes.length} 框，未扫到 $missN 框${missN > 0 ? "（将列入报表「未盘到」清单，请现场复核是否缺失/串位）" : "（全部盘到 ✅）"}。\n结束后进入差异报表，之后不可再扫描。确认结束？"
+            : "结束后进入差异报表，之后不可再扫描。确认结束？"),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("继续盘点")),
           TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("确认结束")),
@@ -1218,8 +1456,8 @@ class _InvScanPageState extends State<_InvScanPage> {
       ),
     );
     if (ok != true || !mounted) return;
-    final task = widget.task;
     task.isArchived = true;
+    if (task.invPickMode == 1) task.invMissJson = missJson;
     await _globalIsar.writeTxn(() async {
       await _globalIsar.batchInfos.put(task);
     });
@@ -1416,7 +1654,8 @@ class _InvDiffPageState extends State<_InvDiffPage> {
         } catch (_) {}
       }
       await AuthApi.invReport({
-        "batchId": t.batchId, "remark": t.batchRemark, "scope": (t.invScope ?? []).join(","),
+        "batchId": t.batchId, "remark": t.batchRemark, "scope": t.invScope.join(","),
+        "pickRaw": t.invPickRaw, "pickMiss": t.invMissJson, // ㉖v174 点名盘：原始输入+未盘到清单随报告上收
         "blind": t.blindMode, "bookKey": t.invBookKey, "locKey": t.invLocKey,
         "at": nowMs, "totalScans": d.totalScans, "validScans": d.validScans,
         "mesFail": d.mesFail.length, "dup": d.dup.length, "outside": d.outsideScope.length,
@@ -1558,6 +1797,38 @@ class _InvDiffPageState extends State<_InvDiffPage> {
                   ]),
                 ),
               ),
+              // ㉖v174 点名盘：未盘到清单（结束任务时已回写 invMissJson）——点名盘的核心产出
+              if (widget.task.invPickMode == 1) ...[
+                () {
+                  List<dynamic> miss = const [];
+                  try { if (widget.task.invMissJson.isNotEmpty) miss = jsonDecode(widget.task.invMissJson) as List; } catch (_) {}
+                  final allGot = miss.isEmpty;
+                  return Card(
+                    color: allGot ? const Color(0xFFE8F5E9) : const Color(0xFFFFF3E0),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(allGot ? "点名盘点：应扫 ${widget.task.invPickCodes.length} 框，全部盘到 ✅" : "点名盘未盘到 ${miss.length} 框（应扫 ${widget.task.invPickCodes.length}）—— 疑似缺失/串位/未同步，请现场复核",
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: allGot ? Colors.green : const Color(0xFFE65100))),
+                        if (!allGot) ...[
+                          const SizedBox(height: 6),
+                          ConstrainedBox(constraints: const BoxConstraints(maxHeight: 260), child: SingleChildScrollView(
+                            child: Column(children: miss.map((m) {
+                              final mm = m as Map;
+                              return Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Text("▸ ${mm['c']}", style: const TextStyle(fontFamily: "monospace", fontSize: 12.5, fontWeight: FontWeight.w600)),
+                                const SizedBox(width: 8),
+                                Expanded(child: Text("${mm['p']?.toString().isEmpty ?? true ? "零件未知" : mm['p']}  @${mm['l']?.toString().isEmpty ?? true ? "账本无货位" : mm['l']}", style: const TextStyle(fontSize: 12, color: Colors.black87))),
+                              ]));
+                            }).toList()))),
+                          const SizedBox(height: 4),
+                          const Text("处理：找到实物→用「位置登记」重扫归位；确不在架→到库存页消账；账实本就未同步→先同步再复查一遍。", style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                        ],
+                      ]),
+                    ),
+                  );
+                }(),
+              ],
               const Padding(padding: EdgeInsets.fromLTRB(4, 14, 4, 6), child: Text("零件号级差异", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
               if (diffParts.isEmpty) const Padding(padding: EdgeInsets.only(left: 8), child: Text("全部账实相符 🎉", style: TextStyle(color: Colors.green)))
               else ...diffParts.map((p) {
