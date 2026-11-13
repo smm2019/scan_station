@@ -352,6 +352,25 @@ function loadDb() {
       for (const x0 of (d.ledger || [])) { const f0 = String(x0.f || ''); if (f0 && _has(f0)) { x0.f = ctNorm(f0, d.containerTypes); _fx++; } }
       for (const st0 of Object.values(d.scanlog || {})) { const c0 = String(st0.ct || ''); if (c0 && _has(c0)) { st0.ct = ctNorm(c0, d.containerTypes); _fx++; } }
     }
+    // ㉖v174d 料框字典存量对账（11-13 "料筐/塑筐"取证定案的第三层=存量清洗）：
+    //   f 空或不在字典 → 【扫码优先】：该码最新有效流水 ct（PDA 字典按钮产物=权威）经归一在字典则覆盖；
+    //   无扫码 → 字典兜底：ctNorm(f) 唯一命中才改写；两者都救不回 → 存疑保留（绝不臆造），计数上报告。
+    //   存疑含"字典正当值被 11-12 误覆盖事故删掉"的存量行——字典恢复后自然清零。
+    //   loadDb 期 db 未就绪：自带 d 版实现（运行时同口径见 ctLedgerFix/ledgerSync 硬闸）。
+    const _ctTypes = (Array.isArray(d.containerTypes) && d.containerTypes.length) ? d.containerTypes : defaultDb().containerTypes;
+    {
+      const _dict = ctDictSet(_ctTypes), _scm = ctByCode(d), _nm = (v) => ctNorm(v, _ctTypes);
+      let _cf = 0, _cs = 0, _cd = 0, _ca = 0; const _cex = [];
+      for (const x0 of (d.ledger || [])) {
+        const f0 = String(x0.f || '').trim();
+        if (f0 && _dict.has(f0)) continue;
+        const scv = _scm[String(x0.c || '').toUpperCase()];
+        if (scv) { const n = _nm(scv.ct); if (_dict.has(n)) { if (n !== f0) { x0.f = n; _cf++; _cs++; if (_cex.length < 8) _cex.push(String(x0.c) + ':' + (f0 || '∅') + '→' + n); } continue; } }
+        if (f0) { const n = _nm(f0); if (_dict.has(n) && n !== f0) { x0.f = n; _cf++; _cd++; if (_cex.length < 8) _cex.push(String(x0.c) + ':' + f0 + '→' + n); continue; } _ca++; continue; }
+      }
+      if (_cf) added = true;
+      if (_cf || _ca) { _CT_START = { fix: _cf, scan: _cs, dict: _cd, amb: _ca, ex: _cex }; console.log('[ct-gate] 启动料框字典对账：纠正 ' + _cf + ' 行（扫码' + _cs + '/字典' + _cd + '）存疑 ' + _ca + (_cex.length ? ' 例:' + _cex.join('、') : '')); }
+    }
     // ㉖v61b 字典脏名清理：零件号反查流水/账本干净名覆盖，查不到剥替换符
     for (const [k0, v0] of Object.entries(d.itemDict || {})) {
       if (v0 && _has(String(v0.nm || ''))) {
@@ -483,7 +502,7 @@ function loadDb() {
         if (!slot) continue; // 该区排满：留给人工处理，不臆造跨区
         const full = prefix + '-' + slot;
         occ.add(slot);
-        (d.ledger = d.ledger || []).push({ c: code, l: full, f: String(s.ct || ''), t: Number(s.t) || Date.now(), p: String(s.pn || ''), n: String(s.nm || ''), q: Number(s.q) || 0, b: String(s.batch || '').slice(0, 20), pid: '', mv: '人工', src: String(s.gl), by: String(s.op || '系统自愈'), rec: Date.now(), hist: [] });
+        (d.ledger = d.ledger || []).push({ c: code, l: full, f: ctSrcVal(s.ct, d.containerTypes), t: Number(s.t) || Date.now(), p: String(s.pn || ''), n: String(s.nm || ''), q: Number(s.q) || 0, b: String(s.batch || '').slice(0, 20), pid: '', mv: '人工', src: String(s.gl), by: String(s.op || '系统自愈'), rec: Date.now(), hist: [] });
         _ledCodes.add(code);
         s.gl = full;
         _rg++;
@@ -813,6 +832,41 @@ function latestScanQty() {
   }
   return m;
 }
+// ---- ㉖v174d 容器类型字典硬闸（11-13 存量脏值"料筐/塑筐"取证定案）----
+// 病理回溯（ops 字段级留痕实证）：WPS 台账口语名/旧版自由登记进账本 → ctNorm"四级匹配仅在唯一时纠正"
+//   放行（"料筐"同时是 塑料筐/华强塑料筐 的子串，"塑筐"同为两者子序列 → 多匹配=歧义原样过）→
+//   各 PDA 全量推送"后到者胜"合并，多设备缓存乒乓覆盖（留痕实测 20 秒内 A→B→A）→ 脏值随机复现。
+//   扫码 ct 全为正确值（字典按钮产物），脏的只有账本 f → 对账基准=该码最新扫码 ct（MES 直读同权口径）。
+// 三层闸：① ledgerSync 写完即 ctLedgerFix 字典对账（v103 件数闸同款，脏值推上来也活不过一轮）
+//   ② loadDb 启动自愈=存量清洗（f 空/不在字典 → 扫码优先；洗不动的计数"存疑"人工裁决，绝不臆造）
+//   ③ 源头（扫描补建/退回复位行）ctSrcVal：字典外且归一不唯一 → 置空（空行下轮由扫码优先补正）。
+let _CT_START = null; // 启动对账结果（健康页/report 可读：{fix,scan,dict,amb}）
+function ctDictSet(types) { const s = new Set(); for (const t of (types || db.containerTypes || [])) { if (t && t.db) s.add(String(t.db).trim()); if (t && t.show && t.show !== t.db) s.add(String(t.show).trim()); } return s; }
+function ctByCode(d) { const m = {}; for (const s of Object.values((d || db).scanlog || {})) { if (s.cx) continue; const c = String(s.code || '').toUpperCase(), ct0 = String(s.ct || '').trim(), t = Number(s.t) || 0; if (!c || !ct0) continue; if (!m[c] || t >= m[c].t) m[c] = { ct: ct0, t }; } return m; }
+// 单行容器值字典对账 → {f, how}：how=''（正确不动）/scan（扫码覆盖）/dict（ctNorm唯一命中）/amb（存疑，调用方不得改写）
+function ctFixVal(f0, code, dict, scanMap, norm) {
+  const f = String(f0 || '').trim();
+  if (f && dict.has(f)) return { f, how: '' };
+  const sc = scanMap[String(code || '').toUpperCase()];
+  if (sc) { const n = norm(sc.ct); if (dict.has(n)) return { f: n, how: n !== f ? 'scan' : '' }; }
+  if (f) { const n = norm(f); if (dict.has(n)) return { f: n, how: n !== f ? 'dict' : '' }; }
+  return { f, how: 'amb' };
+}
+// 整账字典对账（ledgerSync 调用；loadDb 存量自愈用同口径内联版——彼处 db 未就绪）
+function ctLedgerFix(tag) {
+  const dict = ctDictSet(db.containerTypes), sc = ctByCode(db), norm = (v) => ctNorm(v, db.containerTypes);
+  let fix = 0, byScan = 0, byDict = 0, amb = 0;
+  for (const x of (db.ledger || [])) {
+    const r = ctFixVal(x.f, x.c, dict, sc, norm);
+    if (r.how === 'amb') { if (String(x.f || '').trim()) amb++; continue; }
+    if (r.how && r.f !== String(x.f || '').trim()) { x.f = r.f; fix++; if (r.how === 'scan') byScan++; else byDict++; }
+  }
+  if (fix) console.log(`[ct-gate] ${tag} 料框字典对账：纠正 ${fix} 行（扫码 ${byScan}/字典 ${byDict}），存疑 ${amb}`);
+  return { fix, scan: byScan, dict: byDict, amb };
+}
+// 源头闸（扫描补建/退回复位行写 f 用）：字典值直过；ctNorm 唯一命中归一；字典外且歧义 → 置空
+//（比带脏进账本好：空行会被同步硬闸/启动自愈按扫码补正，脏值却会乒乓扩散；叫车侧本有 palletTypeOf 流水兜底）
+function ctSrcVal(v0, types) { const s0 = String(v0 || '').trim(); if (!s0) return ''; const dict = ctDictSet(types || db.containerTypes); if (dict.has(s0)) return s0; const n = ctNorm(s0, types); return dict.has(n) ? n : ''; }
 
 // ---- ㉓导出中心：快照登记（谁/何时/数据集/条件/行数/SHA1），CSV带血缘注释头、XLS带口径sheet（SpreadsheetML零依赖） ----
 const EXP_LABELS = { D1: '库位表', D2: '库存汇总', D3: '入库流水', D4: '出库流水', D5: 'AGV任务', D6: 'AGV异常事件', D7: '工作量报表', D8: '领料台账', D9: '活动流审计', D10: '盘点结果', PACK: '月度对账包' };
@@ -2338,7 +2392,7 @@ async function unscanRollbackOne(r, target, code, u, hpush) {
     // （合法语义），但站台不是存储位，直接复挂会把框标在 NB02-CK 上（反向病的最后一条写入路径）。格式不符→不盲目复挂。
     hpush(`↩️ 退回 ${target.partNo} 标签 ${code}（${_ij.q}件，原货位记录「${_ul}」是站台/粗码非存储位，未复挂——请按实物到 PDA「位置登记」补账，累计 ${issuedQtyG(target)}/${target.qty}）（${u.name}）`);
   } else if (_ul && !db.ledger.some((x) => String(x.c || '').toUpperCase() === code)) {
-    db.ledger.push({ c: code, l: _ul, f: String(_ij.f || ''), t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(_ij.n || target.itemName || ''), q: Number(_ij.q) || 0, b: String(_ij.b || ''), pid: String(_ij.pid || ''), mv: '登记', src: '退回复位', by: u.name });
+    db.ledger.push({ c: code, l: _ul, f: ctSrcVal(_ij.f), t: Date.now(), p: String(target.partNo || '').toUpperCase(), n: String(_ij.n || target.itemName || ''), q: Number(_ij.q) || 0, b: String(_ij.b || ''), pid: String(_ij.pid || ''), mv: '登记', src: '退回复位', by: u.name });
     (db.ledgerTomb = db.ledgerTomb || []).splice(0, db.ledgerTomb.length, ...db.ledgerTomb.filter((x) => String(x.c).toUpperCase() !== code));
     db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
     hpush(`↩️ 退回 ${target.partNo} 标签 ${code}（${_ij.q}件退回在架 ${_ul}，累计 ${issuedQtyG(target)}/${target.qty}）（${u.name}）`);
@@ -3418,17 +3472,20 @@ function ledgerView() {
   const key = (db.ledgerRev || 0) + '|' + (db.scanlogAt || '') + '|' + ((db.ledger || []).length);
   if (_lvCache && _lvKey === key && Date.now() - _lvAt < 60000) return _lvCache;
   const mm = scanMetaOf();
-  const out = (db.ledger || []).map((x) => { const mt = mm[String(x.c || '').toUpperCase()]; const bRaw = String(x.b || ''); const bFix = printLot((mt && mt.mk) || '', bRaw); const patch = {}; if (bFix && bFix !== bRaw) patch.b = bFix; if (!(x.p || '') && mt && mt.pn) patch.p = mt.pn; if (!(x.n || '') && mt && mt.nm) patch.n = mt.nm; if (!(Number(x.q) > 0) && mt && mt.q) patch.q = mt.q; if (!(x.f || '') && mt && mt.ct) patch.f = mt.ct; return Object.keys(patch).length ? Object.assign({}, x, patch) : x; }); // ㉖v98c b 无条件过 printLot（序列号还原/打印日期优先），其余仍仅补缺
+  const out = (db.ledger || []).map((x) => { const mt = mm[String(x.c || '').toUpperCase()]; const bRaw = String(x.b || ''); const bFix = printLot((mt && mt.mk) || '', bRaw); const patch = {}; if (bFix && bFix !== bRaw) patch.b = bFix; if (!(x.p || '') && mt && mt.pn) patch.p = mt.pn; if (!(x.n || '') && mt && mt.nm) patch.n = mt.nm; if (!(Number(x.q) > 0) && mt && mt.q) patch.q = mt.q; if (!(x.f || '') && mt && mt.ct) { const _cf = ctSrcVal(mt.ct); if (_cf) patch.f = _cf; } return Object.keys(patch).length ? Object.assign({}, x, patch) : x; }); // ㉖v98c b 无条件过 printLot（序列号还原/打印日期优先），其余仍仅补缺；㉖v174d f 补缺只认字典值（历史 scanlog 可能存旧版脏 ct）
   _lvCache = out; _lvKey = key; _lvAt = Date.now(); return out;
 }
 // ㉖v52 容器类型兜底：账本行 f 为空（旧版 PDA/异常路径未记录）→ 从采集流水最新有效一条取 ct
 function palletTypeOf(code) {
+  // ㉖v174d 字典化：账本 f 是字典外脏值（料筐/塑筐）时不得直通——脏值匹配不到任何 WMAS 容器主档
+  // 关键字，叫车会报"容器主档无「料筐」类型编码"（11-13 取证 5 框在架即此状态）。归一优先、
+  // 再降级该码扫码 ct（字典按钮产物）；都没有→空（叫车侧本就会引导"补记容器类型"，比带脏必败好）。
   const c = String(code || '').toUpperCase();
   const led = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === c);
-  const f = led && String(led.f || '').trim();
+  const f = ctSrcVal(led && led.f);
   if (f) return f;
   const mt = scanMetaOf()[c];
-  return mt && mt.ct ? String(mt.ct) : '';
+  return (mt && ctSrcVal(mt.ct)) || '';
 }
 // ---- ㉕A1 导出角色门禁（方案6.6）：D9活动流=仅管理员；D8领料台账/D10盘点=仓管+管理员；其余登录即可 ----
 function expRoleOk(u, label) { label = String(label || ''); if (label === '活动流审计') return u.role === 'admin'; if (label === '领料台账' || label.indexOf('盘点结果') === 0) return u.role === 'warehouse' || u.role === 'admin'; return true; }
@@ -3791,8 +3848,18 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         // ㉖v103 件数对账闸（账本推送方向）：账本行 q 一律以【全厂最新有效扫码】（MES 直读）为准——
         // PDA LabelInfo 缓存存旧值/拼接行均分值都不得覆盖实测（11/3 现场 8894153871 虚高 80 件根因）。
         // 无扫码记录（别台扫的/已归档）或扫码 q=0 不动=零误伤；系统无人工改账本数量入口，q 唯一来源即扫码。
+        // ㉖v174d 料框字典硬闸（与件数对账同层，11-13 "料筐/塑筐"取证定案）：f 不在字典 →
+        // 该码最新扫码 ct 优先（字典按钮产物=权威）→ ctNorm 唯一命中兜底 → 都救不回保留原值（存疑，
+        // 计数入 diff 留痕）。PDA 多设备缓存乒乓覆盖的脏值（料筐/塑筐）推上来活不过本轮 sync。
         const _sq = latestScanQty(); let _qAlign = 0;
-        const _qa = (row) => { const L = _sq[row.c]; if (L && Number(row.q) !== L.q) { row.q = L.q; _qAlign++; } return row; };
+        const _ctDict = ctDictSet(db.containerTypes), _ctScan = ctByCode(db), _ctN = (v) => ctNorm(v, db.containerTypes); let _ctFixN = 0, _ctAmb = 0;
+        const _qa = (row) => {
+          const L = _sq[row.c]; if (L && Number(row.q) !== L.q) { row.q = L.q; _qAlign++; }
+          const cr = ctFixVal(row.f, row.c, _ctDict, _ctScan, _ctN);
+          if (cr.how === 'amb') { if (String(row.f || '').trim()) _ctAmb++; }
+          else if (cr.how && cr.f !== String(row.f || '').trim()) { row.f = cr.f; _ctFixN++; }
+          return row;
+        };
         const _pushClean = (it) => {
           const c0 = String((it && it.c) || '').trim().toUpperCase();
           if (!c0.includes(';') && !c0.includes('；')) { clean.push(_qa(it)); return; }
@@ -3987,7 +4054,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           }
         } catch (e) { console.log('[urgent-in] 异常：', e.message); }
         // ㉖diff 汇总进活动流：单次合并一条（样例40条+计数，防刷爆滚窗）
-        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${locConflict ? ' 货位冲突' + locConflict : ''}${rejected.length ? ' 拒回' + rejected.length : ''}${locBad ? ' 格式拒' + locBad : ''}${_qAlign ? ' 件数对账' + _qAlign : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
+        try { pushOps(u, '账本合并diff', 'v' + db.ledgerRev, `+${added} 改${updated} 删${delApplied} 未变${kept} 压回${skipped}${locConflict ? ' 货位冲突' + locConflict : ''}${rejected.length ? ' 拒回' + rejected.length : ''}${locBad ? ' 格式拒' + locBad : ''}${_qAlign ? ' 件数对账' + _qAlign : ''}${_ctFixN ? ' 料框字典对账' + _ctFixN : ''}${_ctAmb ? ' 料框存疑' + _ctAmb : ''}` + (_diffs.length ? ' | ' + _diffs.slice(0, 40).join(' ; ') + (_diffs.length > 40 ? ` ; …共${_diffs.length}项` : '') : '')); save(); } catch (_) {}
         return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, locConflict, rejected: rejected.slice(0, 50), rejectedLoc: rejectedLoc.slice(0, 20) });
       }
 
@@ -5052,7 +5119,7 @@ return send(res, 200, {
         if (!info.p) for (const s of Object.values(db.scanlog || {})) { if (String(s.code || '').toUpperCase() === code) { info = { p: String(s.pn || ''), n: String(s.nm || ''), q: Number(s.q) || 0, b: String(s.lot || ''), f: String(s.ct || ''), pid: String(s.pid || '') }; break; } }
         const foreign = [...cur.values()].filter((x) => String(x.l).toUpperCase() === loc);
         if (foreign.length) return send(res, 400, { ok: false, msg: '货位 ' + loc + ' 已登记给 ' + foreign[0].c + '，请换位或先处理' });
-        ledgerPut(cur, code, { c: code, l: loc, f: info.f, t: Date.now(), p: info.p, n: info.n, q: info.q, b: info.b, pid: info.pid, mv: '人工', src: '返架' + (obNo ? '(' + obNo + ')' : ''), by: u.name, rec: Date.now() }, cur.get(code));
+        ledgerPut(cur, code, { c: code, l: loc, f: ctSrcVal(info.f), t: Date.now(), p: info.p, n: info.n, q: info.q, b: info.b, pid: info.pid, mv: '人工', src: '返架' + (obNo ? '(' + obNo + ')' : ''), by: u.name, rec: Date.now() }, cur.get(code));
         db.ledgerTomb = (db.ledgerTomb || []).filter((x) => String(x.c).toUpperCase() !== code);
         const _pre = partBoxCounts();
         db.ledger = [...cur.values()]; db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = u.name;
