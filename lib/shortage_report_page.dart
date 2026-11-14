@@ -4,8 +4,9 @@ part of 'main.dart';
 // ㉖v74b 全厂口径（换设备结果一致）：在库=服务器货位账本（各PDA合并），需求=领料单，零件全集=采集流水背书
 // ㉖v75 物料员视角：项目分类筛选（EX11/E281/V446K/EX1H/EF2H 可自定义，物料名包含即命中，含"其他"兜底）
 //      + 零件搜索 + 口径徽章 + 分享只出"当前筛选∧已勾选"；有在途需求的排前（产线在等更急）
-// 判定：零库存（入过库/有人要而现在全厂无货）+ 欠料（需求−在库>0）+ 低水位（阈值可设，默认关）
-// 版式：一物一单（反馈日期/车型/批次号/物料号/物料名称/异常描述/反馈单位/反馈人/责任单位/确认人/确认日期/@人员）
+// 判定：零库存（入过库/有人要而现在全厂无货）+ 欠料（需求−在库>0）+ 低水位（阈值可设，默认关；㉖v180 起必须同时"有人下单且不够发"，有货无人要不入清单）
+//      ㉖v180 有货不配反馈缺料：低水位叠加真实缺口 + 反馈弹层有货绿标与提交确认闸（仓管按"该补货"处理，假缺料=白跑）
+// 版式：一物一单（反馈日期/车型/批次号/零件号/物料名称/异常描述/反馈单位/反馈人/责任单位/确认人/确认日期/@人员）
 // 分享：文字（多单拼一条消息）或 图片（多单合成一张长图，系统分享面板直达微信）；数据不出本机
 
 class _ShortageItem {
@@ -195,7 +196,10 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       final nd = needMap[pn] ?? 0;
       final zero = st <= 1e-9;
       final short = nd - st > 1e-9;
-      final low = _lowLine > 0 && st > 1e-9 && st < _lowLine;
+      // ㉖v180 有货不算缺料（用户实锤"有货怎么能反馈缺货"）：旧版 low 只看库存绝对值，
+      // 设了阈值就会把"在架 4000 件、无人下单"的件印成缺料单发进群+进闭环，仓管按补货白跑。
+      // 现要求叠加真实缺口（有人要且不够）；零库存仍单独成立（真没货，报缺合理）。
+      final low = _lowLine > 0 && st > 1e-9 && st < _lowLine && short;
       if (!(zero || short || low)) continue; // ㉖v75 口径开关不参与计算，全量入表由视图层筛选（切开关即时生效免重拉）
       if (zero && !hist.contains(pn) && nd <= 1e-9) continue; // 从未入库也无人要：不是缺料
       final it = _ShortageItem(pn)
@@ -205,7 +209,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         ..needQty = nd
         ..needFrom = (needFromMap[pn] ?? []).take(3).join("、")
         ..lot = zero ? "" : (lastLot[pn] ?? "")
-        ..kind = zero ? "零库存" : (short ? "欠料" : "低水位");
+        ..kind = zero ? "零库存" : (low ? "低水位" : "欠料"); // ㉖v180 low 已蕴含 short，须先判 low（否则低水位徽章永不出现）
       // ㉖v108 车型两级推导（用户反馈：有的车型显示不全、有的不显示）：
       // ①物料名自带车型码优先（吉利EX11/EX1H/EF2H/沃尔沃V446K/E281…）
       // ②名称不含车型关键词的（"11-排气管后…"这类），回退用项目归属码预填——
@@ -325,7 +329,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         "反馈日期：$_today",
         "车型：${it.carC.text}",
         "批次号：${it.lotC.text}",
-        "物料号：${it.partNo}",
+        "零件号：${it.partNo}", // ㉖v180 改称零件号（本字段=partNo；"物料号"在本项目专指 MES MITEM_CODE）
         "物料名称：${it.itemName}",
         // ㉖v179b 删除"全厂在库：N框·N件"一行（用户实锤没用）：该数值已被下面"异常描述"
         // 完整包含（欠料类描述本身写"全厂在库仅X件，低于待领需求"），两行说的是同一件事。
@@ -378,7 +382,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                   TextField(controller: c, decoration: const InputDecoration(labelText: "确认人", isDense: true)),
                   TextField(controller: a, decoration: const InputDecoration(labelText: "@人员（顿号分隔）", isDense: true)),
                   TextField(controller: pj, decoration: const InputDecoration(labelText: "项目分类（顿号/逗号分隔）", isDense: true, helperText: "物料名包含关键字即归入该项目，如 EX11、E281、V446K", helperStyle: TextStyle(fontSize: 10))),
-                  TextField(controller: l, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "低水位阈值（件，0=不启用）", isDense: true, helperText: "在库低于此值也算缺料纳入清单", helperStyle: TextStyle(fontSize: 10))),
+                  TextField(controller: l, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "低水位阈值（件，0=不启用）", isDense: true, helperText: "在库低于此值且有人下单不够发才算缺料纳入；有货无人要=不缺货，不纳入", helperStyle: TextStyle(fontSize: 10))),
                   // ㉖v179 分享模板自定义：末次领用行（日期+数量+多少天没领过）
                   SwitchListTile(
                       contentPadding: EdgeInsets.zero,
@@ -705,7 +709,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
           row("反馈日期", _today),
           row("车型", it.carC.text),
           row("批次号", it.lotC.text),
-          row("物料号", it.partNo),
+          row("零件号", it.partNo), // ㉖v180 与文字版同改（原"物料号"实为 partNo）
           row("物料名称", it.itemName),
           row("异常描述", it.descC.text),
           row("反馈单位", _unit),

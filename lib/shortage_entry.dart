@@ -226,7 +226,7 @@ Future<String> shortFeedText(List<_ShortGap> rows, String desc) async {
   return rows.map((g) => [
         "【缺料反馈】",
         "反馈日期：$day",
-        "物料号：${g.pn}",
+        "零件号：${g.pn}", // ㉖v180 改称零件号：本字段=partNo，项目里"物料号"专指 MES MITEM_CODE（见物料号补录），不可混用
         "物料名称：${g.nm.isEmpty ? "（档案无名称）" : g.nm}",
         g.stockTxt,
         if (g.demand > 0) "在途领料需求：${_fmtInvNum(g.demand)} 件（${g.demandDocs} 单在等）",
@@ -376,6 +376,9 @@ class _ShortNotFoundCardState extends State<ShortNotFoundCard> {
 /// 弹层：预览每行真实缺口 + 全局异常描述 → 分享(系统面板自选微信群)/复制
 /// 弹层动作：0=取消 1=复制 2=分享 3=提交反馈（二期闭环，写入服务端可被认领/核销）
 Future<void> showShortageSheet(BuildContext context, {required List<_ShortGap> rows, String title = "缺料反馈", String defaultDesc = "生产急需，请安排采购/到货", String hint = "", String src = "pda"}) async {
+  // ㉖v180 有货不配反馈缺料（11-14 用户实锤）：全厂有在架且无真实缺口的件走缺料通道=语义错误
+  //（仓管按补货处理/闭环页留假缺料/群内误判）。弹层红色警示 + 提交闸（可确认覆盖，人工裁决留痕）。
+  final allInStock = rows.isNotEmpty && rows.every((g) => !g.noData && g.boxes > 0 && g.gapQty <= 0);
   final descC = TextEditingController(text: defaultDesc);
   final go = await showModalBottomSheet<int>(
       context: context,
@@ -397,6 +400,9 @@ Future<void> showShortageSheet(BuildContext context, {required List<_ShortGap> r
                             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                               Text("${g.pn}${g.nm.isNotEmpty ? " · ${g.nm}" : ""}", style: const TextStyle(fontFamily: "monospace", fontSize: 13, fontWeight: FontWeight.w700)),
                               Text(g.stockTxt + g.demandTxt, style: const TextStyle(fontSize: 12)),
+                              // ㉖v180 有货行绿标：有在架且无缺口=不缺，正确动作是催发料而非报缺
+                              if (!g.noData && g.boxes > 0 && g.gapQty <= 0)
+                                const Text("🟢 全厂有货且不缺——要催的是发料，不是采购", style: TextStyle(fontSize: 12, color: Color(0xFF2E7D32))),
                               if (g.suggestTxt.isNotEmpty)
                                 Text(g.suggestTxt, style: const TextStyle(fontSize: 12, color: const Color(0xFFE65100))),
                               // ㉖v179 末次领用+距今天数：距今越久越说明不是"刚领完"而是真断供
@@ -454,6 +460,22 @@ Future<void> showShortageSheet(BuildContext context, {required List<_ShortGap> r
       ms.showSnackBar(SnackBar(content: Text("分享失败：$e（可改用复制）"), backgroundColor: Colors.red.shade700));
     }
     return;
+  }
+  // ㉖v180 有货不配进缺料闭环：缺料实体语义=「该补货」，有货项写进去=仓管按补货白跑+
+  // 闭环页留假缺料。不硬拦（现场确有"提前囤/整托凑单"等合理场景），但必须确认一次=人工裁决。
+  if (go == 3 && allInStock) {
+    final sure = await showDialog<bool>(
+        context: context,
+        builder: (c2) => AlertDialog(
+            icon: const Icon(Icons.inventory_2_outlined, color: Colors.orange, size: 30),
+            title: const Text("这些零件全厂有货", style: TextStyle(fontSize: 16)),
+            content: const Text("选中项在架都够当前需求，按缺料提交会让仓管误判为「要补货」。\n\n若确实需要提前囤货/凑整托，继续提交；否则请改用催发料。",
+                style: TextStyle(fontSize: 13, height: 1.6)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消，去催发料")),
+              FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("确实要提前备货")),
+            ]));
+    if (sure != true) return;
   }
   // go == 3 提交：逐条上报（服务端按零件归并计热度，同人重复=幂等不刷热度）
   ms.showSnackBar(const SnackBar(content: Text("提交中…"), backgroundColor: Colors.blueGrey));
