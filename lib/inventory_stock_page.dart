@@ -2006,12 +2006,14 @@ class _PartProfilePageState extends State<PartProfilePage> {
     if (!_watched) {
       final cfg = await bookingDlgOf(context, widget.partNo, _itemNameCache);
       if (cfg == null || !mounted) return;
-      final r = await AuthApi.watchlistSet(widget.partNo, true,
+      final r0 = await watchBookWithGate(context, widget.partNo,
           qty: cfg["qty"] as int,
           itemName: _itemNameCache,
           due: cfg["due"] as String,
           auto: cfg["auto"] as bool);
       if (!mounted) return;
+      if (r0 == null) return; // 用户经闸改选"去开领料单"
+      final r = r0;
       if (r["ok"] != true) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text("预约失败：${r["msg"]}")));
@@ -2072,12 +2074,14 @@ class _PartProfilePageState extends State<PartProfilePage> {
         initDue: w["due"]?.toString() ?? "",
         initAuto: w["auto"] != false);
     if (cfg == null || !mounted) return;
-    final r = await AuthApi.watchlistSet(widget.partNo, true,
+    final r0 = await watchBookWithGate(context, widget.partNo,
         qty: cfg["qty"] as int,
         itemName: _itemNameCache,
         due: cfg["due"] as String,
         auto: cfg["auto"] as bool);
     if (!mounted) return;
+    if (r0 == null) return; // 用户经闸改选"去开领料单"
+    final r = r0;
     if (r["ok"] != true) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text("修改失败：${r["msg"]}")));
@@ -2833,12 +2837,14 @@ class _WatchTabState extends State<_WatchTab> {
     final cfg = await _bookingDlg(picked!.partNo, picked!.itemName);
     if (cfg == null || !mounted) return;
     final qq = (cfg["qty"] as int) > 0;
-    final r = await AuthApi.watchlistSet(picked!.partNo, true,
+    final r0 = await watchBookWithGate(context, picked!.partNo,
         qty: cfg["qty"] as int,
         itemName: picked!.itemName,
         due: cfg["due"] as String,
         auto: cfg["auto"] as bool);
     if (!mounted) return;
+    if (r0 == null) return; // 用户经闸改选"去开领料单"
+    final r = r0;
     if (r["ok"] != true) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text("预约失败：${r["msg"]}")));
@@ -2870,12 +2876,14 @@ class _WatchTabState extends State<_WatchTab> {
         initDue: w["due"]?.toString() ?? "",
         initAuto: w["auto"] != false);
     if (cfg == null || !mounted) return;
-    final r = await AuthApi.watchlistSet(pn, true,
+    final r0 = await watchBookWithGate(context, pn,
         qty: cfg["qty"] as int,
         itemName: nm,
         due: cfg["due"] as String,
         auto: cfg["auto"] as bool);
     if (!mounted) return;
+    if (r0 == null) return; // 用户经闸改选"去开领料单"
+    final r = r0;
     if (r["ok"] != true) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text("修改失败：${r["msg"]}")));

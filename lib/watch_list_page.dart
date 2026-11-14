@@ -12,6 +12,35 @@ part of 'main.dart';
 // 列表数据同样走服务器富化端点（watchlist GET 已带 stock/arrived/target/done/reqNo/overdue），
 //   本机不存任何副本，换设备结果一致。
 
+/// ㉖v184 有货预约闸（用户确认方案，与缺料 in_stock 闸同套路）：服务端对全厂在架>0
+/// 返回 code=in_stock 拒建——预约语义=等新货，有库存应直接开领料单（got 只数新到框，
+/// 有货硬约=干等）。"库存将空想排队等下批"是真实场景，弹一次确认可带 forceStock
+/// 放行。全部建预约调用点统一走本函数，确认交互只写一遍。返回 null=用户取消。
+Future<Map?> watchBookWithGate(BuildContext ctx, String pn,
+    {required int qty, String itemName = "", String due = "", bool auto = true}) async {
+  var r = await AuthApi.watchlistSet(pn, true, qty: qty, itemName: itemName, due: due, auto: auto);
+  if (r["ok"] != true && r["code"] == "in_stock" && ctx.mounted) {
+    final boxes = (r["boxes"] as num?)?.toInt() ?? 0;
+    final go = await showDialog<bool>(
+        context: ctx,
+        builder: (c2) => AlertDialog(
+            icon: const Icon(Icons.inventory_2_outlined, color: Colors.orange, size: 30),
+            title: const Text("这个零件仓库有货", style: TextStyle(fontSize: 16)),
+            content: Text("全厂在架 $boxes 框。预约只数【新到货】——有货还预约，要等新货凑够才开单，现有库存白放着。\n\n建议：直接开领料单领现有库存。\n若是库存即将领空、想排队等下一批到货，可继续预约。",
+                style: const TextStyle(fontSize: 13, height: 1.6)),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("不预约，去开领料单")),
+              FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("仍要等新货")),
+            ]));
+    if (go == true) {
+      r = await AuthApi.watchlistSet(pn, true, qty: qty, itemName: itemName, due: due, auto: auto, forceStock: true);
+    } else {
+      return null;
+    }
+  }
+  return r;
+}
+
 class WatchListPage extends StatefulWidget {
   const WatchListPage({super.key});
   @override
@@ -70,10 +99,11 @@ class _WatchListPageState extends State<WatchListPage> {
     final cfg = await bookingDlgOf(context, pn, nm, initQty: initQty, initDue: initDue, initAuto: initAuto);
     if (cfg == null || !mounted) return;
     setState(() => _busy = true);
-    final r = await AuthApi.watchlistSet(pn, true,
+    final r = await watchBookWithGate(context, pn,
         qty: (cfg["qty"] as int?) ?? 0, itemName: nm, due: (cfg["due"] as String?) ?? "", auto: (cfg["auto"] as bool?) ?? true);
     if (!mounted) return;
     setState(() => _busy = false);
+    if (r == null) return; // 用户经闸改选"去开领料单"
     if (r["ok"] != true) { _toast("预约失败：${r["msg"]}"); return; }
     final q = (cfg["qty"] as int?) ?? 0;
     _toast(q > 0 ? "已预约 $pn 预订 $q 框，够数自动开领料单" : "已预约 $pn，到料时通知你", err: false);

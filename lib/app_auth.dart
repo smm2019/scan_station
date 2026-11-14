@@ -454,14 +454,15 @@ class AuthApi {
   static Future<Map> watchlistGet() async =>
       _req("GET", "/api/watchlist", token: await AuthStore.token());
   static Future<Map> watchlistSet(String partNo, bool on,
-      {int qty = 0, String itemName = "", String due = "", bool auto = true}) async =>
+      {int qty = 0, String itemName = "", String due = "", bool auto = true, bool forceStock = false}) async =>
       _req("POST", "/api/watchlist",
           body: {
             "partNo": partNo, "on": on,
             if (on) "qty": qty,
             if (on && itemName.isNotEmpty) "itemName": itemName,
             if (on && due.isNotEmpty) "due": due,
-            if (on) "auto": auto
+            if (on) "auto": auto,
+            if (on && forceStock) "forceStock": true // ㉖v184 有货预约闸：确认"明知有货仍要等下批"后重试
           },
           token: await AuthStore.token());
   static Future<Map> groundSlotsGet() async =>

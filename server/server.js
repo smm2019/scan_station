@@ -5650,6 +5650,13 @@ return send(res, 200, {
         const due = /^\d{4}-\d{2}-\d{2}$/.test(String(b.due || '')) ? String(b.due) : '';
         const itemName = String(b.itemName || '').slice(0, 60);
         const auto = b.auto !== false;
+        // ㉖v184 有货不配预约等货（用户确认方案，与缺料 in_stock 闸同套路同判据 partBoxCounts）：
+        // 全厂有在架时预约=让got(只数新到框)永远凑不够→有库存反而干等开单。默认提示改走直接
+        // 开领料单；现场确有"库存将空想排队等下批"合理场景→forceStock 确认后放行并打标。
+        if (qty > 0 && b.forceStock !== true) {
+          const _bx = (partBoxCounts()[pn] || 0);
+          if (_bx > 0) return send(res, 400, { ok: false, code: 'in_stock', boxes: _bx, msg: `零件 ${pn} 全厂在架 ${_bx} 框——直接开领料单更快，无需预约等新货` });
+        }
         let w = db.watchlist.find((x) => x.userId === u.id && x.partNo === pn);
         if (!w) {
           if (db.watchlist.length > 3000) return send(res, 400, { ok: false, msg: '预约条目已满，请先清理' });

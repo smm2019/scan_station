@@ -1077,8 +1077,9 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                             final q = picked ?? sug;
                             setSt(() { booking.add(pn); bookFail.remove(pn); });
                             try {
-                              final r = await AuthApi.watchlistSet(pn, true, qty: q > 0 ? q : 0, itemName: x["nm"]?.toString() ?? "", auto: q > 0);
-                              setSt(() { booking.remove(pn); if (r["ok"] == true) { booked.add(pn.toUpperCase()); bookFail.remove(pn); } else { bookFail.add(pn); } });
+                              final r = await watchBookWithGate(mctx, pn, qty: q > 0 ? q : 0, itemName: x["nm"]?.toString() ?? "", auto: q > 0);
+                              // r==null=闸上用户改选"去开领料单"：只撤进行中态，不记预约成败
+                              setSt(() { booking.remove(pn); if (r != null && r["ok"] == true) { booked.add(pn.toUpperCase()); bookFail.remove(pn); } else if (r != null) { bookFail.add(pn); } });
                             } catch (_) { setSt(() { booking.remove(pn); bookFail.add(pn); }); }
                           }
                           return Row(children: [
@@ -1119,6 +1120,9 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                           setSt(() { booking.add(pn); bookFail.remove(pn); });
                                           final x = outOfStock.firstWhere((e) => e["pn"].toString() == pn);
                                           try {
+                                            // 批量场景不逐个弹闸确认框（选5项弹5次不可用）：本列表本就是
+                                            // "在架0"告急件，被 in_stock 拦=建约瞬间刚好到货，归入既有
+                                            // 失败态(bookFail 红标)让现场可见即可，不弹窗打断批量。
                                             final r = await AuthApi.watchlistSet(pn, true, qty: (x["boxes"] as num?)?.toInt() ?? 0, itemName: x["nm"]?.toString() ?? "", auto: true);
                                             setSt(() { booking.remove(pn); if (r["ok"] == true) { booked.add(pn.toUpperCase()); selOut.remove(pn); } else bookFail.add(pn); });
                                           } catch (_) { setSt(() { booking.remove(pn); bookFail.add(pn); }); }
