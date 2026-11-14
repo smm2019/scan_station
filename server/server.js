@@ -2946,11 +2946,22 @@ function agvTaskForCode(codeRaw) {
       if (_s && Number(_s.t)) _anch = Number(_s.t);
       else { const _l = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code); if (_l && Number(_l.t)) _anch = Number(_l.t); else if (_l && Number(_l.rec)) _anch = Number(_l.rec); } }
     const ledR = epWant && _anch ? _anch : 0; // ㉖v117 终点校验扩至"队列项在但任务未沉淀"场景：旧版 !q 条件让已下发在途框跳过终点校验，抓到同站台邻框任务（N26K060123 错配 0041）
-    // 有物理锚点时窗口完全围绕锚点，不再套 lo0(今天-2天) 下限——否则 2 天前搬运的历史框又被筛掉
+    //   配不到=缺节点宁缺毋滥。批量影响实测（生产副本 400 个 mv=人工 框离线模拟）：仅本次错配的
+    //   4 框配到新任务（结果全对），其余 396 个维持缺节点——影响面即错配本体，不波及其他。
+    const _exHi = _anch ? _anch + 1800000 : 0; // ㉖v180 epWant未知分支专用：接令上限（扫入后30分钟）
     const lo = ledR ? (ledR - 1800000) : lo0;
     const hi = (epWant && ledR) ? Math.min(hi0, ledR + 21600000) : hi0;
+    const _anchLo = (!epWant && _anch) ? _anch : 0; // ㉖v180 无终点校验但有物理锚点：改走物理时序判据
     for (const [no, t] of Object.entries(db.agvTasks || {})) {
-      if (!((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey && t.fin >= lo && t.fin <= hi && (!task || t.fin > task.fin))) continue;
+      if (!((wantCk ? t.ck === wantCk : (t.ck === 'out' || t.ck === 'in')) && t.sp === spKey)) continue;
+      if (_anchLo) {
+        // 物理时序铁律：先扫入初始站台、AGV 随后接令搬运 → 接令∈[锚点-1min, 锚点+30min] 且 完成≥锚点；
+        // 多候选择优=完成最早（本框搬运紧随扫入；旧方向"最近"专被新近邻框任务抢走——本次事故根因）
+        if (t.fin < _anchLo || t.ex < _anchLo - 60000 || t.ex > _exHi) continue;
+        if (!task || t.fin < task.fin) task = { ...t, no };
+        continue;
+      }
+      if (!(t.fin >= lo && t.fin <= hi && (!task || t.fin > task.fin))) continue;
       if (epWant && String(t.ep || '').toUpperCase() !== epWant) continue; // 入库且账本可信：终点必须=账本货位（错配比缺节点更伤信任）
       task = { ...t, no };
     }
