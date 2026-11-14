@@ -958,7 +958,9 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                   builder: (ctx, sn) {
                     if (!sn.hasData) return const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()));
                     final allLocs = sn.data!.map((e) => e.locCode).toSet().toList();
-                    final zones = allLocs.where((c) => _scopeType.isEmpty ? true : (c.toUpperCase().startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04'))).map(invZoneOf).toSet().toList()..sort(); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
+                    // ㉖v181 修①：货架候选排除站台码（NB02-CK-xx 是出库缓存/检验站台不是货架，
+                    // 勾它圈不出任何货位=误导；判据与服务端 locStation、AGV 统计 !/-CK-/ 同源）
+                    final zones = allLocs.where((c) { final cu = c.toUpperCase(); if (_scopeType.isEmpty) return true; if (!cu.startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04')) return false; return !cu.contains('-CK-'); }).map(invZoneOf).toSet().toList()..sort(); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
                     return Card(
                       child: Padding(
                         padding: const EdgeInsets.all(12),
@@ -980,12 +982,15 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                             if (zones.isEmpty)
                               const Text("货位基准中没有该类型的库位数据", style: TextStyle(fontSize: 12, color: Colors.grey))
                             else
-                              ConstrainedBox(constraints: const BoxConstraints(maxHeight: 300), child: SingleChildScrollView(child: Column(children: zones.map((z) => CheckboxListTile(
+                              // ㉖v181 修②：原 maxHeight300 内层滚动嵌在外层 SingleChildScrollView 里
+                              // ——Flutter 双层同轴滚动不联动，内层列表经常滚不动，F-02 之后的项看不见
+                              // 也点不着（11-14 现场截图实锤）。候选直接铺进外层滚动流，整页一处滚。
+                              Column(children: zones.map((z) => CheckboxListTile(
                                 dense: true, contentPadding: EdgeInsets.zero, controlAffinity: ListTileControlAffinity.leading,
                                 title: Text(z, style: const TextStyle(fontSize: 13, fontFamily: "monospace")),
                                 value: _scope.contains(z),
                                 onChanged: (v) => setState(() { if (v == true) { _scope.add(z); } else { _scope.remove(z); } }),
-                              )).toList()))),
+                              )).toList()),
                           ],
                         ]),
                       ),
