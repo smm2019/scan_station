@@ -991,7 +991,15 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                       }
                       for (final l in shelfGroups.values) { l.sort(); }
                     }
-                    final zones = _scopeType == 'shelf' ? const <String>[] : locs.where((c) { if (_scopeType.isEmpty) return true; if (!c.startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04')) return false; return !c.contains('-CK-'); }).map(invZoneOf).toSet().toList()..sort(); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
+                    // ㉖v182 修现场崩溃（13:19 实锤）：v181 原写法 `cond ? const [] : list..sort()`
+                    // ——Dart 级联优先级低于三元，..sort() 作用于整个三元结果；选"AGV货架"时
+                    // sort 打在 const 不可变列表上=“Cannot modify an unmodifiable list”。
+                    // 静态类型是可变 List<String>，analyzer 查不出——只有真机点到该分支才炸，教训入档。
+                    final List<String> zones = <String>[];
+                    if (_scopeType != 'shelf') {
+                      zones.addAll(locs.where((c) { if (_scopeType.isEmpty) return true; if (!c.startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04')) return false; return !c.contains('-CK-'); }).map(invZoneOf)); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
+                      zones.sort();
+                    }
                     // 每格位在架框数=账本在架码数（㉖v181：与创建时 buildPickPlan 展开同源于
                     // shelfPlacements——基线货位行是"位×零件"不是码行，数它会把"1框多零件"算成
                     // 多框，勾选时显示的框数与展开结果不一致=又一次承诺与结果不符）
