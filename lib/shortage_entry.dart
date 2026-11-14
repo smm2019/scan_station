@@ -376,9 +376,9 @@ class _ShortNotFoundCardState extends State<ShortNotFoundCard> {
 /// 弹层：预览每行真实缺口 + 全局异常描述 → 分享(系统面板自选微信群)/复制
 /// 弹层动作：0=取消 1=复制 2=分享 3=提交反馈（二期闭环，写入服务端可被认领/核销）
 Future<void> showShortageSheet(BuildContext context, {required List<_ShortGap> rows, String title = "缺料反馈", String defaultDesc = "生产急需，请安排采购/到货", String hint = "", String src = "pda"}) async {
-  // ㉖v180 有货不配反馈缺料（11-14 用户实锤）：全厂有在架且无真实缺口的件走缺料通道=语义错误
-  //（仓管按补货处理/闭环页留假缺料/群内误判）。弹层红色警示 + 提交闸（可确认覆盖，人工裁决留痕）。
-  final allInStock = rows.isNotEmpty && rows.every((g) => !g.noData && g.boxes > 0 && g.gapQty <= 0);
+  // ㉖v181 有货判定统一交服务端（in_stock 闸，见 shortage 提交端点）：旧版端上
+  // rows.every(有货) 判据既漏"一行真缺+一行有货"的混单，又与服务端兜底重复弹窗。
+  // 端上只保留行内绿标提示（提交前就知道该行本不该按缺料处理），拦截判据单一来源。
   final descC = TextEditingController(text: defaultDesc);
   final go = await showModalBottomSheet<int>(
       context: context,
@@ -461,39 +461,64 @@ Future<void> showShortageSheet(BuildContext context, {required List<_ShortGap> r
     }
     return;
   }
-  // ㉖v180 有货不配进缺料闭环：缺料实体语义=「该补货」，有货项写进去=仓管按补货白跑+
-  // 闭环页留假缺料。不硬拦（现场确有"提前囤/整托凑单"等合理场景），但必须确认一次=人工裁决。
-  if (go == 3 && allInStock) {
-    final sure = await showDialog<bool>(
-        context: context,
-        builder: (c2) => AlertDialog(
-            icon: const Icon(Icons.inventory_2_outlined, color: Colors.orange, size: 30),
-            title: const Text("这些零件全厂有货", style: TextStyle(fontSize: 16)),
-            content: const Text("选中项在架都够当前需求，按缺料提交会让仓管误判为「要补货」。\n\n若确实需要提前囤货/凑整托，继续提交；否则请改用催发料。",
-                style: TextStyle(fontSize: 13, height: 1.6)),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消，去催发料")),
-              FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("确实要提前备货")),
-            ]));
-    if (sure != true) return;
-  }
   // go == 3 提交：逐条上报（服务端按零件归并计热度，同人重复=幂等不刷热度）
+  // ㉖v181 有货判定以服务端为准（唯一口径，且堵住混单漏口——旧版端上 rows.every(有货)
+  // 才提示，"一行真缺+一行有货"会静默放过）。服务端返回 code=in_stock 的行先收集，
+  // 循环后统一点名确认：确认者带 forceStock 重试（标记囤货申请），拒绝者计入未提交。
   ms.showSnackBar(const SnackBar(content: Text("提交中…"), backgroundColor: Colors.blueGrey));
-  int okN = 0, dupN = 0, failN = 0;
+  int okN = 0, dupN = 0, failN = 0, skipN = 0;
   final msgs = <String>[];
+  final inStock = <_ShortGap, String>{}; // 被有货闸拦下的行 → 服务端原因
   for (final g in rows) {
     try {
       final r = await AuthApi.shortSubmit(g.pn, g.nm, desc, src);
       if (r["ok"] == true) {
         if (r["dup"] == true) { dupN++; msgs.add("${g.pn} 你已反馈过（${r["status"] == "claimed" ? "${r["claimByName"]} 处理中" : "待仓管认领"}）"); }
         else { final isNew = r["created"] == true; okN++; msgs.add("${g.pn} ${isNew ? "已提交" : "热度+1（共 ${r["n"]} 人在催）"}"); }
+      } else if (r["code"] == "in_stock") {
+        inStock[g] = (r["msg"] ?? "全厂有货且不缺").toString();
       } else { failN++; msgs.add("${g.pn} 失败：${r["msg"]}"); }
     } catch (e) { failN++; msgs.add("${g.pn} 失败：$e"); }
+  }
+  if (inStock.isNotEmpty && context.mounted) {
+    final its = inStock.keys.toList();
+    final sure = await showDialog<bool>(
+        context: context,
+        builder: (c2) => AlertDialog(
+            icon: const Icon(Icons.inventory_2_outlined, color: Colors.orange, size: 30),
+            title: Text("${its.length} 项全厂有货，未提交", style: const TextStyle(fontSize: 16)),
+            content: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+              const Text("下列零件在架够当前需求，按缺料提交会让仓管误判为「要补货」：", style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 6),
+              ConstrainedBox(constraints: const BoxConstraints(maxHeight: 150), child: SingleChildScrollView(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    for (final g in its) Text("· ${g.pn} ${g.stockTxt}", style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
+                  ]))),
+              const SizedBox(height: 8),
+              const Text("确实需要提前囤货/凑整托 → 继续提交（仓管端标注「囤货申请」）；否则仅催发料。", style: TextStyle(fontSize: 12, color: Colors.blueGrey)),
+            ]),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(c2, false), child: Text("不提交这${its.length}项")),
+              FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("确实要提前备货")),
+            ]));
+    if (sure == true) {
+      for (final g in its) {
+        try {
+          final r = await AuthApi.shortSubmit(g.pn, g.nm, desc, src, forceStock: true);
+          if (r["ok"] == true) {
+            if (r["dup"] == true) dupN++; else okN++;
+            msgs.add("${g.pn} 已按囤货申请提交");
+          } else { failN++; msgs.add("${g.pn} 失败：${r["msg"]}"); }
+        } catch (e) { failN++; msgs.add("${g.pn} 失败：$e"); }
+      }
+    } else {
+      skipN = its.length;
+    }
   }
   ms.showSnackBar(SnackBar(
       duration: const Duration(seconds: 6),
       backgroundColor: failN == 0 ? Colors.green : Colors.orange.shade800,
-      content: Text("缺料反馈：新提交 $okN 项" + (dupN > 0 ? " · 重复 $dupN 项" : "") + (failN > 0 ? " · 失败 $failN 项" : "") + "\n" + msgs.take(3).join("\n"), style: const TextStyle(fontSize: 12.5))));
+      content: Text("缺料反馈：新提交 $okN 项" + (dupN > 0 ? " · 重复 $dupN 项" : "") + (skipN > 0 ? " · 有货未提交 $skipN 项" : "") + (failN > 0 ? " · 失败 $failN 项" : "") + "\n" + msgs.take(3).join("\n"), style: const TextStyle(fontSize: 12.5))));
 }
 
 /// 入口统一动作：拉全厂缺口 → 预览弹层。失败不发假数据：询问后才裸文案发送。

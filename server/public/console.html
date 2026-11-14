@@ -506,9 +506,12 @@ async function pgShort(){
  if(!L.length){$('#shList').innerHTML='<div style="color:var(--sub);padding:14px">暂无'+(_shSt=='open'?'未处理':'已核销')+'的缺料反馈</div>';return}
  $('#shList').innerHTML=`<div style="overflow:auto;max-height:72vh"><table><thead><tr><th>零件号</th><th>物料名</th><th>热度</th><th>全厂在架</th><th>在途需求</th><th>建议补</th><th>状态</th><th>反馈人</th><th>备注</th><th></th></tr></thead><tbody>${L.map((s,i)=>{
   const who=(s.byList||[]).map(b=>b.name).slice(0,3).join('、')+((s.byList||[]).length>3?' 等'+s.byList.length+'人':'');
-  const st=s.status=='resolved'?`<span class="tag t-d">已核销</span><div style="font-size:10.5px;color:var(--sub)">${_esc(s.doneByName||'')}${s.way?' · '+_esc(s.way):''}</div>`
-    :s.status=='claimed'?`<span class="tag t-a">已认领</span><div style="font-size:10.5px;color:var(--sub)">${_esc(s.claimByName||'')}${s.eta?' · 预计 '+_esc(s.eta):' · 未填到货日'}</div>`
-    :`<span class="tag t-p">待认领</span><div style="font-size:10.5px;color:var(--sub)">${s.ageDays>6?`<b style="color:var(--bad)">已挂 ${s.ageDays} 天</b>`:'已挂 '+s.ageDays+' 天'}</div>`;
+  // ㉖v181 囤货申请标注：服务端有货闸拒写、物料员二次确认后才纳入的条目带 stockApply=1。
+  // 不显示则等于标记不存在——囤货请求会被当断供抢处理，而它本可缓办（到货即自动核销）。
+  const sa=s.stockApply===1?'<div style="font-size:10.5px;color:var(--warn)">🛒 囤货申请（物料员确认要提前备货，非断供·可缓办）</div>':'';
+  const st=s.status=='resolved'?`<span class="tag t-d">已核销</span><div style="font-size:10.5px;color:var(--sub)">${_esc(s.doneByName||'')}${s.way?' · '+_esc(s.way):''}</div>${sa}`
+    :s.status=='claimed'?`<span class="tag t-a">已认领</span><div style="font-size:10.5px;color:var(--sub)">${_esc(s.claimByName||'')}${s.eta?' · 预计 '+_esc(s.eta):' · 未填到货日'}</div>${sa}`
+    :`<span class="tag t-p">待认领</span><div style="font-size:10.5px;color:var(--sub)">${s.ageDays>6?`<b style="color:var(--bad)">已挂 ${s.ageDays} 天</b>`:'已挂 '+s.ageDays+' 天'}</div>${sa}`;
   const act=_wh&&s.status!='resolved'?`<button class="pill g" style="padding:3px 8px;font-size:11.5px" onclick="shClaim('${s.id}','${_esc(s.pn)}')">认领</button> ${s.status=='claimed'?`<button class="pill" style="padding:3px 8px;font-size:11.5px" onclick="shResolve('${s.id}','${_esc(s.pn)}')">核销</button>`:`<button class="pill q" style="padding:3px 8px;font-size:11.5px" onclick="shResolve('${s.id}','${_esc(s.pn)}')">核销</button>`}`:'';
   return `<tr class="fin" style="animation-delay:${Math.min(i*22,500)}ms"><td class="mono">${_esc(s.pn)}${(j.mine||[]).includes(s.pn)?' <span style="color:var(--pri);font-size:10px" title="你反馈过">你</span>':''}</td><td style="max-width:160px">${_esc(s.nm||'')}</td>
    <td><b style="color:${s.n>=3?'var(--bad)':'var(--ink)'}">${s.n}人</b></td>

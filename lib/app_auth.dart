@@ -264,10 +264,11 @@ class AuthApi {
   // ㉖v178 缺料反馈闭环（二期）：列表/提交（认领与核销在网页端，仓管场景）
   static Future<Map> shortList({String status = "open"}) async =>
       _req("GET", "/api/shortages?status=$status", token: await AuthStore.token());
-  static Future<Map> shortSubmit(String partNo, String itemName, String note, String src) async =>
+  /// ㉖v181 forceStock：服务端有货闸返回 in_stock 后，用户确认「确实要提前备货」时带 true 重试
+  static Future<Map> shortSubmit(String partNo, String itemName, String note, String src, {bool forceStock = false}) async =>
       _req("POST", "/api/shortages",
           token: await AuthStore.token(),
-          body: {"partNo": partNo, "itemName": itemName, "note": note, "src": src});
+          body: {"partNo": partNo, "itemName": itemName, "note": note, "src": src, if (forceStock) "forceStock": true});
 
   /// ㉖v179 末次领料批量查询（全厂口径，服务端算）：items="零件号,零件号"，返回 map:{pn:{t,qty,by,no}}
   /// 必须服务端算——领料列表对物料员只返回本人单，端上自己算会把同事领过的显示成"无记录"

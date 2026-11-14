@@ -2565,7 +2565,10 @@ function shortageNotifyOwners(s, text) { // 通知全部反馈人（去重、跳
   const ids = new Set((s.byList || []).map((b) => b.id));
   for (const id of ids) { const x = db.users.find((z) => z.id === id); if (x && x.enabled) notify(id, 'shortage_done', text, '', { solo: true }); }
 }
-function shortageUpsert(u, pn, nm, note, src) {
+function shortageUpsert(u, pn, nm, note, src, opts) {
+  // ㉖v181 stockApply=显式纳入的"有货囤货申请"（调用方已过有货闸、确认要提前备货）；
+  // 打标而非拒写：与"真断供"区分，仓管待办据此排序/标注，不被囤货请求污染断供判断。
+  const stockApply = !!(opts && opts.stockApply);
   db.shortages = db.shortages || [];
   const now = Date.now();
   const open = db.shortages.filter((s) => s.pn === pn && s.status !== 'resolved');
@@ -2576,12 +2579,14 @@ function shortageUpsert(u, pn, nm, note, src) {
     (hit.byList = hit.byList || []).push({ id: u.id, name: u.name, at: now });
     hit.at = now;
     if (nm && !hit.nm) hit.nm = String(nm).slice(0, 60);
+    if (stockApply) hit.stockApply = 1;
     return { item: hit, dup: false, created: false };
   }
   const s = {
     id: newId('sh'), pn, nm: String(nm || '').slice(0, 60), note: String(note || '').slice(0, 200), src: String(src || '').slice(0, 20),
     n: 1, byList: [{ id: u.id, name: u.name, at: now }], status: 'open',
     firstAt: now, at: now, // 不存 lastPer：账本只在架有行，零在架（恰恰最常反馈）算不出均值——宁缺不假，均值一律取实时在架口径
+    ...(stockApply ? { stockApply: 1 } : {}),
   };
   db.shortages.push(s);
   if (db.shortages.length > SHORT_KEEP) {
@@ -6947,10 +6952,24 @@ return send(res, 200, {
           const bd = await readBody(req);
           const pn = String(bd.partNo || '').trim().toUpperCase().slice(0, 40);
           if (!pn) return send(res, 400, { ok: false, msg: '缺少零件号' });
-          const rs = shortageUpsert(u, pn, bd.itemName, bd.note, bd.src);
+          // ㉖v181 服务端有货兜底闸（用户拍板"修混单漏口+服务端兜住"）：缺料实体语义=「该补货」，
+          //   有货且不缺的件写进来=仓管按补货白跑+闭环页留假缺料+热度排序被污染。手机侧只在
+          //   "全部行都有货"时才提示，混单（一行真缺+一行有货）会静默放过——本闸兜住这一漏口。
+          //   口径与 PDA 同源（partBoxCounts 框数 / shortDemandMap 在途需求 / shortQtyMap 件数）；
+          //   零在架（boxes=0）永不拦：真没货报缺合理。
+          const _bc = partBoxCounts(), _dm2 = shortDemandMap(), _qm = shortQtyMap();
+          const _bx = _bc[pn] || 0, _qy = _qm[pn] || 0, _dq = _dm2.qty[pn] || 0;
+          const inStockNoGap = _bx > 0 && _dq - _qy <= 0;
+          if (inStockNoGap && bd.forceStock !== true) {
+            return send(res, 400, {
+              ok: false, code: 'in_stock', boxes: _bx, qty: Math.round(_qy * 100) / 100, demand: Math.round(_dq * 100) / 100,
+              msg: `零件 ${pn} 全厂在架 ${_bx} 框（${Math.round(_qy)} 件）且够当前在途需求，不属断供——要催的是发料，不是采购`,
+            });
+          }
+          const rs = shortageUpsert(u, pn, bd.itemName, bd.note, bd.src, { stockApply: inStockNoGap });
           save();
-          pushOps(u, '缺料反馈', pn, `${rs.created ? '新建' : rs.dup ? '同人重复(幂等)' : '热度+1'} ｜ ${String(bd.note || '').slice(0, 80)}`);
-          return send(res, 200, { ok: true, id: rs.item.id, dup: rs.dup, created: rs.created, n: rs.item.n, status: rs.item.status, eta: rs.item.eta || '', claimByName: rs.item.claimByName || '' });
+          pushOps(u, '缺料反馈', pn, `${inStockNoGap ? '囤货申请(有货显式纳入) ｜ ' : ''}${rs.created ? '新建' : rs.dup ? '同人重复(幂等)' : '热度+1'} ｜ ${String(bd.note || '').slice(0, 80)}`);
+          return send(res, 200, { ok: true, id: rs.item.id, dup: rs.dup, created: rs.created, n: rs.item.n, status: rs.item.status, eta: rs.item.eta || '', claimByName: rs.item.claimByName || '', stockApply: inStockNoGap ? 1 : 0 });
         }
         if (p === '/api/shortages/claim' && req.method === 'POST') {
           if (!isWh) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可认领' });
