@@ -47,10 +47,23 @@ class _ShortGap {
   /// 距上次领用天数；-1=不显示（未知或窗口内无记录）
   int get lastDaysAgo => lastT <= 0 ? -1 : DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(lastT)).inDays;
 
-  double get gapQty => demand - qty > 0 ? demand - qty : (boxes <= 0 ? demand : 0); // 件数缺口（在架够需求→0，属催办非缺料）
-  // ★ 只在"知道每框均值"时折框数。字典对零在架零件不下发 perBoxQty（server.js:5292 只在有在架时算），
-  //   而零在架恰恰最常反馈——此时折框必错（缺口 5000 件也说"建议 1 框"），宁可不给框数只报件数。
-  int get suggestBoxes => (gapQty > 0 && perBox > 0) ? (gapQty / perBox).ceil().clamp(1, 999).toInt() : 0;
+  // ★ 缺口=未满足的在途需求（11-14 修：旧版零在架分支把 demand 塞进 gapQty，
+  //   致"零在架+零需求"落进"属催办"分支、对 0 库存显示"缺口已被在架覆盖"=假话）
+  double get gapQty => demand - qty > 0 ? demand - qty : 0;
+  /// "建议补"行四分支（写人话，杜绝"零在架却称已覆盖"类自相矛盾）：
+  ///  有缺口 → 折框/不折框；无缺口但有在架有需求 → 催发料；无缺口无需求 → 整行不出现（沉默胜过错说）
+  String get suggestTxt {
+    if (noData) return "发送时缺口数据不可用，仅基础字段";
+    final g = gapQty;
+    if (g > 0) {
+      final s = suggestBoxes;
+      return s > 0
+          ? "缺 ${_fmtInvNum(g)} 件 · 建议补 ≥$s 框（均值 ${_fmtInvNum(perBox)} 件/框）"
+          : "缺 ${_fmtInvNum(g)} 件（当前无每框均值，不折框数以免误导）";
+    }
+    if (boxes > 0 && demand > 0) return "在架够本次需求，不缺货——请催仓管发料";
+    return ""; // 无缺口且无在途需求：不写判断句（旧版此处"缺口已被在架覆盖，属催办"歧义太大）
+  }
 
   String get stockTxt => noData
       ? "缺口数据未核算（服务器暂不可用）"
@@ -58,12 +71,9 @@ class _ShortGap {
           ? "全厂在架 ${_fmtInvNum(boxes.toDouble())} 框 · ${_fmtInvNum(qty)} 件"
           : "全厂零在架${backed ? "" : "（系统档案查无此号，可能新项目/新零件）"}";
   String get demandTxt => noData ? "" : (demand > 0 ? "｜在途需求 ${_fmtInvNum(demand)} 件（$demandDocs 单在等）" : "");
-  String get suggestTxt => noData
-      ? "发送时缺口数据不可用，仅基础字段"
-      : suggestBoxes > 0
-          ? "建议补 ≥$suggestBoxes 框（均值 ${_fmtInvNum(perBox)} 件/框）"
-          : (gapQty > 0 ? "缺口 ${_fmtInvNum(gapQty)} 件（该零件无历史每框均值，不折框数以免误导）"
-                        : "缺口已被在架覆盖，属催办");
+  // ★ 只在"知道每框均值"时折框数。字典对零在架零件不下发 perBoxQty（server.js:5292 只在有在架时算），
+  //   而零在架恰恰最常反馈——此时折框必错（缺口 5000 件也说"建议 1 框"），宁可不给框数只报件数。
+  int get suggestBoxes => (gapQty > 0 && perBox > 0) ? (gapQty / perBox).ceil().clamp(1, 999).toInt() : 0;
 }
 
 /// 拉全厂缺口快照；整体失败返回 null（调用方必须降级，不得当 0 处理）
@@ -220,8 +230,9 @@ Future<String> shortFeedText(List<_ShortGap> rows, String desc) async {
         "物料名称：${g.nm.isEmpty ? "（档案无名称）" : g.nm}",
         g.stockTxt,
         if (g.demand > 0) "在途领料需求：${_fmtInvNum(g.demand)} 件（${g.demandDocs} 单在等）",
-        // 一律输出：有均值→折框建议；无均值→只报件数；在架够需求→标"属催办"；降级→如实标注
-        g.suggestTxt,
+        // ㉖v180b 四分支：有缺口→折框/报件数；在架够需求→催发料；无缺口无需求→整行不出现
+        //（旧版此处恒输出，零在架+零需求时会显示"缺口已被在架覆盖"=对 0 库存说货够了）
+        if (g.suggestTxt.isNotEmpty) g.suggestTxt,
         // ㉖v179 末次领用（自定义开关 sr_show_last）：空串=未知态或服务未重启，整行不出现
         if (showLast && g.lastTxt.isNotEmpty) g.lastTxt,
         "异常描述：$desc",
@@ -386,7 +397,8 @@ Future<void> showShortageSheet(BuildContext context, {required List<_ShortGap> r
                             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                               Text("${g.pn}${g.nm.isNotEmpty ? " · ${g.nm}" : ""}", style: const TextStyle(fontFamily: "monospace", fontSize: 13, fontWeight: FontWeight.w700)),
                               Text(g.stockTxt + g.demandTxt, style: const TextStyle(fontSize: 12)),
-                              Text(g.suggestTxt, style: const TextStyle(fontSize: 12, color: const Color(0xFFE65100))),
+                              if (g.suggestTxt.isNotEmpty)
+                                Text(g.suggestTxt, style: const TextStyle(fontSize: 12, color: const Color(0xFFE65100))),
                               // ㉖v179 末次领用+距今天数：距今越久越说明不是"刚领完"而是真断供
                               if (g.lastTxt.isNotEmpty)
                                 Text(
