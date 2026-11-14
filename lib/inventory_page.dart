@@ -830,7 +830,12 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
     final name = _nameCtrl.text.trim().isEmpty ? "盘点${DateTime.now().toString().substring(5, 10).replaceAll("-", "")}" : _nameCtrl.text.trim();
     final ts = DateTime.now();
     // ㉖v174 点名盘：建任务前把输入展开成应扫清单，展开为空则拦停（防建成空点名任务白盘一场）
+    // ㉖v181 货架范围盘合流：勾选细化到层格位后，建单前同样展开应扫清单（复用 buildPickPlan
+    // 货位 token），invPickMode=1 走点名盘执行链路、invAgvMode=1 标记 NB02 框走 AGV 台站
+    // 核对通道（拉架→核对→钉死归位，人不去货架前）——用户定标：盲区抽盘就是货架盘标准。
     List<String> pickCodes = const [], pickShelf = const [];
+    int agvMode = 0;
+    String rawInput = "";
     if (_pickMode == 1) {
       if (_pickBusy) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("正在展开清单，请稍候…"), backgroundColor: Colors.blueGrey));
@@ -839,9 +844,21 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
       final r = await buildPickPlan(_pickCtrl.text);
       pickCodes = List<String>.from(r['codes'] ?? const []);
       pickShelf = List<String>.from(r['shelf'] ?? const []); // ㉖v174c 其中属 AGV 货架的框（整合"盲区抽盘"通道发起搬运用）
+      rawInput = _pickCtrl.text.trim();
       if (pickCodes.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("点名清单展开后为空：请检查零件号/货位/标签号是否正确"), backgroundColor: Colors.orange));
+        return;
+      }
+    } else if (_scopeType == 'shelf' && _scope.isNotEmpty) {
+      final r = await buildPickPlan(_scope.join(","));
+      pickCodes = List<String>.from(r['codes'] ?? const []);
+      pickShelf = List<String>.from(r['shelf'] ?? const []);
+      rawInput = _scope.join(", ");
+      agvMode = 1;
+      if (pickCodes.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("勾选格位展开后无在架框（可能已全部出库或账本未同步），请回第二步核对"), backgroundColor: Colors.orange));
         return;
       }
     }
@@ -854,10 +871,11 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
       invLocKey: _locKey,
       blindMode: _blind,
       invScope: _scope.toList(),
-      invPickMode: _pickMode,
-      invPickRaw: _pickMode == 1 ? _pickCtrl.text.trim() : "",
+      invPickMode: _pickMode == 1 || agvMode == 1 ? 1 : 0,
+      invPickRaw: rawInput,
       invPickCodes: pickCodes,
       invPickShelf: pickShelf,
+      invAgvMode: agvMode,
     );
     try {
       await _globalIsar.writeTxn(() async {
@@ -953,31 +971,97 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
               if (_locKey.isEmpty)
                 const Card(child: Padding(padding: EdgeInsets.all(14), child: Text("未绑定货位基准，无法圈定范围，本次为全盘盘点。\n想做循环盘点请在第二步绑定货位基准。", style: TextStyle(fontSize: 13))))
               else
-                FutureBuilder<List<BaselineLoc>>(
-                  future: _globalIsar.baselineLocs.filter().fileKeyEqualTo(_locKey).findAll(),
+                FutureBuilder<(List<BaselineLoc>, List<ShelfPlacement>)>(
+                  future: () async {
+                    final a = await _globalIsar.baselineLocs.filter().fileKeyEqualTo(_locKey).findAll();
+                    final b = await _globalIsar.shelfPlacements.where().findAll(); // ㉖v181 格位框数=账本在架码数（与展开清单同源）
+                    return (a, b);
+                  }(),
                   builder: (ctx, sn) {
                     if (!sn.hasData) return const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()));
-                    final allLocs = sn.data!.map((e) => e.locCode).toSet().toList();
-                    // ㉖v181 修①：货架候选排除站台码（NB02-CK-xx 是出库缓存/检验站台不是货架，
-                    // 勾它圈不出任何货位=误导；判据与服务端 locStation、AGV 统计 !/-CK-/ 同源）
-                    final zones = allLocs.where((c) { final cu = c.toUpperCase(); if (_scopeType.isEmpty) return true; if (!cu.startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04')) return false; return !cu.contains('-CK-'); }).map(invZoneOf).toSet().toList()..sort(); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
+                    final locs = sn.data!.$1.map((e) => e.locCode.trim().toUpperCase()).where((c) => c.isNotEmpty).toSet();
+                    // ㉖v181 货架类型细化到层格位（用户：盘点区域要具体到格位）：NB02 按货架
+                    // 分组→组内列 1F~4F 层格位，货架行=整架全选三态；层行显示账本在架框数。
+                    // 全部排除 -CK- 站台码（出库缓存/检验站台不是货架，判据与服务端 locStation 同源）。
+                    final shelfGroups = <String, List<String>>{};
+                    if (_scopeType == 'shelf') {
+                      for (final c in locs) {
+                        if (!c.startsWith('NB02-') || c.contains('-CK-')) continue;
+                        (shelfGroups[invShelfOf(c)] ??= <String>[]).add(c);
+                      }
+                      for (final l in shelfGroups.values) { l.sort(); }
+                    }
+                    final zones = _scopeType == 'shelf' ? const <String>[] : locs.where((c) { if (_scopeType.isEmpty) return true; if (!c.startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04')) return false; return !c.contains('-CK-'); }).map(invZoneOf).toSet().toList()..sort(); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
+                    // 每格位在架框数=账本在架码数（㉖v181：与创建时 buildPickPlan 展开同源于
+                    // shelfPlacements——基线货位行是"位×零件"不是码行，数它会把"1框多零件"算成
+                    // 多框，勾选时显示的框数与展开结果不一致=又一次承诺与结果不符）
+                    final boxCnt = <String, int>{};
+                    for (final p in sn.data!.$2) {
+                      final l = p.loc.trim().toUpperCase();
+                      if (l.isEmpty) continue;
+                      boxCnt[l] = (boxCnt[l] ?? 0) + 1;
+                    }
+                    int nCell = 0, nBox = 0; final Set<String> nShelf = {};
+                    for (final z in _scope) { final b = boxCnt[z] ?? 0; if (b > 0) { nCell++; nBox += b; nShelf.add(invShelfOf(z)); } }
                     return Card(
                       child: Padding(
                         padding: const EdgeInsets.all(12),
                         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          const Text("第一步：选择盘点类型", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                          const SizedBox(height: 6),
-                          Wrap(spacing: 8, children: [
-                            ChoiceChip(label: const Text("AGV货架 NB02"), selected: _scopeType == 'shelf', onSelected: (_) => setState(() { _scopeType = 'shelf'; _scope.clear(); })),
-                            ChoiceChip(label: const Text("地面库位 NB03"), selected: _scopeType == 'ground', onSelected: (_) => setState(() { _scopeType = 'ground'; _scope.clear(); })),
-                            ChoiceChip(label: const Text("来料区 NB04"), selected: _scopeType == 'recv', onSelected: (_) => setState(() { _scopeType = 'recv'; _scope.clear(); })), // ㉖v120 来料区班末对账=按行圈盘
-                            ChoiceChip(label: const Text("混合/全盘"), selected: _scopeType.isEmpty, onSelected: (_) => setState(() { _scopeType = ''; _scope.clear(); })),
-                          ]),
+                          if (_scopeType != 'shelf') ...[
+                            const Text("第一步：选择盘点类型", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                            const SizedBox(height: 6),
+                          ],
+                          if (_scopeType != 'shelf')
+                            Wrap(spacing: 8, children: [
+                              ChoiceChip(label: const Text("AGV货架 NB02"), selected: _scopeType == 'shelf', onSelected: (_) => setState(() { _scopeType = 'shelf'; _scope.clear(); })),
+                              ChoiceChip(label: const Text("地面库位 NB03"), selected: _scopeType == 'ground', onSelected: (_) => setState(() { _scopeType = 'ground'; _scope.clear(); })),
+                              ChoiceChip(label: const Text("来料区 NB04"), selected: _scopeType == 'recv', onSelected: (_) => setState(() { _scopeType = 'recv'; _scope.clear(); })), // ㉖v120 来料区班末对账=按行圈盘
+                              ChoiceChip(label: const Text("混合/全盘"), selected: _scopeType.isEmpty, onSelected: (_) => setState(() { _scopeType = ''; _scope.clear(); })),
+                            ])
+                          else
+                            Row(children: [
+                              const Text("盘点类型：", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                              ChoiceChip(label: const Text("改选其他类型"), selected: false, onSelected: (_) => setState(() { _scopeType = ''; _scope.clear(); })),
+                            ]),
                           if (_scopeType.isEmpty)
                             const Padding(padding: EdgeInsets.only(top: 8), child: Text("未选类型：本次全盘（货架+地面全覆盖），无需勾区域。", style: TextStyle(fontSize: 12, color: Colors.grey)))
-                          else ...[
+                          else if (_scopeType == 'shelf') ...[
                             const SizedBox(height: 10),
-                            Text("第二步：勾选要盘的${_scopeType == 'shelf' ? '货架（循环盘建议1~3个）' : _scopeType == 'recv' ? '来料区行（班末对账勾全部行）' : '地面排（如 NB03-A-13）'}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                            const Text("第二步：勾选要盘的货架格位（展开货架勾层，或点货架行整架全选）", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                            Text("已勾 ${_scope.length} 格位 · 实有 $nBox 框 · 需拉 ${nShelf.length} 趟 → 创建后自动展开应扫清单，AGV 逐框拉架到台站核对→钉死归位（人不去货架前）", style: const TextStyle(fontSize: 11.5, color: Color(0xFF3949AB))),
+                            const SizedBox(height: 4),
+                            if (shelfGroups.isEmpty)
+                              const Text("货位基准中没有货架格位数据", style: TextStyle(fontSize: 12, color: Colors.grey))
+                            else
+                              Column(children: shelfGroups.entries.map((en) {
+                                final cells = en.value;
+                                final on = _scope.where(cells.contains).length;
+                                return ExpansionTile(
+                                  tilePadding: EdgeInsets.zero,
+                                  initiallyExpanded: cells.length <= 2,
+                                  title: InkWell(
+                                    onTap: () => setState(() {
+                                      if (on == cells.length) { _scope.removeAll(cells); } else { _scope.addAll(cells); }
+                                    }),
+                                    child: Row(children: [
+                                      SizedBox(width: 24, child: Checkbox(value: on == cells.length ? true : (on > 0 ? null : false), tristate: true, onChanged: (_) => setState(() { if (on == cells.length) { _scope.removeAll(cells); } else { _scope.addAll(cells); } }))),
+                                      const SizedBox(width: 4),
+                                      Text(en.key, style: const TextStyle(fontSize: 13, fontFamily: "monospace", fontWeight: FontWeight.w700)),
+                                      const SizedBox(width: 8),
+                                      Text("共 ${cells.length} 层 · ${cells.fold<int>(0, (s, c) => s + (boxCnt[c] ?? 0))} 框在架", style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
+                                    ]),
+                                  ),
+                                  children: cells.map((c) => CheckboxListTile(
+                                    dense: true, contentPadding: const EdgeInsets.only(left: 24), controlAffinity: ListTileControlAffinity.leading,
+                                    title: Text("$c　${boxCnt[c] ?? 0} 框", style: const TextStyle(fontSize: 12.5, fontFamily: "monospace")),
+                                    value: _scope.contains(c),
+                                    onChanged: (v) => setState(() { if (v == true) { _scope.add(c); } else { _scope.remove(c); } }),
+                                  )).toList(),
+                                );
+                              }).toList()),
+                          ] else ...[
+                            const SizedBox(height: 10),
+                            Text("第二步：勾选要盘的${_scopeType == 'recv' ? '来料区行（班末对账勾全部行）' : '地面排（如 NB03-A-13）'}", style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                             const SizedBox(height: 4),
                             if (zones.isEmpty)
                               const Text("货位基准中没有该类型的库位数据", style: TextStyle(fontSize: 12, color: Colors.grey))
@@ -1022,10 +1106,14 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                         Text("点名输入：${_pickCtrl.text.trim().replaceAll(RegExp(r'\s+'), " / ")}", style: const TextStyle(fontSize: 12, fontFamily: "monospace")),
                         const SizedBox(height: 6),
                       ] else ...[
-                        Text("盘点类型：${_scopeType == 'shelf' ? "AGV货架" : _scopeType == 'ground' ? "地面库位" : _scopeType == 'recv' ? "来料区" : "混合/全盘"}"),
+                        Text("盘点类型：${_scopeType == 'shelf' ? "AGV货架（格位级 · AGV拉架台站核对）" : _scopeType == 'ground' ? "地面库位" : _scopeType == 'recv' ? "来料区" : "混合/全盘"}"),
                         const SizedBox(height: 6),
-                        Text("盘点范围：${_scope.isEmpty ? "全盘" : "循环盘 · ${_scope.join("、")}"}"),
+                        Text("盘点范围：${_scope.isEmpty ? "全盘" : _scopeType == 'shelf' ? "循环盘 · ${_scope.length} 个格位（${_scope.map(invShelfOf).toSet().join("、")}）" : "循环盘 · ${_scope.join("、")}"}"),
                         const SizedBox(height: 6),
+                        if (_scopeType == 'shelf' && _scope.isNotEmpty) ...[
+                          const Text("创建时自动展开应扫清单 → 任务卡「AGV搬运」逐框发起：AGV 取框到站台 → 到台扫码核对 → 钉死归位；核对相符自动算已盘到。", style: TextStyle(fontSize: 12, color: Color(0xFF3949AB))),
+                          const SizedBox(height: 6),
+                        ],
                       ],
                       const Text("⚠️ 盘点期间请冻结出入库，否则产生虚假盘亏。", style: TextStyle(color: Colors.red, fontSize: 12)),
                     ],
@@ -1505,21 +1593,36 @@ class _InvScanPageState extends State<_InvScanPage> {
     if (go != true || !mounted) return;
     setState(() => _busy = true);
     try {
-      final r = await AuthApi.countStart(codes: codes, pickBatch: widget.task.batchId);
-      if (!mounted) return;
-      final okN = ((r["list"] as List?) ?? const []).length;
-      final fails = ((r["out"] as List?) ?? const []).where((x) => (x as Map)["ok"] != true).toList();
+      // ㉖v181 分批发起：服务端单请求 codes 上限 200（超出静默截断）——范围盘拉架勾两三架
+      // 即可达数百框，一次性提交会丢单且无声无息。每片 180 留余量，逐片提交聚合结果。
+      int okN = 0;
+      final fails = <dynamic>[];
+      String? netErr;
+      for (int i = 0; i < codes.length; i += 180) {
+        final chunk = codes.sublist(i, i + 180 > codes.length ? codes.length : i + 180);
+        try {
+          final r = await AuthApi.countStart(codes: chunk, pickBatch: widget.task.batchId);
+          if (r["ok"] == true) {
+            okN += ((r["list"] as List?) ?? const []).length;
+            fails.addAll(((r["out"] as List?) ?? const []).where((x) => (x as Map)["ok"] != true));
+          } else {
+            netErr = r["msg"]?.toString();
+          }
+        } catch (e) { netErr = "$e"; }
+        if (!mounted) return;
+      }
       String msg;
-      if (r["ok"] == true) {
-        msg = "已发起 $okN 框";
+      if (netErr == null || okN > 0) {
+        msg = "已发起 $okN/$codes.length 框";
         if (fails.isNotEmpty) {
           final det = fails.take(3).map((f) { final fm = f as Map; return '${fm["code"]}(${fm["msg"]})'; }).join('、');
           msg += "，跳过 ${fails.length}：$det${fails.length > 3 ? ' 等' : ''}";
         }
+        if (netErr != null) msg += "｜部分批次异常：$netErr";
       } else {
-        msg = "发起失败：${r["msg"] ?? "无有效框"}";
+        msg = "发起失败：$netErr";
       }
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: r["ok"] == true ? const Color(0xFF2E7D32) : Colors.orange, duration: const Duration(seconds: 5)));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: okN > 0 ? const Color(0xFF2E7D32) : Colors.orange, duration: const Duration(seconds: 6)));
       if (okN > 0 && mounted) await Navigator.push(context, MaterialPageRoute(builder: (_) => const ShelfCountPage())); // 跳工单看板跟进发车/核对/归位
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("AGV 搬运发起异常：$e"), backgroundColor: Colors.red));
