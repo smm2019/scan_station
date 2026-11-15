@@ -73,10 +73,10 @@ extension CollectionLedgerExt on _MainPageState {
   ///AGV 目标货位自动分配：①同零件已占的架内空位（同件同架，AGV整架取放最优）
   ///②同零件所在区的空架空位 ③全局顺序兜底（A-01-1F 起集满靠前）。无可分配返回 null。
   ///㉖v54 首选服务器原子预占（多PDA并发拿不同格，根治5~15秒撞位窗口）；仅网络不通降级本机口径
-  Future<String?> nb02AutoAssign(String partNo, {String code = ''}) async {
+  Future<String?> nb02AutoAssign(String partNo, {String code = '', bool reShelf = false}) async {
     if (code.isNotEmpty) {
       try {
-        final rv = await AuthApi.ledgerReserve(code, partNo);
+        final rv = await AuthApi.ledgerReserve(code, partNo, reShelf: reShelf);
         if (rv["ok"] == true && (rv["loc"] as String?)?.isNotEmpty == true) {
           return (rv["loc"] as String).toUpperCase();
         }
@@ -577,13 +577,14 @@ extension CollectionLedgerExt on _MainPageState {
   }
 
   ///AUTO 解析：按本次 MES 零件号给 NB02 自动分配货位并回填；分配不到保留 AUTO 走格式提示。
-  Future<void> _handleAutoLedger(String code) async {
+  ///㉖v198 reShelf：重新上架模式——服务器跳过"回吐地面现位"，给这个框分配新的货架格。
+  Future<void> _handleAutoLedger(String code, {bool reShelf = false}) async {
     final rec = await _isar.scanRecords
         .filter()
         .goodsCodeEqualTo(code.toUpperCase())
         .findFirst();
     final partNo = rec?.mesPartNo ?? "";
-    final loc = await nb02AutoAssign(partNo, code: code.toUpperCase());
+    final loc = await nb02AutoAssign(partNo, code: code.toUpperCase(), reShelf: reShelf);
     if (!mounted) return;
     if (loc == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

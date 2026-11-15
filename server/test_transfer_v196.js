@@ -11,7 +11,7 @@ let total = 0, fail = 0;
 const C = (n, c, i) => { total++; if (!c) { fail++; console.log('FAIL! [' + n + '] ' + (i || '')); } else console.log('PASS [' + n + ']'); };
 
 // 假 DB + 假参数 + 假 wmasDispatchOne（可控成功/失败/计数）
-const DB = { agvQueue: [] }, PP = { transferConc: 2, aisleCap: 2 };
+const DB = { agvQueue: [], rcsStations: {}, rcsManual: {} }, PP = { transferConc: 2, aisleCap: 2, manualHoldMin: 30 };
 let dispCalls = [], dispFailSet = new Set();
 const ctx = { P: () => PP, wmasDispatchOne: async (a, tk, o) => { dispCalls.push(o.ref); return dispFailSet.has(o.ref) ? { ok: false, msg: '模拟下发失败' } : { ok: true, taskNo: 'T' + dispCalls.length }; } };
 vm.createContext(ctx);
@@ -71,7 +71,39 @@ const TD = (item, tk, ab, flow) => vm.runInContext('tryDispatchTransfer', ctx).c
     dispFailSet = new Set();
   }
 
-  // ⑦ 静态：waiting 排除 transfer + 补发段在双腿 return 之前（双腿空时移库仍补发）
+  // ⑥b ㉖v198c 目标 CK 站台串行闸：台有货 → 排队接力，绝不硬发压台
+  {
+    DB.agvQueue = []; DB.rcsStations = { 'NB02-CK-06': { station: 'NB02-CK-06', state: '有货' } }; DB.rcsManual = {};
+    dispCalls = [];
+    const t = { type: 'transfer', kind: 'shelf2shelf', state: '排队', from: 'NB02-A-03-3F', to: 'NB02-CK-06', code: 'S1', trace: [] };
+    const r = await TD(t, 'tk', AB(), { n: 0 });
+    C('★★★ 目标台有货 → 保持排队不硬发（台满接力，v198c）', r.queued === true && t.state === '排队' && dispCalls.length === 0, JSON.stringify(r));
+  }
+  // ⑥c 台看板"空闲"但另一框任务已下发未落地 → 同样排队（台面一次一框）
+  {
+    DB.agvQueue = [{ type: 'transfer', kind: 'shelf2shelf', state: '已下发', from: 'NB02-A-05-2F', to: 'NB02-CK-06', code: 'S0' }];
+    DB.rcsStations = {};
+    dispCalls = [];
+    const t = { type: 'transfer', kind: 'shelf2shelf', state: '排队', from: 'NB02-A-07-1F', to: 'NB02-CK-06', code: 'S2', trace: [] };
+    const r = await TD(t, 'tk', AB(), { n: 0 });
+    C('★★★ 同目标台已有任务在途(已下发) → 排队接力（批量共一台不撞台）', r.queued === true && dispCalls.length === 0, JSON.stringify(r));
+  }
+  // ⑥d 台占用任务已闭环(完成/取消) → 不再自锁，正常补发（清台后台空即发下一框）
+  {
+    DB.agvQueue = [{ type: 'transfer', kind: 'shelf2shelf', state: '完成', from: 'NB02-A-05-2F', to: 'NB02-CK-06', code: 'S0' }];
+    DB.rcsStations = {};
+    dispCalls = [];
+    const t = { type: 'transfer', kind: 'shelf2shelf', state: '排队', from: 'NB02-A-07-1F', to: 'NB02-CK-06', code: 'S3', trace: [] };
+    const r = await TD(t, 'tk', AB(), { n: 0 });
+    C('★★★ 台上一趟已"完成" → 清台后台空自动接力下发（不自锁）', r.ok === true && t.state === '已下发' && dispCalls.length === 1, JSON.stringify(r));
+    // 人工占用窗同样拦
+    DB.agvQueue = []; DB.rcsManual = { 'NB02-CK-06': Date.now() - 60000 };
+    dispCalls = [];
+    const t2 = { type: 'transfer', kind: 'shelf2shelf', state: '排队', from: 'NB02-A-07-2F', to: 'NB02-CK-06', code: 'S4', trace: [] };
+    const r2 = await TD(t2, 'tk', AB(), { n: 0 });
+    C('★★ 目标台人工占用窗内 → 排队（manualHoldMin 同源）', r2.queued === true && dispCalls.length === 0, JSON.stringify(r2));
+    DB.rcsManual = {};
+  }
   {
     const iw = server.indexOf("q.state === '排队' && q.type !== 'transfer'");
     const ifill = server.indexOf('移库/返架排队补发');

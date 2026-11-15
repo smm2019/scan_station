@@ -5,15 +5,22 @@ part of 'main.dart';
 
 /// ㉒G11 服务器时钟偏移（毫秒）：本机显示时间统一校正用；心跳/登录时更新
 int kClockOffsetMs = 0;
+
 /// ㉖v100 出库去向关键词（逗号分隔，服务器参数 outWhKeys 心跳下发，默认"线边仓"）：
 /// 直调/转单去向含任一关键词=出库，全不含=移仓（不计出库统计）。仅用于提示文案，判定权威在服务器。
 String kOutWhKeys = "线边仓";
+
 /// 去向是否移仓（与服务器 isMoveOrder 同判据；空去向按出库）
 bool isMoveToLoc(String to) {
-  final keys = kOutWhKeys.split(RegExp('[,，]')).map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+  final keys = kOutWhKeys
+      .split(RegExp('[,，]'))
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty)
+      .toList();
   if (keys.isEmpty || to.trim().isEmpty) return false;
   return !keys.any((k) => to.contains(k));
 }
+
 // ---- 第3档 PDA显示偏好：字号档位(响应式即时生效)/扫码自动聚焦 ----
 final ValueNotifier<double> kFontScaleN =
     ValueNotifier(1.0); // std=1.0 lg=1.18 xl=1.35
@@ -48,9 +55,7 @@ class AuthUser {
       };
   String get roleName => role == "admin"
       ? "管理员"
-      : (role == "warehouse"
-          ? "仓管员"
-          : (role == "inspector" ? "检验员" : "物料员"));
+      : (role == "warehouse" ? "仓管员" : (role == "inspector" ? "检验员" : "物料员"));
 }
 
 /// 会话持久化（SharedPreferences）
@@ -115,7 +120,10 @@ class AuthStore {
 /// 服务端 API 封装（10 秒超时）
 class AuthApi {
   static Future<Map> _req(String method, String path,
-      {Map? body, String? token, String? serverOverride, int timeoutSec = 10}) async {
+      {Map? body,
+      String? token,
+      String? serverOverride,
+      int timeoutSec = 10}) async {
     final base = (serverOverride ?? await AuthStore.serverUrl())
         .replaceFirst(RegExp(r"/+$"), "");
     if (base.isEmpty) return {"ok": false, "net": true, "msg": "未配置服务器地址"};
@@ -157,7 +165,8 @@ class AuthApi {
     return dev;
   }
 
-  static Future<Map> login(String server, String username, String password) async =>
+  static Future<Map> login(
+          String server, String username, String password) async =>
       _req("POST", "/api/login",
           body: {
             "username": username,
@@ -185,10 +194,9 @@ class AuthApi {
           body: {"oldPassword": oldPw, "newPassword": newPw},
           token: await AuthStore.token());
   // ㉖v67 个人中心：改自己姓名（验原密码）+ 我的登录设备/会话（本人可看可踢）
-  static Future<Map> changeName(String pw, String name) async => _req("POST",
-      "/api/change_name",
-      body: {"password": pw, "name": name},
-      token: await AuthStore.token());
+  static Future<Map> changeName(String pw, String name) async =>
+      _req("POST", "/api/change_name",
+          body: {"password": pw, "name": name}, token: await AuthStore.token());
   static Future<Map> myDevices() async =>
       _req("GET", "/api/me/devices", token: await AuthStore.token());
   static Future<Map> kickDevice(String dev) async =>
@@ -244,31 +252,48 @@ class AuthApi {
   /// ㉖v98c 领料闸门预检：返回 {mode, pend[], block[]}（服务器统一判定，含宽限期与急料豁免）
   static Future<Map> reqGate() async =>
       _req("GET", "/api/requisitions/gate", token: await AuthStore.token());
+
   /// ㉖v62 建单提效：本人近60天常领清单（频次×最近排序，带上次数量与在架托数）
   static Future<Map> reqFrequent() async =>
       _req("GET", "/api/requisitions/frequent", token: await AuthStore.token());
+
   /// ㉖v137 补料建议：按出库实况日均消耗预估告急件与建议框数（纯只读，不下单）
   static Future<Map> reqSuggest() async =>
       _req("GET", "/api/requisitions/suggest", token: await AuthStore.token());
+
   /// ㉖v62 产线模板：列表（本人私有+同事共享）
   static Future<Map> tplList() async =>
       _req("GET", "/api/req-templates", token: await AuthStore.token());
-  static Future<Map> tplSave(String name, List<Map> items, bool shared, {String id = ""}) async =>
-      _req("POST", "/api/req-templates",
-          token: await AuthStore.token(),
-          body: {"name": name, "items": items, "shared": shared, if (id.isNotEmpty) "id": id});
-  static Future<Map> tplDelete(String id) async => _req(
-      "DELETE", "/api/req-templates?id=$id", token: await AuthStore.token());
-  static Future<void> tplUse(String id) async => _req(
-      "POST", "/api/req-templates/$id/use", token: await AuthStore.token());
+  static Future<Map> tplSave(String name, List<Map> items, bool shared,
+          {String id = ""}) async =>
+      _req("POST", "/api/req-templates", token: await AuthStore.token(), body: {
+        "name": name,
+        "items": items,
+        "shared": shared,
+        if (id.isNotEmpty) "id": id
+      });
+  static Future<Map> tplDelete(String id) async =>
+      _req("DELETE", "/api/req-templates?id=$id",
+          token: await AuthStore.token());
+  static Future<void> tplUse(String id) async =>
+      _req("POST", "/api/req-templates/$id/use",
+          token: await AuthStore.token());
   // ㉖v178 缺料反馈闭环（二期）：列表/提交（认领与核销在网页端，仓管场景）
   static Future<Map> shortList({String status = "open"}) async =>
-      _req("GET", "/api/shortages?status=$status", token: await AuthStore.token());
+      _req("GET", "/api/shortages?status=$status",
+          token: await AuthStore.token());
+
   /// ㉖v181 forceStock：服务端有货闸返回 in_stock 后，用户确认「确实要提前备货」时带 true 重试
-  static Future<Map> shortSubmit(String partNo, String itemName, String note, String src, {bool forceStock = false}) async =>
-      _req("POST", "/api/shortages",
-          token: await AuthStore.token(),
-          body: {"partNo": partNo, "itemName": itemName, "note": note, "src": src, if (forceStock) "forceStock": true});
+  static Future<Map> shortSubmit(
+          String partNo, String itemName, String note, String src,
+          {bool forceStock = false}) async =>
+      _req("POST", "/api/shortages", token: await AuthStore.token(), body: {
+        "partNo": partNo,
+        "itemName": itemName,
+        "note": note,
+        "src": src,
+        if (forceStock) "forceStock": true
+      });
 
   /// ㉖v179 末次领料批量查询（全厂口径，服务端算）：items="零件号,零件号"，返回 map:{pn:{t,qty,by,no}}
   /// 必须服务端算——领料列表对物料员只返回本人单，端上自己算会把同事领过的显示成"无记录"
@@ -278,10 +303,12 @@ class AuthApi {
   static Future<Map> reqList({String scope = ""}) async => _req("GET",
       scope.isEmpty ? "/api/requisitions" : "/api/requisitions?scope=$scope",
       token: await AuthStore.token());
+
   /// ㉖v98 单张全量（详情弹层打开时拉一次带 suggest 取货建议；列表 lite 化配套）
   static Future<Map> reqOne(String id) async =>
       _req("GET", "/api/requisitions/${Uri.encodeComponent(id)}",
           token: await AuthStore.token());
+
   /// ㉖v52 备料排队看板：my=本人某单号则返回该单排位；留空返回全员排队全景
   static Future<Map> reqQueue({String my = ""}) async => _req(
       "GET",
@@ -290,9 +317,11 @@ class AuthApi {
           : "/api/requisitions/queue?my=${Uri.encodeComponent(my)}",
       token: await AuthStore.token());
   static Future<Map> reqAction(String id, String action,
-      [Map? body, int timeoutSec = 10]) async =>
+          [Map? body, int timeoutSec = 10]) async =>
       _req("POST", "/api/requisitions/$id/$action",
-          body: body ?? {}, token: await AuthStore.token(), timeoutSec: timeoutSec);
+          body: body ?? {},
+          token: await AuthStore.token(),
+          timeoutSec: timeoutSec);
   // 设置转入货位（loc）；行级转单回写(transfer)/跳过(skip) 直接走 reqAction
   static Future<Map> reqSetLoc(String id, Map to) async =>
       reqAction(id, "loc", {
@@ -340,9 +369,11 @@ class AuthApi {
 
   /// 拉取电脑服务器上的账本全量（公开只读；含墓碑，PDA 合并用）
   static Future<Map> ledgerGet() async => _req("GET", "/api/ledger");
+
   /// ㉖v99 数据资产计数（含今日出入库全厂口径，库存页 KPI 用）
   static Future<Map> counts() async =>
       _req("GET", "/api/counts", token: await AuthStore.token());
+
   /// ㉖v69 零件全集背书（字典∪账本∪流水∪出库∪领料）：缺料反馈判零库存的地基
   static Future<Map> partsBacking() async =>
       _req("GET", "/api/parts/backing", token: await AuthStore.token());
@@ -356,6 +387,7 @@ class AuthApi {
   static Future<Map> scanlogDeleteBatch(String batch) async =>
       _req("POST", "/api/scanlog/delete",
           body: {"batch": batch}, token: await AuthStore.token());
+
   /// ㉖v98c 物料号补录批量上收：items=[{c,pn,mc}]，服务器沉淀字典+标签修正表
   static Future<Map> mitemBatch(List items) async =>
       _req("POST", "/api/mitem/batch",
@@ -454,7 +486,11 @@ class AuthApi {
   static Future<Map> watchlistGet() async =>
       _req("GET", "/api/watchlist", token: await AuthStore.token());
   static Future<Map> watchlistSet(String partNo, bool on,
-      {int qty = 0, String itemName = "", String due = "", bool auto = true, bool forceStock = false}) async =>
+          {int qty = 0,
+          String itemName = "",
+          String due = "",
+          bool auto = true,
+          bool forceStock = false}) async =>
       _req("POST", "/api/watchlist",
           body: {
             "partNo": partNo, "on": on,
@@ -462,7 +498,8 @@ class AuthApi {
             if (on && itemName.isNotEmpty) "itemName": itemName,
             if (on && due.isNotEmpty) "due": due,
             if (on) "auto": auto,
-            if (on && forceStock) "forceStock": true // ㉖v184 有货预约闸：确认"明知有货仍要等下批"后重试
+            if (on && forceStock)
+              "forceStock": true // ㉖v184 有货预约闸：确认"明知有货仍要等下批"后重试
           },
           token: await AuthStore.token());
   static Future<Map> groundSlotsGet() async =>
@@ -484,9 +521,17 @@ class AuthApi {
   static Future<Map> setPrefs(Map body) async => _req("POST", "/api/prefs",
       body: body, token: await AuthStore.token()); // ㉖B14 偏好上云
   // ㉖① 标签全局查重（采集入库前调用）；㉖v120 recv=1 来料登记模式（重复扫 NB01 在库码仍拦）
-  static Future<Map> labelCheck(String c, {bool recv = false, bool ret = false}) async =>
-      _req("GET", "/api/label/check?c=" + Uri.encodeComponent(c) +
-          (recv ? "&recv=1" : "") + (ret ? "&ret=1" : ""),
+  // ㉖v198 rs=1 重新上架模式：人工把地面框搬到 CK 站台后由 AGV 重新上货架，服务器豁免"已在库"拦
+  // （仅限账本行全在地面 NB03 存储格的框，货架行/来料区行照拦——不是万能绕过口）
+  static Future<Map> labelCheck(String c,
+          {bool recv = false, bool ret = false, bool reShelf = false}) async =>
+      _req(
+          "GET",
+          "/api/label/check?c=" +
+              Uri.encodeComponent(c) +
+              (recv ? "&recv=1" : "") +
+              (ret ? "&ret=1" : "") +
+              (reShelf ? "&rs=1" : ""),
           token: await AuthStore.token());
   // ㉖v151 出库扫码预检（直调页专用）：服务端早已备好该闸（无流水无账本=来源不明 block），但此前只有网页
   // 一处调用，PDA 直调从未接——导致"一楼没扫直接直调出库"在车间实际路径上零提示、事后无痕
@@ -505,22 +550,47 @@ class AuthApi {
       _req("GET", "/api/inspect/list", token: await AuthStore.token());
   // ㉖v123 货架AGV盘点（盲区随机抽盘）：发起会话/工单看板/到台核对/归位/取消
   static Future<Map> countList({bool all = false}) async =>
-      _req("GET", "/api/count/list" + (all ? "?all=1" : ""), token: await AuthStore.token());
+      _req("GET", "/api/count/list" + (all ? "?all=1" : ""),
+          token: await AuthStore.token());
+
   /// ㉖v174c 双入口：codes 非空=点名盘指定框发起AGV盘点（sid 归集用 pickBatch）；codes 空=随机抽盘
-  static Future<Map> countStart({int pct = 0, List<String> codes = const [], String pickBatch = ''}) async =>
-      _req("POST", "/api/count/start", body: {if (pct > 0) "pct": pct, if (codes.isNotEmpty) "codes": codes, if (pickBatch.isNotEmpty) "pickBatch": pickBatch}, token: await AuthStore.token());
-  static Future<Map> countScan(String id, String barcode, {int mesQty = -1}) async =>
-      _req("POST", "/api/count/scan", body: {"id": id, "barcode": barcode, if (mesQty >= 0) "mesQty": mesQty}, token: await AuthStore.token());
+  static Future<Map> countStart(
+          {int pct = 0,
+          List<String> codes = const [],
+          String pickBatch = ''}) async =>
+      _req("POST", "/api/count/start",
+          body: {
+            if (pct > 0) "pct": pct,
+            if (codes.isNotEmpty) "codes": codes,
+            if (pickBatch.isNotEmpty) "pickBatch": pickBatch
+          },
+          token: await AuthStore.token());
+  static Future<Map> countScan(String id, String barcode,
+          {int mesQty = -1}) async =>
+      _req("POST", "/api/count/scan",
+          body: {
+            "id": id,
+            "barcode": barcode,
+            if (mesQty >= 0) "mesQty": mesQty
+          },
+          token: await AuthStore.token());
+
   /// ㉖v175 领料预占预览：items="pn:框数,pn:框数" → 每行"将发哪几筐/实数合计"（建单填框数即见实发，混框防均值失真）
   static Future<Map> reqPreview(String items) async =>
-      _req("GET", "/api/req/preview?items=" + Uri.encodeComponent(items), token: await AuthStore.token());
+      _req("GET", "/api/req/preview?items=" + Uri.encodeComponent(items),
+          token: await AuthStore.token());
   static Future<Map> countReturn(String id) async =>
-      _req("POST", "/api/count/return", body: {"id": id}, token: await AuthStore.token());
+      _req("POST", "/api/count/return",
+          body: {"id": id}, token: await AuthStore.token());
+
   /// ㉖v141 人工拉取发车：待发车工单点「发车」才下发下架腿（sid 非空=整会话批量）
   static Future<Map> countDeploy({String id = "", String sid = ""}) async =>
-      _req("POST", "/api/count/deploy", body: {if (id.isNotEmpty) "id": id, if (sid.isNotEmpty) "sid": sid}, token: await AuthStore.token());
+      _req("POST", "/api/count/deploy",
+          body: {if (id.isNotEmpty) "id": id, if (sid.isNotEmpty) "sid": sid},
+          token: await AuthStore.token());
   static Future<Map> countCancel(String id, String reason) async =>
-      _req("POST", "/api/count/cancel", body: {"id": id, "reason": reason}, token: await AuthStore.token());
+      _req("POST", "/api/count/cancel",
+          body: {"id": id, "reason": reason}, token: await AuthStore.token());
   static Future<Map> inspectStart(String from, String note,
           {String station = ""}) async =>
       _req("POST", "/api/inspect/start",
@@ -548,7 +618,17 @@ class AuthApi {
           token: await AuthStore.token());
   static Future<Map> inspectCancel(String id) async =>
       _req("POST", "/api/inspect/cancel",
-          body: {"id": id}, token: await AuthStore.token()); // ㉖ 取消检验工单（未叉货直接作废；途中先撤AGV任务）
+          body: {"id": id},
+          token: await AuthStore.token()); // ㉖ 取消检验工单（未叉货直接作废；途中先撤AGV任务）
+  // ㉖v198 人已移走收口：货被人工从站台搬走后，把工单闭环 + 账本改到实际去向格 + 站台立释
+  static Future<Map> inspectRemove(String id, String loc) async =>
+      _req("POST", "/api/inspect/remove",
+          body: {"id": id, "loc": loc}, token: await AuthStore.token());
+  // ㉖v198b 地面空闲格查询（收口"点选地面空格"数据源）：判据与服务器自动分格同源；
+  // c=本框标签时整框自排除（原格腾出不显示"已占用"挡自己）
+  static Future<Map> groundFree(String code) async =>
+      _req("GET", "/api/ground-free?c=" + Uri.encodeComponent(code),
+          token: await AuthStore.token());
   static Future<Map> inspectVerdict(String id, String verdict, String note,
           {String retReason = ""}) async =>
       _req("POST", "/api/inspect/verdict",
@@ -589,7 +669,8 @@ class AuthApi {
           String palletType = "",
           String container = ""}) async =>
       _req("POST", "/api/agv/carry",
-          timeoutSec: 25, // ㉖v94i 叫车走服务器全链（容器占用+主档+建任务多次 WMAS 往返），WMAS 恢复期 10 秒必超时假失败
+          timeoutSec:
+              25, // ㉖v94i 叫车走服务器全链（容器占用+主档+建任务多次 WMAS 往返），WMAS 恢复期 10 秒必超时假失败
           body: {
             "from": from,
             "to": to,
@@ -610,9 +691,18 @@ class AuthApi {
   // ㉖v122 recv=1：来料区登记模式——服务器原子放 NB04 格（连扫多框必得不同格，根治 11-07 三框同扫 A-01-001）
   // ㉖v163 zone="C12"：地面登记模式——服务器原子放 NB03 格（旧口径 PDA 本机算位，两台设备在
   //      5~30 秒账本推送防抖窗内会把同一格各分一次，11-12 NB03-C-12 现场实锤）
-  static Future<Map> ledgerReserve(String code, String partNo, {bool recv = false, String zone = ''}) async =>
+  // ㉖v198 reShelf=1 重新上架：账本行在地面 NB03 的框不再回吐地面现位（AGV 到不了地面），
+  //      改为正常分配 NB02 新格；服务器同时把同框兄弟码随单改到新格
+  static Future<Map> ledgerReserve(String code, String partNo,
+          {bool recv = false, String zone = '', bool reShelf = false}) async =>
       _req("POST", "/api/ledger/reserve",
-          body: {"code": code, "partNo": partNo, if (recv) "recv": 1, if (zone.isNotEmpty) "zone": zone},
+          body: {
+            "code": code,
+            "partNo": partNo,
+            if (recv) "recv": 1,
+            if (zone.isNotEmpty) "zone": zone,
+            if (reShelf) "rs": 1
+          },
           token: await AuthStore.token());
   // ㉖ 容器类型配置：读（采集页按钮数据源）/ 整表保存（仓管·管理员）
   static Future<Map> containersGet() async =>
@@ -636,9 +726,28 @@ class AuthApi {
             if (dry) "dry": "1"
           },
           token: await AuthStore.token());
+  // ㉖v198d 拉下架/移库可选站台清单（手动选台数据源，判据与服务器自动选台同源）
+  static Future<Map> agvTransferStations() async =>
+      _req("GET", "/api/agv/transfer-stations", token: await AuthStore.token());
   static Future<Map> agvTransferCancel(String id) async =>
       _req("POST", "/api/agv/transfer/cancel",
           body: {"id": id}, token: await AuthStore.token());
+  // ㉖v198g 拉下架「人已移走收口」：AGV 已把框放上站台，人搬走后填去向格 →
+  // 账本随单改位（整框随改）+ 队列项收口 + 站台立即释放。id=队列项 at（可空），
+  // code/station=送达后队列项已归档时按框号定位。
+  static Future<Map> agvTransferRemove(
+          {String id = "",
+          String code = "",
+          String station = "",
+          required String loc}) async =>
+      _req("POST", "/api/agv/transfer/remove",
+          body: {
+            "id": id,
+            if (code.isNotEmpty) "code": code,
+            if (station.isNotEmpty) "station": station,
+            "loc": loc
+          },
+          token: await AuthStore.token());
   static Future<void> agvRelease(
       {required String container, required String station}) async {
     try {
@@ -742,7 +851,8 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
           .difference(DateTime.now().toUtc())
           .inMilliseconds; // ㉒G11 服务器-本机偏差
     // ㉖v100 出库去向关键词（服务器参数 outWhKeys 下发）：直调提交后按去向提示"出库单/移仓单"；离线保留上次值
-    if (r["outWhKeys"] is String && (r["outWhKeys"] as String).trim().isNotEmpty)
+    if (r["outWhKeys"] is String &&
+        (r["outWhKeys"] as String).trim().isNotEmpty)
       kOutWhKeys = (r["outWhKeys"] as String).trim();
     Auth.user = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
     Auth.features = Map<String, bool>.from(r["features"] ?? {});
@@ -870,11 +980,9 @@ class _LoginPageState extends State<LoginPage> {
       filled: true,
       fillColor: const Color(0xFFF1F3FA),
       border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none),
+          borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
       enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide.none),
+          borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
       focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: Color(0xFF515BD4), width: 1.6)),
@@ -889,7 +997,11 @@ class _LoginPageState extends State<LoginPage> {
             gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [Color(0xFFE8EBFA), Color(0xFFF6F7FC), Color(0xFFEFF5F4)])),
+                colors: [
+              Color(0xFFE8EBFA),
+              Color(0xFFF6F7FC),
+              Color(0xFFEFF5F4)
+            ])),
         child: SafeArea(
             child: Center(
                 child: SingleChildScrollView(
@@ -954,8 +1066,7 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                         TextField(
                             controller: _serverCtrl,
-                            decoration: _dec(
-                                "鉴权服务器（如 http://172.25.1.99:8098）",
+                            decoration: _dec("鉴权服务器（如 http://172.25.1.99:8098）",
                                 Icons.dns_outlined),
                             keyboardType: TextInputType.url),
                         const SizedBox(height: 12),
@@ -968,60 +1079,58 @@ class _LoginPageState extends State<LoginPage> {
                             controller: _pwCtrl,
                             obscureText: !_pwVisible,
                             onSubmitted: (_) => _busy ? null : _login(),
-                            decoration: _dec("密码", Icons.lock_outline)
-                                .copyWith(
-                                    suffixIcon: IconButton(
-                                        icon: Icon(
-                                            _pwVisible
-                                                ? Icons.visibility_off
-                                                : Icons.visibility,
-                                            size: 20),
-                                        onPressed: () => setState(
-                                            () => _pwVisible = !_pwVisible)))),
+                            decoration: _dec("密码", Icons.lock_outline).copyWith(
+                                suffixIcon: IconButton(
+                                    icon: Icon(
+                                        _pwVisible
+                                            ? Icons.visibility_off
+                                            : Icons.visibility,
+                                        size: 20),
+                                    onPressed: () => setState(
+                                        () => _pwVisible = !_pwVisible)))),
                         const SizedBox(height: 18),
                         SizedBox(
                             width: double.infinity,
                             height: 48,
                             child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                    gradient: const LinearGradient(
-                                        colors: [
-                                          Color(0xFF515BD4),
-                                          Color(0xFF6D76E0)
-                                        ]),
-                                    borderRadius: BorderRadius.circular(13),
-                                    boxShadow: const [
-                                      BoxShadow(
-                                          color: Color(0x33515BD4),
-                                          blurRadius: 14,
-                                          offset: Offset(0, 6))
-                                    ]),
-                                child: Material(
-                                    color: Colors.transparent,
-                                    child: InkWell(
-                                        borderRadius: BorderRadius.circular(13),
-                                        onTap: _busy ? null : _login,
-                                        child: Center(
-                                            child: _busy
-                                                ? const SizedBox(
-                                                    width: 22,
-                                                    height: 22,
-                                                    child:
-                                                        CircularProgressIndicator(
-                                                            strokeWidth: 2.5,
-                                                            color:
-                                                                Colors.white))
-                                                : const Text("登 录",
-                                                    style: TextStyle(
-                                                        fontSize: 16,
-                                                        fontWeight:
-                                                            FontWeight.w600,
-                                                        color: Colors.white,
-                                                        letterSpacing: 6))))),
+                              decoration: BoxDecoration(
+                                  gradient: const LinearGradient(colors: [
+                                    Color(0xFF515BD4),
+                                    Color(0xFF6D76E0)
+                                  ]),
+                                  borderRadius: BorderRadius.circular(13),
+                                  boxShadow: const [
+                                    BoxShadow(
+                                        color: Color(0x33515BD4),
+                                        blurRadius: 14,
+                                        offset: Offset(0, 6))
+                                  ]),
+                              child: Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                      borderRadius: BorderRadius.circular(13),
+                                      onTap: _busy ? null : _login,
+                                      child: Center(
+                                          child: _busy
+                                              ? const SizedBox(
+                                                  width: 22,
+                                                  height: 22,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                          strokeWidth: 2.5,
+                                                          color: Colors.white))
+                                              : const Text("登 录",
+                                                  style: TextStyle(
+                                                      fontSize: 16,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      color: Colors.white,
+                                                      letterSpacing: 6))))),
                             )),
                       ])),
                   const SizedBox(height: 18),
-                  Text("v${AppUpdater.localVersion}+${AppUpdater.localBuild} · 豪斯特仓储协同",
+                  Text(
+                      "v${AppUpdater.localVersion}+${AppUpdater.localBuild} · 豪斯特仓储协同",
                       style: const TextStyle(
                           fontSize: 11, color: Color(0xFF9AA6BC))),
                 ],
@@ -1063,43 +1172,44 @@ class _AccountPageState extends State<AccountPage> {
   Future<void> _doRename() async {
     final u = Auth.user;
     if (u == null) return;
-    final pw = TextEditingController(), nm = TextEditingController(text: u.name);
+    final pw = TextEditingController(),
+        nm = TextEditingController(text: u.name);
     final ok = await showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
-            title: const Text("修改姓名"),
-            content: SizedBox(
-                width: 320,
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  TextField(
-                      controller: pw,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                          labelText: "当前密码",
-                          isDense: true,
-                          border: OutlineInputBorder())),
-                  const SizedBox(height: 10),
-                  TextField(
-                      controller: nm,
-                      decoration: const InputDecoration(
-                          labelText: "新姓名（2-20字）",
-                          isDense: true,
-                          border: OutlineInputBorder())),
-                ])),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(c, false),
-                  child: const Text("取消")),
-              FilledButton(
-                  onPressed: () => Navigator.pop(c, true),
-                  child: const Text("确认修改")),
-            ]));
+                title: const Text("修改姓名"),
+                content: SizedBox(
+                    width: 320,
+                    child: Column(mainAxisSize: MainAxisSize.min, children: [
+                      TextField(
+                          controller: pw,
+                          obscureText: true,
+                          decoration: const InputDecoration(
+                              labelText: "当前密码",
+                              isDense: true,
+                              border: OutlineInputBorder())),
+                      const SizedBox(height: 10),
+                      TextField(
+                          controller: nm,
+                          decoration: const InputDecoration(
+                              labelText: "新姓名（2-20字）",
+                              isDense: true,
+                              border: OutlineInputBorder())),
+                    ])),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c, false),
+                      child: const Text("取消")),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(c, true),
+                      child: const Text("确认修改")),
+                ]));
     if (ok != true) return;
     final r = await AuthApi.changeName(pw.text, nm.text.trim());
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-            (r["msg"] ?? (r["ok"] == true ? "姓名已修改" : "修改失败")).toString()),
+        content:
+            Text((r["msg"] ?? (r["ok"] == true ? "姓名已修改" : "修改失败")).toString()),
         backgroundColor: r["ok"] == true ? Colors.green : Colors.red));
     if (r["ok"] == true) {
       // 就地重建会话用户并回写缓存：静态成员 final 字段不能改，整体换新实例
@@ -1119,16 +1229,16 @@ class _AccountPageState extends State<AccountPage> {
     final ok = await showDialog<bool>(
         context: context,
         builder: (c) => AlertDialog(
-            title: const Text("下线该设备"),
-            content: Text("确认下线「$label」？该设备需重新登录。"),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(c, false),
-                  child: const Text("取消")),
-              FilledButton(
-                  onPressed: () => Navigator.pop(c, true),
-                  child: const Text("确认下线")),
-            ]));
+                title: const Text("下线该设备"),
+                content: Text("确认下线「$label」？该设备需重新登录。"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c, false),
+                      child: const Text("取消")),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(c, true),
+                      child: const Text("确认下线")),
+                ]));
     if (ok != true) return;
     final r = await AuthApi.kickDevice(dev);
     if (!mounted) return;
@@ -1147,8 +1257,7 @@ class _AccountPageState extends State<AccountPage> {
     final sessions = (_dev?["sessions"] as List?) ?? [];
     return Scaffold(
       appBar: AppBar(
-          title: const Text("账号与权限"),
-          backgroundColor: const Color(0xFF515BD4)),
+          title: const Text("账号与权限"), backgroundColor: const Color(0xFF515BD4)),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         Card(
             child: ListTile(
@@ -1186,68 +1295,61 @@ class _AccountPageState extends State<AccountPage> {
               subtitle: const Text("需验证原密码；新密码至少6位"),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => showDialog(
-                  context: context,
-                  builder: (_) => const _ChangePwDialog())),
+                  context: context, builder: (_) => const _ChangePwDialog())),
         ])),
         const SizedBox(height: 12),
         Card(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                child: Row(children: [
-                  const Text("我的登录设备",
-                      style: TextStyle(fontWeight: FontWeight.bold)),
-                  const Spacer(),
-                  IconButton(
-                      onPressed: _devBusy ? null : _loadDev,
-                      icon: const Icon(Icons.refresh, size: 20)),
-                ]),
-              ),
-              if (_devBusy && sessions.isEmpty)
-                const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Center(
-                        child: SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2)))),
-              if (!_devBusy && _dev != null && sessions.isEmpty)
-                const Padding(
-                    padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    child: Text("暂无其他登录会话",
-                        style: TextStyle(color: Colors.grey))),
-              for (final s in sessions)
-                ListTile(
-                  dense: true,
-                  leading: Icon(
-                      s["kind"] == "web"
-                          ? Icons.computer
-                          : Icons.phone_android,
-                      size: 20,
-                      color: const Color(0xFF515BD4)),
-                  title: Text(
-                      "${s["kind"] == "web" ? "网页" : "手持机"} · ${s["ip"]}"),
-                  subtitle: Text(
-                      "最近活跃 ${DateTime.fromMillisecondsSinceEpoch((s["lastSeen"] ?? 0) is int ? (s["lastSeen"] as int) : 0)}"
-                      "${s["current"] == true ? "（当前设备）" : ""}"),
-                  trailing: s["current"] == true
-                      ? const Icon(Icons.check_circle,
-                          size: 18, color: Colors.green)
-                      : IconButton(
-                          icon: const Icon(Icons.logout,
-                              size: 20, color: Colors.red),
-                          onPressed: () => _kick(
-                              (s["dev"] ?? "").toString(),
-                              "${s["kind"] == "web" ? "网页" : "手持机"} ${s["ip"]}")),
-                ),
-              const Padding(
-                padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
-                child: Text("发现不是自己的设备？点红色按钮下线它，对方需重新登录。",
-                    style: TextStyle(fontSize: 11, color: Colors.grey)),
-              ),
-            ])),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+            child: Row(children: [
+              const Text("我的登录设备",
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              const Spacer(),
+              IconButton(
+                  onPressed: _devBusy ? null : _loadDev,
+                  icon: const Icon(Icons.refresh, size: 20)),
+            ]),
+          ),
+          if (_devBusy && sessions.isEmpty)
+            const Padding(
+                padding: EdgeInsets.all(16),
+                child: Center(
+                    child: SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(strokeWidth: 2)))),
+          if (!_devBusy && _dev != null && sessions.isEmpty)
+            const Padding(
+                padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                child: Text("暂无其他登录会话", style: TextStyle(color: Colors.grey))),
+          for (final s in sessions)
+            ListTile(
+              dense: true,
+              leading: Icon(
+                  s["kind"] == "web" ? Icons.computer : Icons.phone_android,
+                  size: 20,
+                  color: const Color(0xFF515BD4)),
+              title: Text("${s["kind"] == "web" ? "网页" : "手持机"} · ${s["ip"]}"),
+              subtitle: Text(
+                  "最近活跃 ${DateTime.fromMillisecondsSinceEpoch((s["lastSeen"] ?? 0) is int ? (s["lastSeen"] as int) : 0)}"
+                  "${s["current"] == true ? "（当前设备）" : ""}"),
+              trailing: s["current"] == true
+                  ? const Icon(Icons.check_circle,
+                      size: 18, color: Colors.green)
+                  : IconButton(
+                      icon:
+                          const Icon(Icons.logout, size: 20, color: Colors.red),
+                      onPressed: () => _kick((s["dev"] ?? "").toString(),
+                          "${s["kind"] == "web" ? "网页" : "手持机"} ${s["ip"]}")),
+            ),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+            child: Text("发现不是自己的设备？点红色按钮下线它，对方需重新登录。",
+                style: TextStyle(fontSize: 11, color: Colors.grey)),
+          ),
+        ])),
         const SizedBox(height: 12),
         if (u.role == "admin")
           Card(
@@ -1257,8 +1359,10 @@ class _AccountPageState extends State<AccountPage> {
                   title: const Text("用户与功能管理（管理员）"),
                   subtitle: const Text("建号/停用/角色与功能权限分配"),
                   trailing: const Icon(Icons.chevron_right),
-                  onTap: () => Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const UserManagePage())))),
+                  onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const UserManagePage())))),
         if (u.role == "admin") const SizedBox(height: 12),
         Card(
             child: Column(
@@ -1834,7 +1938,8 @@ class PrefsSync {
       }
       final n = pv["notes"];
       // ㉖v53 首页模块自定义：顺序/显隐 + 用量 + 习惯开关（落本地，changed 触发主界面重建页签）
-      await TabCustom.applyServer(pv["pd_tabs"], pv["pd_tabuse"], pv["pd_tab_auto"]);
+      await TabCustom.applyServer(
+          pv["pd_tabs"], pv["pd_tabuse"], pv["pd_tab_auto"]);
       if (n is Map) {
         // ㉖v53 三档分级上云：notes 值兼容 true/false(旧) 与 0/1/2(新)；bool→level(2/0)
         Future<void> setLv(String spKey, dynamic v) async {
@@ -1842,6 +1947,7 @@ class PrefsSync {
           final lv = v is bool ? (v ? 2 : 0) : ((v is num) ? v.toInt() : 2);
           await sp.setInt(spKey + '_lv', lv.clamp(0, 2));
         }
+
         await setLv("remind_req_new", n["req_new"]);
         await setLv("remind_req_urge", n["req_urge"]);
         await setLv("remind_req_arrive", n["req_arrive"]);
@@ -1887,7 +1993,9 @@ class PrefsSync {
         "pd_dateOffset": sp.getInt("pd_dateOffset") ?? 0,
       };
       // ㉖v53 首页模块自定义随偏好全量上云
-      try { body.addAll(await TabCustom.cloudPayload()); } catch (_) {}
+      try {
+        body.addAll(await TabCustom.cloudPayload());
+      } catch (_) {}
       if (uid.isNotEmpty) body["work"] = sp.getInt("worktype_$uid") ?? 0;
       await AuthApi.setPrefs(body);
     } catch (_) {}

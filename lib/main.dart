@@ -1509,6 +1509,7 @@ class _MainPageState extends State<MainPage>
   int? _recvOn; // ㉖v120b 服务器来料区启用开关探测（locs?recv=1 顺带下发；null=未探到/旧版服务器，不改变行为）
   bool _recvOffFlag = false; // ㉖v120b nb01AutoSlot 判定"未启用"置位，保存链据此中止并提示（与"区满/离线"区分）
   bool _retMode = false; // ㉖v122 生产退库勾选：保存链查重带 ret=1（豁免 everOut 复用拦+来料区源头闸）；仅单次生效，保存成功即自动清除——防忘关把普通新料当退料放行
+  bool _reShelfMode = false; // ㉖v198 重新上架勾选（仅 AGV 站台模式）：框被人工搬到 CK 站台后要由 AGV 重新上货架，服务器豁免"已在库"拦 + 预占改分新货架格（旧位在地面时不再回吐）；同样单次生效
   String? _selectedStation; //【修改：存储编码 NB02-CK-05】
   String? _lastScanStation; // ㉖ 扫码保存后站台即清，留作手动「提交任务」回退
   String? _lastScanContainer; // ㉖ 容器类型同左
@@ -2201,8 +2202,9 @@ class _MainPageState extends State<MainPage>
   /// ㉖① 全局标签查重：服务器 labelSeen 权威（任何批次录过即拦）；断网降级本机 Isar 全批次。命中默认拒绝，可填原因强制继续（留痕）。
   /// ㉖v120 recv=1：来料区登记模式——命中在库 NB04 行不豁免（重复登记照拦）
   /// ㉖v122 ret=1：生产退库模式——豁免"标签不可回收复用"拦与来料区源头闸（退料不经一楼）
-  Future<bool> _globalDupCheck(String code, {bool recv = false, bool ret = false}) async {
-    final r = await AuthApi.labelCheck(code, recv: recv, ret: ret);
+  /// ㉖v198 reShelf=1：重新上架模式——人工搬到 CK 站台的地面框由 AGV 再上货架，豁免"已在库"拦（服务器只放账本行全在地面格的框）
+  Future<bool> _globalDupCheck(String code, {bool recv = false, bool ret = false, bool reShelf = false}) async {
+    final r = await AuthApi.labelCheck(code, recv: recv, ret: ret, reShelf: reShelf);
     if (r["net"] == true) {
       // 断网/服务不可达：降级查本机全部批次（未作废）
       final any = await _isar.scanRecords
@@ -2480,6 +2482,7 @@ class _MainPageState extends State<MainPage>
     final String? ct0 = _containerType; // 容器类型快照
     final bool pallet0 = _palletMode; // 整托模式快照
     final bool ret0 = _retMode; // ㉖v122 退库勾选快照
+    final bool rs0 = _reShelfMode; // ㉖v198 重新上架勾选快照（仅 AGV 站台模式生效）
 // ==========【新增前置校验，从这里开始】==========
     try {
       //校验1：容器类型不能为空（㉖v120 来料区模式免选：容器默认筐，见保存段兜底）
@@ -2521,7 +2524,7 @@ class _MainPageState extends State<MainPage>
               .showSnackBar(const SnackBar(content: Text("未创建采集批次！")));
         return;
       }
-      if (await _globalDupCheck(code, recv: wt0 == 2, ret: ret0 && wt0 != 2)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）；来料模式带 recv；㉖v122 退库勾选带 ret（来料模式不适用）
+      if (await _globalDupCheck(code, recv: wt0 == 2, ret: ret0 && wt0 != 2, reShelf: rs0 && wt0 == 0)) return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）；来料模式带 recv；㉖v122 退库勾选带 ret（来料模式不适用）；㉖v198 重新上架勾选带 rs（仅 AGV 站台模式）
       if (await _isCodeDuplicate(code)) return;
       if (wt0 == 0 && st0 == null) {
         if (mounted) {
@@ -2740,6 +2743,7 @@ class _MainPageState extends State<MainPage>
       setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
         _retMode = false; // ㉖v122 退库勾选单次生效：本筐已按退料入账，自动关闭防下一筐普通新料被误豁免
+        _reShelfMode = false; // ㉖v198 重新上架勾选同款项下：本筐已重新入账，自动关闭防下一框真·新料被当成重新上架豁免查重
         _remarkInputCtrl.clear();
         if (!pallet0) {
           _containerType = null; // 新增：保存成功，容器类型取消选中
@@ -2759,6 +2763,7 @@ class _MainPageState extends State<MainPage>
       }
       await _ledgerRegisterOnSave(code,
           wtSnap: wt0, palletSnap: pallet0, ctSnap: ct0,
+          rsSnap: rs0 && wt0 == 0, // ㉖v198 重新上架快照透传：分配链要跳过"回吐地面现位"
           autoCallStation: autoCallSt,
           groundZone: lastGroundZone,
           recvSlot: recvSlotAuto); //顺手登记货位账本（选填，不影响采集主流程）；㉖v120 来料模式带自动格位
@@ -2793,6 +2798,7 @@ class _MainPageState extends State<MainPage>
   ///留空则不写账本，与改动前行为完全一致；编码格式不符或货位已被他人占用时只提示不写入。
   Future<void> _ledgerRegisterOnSave(String code,
       {required int wtSnap, required bool palletSnap, String? ctSnap, // ㉖v154 快照入参(必填，漏传即编译报错)：本函数在保存清界面之后才跑，读实时值会拿到被改写/清空的模式
+      bool rsSnap = false, // ㉖v198 重新上架快照：自动分配须跳过"回吐地面现位"，给框分新货架格
       String autoCallStation = "", String groundZone = "", String? recvSlot}) async {
     try {
       if (recvSlot != null && recvSlot.isNotEmpty) {
@@ -2802,7 +2808,7 @@ class _MainPageState extends State<MainPage>
       }
       if (_ledgerLocCtrl.text.trim().toUpperCase() == 'AUTO') {
         //自动分配：先按零件号定货位并回填
-        await _handleAutoLedger(code);
+        await _handleAutoLedger(code, reShelf: rsSnap);
       }
       var loc = _ledgerLocCtrl.text.trim().toUpperCase();
       if (loc == 'AUTO') return; //AUTO 分配失败的情形，不写账本
@@ -2835,7 +2841,7 @@ class _MainPageState extends State<MainPage>
               .filter()
               .goodsCodeEqualTo(code.toUpperCase())
               .findFirst();
-          final auto = await nb02AutoAssign(recA?.mesPartNo ?? "", code: code.toUpperCase());
+          final auto = await nb02AutoAssign(recA?.mesPartNo ?? "", code: code.toUpperCase(), reShelf: rsSnap);
           if (auto == null) {
             if (mounted)
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -4064,6 +4070,42 @@ class _MainPageState extends State<MainPage>
                         ]),
                       ),
 
+                    // ㉖v198 重新上架勾选（仅 AGV 站台模式）：框已被人工搬到 CK 站台，现要由 AGV 重新上货架。
+                    // 勾选后：①服务器豁免"已在库"拦（只放账本行全在地面格的框，货架/来料区框照拦）；
+                    // ②自动分配跳过"回吐地面现位"，给这个框分新的货架格；③同框兄弟码整框随动改位。
+                    // 单次生效，入账成功自动关闭——防忘关把正常新料当重新上架。
+                    if (_workType == 0)
+                      Container(
+                        margin: const EdgeInsets.only(top: 10),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: _reShelfMode ? const Color(0xFFE8F2FF) : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                              color: _reShelfMode
+                                  ? Colors.blue.shade300
+                                  : Colors.grey.shade300),
+                        ),
+                        child: Row(children: [
+                          Checkbox(
+                              value: _reShelfMode,
+                              activeColor: const Color(0xFF1565C0),
+                              visualDensity: VisualDensity.compact,
+                              onChanged: (v) =>
+                                  setState(() => _reShelfMode = v == true)),
+                          Expanded(
+                              child: Text(
+                                  _reShelfMode
+                                      ? "重新上架已开启：本筐已从地面搬到站台，将分配新货架格由 AGV 上架，入账后自动关闭"
+                                      : "重新上架：地面框已由人工搬到 CK 站台时勾选（免'已在库'重复拦·自动换新货架格）",
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: _reShelfMode
+                                          ? const Color(0xFF1565C0)
+                                          : Colors.grey.shade700))),
+                        ]),
+                      ),
+
 // ===== 整托合并模式：开关 + 当前托汇总卡片（㉖v120 来料区登记模式隐藏：逐筐登记无托概念） =====
                     if (_workType != 2)
                     Container(
@@ -4777,6 +4819,7 @@ class _MainPageState extends State<MainPage>
           _lastScanStation = null;
           _lastScanContainer = null;
           _ledgerLocCtrl.clear(); // ㉖v69c 切模式清空货位编码输入框：地面NB03残留会流进AGV模式致叫车"库位不在WMAS主档"
+          _reShelfMode = false; // ㉖v198 重新上架只在AGV站台模式有意义，切模式即清，防残留勾选流进地面/来料模式
           if (type == 0) {
             _selectedGroundLoc = null;
           } else if (type == 2) {

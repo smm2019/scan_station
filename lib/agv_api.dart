@@ -599,7 +599,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         final rt = AgvApi.taskRoute(t);
         for (final k in ["startPoint", "endPoint"]) {
           final v = (rt[k] ?? "").toString().toUpperCase();
-          if (v.isNotEmpty && !v.contains('-CK-')) locs.add(v); // 站台非存储位，反查只会假报无货
+          if (v.isNotEmpty && !v.contains('-CK-'))
+            locs.add(v); // 站台非存储位，反查只会假报无货
         }
       }
       if (locs.isEmpty) return;
@@ -611,7 +612,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
         if (lr["ok"] == true && lr["items"] is List) {
           for (final x in (lr["items"] as List).whereType<Map>()) {
             final l0 = (x["l"] ?? "").toString().toUpperCase();
-            if (l0.isNotEmpty && locs.contains(l0)) (srvLoc[l0] = srvLoc[l0] ?? <Map>[]).add(x);
+            if (l0.isNotEmpty && locs.contains(l0))
+              (srvLoc[l0] = srvLoc[l0] ?? <Map>[]).add(x);
           }
         }
       } catch (_) {}
@@ -622,7 +624,9 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
             final p = (x["p"] ?? "").toString();
             final q = ((x["q"] as num?) ?? 0).toDouble();
             return (p.isNotEmpty ? p + "·" + _fmtInvNum(q) + "件" : "未补齐物料") +
-                "（标签 " + (x["c"] ?? "").toString() + "）";
+                "（标签 " +
+                (x["c"] ?? "").toString() +
+                "）";
           }).join(" ");
         });
         if (!mounted) return;
@@ -977,7 +981,9 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
       // ㉖v91 存储位=起终点中非站台(-CK-)的那个：入库起点是站台→取终点货架位；出库终点是站台→取起点货架位。
       // 旧版只查起点，入库任务起点=站台（账本永不登记站台）必误报"无此位货物"
       final _stn = (String s) => s.contains('-CK-');
-      final stLoc = (!_stn(sp) && sp.isNotEmpty) ? sp : ((!_stn(ep) && ep.isNotEmpty) ? ep : "");
+      final stLoc = (!_stn(sp) && sp.isNotEmpty)
+          ? sp
+          : ((!_stn(ep) && ep.isNotEmpty) ? ep : "");
       final cargo = _cargo[stLoc];
       final isCharge = rt["taskType"]?.toString() == "CHARGE" ||
           "${t["taskType"] ?? ""}" == "CHARGE";
@@ -1110,34 +1116,76 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                     color: Colors.deepOrange))),
         ..._transfer.map((q) => Padding(
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
+            // ㉖v198d 移库任务卡可展开时间线（检验工单同款）：服务器 trace 数组
+            // （排队原因/自动选台依据/WMAS下发结果/失败原因）逐条带时刻展开，
+            // 现场看得懂"为什么还没发"与"台是谁选的"。
             child: Container(
-                padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
                     color: Colors.deepOrange.shade50,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: Colors.deepOrange.shade200)),
-                child: Row(children: [
-                  const Icon(Icons.swap_horiz,
-                      size: 18, color: Colors.deepOrange),
-                  const SizedBox(width: 8),
-                  Expanded(
-                      child: Text(
-                          "${(q["from"] ?? "?")} → ${(q["to"] ?? "?")}${(q["code"] ?? "").toString().isNotEmpty ? "  ${q["code"]}" : ""}",
-                          style: const TextStyle(
-                              fontSize: 13,
-                              fontFamily: "monospace",
-                              fontWeight: FontWeight.w600))),
-                  Text("${q["state"] ?? ""}",
-                      style: const TextStyle(
-                          fontSize: 12,
-                          color: Colors.deepOrange,
-                          fontWeight: FontWeight.bold)),
-                  if (q["state"] == "已下发" || q["state"] == "排队")
-                    IconButton(
-                        icon: const Icon(Icons.close,
-                            size: 18, color: Colors.red),
-                        onPressed: () => _cancelTransfer(q)),
-                ])))),
+                child: ExpansionTile(
+                    tilePadding: const EdgeInsets.symmetric(horizontal: 10),
+                    childrenPadding: const EdgeInsets.fromLTRB(14, 0, 10, 10),
+                    leading: const Icon(Icons.swap_horiz,
+                        size: 18, color: Colors.deepOrange),
+                    title: Text(
+                        "${(q["from"] ?? "?")} → ${(q["to"]?.toString() ?? "").isNotEmpty ? q["to"] : (q["autoStn"] == 1 ? "待自动选台" : "?")}${(q["code"] ?? "").toString().isNotEmpty ? "  ${q["code"]}" : ""}",
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontFamily: "monospace",
+                            fontWeight: FontWeight.w600)),
+                    subtitle: Text(
+                        "${q["state"] ?? ""}${q["stage"] != null ? " · ${q["stage"]}" : ""} · ${(q["by"] ?? "").toString()}发起",
+                        style: const TextStyle(
+                            fontSize: 11.5,
+                            color: Colors.deepOrange,
+                            fontWeight: FontWeight.bold)),
+                    trailing: (q["state"] == "已下发" || q["state"] == "排队")
+                        ? IconButton(
+                            icon: const Icon(Icons.close,
+                                size: 18, color: Colors.red),
+                            onPressed: () => _cancelTransfer(q))
+                        : const Icon(Icons.expand_more,
+                            size: 18, color: Colors.grey),
+                    children: [
+                      // ㉖v198g 已送达/在送途中的框被人搬走 → 一键收口（去向弹层+站台立释）
+                      if (["已下发", "到站", "完成"].contains(q["state"]))
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Padding(
+                              padding: const EdgeInsets.only(bottom: 6),
+                              child: OutlinedButton.icon(
+                                  style: OutlinedButton.styleFrom(
+                                      foregroundColor: const Color(0xFFEF6C00),
+                                      visualDensity: VisualDensity.compact),
+                                  onPressed: () => _removeTransfer(q),
+                                  icon: const Icon(Icons.move_down, size: 16),
+                                  label: const Text("人已移走 · 收口",
+                                      style: TextStyle(fontSize: 12.5)))),
+                        ),
+                      Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text((() {
+                            final tr = ((q["trace"] as List?) ?? [])
+                                .map((e) => e.toString())
+                                .toList()
+                              ..reversed;
+                            return tr.isEmpty
+                                ? "暂无调度留痕"
+                                : tr.map((e) => "· $e").join("\n");
+                          })(),
+                              style: const TextStyle(
+                                  fontSize: 11.5,
+                                  height: 1.6,
+                                  color: Colors.blueGrey))),
+                      if (q["err"]?.toString().isNotEmpty == true)
+                        Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("⚠ ${q["err"]}",
+                                style: const TextStyle(
+                                    fontSize: 11.5, color: Colors.red))),
+                    ])))),
       ],
       Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
@@ -1417,6 +1465,15 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
           final st = off ? "已停用" : (s?["state"]?.toString() ?? "空闲");
           final c = off ? Colors.blueGrey : cOf(st);
           final tl = AgvApi.stationTimeline(s);
+          // 徽标文案预计算（s 可空，此处统一 ?安全取值）：检验挂单 + 拉下架待搬
+          final _inspL = (s?["inspOrders"] as List?) ?? const [];
+          final _tfM = s?["tfLedger"] as Map?;
+          final _badgeTxt = [
+            if (_inspL.isNotEmpty)
+              "🔎检验${_inspL.map((e) => ((e as Map?)?["code"] ?? "")).take(2).join(" ")}${_inspL.length > 2 ? "等${_inspL.length}单" : ""}",
+            if (_tfM != null)
+              "⬇️待搬${((_tfM["codes"] as List?) ?? const []).join(" ")}",
+          ].join("　");
           return GestureDetector(
               onTap: () => _stDetail(code), // ㉖⑯ 点卡片弹站台详情（吞吐/占用明细/身份）
               child: Container(
@@ -1459,6 +1516,19 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                                 fontSize: 10.5,
                                 height: 1.25,
                                 color: st == "空闲" ? Colors.blueGrey : c)),
+                        // ㉖v198g 逻辑挂单徽标：物理"空闲"≠可用——检验工单还挂着（人要把框搬
+                        // 走前不能派车压台）或拉下架框已送达待搬，都在此点名，两端信息对齐。
+                        if (_badgeTxt.isNotEmpty)
+                          Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(_badgeTxt,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 10,
+                                      height: 1.2,
+                                      color: Color(0xFFB26A00),
+                                      fontWeight: FontWeight.w600))),
                         // 时间线：每步发生即点亮（建单→接令→叉出/叉离→放架；有货末尾追加到站）
                         if (tl.isNotEmpty)
                           Expanded(
@@ -1903,6 +1973,42 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
     LocalLog.op('移库取消', r["ok"] == true ? '已请求取消' : '取消失败');
   }
 
+  /// ㉖v198g 拉下架「人已移走收口」：AGV 已把框放上站台（已下发≈已在送/已到台，到站=已送达），
+  /// 人把框搬去地面/货架后 → 去向弹层（检验收口同款，可选地面空格）→ 二次确认 →
+  /// 账本随单改位（整框随改）+ 队列项收口 + 站台立即释放。
+  Future<void> _removeTransfer(Map q) async {
+    final code = (q["code"] ?? "").toString();
+    final stn = (q["to"] ?? "").toString();
+    if (!mounted) return;
+    final loc = await removeLocDialog(context, code, stn.isEmpty ? "站台" : stn);
+    if (loc == null || loc.trim().isEmpty || !mounted) return;
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+                title: const Text("确认人工收口", style: TextStyle(fontSize: 16)),
+                content: Text(
+                    "确认 $code 已由人工搬离 ${stn.isEmpty ? "站台" : stn}，现实际在 $loc ？\n\n"
+                    "将同时完成：账本改位→$loc（整框标签随改）＋ 拉下架任务结束 ＋ 站台立即释放，并记入审计。"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text("返回")),
+                  FilledButton(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFEF6C00)),
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text("确认收口",
+                          style: TextStyle(color: Colors.white)))
+                ]));
+    if (yes != true || !mounted) return;
+    final r = await AuthApi.agvTransferRemove(
+        id: (q["at"] ?? "").toString(), code: code, station: stn, loc: loc);
+    if (!mounted) return;
+    _toast(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ 收口失败：${r["msg"]}");
+    if (r["ok"] == true) _load(silent: true);
+    LocalLog.op('拉下架收口', r["ok"] == true ? '$code→$loc 已收口' : '$code 收口失败');
+  }
+
   /// 解除交管：二次确认（红色警示）→ 释放点位交管锁 → 刷新
   Future<void> _unlockStation(String land) async {
     final ok = await showDialog<bool>(
@@ -1935,8 +2041,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
           icon: const Icon(Icons.map, size: 18, color: Color(0xFF00897B)),
           label: const Text("AGV 实时地图（网页版·横屏·捏合缩放）",
               style: TextStyle(fontSize: 12, color: Color(0xFF00897B))),
-          onPressed: () => Navigator.push(
-              context, MaterialPageRoute(builder: (_) => const AgvWebMapPage()))),
+          onPressed: () => Navigator.push(context,
+              MaterialPageRoute(builder: (_) => const AgvWebMapPage()))),
       const SizedBox(height: 14),
       const Icon(Icons.monitor, size: 40, color: Color(0xFF37474F)),
       const SizedBox(height: 6),
@@ -2024,8 +2130,7 @@ class _AgvWebMapPageState extends State<AgvWebMapPage> {
       _err = "";
       _loading = true;
     });
-    final base =
-        (await AuthStore.serverUrl()).replaceFirst(RegExp(r"/+$"), "");
+    final base = (await AuthStore.serverUrl()).replaceFirst(RegExp(r"/+$"), "");
     if (base.isEmpty) {
       if (mounted) setState(() => _err = "未配置服务器地址（先去「MES服务器设置」）");
       return;
@@ -2034,8 +2139,7 @@ class _AgvWebMapPageState extends State<AgvWebMapPage> {
     final j = await AuthApi.webSession();
     final tk = j["ok"] == true ? (j["token"] ?? "").toString() : "";
     if (tk.isEmpty) {
-      if (mounted)
-        setState(() => _err = "会话换发失败：${j["msg"] ?? "请重新登录后再试"}");
+      if (mounted) setState(() => _err = "会话换发失败：${j["msg"] ?? "请重新登录后再试"}");
       return;
     }
     await _ctrl
@@ -2050,24 +2154,21 @@ class _AgvWebMapPageState extends State<AgvWebMapPage> {
           child: Stack(children: [
         WebViewWidget(controller: _ctrl),
         Positioned(
-            top: 4,
-            left: 6,
-            child: GestureDetector(
-                onTap: () => Navigator.pop(context),
-                child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                        color: const Color(0xCC101A2E),
-                        borderRadius: BorderRadius.circular(6)),
-                    child: const Text("← 返回",
-                        style: TextStyle(
-                            color: Colors.white, fontSize: 12)))),
-            ),
+          top: 4,
+          left: 6,
+          child: GestureDetector(
+              onTap: () => Navigator.pop(context),
+              child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                      color: const Color(0xCC101A2E),
+                      borderRadius: BorderRadius.circular(6)),
+                  child: const Text("← 返回",
+                      style: TextStyle(color: Colors.white, fontSize: 12)))),
+        ),
         if (_loading)
-          const Center(
-              child:
-                  CircularProgressIndicator(color: Colors.cyan)),
+          const Center(child: CircularProgressIndicator(color: Colors.cyan)),
         if (_err.isNotEmpty)
           Center(
               child: Padding(
@@ -2082,7 +2183,8 @@ class _AgvWebMapPageState extends State<AgvWebMapPage> {
 }
 
 // ===================== AGV实时调度界面（WebView，注入token自动登录） =====================
-class AgvWebViewPage extends StatefulWidget {  final String spaRoute; // 非空=SPA内路由（如 /home-pda 原厂手机版）；nginx无回退，先载根路径再前端跳转
+class AgvWebViewPage extends StatefulWidget {
+  final String spaRoute; // 非空=SPA内路由（如 /home-pda 原厂手机版）；nginx无回退，先载根路径再前端跳转
   const AgvWebViewPage({super.key, this.spaRoute = ""});
   @override
   State<AgvWebViewPage> createState() => _AgvWebViewPageState();
@@ -2193,7 +2295,10 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
         _accCtrl.text = cfg["account"] ?? "";
         _pwdCtrl.text = cfg["pwd"] ?? "";
         _yielding = yld;
-        if (yld) { _ok = true; _msg = AgvAuthYield.msgOf(left); }
+        if (yld) {
+          _ok = true;
+          _msg = AgvAuthYield.msgOf(left);
+        }
       });
       final st = await AuthApi.rcsStations();
       if (mounted && st["ok"] == true)
@@ -2226,7 +2331,8 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
     // ㉖v162 旧实现只写本机就报"已保存"：服务器轮询 RCS、代发 AGV 叫车用的都是它自己那份凭据，
     // 不推过去=改了等于没改（与 WMAS 设置页同一缺陷）。同步失败必须显式警告，不能让绿色"已保存"掩盖。
     final err = await agvSyncBothToServer(alsoRcs: true);
-    if (!mounted) return; // ㉖v98b 保存为await，期间弹窗可能已关：setState前守卫（v97 PDA-34660同款病）
+    if (!mounted)
+      return; // ㉖v98b 保存为await，期间弹窗可能已关：setState前守卫（v97 PDA-34660同款病）
     final yld = await AgvAuthYield.on();
     if (!mounted) return;
     setState(() {
@@ -2369,8 +2475,13 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
                 child: OutlinedButton(
                     onPressed: _busy ? null : _logout,
                     style: OutlinedButton.styleFrom(
-                        foregroundColor: _yielding ? const Color(0xFF00897B) : const Color(0xFFB71C1C),
-                        side: BorderSide(color: _yielding ? const Color(0xFF00897B) : const Color(0xFFB71C1C))),
+                        foregroundColor: _yielding
+                            ? const Color(0xFF00897B)
+                            : const Color(0xFFB71C1C),
+                        side: BorderSide(
+                            color: _yielding
+                                ? const Color(0xFF00897B)
+                                : const Color(0xFFB71C1C))),
                     child: Text(_yielding ? "恢复登录" : "退出登录"))),
           ]),
           if (_msg.isNotEmpty)
@@ -2442,40 +2553,158 @@ class _AgvSettingPageState extends State<AgvSettingPage> {
 /// 货架移库（货位→货位 / 货位→地面暂存）：表单 → 二次确认 → 服务器建CARRY任务
 Future<void> showTransferDialog(BuildContext context,
     {void Function()? onDone}) async {
-  final fromC = TextEditingController(),
-      toC = TextEditingController(),
-      palC = TextEditingController();
-  bool toGround = false, dry = false;
+  final fromC = TextEditingController(), palC = TextEditingController();
+  bool dry = false; // ㉖v197 原 toGround 勾选随"地面直送"伪功能移除
+  // ㉖v198d 终点三模式（对齐检验下架）：0=自动分配空闲台（服务器判据下发时刻现算）
+  // 1=手动指定CK站台（清单来自 /api/agv/transfer-stations，占用台带原因灰显）
+  // 2=手填货架格（NB02 货架→货架移库旧能力保留）
+  int toMode = 0;
+  String pickedStn = "";
+  final toShelfC = TextEditingController();
+  List<Map> stnList = [];
+  bool stnLoading = false;
+  String stnErr = "";
   InputDecoration di(String hint) => InputDecoration(
       isDense: true, border: const OutlineInputBorder(), hintText: hint);
   final choice = await showDialog<String>(
       context: context,
       builder: (ctx) => StatefulBuilder(builder: (ctx2, setDlg) {
+            Future<void> loadStns() async {
+              setDlg(() {
+                stnLoading = true;
+                stnErr = "";
+              });
+              final r = await AuthApi.agvTransferStations();
+              setDlg(() {
+                stnLoading = false;
+                if (r["ok"] == true && r["list"] is List) {
+                  stnList = (r["list"] as List).whereType<Map>().toList();
+                } else {
+                  stnErr = r["msg"]?.toString() ?? "站台清单拉取失败";
+                }
+              });
+            }
+
             return AlertDialog(
-              title: const Text("🔄 货架移库"),
+              title: const Text("🔄 货架移库 / 拉下架"),
               content: SingleChildScrollView(
                   child: Column(mainAxisSize: MainAxisSize.min, children: [
                 TextField(
                     controller: fromC,
                     textCapitalization: TextCapitalization.characters,
-                    decoration: di("起点货位（如 NB02-A-08-2F）")),
+                    decoration: di("起点货架格（如 NB02-A-08-2F）")),
+                const SizedBox(height: 10),
+                // —— 终点模式三选（检验下架同款：可自动、可手动、留痕透明）——
+                Row(children: [
+                  for (final e in [
+                    const {"v": 0, "t": "自动分配空闲台"},
+                    const {"v": 1, "t": "手动选CK站台"},
+                    const {"v": 2, "t": "货架格（手填）"}
+                  ]) ...[
+                    ChoiceChip(
+                        label: Text(e["t"] as String,
+                            style: const TextStyle(fontSize: 12)),
+                        selected: toMode == e["v"],
+                        onSelected: (_) {
+                          setDlg(() => toMode = e["v"] as int);
+                          if (toMode == 1 && stnList.isEmpty && !stnLoading) {
+                            loadStns();
+                          }
+                        }),
+                    const SizedBox(width: 6),
+                  ]
+                ]),
                 const SizedBox(height: 8),
-                TextField(
-                    controller: toC,
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: di("终点货位 / 地面暂存位")),
+                if (toMode == 0)
+                  const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 4),
+                      child: Text(
+                          "下发时刻由服务器按空闲口径现算选台（未停用·非入库/检验专用·看板空闲·无队列与检验占台）；暂无空闲台时自动排队，台释放后按序发车。",
+                          style: TextStyle(
+                              fontSize: 11.5,
+                              color: Colors.blueGrey,
+                              height: 1.5))),
+                if (toMode == 1)
+                  Container(
+                      constraints: const BoxConstraints(maxHeight: 230),
+                      child: stnLoading
+                          ? const Padding(
+                              padding: EdgeInsets.all(14),
+                              child: LinearProgressIndicator())
+                          : stnErr.isNotEmpty
+                              ? Column(children: [
+                                  Text(stnErr,
+                                      style: const TextStyle(
+                                          fontSize: 12, color: Colors.orange)),
+                                  TextButton(
+                                      onPressed: loadStns,
+                                      child: const Text("重试")),
+                                ])
+                              : ListView(shrinkWrap: true, children: [
+                                  for (final s in stnList)
+                                    ListTile(
+                                      dense: true,
+                                      visualDensity: VisualDensity.compact,
+                                      enabled: s["ok"] == true,
+                                      leading: Icon(
+                                          s["ok"] == true
+                                              ? Icons.pin_drop
+                                              : Icons.pin_drop_outlined,
+                                          size: 18,
+                                          color: s["ok"] == true
+                                              ? const Color(0xFF00897B)
+                                              : Colors.grey),
+                                      title: Text(
+                                          "${s["alias"]?.toString().isNotEmpty == true ? "${s["alias"]} · " : ""}${s["code"]}",
+                                          style: TextStyle(
+                                              fontSize: 13.5,
+                                              fontFamily: "monospace",
+                                              color: s["ok"] == true
+                                                  ? null
+                                                  : Colors.grey,
+                                              fontWeight: pickedStn == s["code"]
+                                                  ? FontWeight.bold
+                                                  : FontWeight.normal)),
+                                      trailing: s["ok"] == true
+                                          ? (pickedStn == s["code"]
+                                              ? const Icon(Icons.check_circle,
+                                                  size: 18,
+                                                  color: Color(0xFF00897B))
+                                              : null)
+                                          : Text("${s["why"]}",
+                                              style: const TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.grey)),
+                                      onTap: s["ok"] == true
+                                          ? () {
+                                              setDlg(() => pickedStn =
+                                                  s["code"].toString());
+                                              Navigator.pop(ctx2, "go");
+                                            }
+                                          : null,
+                                    ),
+                                ])),
+                if (toMode == 2)
+                  TextField(
+                      controller: toShelfC,
+                      textCapitalization: TextCapitalization.characters,
+                      decoration: di("目标货架格（如 NB02-B-12-3F）")),
                 const SizedBox(height: 8),
                 TextField(
                     controller: palC,
                     textCapitalization: TextCapitalization.characters,
                     decoration: di("货架类型（选填，留空按账本自动匹配）")),
-                CheckboxListTile(
-                    value: toGround,
-                    onChanged: (v) => setDlg(() => toGround = v ?? false),
-                    title:
-                        const Text("终点是地面暂存位", style: TextStyle(fontSize: 13)),
-                    dense: true,
-                    controlAffinity: ListTileControlAffinity.leading),
+                // ㉖v197 移除「终点是地面暂存位」勾选：AGV 地面区不可达（RCS 沉淀数千条任务
+                // 0 条含 NB03 端、账本移库改账留痕 0 条=地面直送从未成功过一框）。
+                // 货架→地面正确动线：本表单拉到 CK 站台 → 人工转地面 → 位置登记收账；
+                // 地面上架：人工搬到 CK 站台 → 采集录入 AGV 模式（见下方提示）
+                const Padding(
+                  padding: EdgeInsets.only(top: 2),
+                  child: Text(
+                      "地面框上架请走「采集录入·AGV模式」（人工搬到CK台再扫）；"
+                      "移库仅支持 货架→货架 / 货架→CK站台",
+                      style: TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
+                ),
                 CheckboxListTile(
                     value: dry,
                     onChanged: (v) => setDlg(() => dry = v ?? false),
@@ -2490,20 +2719,26 @@ Future<void> showTransferDialog(BuildContext context,
                     child: const Text("取消")),
                 FilledButton(
                     onPressed: () => Navigator.pop(
-                        ctx2, dry ? "dry" : (toGround ? "goG" : "go")),
-                    child: const Text("下一步")),
+                        ctx2, dry ? "dry" : "go"), // ㉖v197 goG（终点地面）分支随伪功能移除
+                    child: Text(
+                        toMode == 1 && pickedStn.isEmpty ? "选一个站台" : "下一步")),
               ],
             );
           }));
   if (choice == null || !context.mounted) return;
-  final from = fromC.text.trim().toUpperCase(),
-      to = toC.text.trim().toUpperCase();
+  final from = fromC.text.trim().toUpperCase();
+  final to = toMode == 0
+      ? "AUTO"
+      : toMode == 1
+          ? pickedStn
+          : toShelfC.text.trim().toUpperCase();
   if (from.isEmpty || to.isEmpty) {
     if (context.mounted)
       ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("❌ 起点/终点货位不能为空")));
+          .showSnackBar(const SnackBar(content: Text("❌ 起点货位必填；终点请选台/填格")));
     return;
   }
+  final toDisp = to == "AUTO" ? "自动分配空闲台" : to;
   if (choice != "dry") {
     final ok = await showDialog<bool>(
         context: context,
@@ -2511,7 +2746,7 @@ Future<void> showTransferDialog(BuildContext context,
               title: const Text("⚠️ 确认移库",
                   style: TextStyle(color: Colors.deepOrange)),
               content: Text(
-                  "将呼叫AGV把 $from 上的货架整架移到 $to。\n\n请确认该货位确有此架、移库路径无人停留。到位后记得用「位置登记」更新账本。确认下发？"),
+                  "将呼叫AGV把 $from 上的货架整架移到 $toDisp。\n\n请确认该货位确有此架、移库路径无人停留。AGV 确认到位后账本会自动更新位置（无需再手工登记）。确认下发？"),
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(ctx, false),
@@ -2528,12 +2763,14 @@ Future<void> showTransferDialog(BuildContext context,
   final r = await AuthApi.agvTransfer(
       from: from,
       to: to,
-      kind: choice == "goG" ? "toGround" : "shelf2shelf",
+      kind: "shelf2shelf", // ㉖v197 地面直送伪功能移除：本表单仅 货架→货架/货架→CK站台（AGV 地面区不可达）
       palletType: palC.text.trim(),
       dry: choice == "dry");
   if (context.mounted)
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(r["ok"] == true ? "✅ ${r["msg"]}" : "❌ ${r["msg"]}")));
+        content: Text(r["ok"] == true
+            ? "✅ ${r["msg"]}${r["to"]?.toString().isNotEmpty == true && toMode == 0 ? "（已选台 ${r["to"]}）" : ""}"
+            : "❌ ${r["msg"]}")));
   if (r["ok"] == true) onDone?.call();
-  LocalLog.op('移库', r["ok"] == true ? '$from→$to 已下发' : '$from→$to 失败');
+  LocalLog.op('移库', r["ok"] == true ? '$from→$toDisp 已下发' : '$from→$toDisp 失败');
 }

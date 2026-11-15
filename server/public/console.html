@@ -805,7 +805,7 @@ async function traceBox(codeRaw){const code=String(codeRaw||'').trim().toUpperCa
  const _t=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}).slice(5,16):'';const chain=tb.chain||{};const nodes=[];
  const sl=(sc.items||[])[0];if(sl)nodes.push([sl.t||0,'📥 采集入库',String(sl.op||'')+' 扫入 · 初始货位 '+(sl.wt===0?(sl.st||''):(sl.gl||''))+(sl.pn?' · 零件 '+sl.pn:'')+(sl.q?' ×'+sl.q:'')+(sl.lot?' · 批次 '+sl.lot:'')+(sl.pid?' · 托号 '+sl.pid:'')+(sl.ct?' · 容器 '+sl.ct:'')+(sl.cx?' · 【已作废】':'')]);
  else if(chain.inAt)nodes.push([chain.inAt,'📝 入账登记',(chain.inBy||'')+(chain.inPn?' · 零件 '+chain.inPn:'')+(chain.inQ?' · 数量 '+chain.inQ:'')+(chain.inLoc?' · 初始货位 '+chain.inLoc:'')+(chain.inPid?' · 托号 '+chain.inPid:'')+(chain.inLot?' · 批次 '+chain.inLot:'')+'（采集流水已归档，此为历史录入索引留痕）']); // ㉖v98c 流水归档后入账节点不再缺席；㉖v99 富字段与PDA链路同信息量
- const led=(lg.items||[])[0];if(led)nodes.push([led.t||0,'📦 货位账本','当前 '+String(led.l||'')+(led.p?' · 零件 '+led.p:'')+(led.q?' ×'+led.q:'')+(led.f?' · 容器 '+led.f:'')+(led.mv?' · '+led.mv:'')+(led.by?' · 登记 '+led.by:'')]);
+ const led=(lg.items||[])[0];if(led)nodes.push([led.t||0,'📦 货位账本','当前 '+String(led.l||'')+(led.p?' · 零件 '+led.p:'')+(led.q?' ×'+led.q:'')+(led.f?' · 容器 '+led.f:'')+(led.mv?' · '+led.mv:'')+(led.by?' · '+(led.src||'登记')+' '+led.by:'')]); // ㉖v198c 来源标注露出：src 有值（检验收口/网页修正等）时替代一律"登记"，收口改账不再被画成首次录入
  const pushN=(ms,lb,ex)=>{if(ms)nodes.push([ms,lb,ex||''])};
  pushN(chain.created,'📋 领料下单',chain.reqNo?`<a href="javascript:void 0" style="color:var(--pri)" title="打开该领料单" onclick="reqGo('${_esc(chain.reqNo)}')">${_esc(chain.reqNo)}</a>`:'');
  pushN(chain.accept,'🙋 接单','');
@@ -820,7 +820,7 @@ async function traceBox(codeRaw){const code=String(codeRaw||'').trim().toUpperCa
  pushN(chain.confirm,'✅ 签收','');
  pushN(chain.cleared,'🧹 清台','');
  const T2=tb.task;
- for(const im of (ins.list||[]).filter((x)=>String(x.code||'').toUpperCase()===code).slice(0,4)){nodes.push([im.at||0,'🔎 检验下架',(im.by||'')+' · '+(im.from||'')+'⇄'+(im.station||'')+' · '+({waitOut:'待协助下架',toStation:'下架途中',atStation:'站台待检',waitBack:'待协助归位',returning:'归位途中',done:'已归位',returned:'退货已出账',stuck:'超时待核',cancel:'已取消'}[im.state]||im.state)+(im.note2?' · 检验：'+im.note2:'')]);if(im.doneAt)nodes.push([im.doneAt,im.state==='returned'?'📤 退货出账闭环（框不回货架）':(im.state==='done'?'🔙 检验归位到位':'🔙 检验闭环'),im.state==='returned'?((im.station||'')+' 已出账'):im.from||''])}
+ for(const im of (ins.list||[]).filter((x)=>String(x.code||'').toUpperCase()===code).slice(0,4)){nodes.push([im.at||0,'🔎 检验下架',(im.by||'')+' · '+(im.from||'')+'⇄'+(im.station||'')+' · '+({waitOut:'待协助下架',toStation:'下架途中',atStation:'站台待检',waitBack:'待协助归位',returning:'归位途中',done:im.removed?'人工移走收口':'已归位',returned:'退货已出账',stuck:'超时待核',cancel:'已取消'}[im.state]||im.state)+(im.note2?' · 检验：'+im.note2:'')]);if(im.doneAt){const _to=(String(im.note||'').match(/人工移走收口→(\S+?)（/)||[])[1]||'';nodes.push([im.doneAt,im.state==='returned'?'📤 退货出账闭环（框不回货架）':(im.removed?'📦 人已移走收口 → '+(_to||'?')+'（账本随单改位·站台已释）':(im.state==='done'?'🔙 检验归位到位':'🔙 检验闭环')),im.state==='returned'?((im.station||'')+' 已出账'):(im.removed?('原 '+(im.from||'')+' 已腾空'):im.from||'')])}}
  for(const o of (ob.items||[])){ const it=(o.items||[]).find((i)=>String(i.barcode||'').toUpperCase()===code); if(!it)continue; nodes.push([Number(o.createdAt)||0,'📤 '+(o.linkReqNo?'领料出库':'直调出库')+'出账',String(o.orderNo||'')+' · '+(Number(it.qty)||0)+'件'+(it.fromLoc?' · 原'+it.fromLoc:'')+(o.toLoc?' → '+o.toLoc:'')+(o.operator?' · '+String(o.operator).replace(/\s*\((?:[^()]*)\)\s*$/,''):'')+(it.checked?' · 已核对':'')+(o.linkReqNo?` · 单<a href="javascript:void 0" style="color:var(--pri)" title="打开该领料单" onclick="reqGo('${_esc(o.linkReqNo)}')">${_esc(o.linkReqNo)}</a>`:'')]) }
  let h=nodes.length?('<div class="tl" style="margin:4px 0 14px">'+nodes.sort((a,b)=>(a[0]||0)-(b[0]||0)).map((x,i,arr)=>'<div class="tl-i'+(i===arr.length-1?' cur':'')+'"><div style="font-size:12.5px">'+x[1]+(x[2]?' · '+x[2]:'')+'</div><div style="font-size:11px;color:var(--sub)">'+_t(x[0])+'</div></div>').join('')+'</div>'):'<div style="color:var(--sub);font-size:12.5px;padding:8px 0">该标签在采集流水/账本/AGV/领料/出库各域均无当前记录——可能属更早归档数据（导出中心勾「含归档」核查）。</div>';
  h+='<div style="font-size:11.5px;color:var(--sub);line-height:1.8;border-top:1px solid var(--line);padding-top:8px">口径：入库=采集流水 · 账本=服务器合并快照（'+(lg.rev? 'v'+(lg.rev||''):'')+ (tb.task&&tb.task.tl?' · AGV节点 '+tb.task.tl:'')+' · 领料/出库节点=单据流转历史 · 检验=检验工单<br>时间均为服务器时钟；如需文件留证 → 导出中心 D2/D3/D4/D5/D8/D9 均带血缘与指纹。</div>';
@@ -997,26 +997,42 @@ var _slD=14,_slJ='';
 async function ctSlow(){const b=$('#ctbody');try{if(!window._pjCodes)await pjLoad();const d=await api('/api/slow-moving?minDays='+_slD);
  const LA=(d.list||[]);const L=_slJ?LA.filter(x=>pjOf(x.pn).includes(_slJ)):LA;
  b.innerHTML=`<div class="card"><div class="row" style="align-items:center"><b style="font-size:13px">🐢 呆滞料排行</b><span style="font-size:11.5px;color:var(--sub)">≥${d.minDays}天未动的格位按零件聚合 · 共 ${L.length} 种${_slJ?'（项目 '+_esc(_slJ)+'）':''}</span><span class="sp"></span>${pjSel('slJ',_slJ,'_slJ')}<select onchange="_slD=+this.value;ctSeg('slow')" style="padding:3px 6px;font-size:12px"><option value="7" ${_slD===7?'selected':''}>≥7天</option><option value="14" ${_slD===14?'selected':''}>≥14天</option><option value="30" ${_slD===30?'selected':''}>≥30天</option></select></div>
- <div style="margin:6px 0;font-size:11.5px;display:flex;align-items:center;gap:8px"><span style="color:var(--sub)">高架格位是稀缺资源：长期呆滞的料建议一键移地面消化（点行尾按钮，发起 AGV 移库到地面区）。</span><span class="sp"></span><button class="pill" style="padding:3px 10px;font-size:11.5px;background:#515BD4;color:#fff" title="不限呆滞天数：按项目勾选在架框，批量发起货架→地面移库" onclick="pjmvOpen()">📦 按项目直接移地面</button></div>
+ <div style="margin:6px 0;font-size:11.5px;display:flex;align-items:center;gap:8px"><span style="color:var(--sub)">高架格位是稀缺资源：长期呆滞的料建议拉下架消化（点行尾按钮，AGV 拉到空闲 CK 站台，到台人工转地面+位置登记——AGV 不能直达地面位）。</span><span class="sp"></span><button class="pill" style="padding:3px 10px;font-size:11.5px;background:#515BD4;color:#fff" title="不限呆滞天数：按项目勾选在架框，批量发起货架→地面移库" onclick="pjmvOpen()">📦 按项目批量拉下架</button></div>
  <div style="overflow:auto;max-height:58vh"><table><thead><tr><th>零件号</th><th>物料名</th><th>所属项目</th><th>呆滞格数</th><th>件数</th><th>最长滞留</th><th>示例标签</th><th></th></tr></thead><tbody>${L.map(x=>`<tr style="border-top:1px solid var(--line)"><td class="mono"><a href="javascript:void 0" style="color:var(--pri)" onclick="go('trace');TRC.q='${_esc(x.pn)}';trSearch()">${_esc(x.pn)}</a></td><td>${_esc(x.nm||'')}</td><td style="font-size:11px;color:var(--sub)">${pjOf(x.pn).map(_esc).join('；')||'—'}</td><td>${x.cells}</td><td><b>${x.qty}</b></td><td style="color:${x.maxAge>=30?'var(--bad)':'var(--warn)'};font-weight:600">${x.maxAge} 天</td><td class="mono" style="font-size:10.5px;color:var(--sub)">${_esc(x.codes.join(' '))}</td><td><button class="pill" style="padding:2px 8px;font-size:11px" title="AGV把这格移下到地面区" onclick="slowMove('${_esc(x.codes[0]||'')}')">⬇ 移地面</button></td></tr>`).join('')||'<tr><td colspan=8 style="color:var(--sub)">'+(_slJ?'该项目下':'没有')+'呆滞格位'+(_slJ?'':'，库位很健康')+'</td></tr>'}</tbody></table></div></div>`;
 }catch(e){b.innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'服务需重启加载新版')+'</div>'}}
 async function slowMove(code){if(!code){T('该零件暂无标签码');return}
- // 从账本找该标签所在高架格 → 发起 shelf→ground 移库
+ // ㉖v197 呆滞单框「拉下架」：AGV 地面区不可达（RCS 历史任务 0 条含 NB03 端，现场实锤），
+ // 目标一律 CK 站台（shelf2shelf 合法路径）；到台人工转地面 + 「位置登记」收账
  let row=null;try{const j=await api('/api/ledger?c='+encodeURIComponent(code));row=(j.items||[])[0]}catch(_){}
  if(!row){T('账本找不到标签 '+code);return}
  const from=String(row.l||'').toUpperCase();
- if(!/^NB02-/.test(from)){T('该框不在高架（'+from+'），无需移');return}
- const to=prompt('移库到地面格位（如 NB03-A-05-03）：',from.replace('NB02','NB03').replace(/-\d+F$/,'-01'));
+ if(!/^NB02-/.test(from)){T('该框不在高架（'+from+'），AGV 通道不适用');return}
+ const sts=await _pjmStns();if(!sts.length){T('站台看板拉取失败，稍后再试');return}
+ // ㉖v198c 修 v197 缺陷×2：①旧版读 s.free 字段不存在（映射里没有）→"空闲 0 个"恒错、
+ // 默认值恒为 CK-01；②CK-01~04 为入库专用台（role=in），拉下架压台会与入库叫车相撞。
+ // 空闲口径=未停用∧非入库∧看板空闲∧无队列占用（与 _pjmFree 同一条），与批量弹窗一致。
+ const fr=_pjmFree();
+ const to=prompt('拉架目标 CK 站台（可用 '+_pjmUsable().length+' 个，其中空闲 '+fr.length+' 个；1~4号为入库专用已排除）：',fr[0]?.code||_pjmUsable()[0]?.code||'');
  if(!to)return;
- try{const r=await api('/api/agv/transfer',{method:'POST',body:{from,to:to.trim().toUpperCase(),code:code.toUpperCase(),kind:'toGround'}});T(r.ok?('✅ 移库任务已发起：'+from+' → '+to):('❌ '+(r.msg||'失败')),r.ok?1:0)}catch(_){T('发起失败')}}
-// ===== ㉖v194 按项目直接移地面（不限呆滞天数）：项目→零件→在架货架框，多选批量 shelf→ground（复用 slowMove 同款 transfer 接口，零新后端）=====
-var _pjm={pn:'',box:[],rows:[],busy:false};
-const _pjmTo=(from)=>String(from).replace('NB02','NB03').replace(/-\d+F$/,'-01'); // 同区排地面格建议（与 slowMove 同款换算）
-async function pjmvOpen(){_pjm={pn:'',box:[],rows:[],busy:false};if(!window._pjCodes)await pjLoad();
- dlg(`<h3>📦 按项目直接移地面 <span style="font-size:11px;color:var(--sub);font-weight:400">不限呆滞天数 · 勾选在架货架框批量发起 AGV 移库（货架→地面）</span></h3>
+ const _t2=to.trim().toUpperCase(),_s2=sts.find(s=>s.code===_t2);
+ if(_s2&&_s2.role==='in'){T('❌ '+_t2+' 是入库专用站台，拉下架不能压台——请改用 5~12 号通用台');return}
+ try{const r=await api('/api/agv/transfer',{method:'POST',body:{from,to:_t2,code:code.toUpperCase(),kind:'shelf2shelf'}});T(r.ok?('✅ '+(r.queued?'已排队：':'已发起：')+from+' → '+_t2+'（到台后人工转地面+位置登记）'):('❌ '+(r.msg||'失败')),r.ok?1:0)}catch(_){T('发起失败')}}
+// ===== ㉖v197 按项目批量拉下架（原"移地面"改造）：项目→在架货架框多选批量 AGV 拉到 CK 站台 =====
+// 根因改造：AGV 不能直达地面货位（RCS 沉淀几千条任务 0 条含 NB03 端；旧 shelf→ground 从 0 年前
+// 就没真正完成过一框），"目标地面格"是伪功能。正确动线：AGV 货架→CK站台（合法 shelf2shelf，
+// 台间轮转负载均衡）→ 人工从台转地面 → 「位置登记」收账。站台选择来自看板，不再手填。
+var _pjm={pn:'',box:[],rows:[],busy:false,stns:[],auto:false};
+async function _pjmStns(){try{const j=await api('/api/agv/stboard');_pjm.stns=((j.list||[]).map(s=>({code:s.code,alias:s.alias||'',role:s.role||'any',off:!!s.off,state:s.state||'空闲',q:(s.queue||[]).length}))); // ㉖v198c role 一并带出：CK-01~04 默认入库专用（role=in），AGV 放架会跟入库叫车撞台
+ return _pjm.stns}catch(_){return[]}}
+const _pjmUsable=()=>_pjm.stns.filter(s=>!s.off&&s.role!=='in'); // 拉下架可用台=未停用∧非入库专用（用户 11-16 拍板：1-4 号台入库专用）
+const _pjmFree=()=>_pjmUsable().filter(s=>s.state==='空闲'&&!s.q);
+const _pjmRot=(i)=>{const ok=_pjmUsable();if(!ok.length)return '';return ok[i%ok.length].code}; // 空闲台轮转：台间负载均衡（入库专用台不参与）
+async function pjmvOpen(){_pjm={pn:'',box:[],rows:[],busy:false,stns:[],auto:true};if(!window._pjCodes)await pjLoad();
+ await _pjmStns();
+ dlg(`<h3>📦 按项目批量拉下架（→CK站台） <span style="font-size:11px;color:var(--sub);font-weight:400">AGV 到不了地面货位：AGV 货架→站台，到台人工转地面+位置登记</span></h3>
  <div class="row" style="gap:8px;align-items:center"><select id="pjmpj" onchange="pjmvFill()" style="padding:4px 8px;font-size:12.5px"><option value="">选择项目码…</option>${(window._pjCodes||[]).map((c)=>`<option value="${_esc(c)}">${_esc(c)}${(window._pjNm&&window._pjNm[c])?' '+_esc(window._pjNm[c]):''}</option>`).join('')}</select><span id="pjmHint" style="font-size:11.5px;color:var(--sub)"></span></div>
- <div id="pjmList" style="overflow:auto;max-height:52vh;margin-top:8px"><div style="color:var(--sub);font-size:12px;padding:12px">先选项目码：列出该项目当前在架的货架格位（=框，一格一框），默认全选、目标地面格自动建议</div></div>
- <div class="row" style="margin-top:8px;gap:8px;align-items:center"><span id="pjmSel" style="font-size:12px;color:var(--pri)"></span><span class="sp"></span><button class="pill q" onclick="$('#mask').classList.add('hide')">关闭</button><button class="pill" style="background:#515BD4;color:#fff" onclick="pjmvSubmit()">⬇ 发起移地面</button></div>`,true);}
+ <div id="pjmList" style="overflow:auto;max-height:52vh;margin-top:8px"><div style="color:var(--sub);font-size:12px;padding:12px">先选项目码：列出该项目当前在架的货架格位（=框），默认全选、目标空闲台自动轮转</div></div>
+ <div class="row" style="margin-top:8px;gap:8px;align-items:center"><span id="pjmSel" style="font-size:12px;color:var(--pri)"></span><span class="sp"></span><button class="pill q" onclick="$('#mask').classList.add('hide')">关闭</button><button class="pill" style="background:#515BD4;color:#fff" onclick="pjmvSubmit()">🚚 批量拉下架</button></div>`,true);}
 async function pjmvFill(){const pj=(document.getElementById('pjmpj')||{}).value||'';const el=$('#pjmList');if(!el)return;
  _pjm.pn=pj;_pjm.box=[];
  if(!pj){el.innerHTML='<div style="color:var(--sub);font-size:12px;padding:12px">先选项目码</div>';const s0=$('#pjmSel');if(s0)s0.textContent='';return}
@@ -1025,40 +1041,45 @@ async function pjmvFill(){const pj=(document.getElementById('pjmpj')||{}).value|
  const pns=new Set(Object.entries(window._pjMap||{}).filter((e2)=>((e2[1]||[]).map((c)=>String(c).toUpperCase())).includes(pj)).map((e2)=>e2[0])); // 项目→零件号集（前端本地映射，服务器零新接口）
  const bx={};
  for(const r of items){const pn=String(r.p||'').toUpperCase(),l=String(r.l||'').toUpperCase();
-  if(!pns.has(pn)||!/^NB02-/.test(l))continue; // 只搬在架的AGV货架框（地面/来料区框本就在地上）
+  if(!pns.has(pn)||!/^NB02-/.test(l)||/-CK-|-RK-/.test(l))continue; // 只拉在架的AGV货架框（地面/来料区框 AGV 通道不适用）；㉖v198h 排台挂行：NB02-CK-xx 满足 /^NB02-/ 但那是"已送达待搬"的框，列进列表=勾上也发不出去（服务器起点台闸拒）
   const b=(bx[l]=bx[l]||{l,pn,nm:String(r.n||'').slice(0,20),codes:[]});b.codes.push(String(r.c||'').toUpperCase());}
  _pjm.rows=Object.values(bx).sort((a,b)=>a.l.localeCompare(b.l));
  if(!_pjm.rows.length){el.innerHTML='<div style="color:var(--sub);font-size:12px;padding:12px">该项目当前没有在架的货架格位（都在地面/来料区或已出库）</div>';const s1=$('#pjmSel');if(s1)s1.textContent='';return}
- el.innerHTML=`<table><thead><tr><th><input type="checkbox" checked onchange="pjmvSelAll(this)" title="本页全选/全不选"></th><th>货架格位（框）</th><th>零件号</th><th>物料名</th><th>标签</th><th>目标地面格（自动建议·可单改）</th></tr></thead><tbody>${_pjm.rows.map((x,i)=>`<tr style="border-top:1px solid var(--line)">
+ el.innerHTML=`<table><thead><tr><th><input type="checkbox" checked onchange="pjmvSelAll(this)" title="本页全选/全不选"></th><th>货架格位（框）</th><th>零件号</th><th>物料名</th><th>标签</th><th>目标CK站台（空闲台轮转·可单改）</th></tr></thead><tbody>${_pjm.rows.map((x,i)=>`<tr style="border-top:1px solid var(--line)">
  <td><input type="checkbox" checked data-i="${i}" onchange="pjmvTg(this)"></td>
  <td class="mono" style="font-size:11.5px">${_esc(x.l)}</td><td class="mono" style="font-size:11px">${_esc(x.pn)}</td><td style="font-size:11px">${_esc(x.nm)}</td>
  <td class="mono" style="font-size:10.5px;color:var(--sub)">${_esc(x.codes.slice(0,3).join(' '))}${x.codes.length>3?' 等'+x.codes.length:''}</td>
- <td><input id="pjmto${i}" value="${_pjmTo(x.l)}" style="width:132px;font-size:11.5px" onblur="pjmvAuto(${i},this)"></td></tr>`).join('')}</tbody></table>`;
- const h=$('#pjmHint');if(h)h.textContent=`在架货架格 ${_pjm.rows.length} 框 · 目标=同区排地面格（可逐格改，AGV 送到地面后人工入格并「位置登记」收账）`;
+ <td><input id="pjmto${i}" value="${_pjmRot(i)}" style="width:120px;font-size:11.5px" onblur="pjmvAuto(${i},this)"></td></tr>`).join('')}</tbody></table>`;
+ const h=$('#pjmHint');if(h){const us=_pjmUsable(),fr=_pjmFree();h.textContent=`在架货架格 ${_pjm.rows.length} 框 · 目标可用台 ${us.length} 个（空闲 ${fr.length}，1~4号入库专用已排除）· 台满自动排队接力 · 到台后人工转地面+「位置登记」收账`}
  pjmvCnt();}
 function pjmvTg(cb){_pjm.box[+cb.dataset.i]=cb.checked;pjmvCnt()}
-function pjmvAuto(i,el){const v=(el.value||'').trim().toUpperCase();if(!v)el.value=_pjmTo(_pjm.rows[i].l)} // 清空失焦时放回自动建议
+function pjmvAuto(i,el){const v=(el.value||'').trim().toUpperCase();if(!v)el.value=_pjmRot(i)} // 清空失焦时放回轮转建议
 function pjmvSelAll(cb){document.querySelectorAll('#pjmList input[type=checkbox][data-i]').forEach((x)=>{x.checked=cb.checked;_pjm.box[+x.dataset.i]=cb.checked});pjmvCnt()}
 function pjmvCnt(){const e=$('#pjmSel');if(e)e.textContent=`已选 ${_pjm.rows.filter((_,i)=>_pjm.box[i]!==false).length} / ${_pjm.rows.length} 框`}
 async function pjmvSubmit(){
  if(_pjm.busy)return;
  const sel=_pjm.rows.map((x,i)=>({x,i})).filter((o)=>_pjm.box[o.i]!==false);
  if(!sel.length){T('未勾选任何框');return}
- const jobs=[],toSeen={},bad=[];
+ const jobs=[],toSeen={},bad=[],_rmx=[];
  for(const o of sel){
   const el=document.getElementById('pjmto'+o.i);const to=((el||{}).value||'').trim().toUpperCase();
-  const ok=/^NB03-[A-H]-\d{2}-\d{1,2}$/.test(to)&&to!==o.x.l; // 前端预检：地面格格式+不与本格同名（服务器 locStrict 还有硬闸）
-  if(!ok){if(el){el.style.borderColor='red';el.title='格式应为 NB03-A-05-03 且不能等于起点'}bad.push(o.x.l);continue}
-  if(toSeen[to]){bad.push(o.x.l+'→'+to+'（与 '+toSeen[to]+' 目标重复，两框不能进同一地面格）');if(el)el.style.borderColor='red';continue}
+  const st=_pjm.stns.find(s=>s.code===to);
+  if(!st){if(el){el.style.borderColor='red';el.title='应为 NB02-CK-01~12'}bad.push(o.x.l);continue}
+  if(st.off){bad.push(o.x.l+'→'+to+'（该台已停用）');if(el)el.style.borderColor='red';continue}
+  // ㉖v198c 入库专用台不接受拉下架（服务器同口径硬闸）；同目标台多框=排队接力不再拒
+  // （排除1~4号后可用台常少于框数：V446K 31框 vs 8台，旧"两框不同台"必把整批拦死。
+  //  台面一次一框，前框到台人工清走后调度器自动补发下一框，见 tryDispatchTransfer 串行闸）
+  if(st.role==='in'){bad.push(o.x.l+'→'+to+'（入库专用台，不能压台——改 5~12 号台）');if(el)el.style.borderColor='red';continue}
+  if(toSeen[to])_rmx.push(o.x.l+'→'+to);
   toSeen[to]=o.x.l;jobs.push({from:o.x.l,to});}
- if(bad.length){T('⚠️ '+bad.length+' 行目标格有问题（红框标出：格式不符/目标重复）——改正后再提交：'+bad.slice(0,3).join('；'),1);return}
- if(!confirm('确认为 '+jobs.length+' 框发起 AGV 移库？\n每框一条搬运任务（货架→地面格，起终点固定不改派）。\n框到地面后：人工入格 + 「位置登记」收账。'))return;
- _pjm.busy=true;let okN=0;const fails=[];
+ if(bad.length){T('⚠️ '+bad.length+' 行目标台有问题（红框标出：停用/入库专用）——改正后再提交：'+bad.slice(0,3).join('；'),1);return}
+ if(!confirm('确认为 '+jobs.length+' 框发起 AGV 拉下架？\n每框一条任务：货架 → 目标CK站台（'+(_rmx.length?('其中 '+_rmx.length+' 框与前排共台，将排队接力：前框到台清走后台空自动发车'):'空闲台轮转，超并发部分自动排队')+'）。\n到台后：人工把框转去地面 + 「位置登记」收账。'))return;
+ _pjm.busy=true;let okN=0,qN=0;const fails=[];
  for(let k=0;k<jobs.length;k++){
   const h=$('#pjmHint');if(h)h.textContent='发起中 '+(k+1)+'/'+jobs.length+' …';
-  try{const r=await api('/api/agv/transfer',{method:'POST',body:{from:jobs[k].from,to:jobs[k].to,kind:'toGround'}});if(r.ok)okN++;else fails.push(jobs[k].from+'：'+(r.msg||'失败'))}catch(_){fails.push(jobs[k].from+'：请求异常')}}
+  try{const r=await api('/api/agv/transfer',{method:'POST',body:{from:jobs[k].from,to:jobs[k].to,kind:'shelf2shelf'}});if(r.ok){okN++;if(r.queued)qN++}else fails.push(jobs[k].from+'：'+(r.msg||'失败'))}catch(_){fails.push(jobs[k].from+'：请求异常')}}
  _pjm.busy=false;pjmvFill();
- T((okN?'✅ 已发起 ':'❌ ')+okN+'/'+jobs.length+' 框移库'+(fails.length?('｜失败 '+fails.length+'：'+fails.slice(0,3).join('、')+(fails.length>3?' 等':'')):''),okN?0:1);}
+ T((okN?'✅ 已发起 ':'❌ ')+okN+'/'+jobs.length+' 框拉下架'+(qN?('（'+qN+' 框排队中，调度器按并发/巷道闸门自动补发）'):'')+(fails.length?('｜失败 '+fails.length+'：'+fails.slice(0,3).join('、')+(fails.length>3?' 等':'')):''),okN?0:1);}
 var _cyD=null;
 async function ctCycle(){const b=$('#ctbody');try{const d=await api('/api/cycle?n=20');_cyD=d;
  const done=d.locs.filter(x=>x.v).length,ok=d.locs.filter(x=>x.v&&x.v.r==='ok').length,bad=done-ok;
@@ -1937,13 +1958,13 @@ async function loadBoard(){let j;try{j=await api('/api/agv/stboard')}catch(_){$(
  const ROLE={'any':'通用','out':'出库专用','in':'入库专用','insp':'检验专用'};
  const ck=(ms)=>{ms=Number(ms)||0;return ms?new Date(ms).toLocaleTimeString('zh-CN',{hour12:false}).slice(0,5):''}; // 时刻 HH:MM
  const dockMs=(x)=>{const t=Number(x.ts)||0;if(t)return t;const v=String(x.since||'');if(v.length>=14)return new Date(`${v.slice(0,4)}-${v.slice(4,6)}-${v.slice(6,8)}T${v.slice(8,10)}:${v.slice(10,12)}:${v.slice(12,14)}`).getTime()||0;return Date.parse(v)||0;}; // ㉖v54 到站时刻：优先ts,兼容旧数据紧凑串
- const cards=(j.list||[]).map((s)=>{const num=s.code.split('-').pop();const stC=s.off?'#b0bec5':s.state=='有货'?'#ff6d00':s.state=='占用中'?'#29b6f5':'#66bb6a';const stT=s.off?'已停用':s.state;const _dkt=s.state=='有货'?dockMs(s):0;const hold=_dkt?Math.max(0,Math.round((Date.now()-_dkt)/60000)):0;const _tms=Math.max(Number(s.pickAt)||0,Number(s.startAt)||0);const agvMin=_tms?Math.max(0,Math.round((Date.now()-_tms)/60000)):-1;const occ=[...s.queue.map((q)=>`🚚 ${q.code||'?'}（${q.by||''}${q.reqNo?' · 单'+q.reqNo:''} · ${qTag(q)}${q.sentAt?ck(q.sentAt):(q.at?' '+ck(q.at):'')}）`),...s.insp.map((q)=>`🔎 ${q.code}（${q.by||''}·${({waitOut:'待协助下架',toStation:'下架途中',atStation:'站台待检',waitBack:'待协助归位',returning:'归位途中',waitReturn:'待退货出账'}[q.state]||q.state)}）`)];if(s.state=='占用中'&&!occ.length)occ.push(s.manual?'✋ 人工占用（叫车拦截中）':`🤖 AGV 搬运中${s.dir=='in'?'（入库取走）':'（出库送达）'}${s.via?' · '+s.via:''}${agvMin>=0?` · 已${agvMin}分钟`:''}`); // 占用来源=RCS实时任务/人工占用，排队与检验清单外补显（via自带"任务"前缀）
+ const cards=(j.list||[]).map((s)=>{const num=s.code.split('-').pop();const stC=s.off?'#b0bec5':s.state=='有货'?'#ff6d00':s.state=='占用中'?'#29b6f5':'#66bb6a';const stT=s.off?'已停用':s.state;const _dkt=s.state=='有货'?dockMs(s):0;const hold=_dkt?Math.max(0,Math.round((Date.now()-_dkt)/60000)):0;const _tms=Math.max(Number(s.pickAt)||0,Number(s.startAt)||0);const agvMin=_tms?Math.max(0,Math.round((Date.now()-_tms)/60000)):-1;const occ=[...s.queue.map((q)=>`🚚 ${q.code||'?'}（${q.by||''}${q.reqNo?' · 单'+q.reqNo:''} · ${qTag(q)}${q.sentAt?ck(q.sentAt):(q.at?' '+ck(q.at):'')}）`),...s.insp.map((q)=>`🔎 ${q.code}（${q.by||''}·${({waitOut:'待协助下架',toStation:'下架途中',atStation:'站台待检',waitBack:'待协助归位',returning:'归位途中',waitReturn:'待退货出账'}[q.state]||q.state)}）`)];if(s.tfd)occ.push(`⬇️ 拉下架待搬 ${(s.tfd.codes||[]).slice(0,2).join(' ')}${(s.tfd.n||0)>(s.tfd.codes||[]).length||((s.tfd.codes||[]).length>2)?' 等'+s.tfd.n+'码':''}（${s.tfd.by||''}${s.tfd.at?' · 已'+Math.max(0,Math.round((Date.now()-s.tfd.at)/60000))+'分':''}）`);if(s.state=='占用中'&&!occ.length)occ.push(s.manual?'✋ 人工占用（叫车拦截中）':`🤖 AGV 搬运中${s.dir=='in'?'（入库取走）':'（出库送达）'}${s.via?' · '+s.via:''}${agvMin>=0?` · 已${agvMin}分钟`:''}`); // 占用来源=RCS实时任务/人工占用，排队与检验清单外补显（via自带"任务"前缀）；v198g 附拉下架挂账待搬
   return `<div class="card" style="padding:12px;border-top:4px solid ${stC};${s.off?'opacity:.55':''}"><div class="row" style="align-items:flex-start"><div style="flex:1;min-width:0"><div style="font-size:16px;font-weight:800;line-height:1.25">${s.alias?_esc(s.alias):num+'号台'}</div><div style="font-size:10.5px;color:var(--sub)" class="mono">${s.code}${s.manual?' · 人工占用':''}</div></div><span class="tag" style="background:${stC}1a;color:${stC};border:1px solid ${stC}55">${stT}${hold?` ${hold}分`:''}</span></div>
 <div style="display:flex;gap:6px;margin:8px 0 6px;flex-wrap:wrap"><span class="tag ${s.role=='any'?'t-d':'t-a'}">${ROLE[s.role]}</span>${s.todayOut||s.todayIn?`<span class="tag t-d" title="今日 AGV 送达本台的出库框 / 从本台叉走的入库框">今出 ${s.todayOut} · 今回 ${s.todayIn}</span>`:'<span class="tag t-x" title="今日无吞吐">今日空闲</span>'}${s.holdAvg?`<span class="tag t-p" title="历史平均清台用时">均清台 ${s.holdAvg>=60?Math.round(s.holdAvg/60*10)/10+'时':s.holdAvg+'分'}</span>`:''}</div>
 ${s.state=='有货'&&s.label?`<div style="font-size:11px;color:var(--sub)">货位 <b class="mono">${_esc(s.label)}</b>${s.goods?' · '+_esc(s.goods):''}${(s.codes||[]).length?` · ${s.codes.length} 码`:''}</div>`:''}
 ${(()=>{const seg=[];if(Number(s.buildAt))seg.push('建单 '+ck(s.buildAt));if(Number(s.startAt))seg.push('接令 '+ck(s.startAt));if(Number(s.pickAt))seg.push((s.dir=='in'?'叉离 ':'叉出 ')+ck(s.pickAt));if(s.state=='有货'){const t=dockMs(s);if(t)seg.push('到站 '+(new Date(t).getMonth()+1)+'-'+new Date(t).getDate()+' '+ck(t))}if(s.state=='占用中'&&!Number(s.pickAt))seg.push('进行中');if(!seg.length)return '';return `<div style="font-size:10.5px;color:var(--sub);margin-top:3px;font-family:Consolas,monospace">${seg.join(' · ')}</div>`})()}
 ${occ.length?`<div style="font-size:11px;color:var(--sub);margin-top:4px;line-height:1.7">${occ.slice(0,3).join('<br>')}${occ.length>3?`<br>…共${occ.length}项`:''}</div>`:(s.state=='有货'?'<div style="font-size:11px;color:var(--sub);margin-top:4px">📦 框在台待清 · 扫码发料/入库后自动叉回</div>':s.off?'<div style="font-size:11px;color:var(--sub);margin-top:4px">已停用 · 不参与自动分配</div>':'<div style="font-size:11px;color:var(--sub);margin-top:4px">无占用 · 可正常叫车/入库</div>')}
-${canCtl?`<div class="row" style="margin-top:8px;justify-content:flex-end"><button class="pill q" style="padding:2px 10px;font-size:11px" onclick="stCfg('${s.code}')">⚙ 设置</button></div>`:''}</div>`}).join('');
+${canCtl?`<div class="row" style="margin-top:8px;justify-content:flex-end">${s.tfd?`<button class="pill" style="padding:2px 10px;font-size:11px;background:var(--warn);color:#fff;margin-right:6px" title="人已把拉下架的框搬离台面→填去向格，账本随单改位+台面立即释放" onclick="tfRemove({code:'${_esc((s.tfd.codes||[''])[0])}',stn:'${s.code}',at:''})">📦 人已移走</button>`:''}<button class="pill q" style="padding:2px 10px;font-size:11px" onclick="stCfg('${s.code}')">⚙ 设置</button></div>`:''}</div>`}).join('');
  $('#agvbody').innerHTML=`<div class="card" style="margin-bottom:10px"><div class="row" style="align-items:center"><b style="font-size:13px">🚉 站台看板</b><span style="font-size:11.5px;color:var(--sub)">每台身份可自定义（别名/用途/停用），保存后网页·PDA·调度全端生效。${j.on?'':'　<b style="color:var(--warn)">RCS 未连接，状态列可能不准</b>'}</span><span class="sp"></span><span style="font-size:11px;color:var(--sub)">${new Date(j.at).toLocaleTimeString('zh-CN')} ${RFTXT()}</span><button class="pill" style="padding:2px 10px;font-size:11px" onclick="loadBoard()">⟳ 刷新</button></div></div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px">${cards}</div>`;
  clearInterval(window._boardT);window._boardT=setInterval(()=>{if(AGVTAB==='board')srBoard()},RFT())}
 function stCfg(code){const s=(window._sboard||[]).find((x)=>x.code==code)||{};dlg(`<h3>⚙ 站台设置 · ${code.split('-').pop()}号台</h3><p style="font-size:12px;color:var(--sub);margin:2px 0 8px">别名会显示在指挥舱/PDA/通知里；用途决定调度自动分配是否使用该台；停用后不再派车（已在台的货不受影响）。</p><label>别名（如：一号发货台 / 退货暂存）</label><input id="sc_a" maxlength="12" value="${_esc(s.alias||'')}" placeholder="留空=显示编号"><label>用途</label><select id="sc_r">${[['any','通用（出库/入库/检验都可）'],['out','出库专用（检验与入库自动不选它）'],['in','入库专用（出库自动不选它）'],['insp','检验专用（出库自动不选它）']].map(([v,n])=>`<option value="${v}" ${s.role==v?'selected':''}>${n}</option>`).join('')}</select><label style="display:flex;align-items:center;gap:8px;margin-top:12px"><input type="checkbox" id="sc_o" style="width:auto" ${s.off?'checked':''}>停用该站台（不参与任何自动分配）</label><div class="row" style="margin-top:14px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">取消</button><button class="pill" onclick="stCfgSave('${code}',this)">保存</button></div>`)}
@@ -1966,13 +1987,16 @@ async function loadQ(){let st={},rj={running:[],done:[],live:false};
  const hhms=(ms)=>ms?new Date(ms).toLocaleTimeString('zh-CN',{hour12:false}).slice(0,5):'';
  const carNm=(id)=>id==null?'未分配':(!id?'车号缺失':('AGV'+String(id).padStart(2,'0')));
  const actBtn=(op,no,tx,cls,dg)=>canCtl?`<button class="pill ${cls||''}" style="padding:2px 8px;font-size:11px" ${dg?'title="删除后 AGV 不再执行该任务"':''} onclick="rTaskAct('${op}','${_esc(no)}')">${tx}</button>`:'';
+const qTfCancel=(q)=>`<button class="pill r" style="padding:2px 8px;font-size:11px" onclick="tfCancel('${q.at}')">✕ 取消移库</button>`;
+// ㉖v198g 已下发/到站=车已接单或已送达：加「人已移走」收口（送达待搬主入口在站台看板卡片）
+const qTfRemove=(q)=>`<button class="pill" style="padding:2px 8px;font-size:11px;background:var(--warn);color:#fff" title="人已把框搬离台面→填去向格收口（账本随单改位+台面释放）" onclick="tfRemove({code:'${_esc(q.code||'')}',stn:'${_esc(q.to||q.station||'')}',at:'${q.at||''}'})">📦 人已移走</button>`;
  const _sr=(s)=>s===1?0:s===0?1:2; // ㉖v52 排序修正：执行中→待执行(📌置顶在前、再按建单先后=调度FIFO口径)→其他；旧比较器状态分组数学有误致列表顺序与RCS语义脱节
  const run=(rj.running||[]).sort((a,b)=>(_sr(a.st)-_sr(b.st))||(b.pri-a.pri)||((a.build||0)-(b.build||0)));
  const dn=(rj.done||[]).slice(0,30);
  $('#agvbody').innerHTML=`<div class="card"><div class="row" style="margin-bottom:8px"><b style="font-size:13px">调度模式</b>
 <button class="pill ${mode=='dry'?'':'q'}" onclick="setMode('dry')">🧮 演算（不下发）</button><button class="pill ${mode=='live'?'':'q'}" onclick="setMode('live')">🚀 真实下发</button>
 <span class="sp"></span><span style="font-size:12px;color:var(--sub)">排队 ${qs.length} 框 · 配置v${st.cfgRev||0} · ${new Date().toLocaleTimeString('zh-CN',{hour12:false})} ${RFTXT()}</span></div>
-<div style="overflow:auto;max-height:40vh"><table><thead><tr><th>标签号</th><th>从货架</th><th>去站台</th><th>关联单</th><th>状态</th><th>等待</th><th>叫车人</th><th style="min-width:220px">🧭 调度原因（为什么这样调）</th><th></th></tr></thead><tbody>${qs.map(q=>`<tr><td class="mono">${q.prio?'📌 ':''}${q.rush?`<span title="整单插队${q.rushBy?'·'+_esc(q.rushBy):''}" style="color:#d32f2f;font-weight:700">🔥${q.rushBy?' 插队·'+_esc(q.rushBy):''} </span>`:''}${q.code||''}</td><td class="mono">${q.fromLoc||q.from||''}</td><td class="mono">${q.station||q.to||''}</td><td class="mono" style="font-size:11px">${q.reqNo||''}</td><td>${qTag(q)}${q.err?`<div style="font-size:10px;color:var(--warn)">${q.err}</div>`:''}</td><td style="font-size:12px;${now-(q.at||0)>10*60000?'color:var(--warn);font-weight:600':''}">${wt(q)}</td><td style="font-size:12px">${q.by||''}</td><td style="font-size:11px;color:var(--sub);line-height:1.5" title="${_esc((q.trace||[]).join('\n'))}">${(q.trace||[]).length?(q.trace||[]).slice(-3).map(_esc).join('<br>'):'—'}</td><td>${(q.state=='排队'||q.state=='失败')&&(!q.type||q.type=='insp'||q.type=='inspback')?`<button class="pill" style="padding:2px 8px;font-size:11px" onclick="qPrio('${q.code}',${q.prio?0:1})">${q.prio?'取消置顶':'置顶'}</button> <button class="pill" style="padding:2px 8px;font-size:11px" onclick="qCancel('${q.code}')">取消</button>`:''}</td></tr>`).join('')||'<tr><td colspan=8 style="color:var(--sub)">调度器无排队任务（下方为 RCS 原生任务实时表）</td></tr>'}</tbody></table></div></div>
+<div style="overflow:auto;max-height:40vh"><table><thead><tr><th>标签号</th><th>从货架</th><th>去站台</th><th>关联单</th><th>状态</th><th>等待</th><th>叫车人</th><th style="min-width:220px">🧭 调度原因（为什么这样调）</th><th></th></tr></thead><tbody>${qs.map(q=>`<tr><td class="mono">${q.prio?'📌 ':''}${q.rush?`<span title="整单插队${q.rushBy?'·'+_esc(q.rushBy):''}" style="color:#d32f2f;font-weight:700">🔥${q.rushBy?' 插队·'+_esc(q.rushBy):''} </span>`:''}${q.code||''}</td><td class="mono">${q.fromLoc||q.from||''}</td><td class="mono">${q.station||q.to||(q.type=='transfer'&&!q.to?'待自动选台':'')}</td><td class="mono" style="font-size:11px">${q.reqNo||''}</td><td>${qTag(q)}${q.err?`<div style="font-size:10px;color:var(--warn)">${q.err}</div>`:''}</td><td style="font-size:12px;${now-(q.at||0)>10*60000?'color:var(--warn);font-weight:600':''}">${wt(q)}</td><td style="font-size:12px">${q.by||''}</td><td style="font-size:11px;color:var(--sub);line-height:1.5" title="${_esc((q.trace||[]).join('\n'))}">${(q.trace||[]).length?(q.trace||[]).slice(-3).map(_esc).join('<br>'):'—'}</td><td>${(q.state=='排队'||q.state=='失败')&&(!q.type||q.type=='insp'||q.type=='inspback')?`<button class="pill" style="padding:2px 8px;font-size:11px" onclick="qPrio('${q.code}',${q.prio?0:1})">${q.prio?'取消置顶':'置顶'}</button> <button class="pill" style="padding:2px 8px;font-size:11px" onclick="qCancel('${q.code}')">取消</button>`:(q.type=='transfer'&&['排队','失败'].includes(q.state))?qTfCancel(q):(q.type=='transfer'&&['已下发','到站'].includes(q.state))?qTfRemove(q):''}</td></tr>`).join('')||'<tr><td colspan=8 style="color:var(--sub)">调度器无排队任务（下方为 RCS 原生任务实时表）</td></tr>'}</tbody></table></div></div>
 <div class="card" style="margin-top:10px"><div class="row" style="align-items:center;margin-bottom:6px"><b style="font-size:13px">🚛 RCS 任务（实时）</b><span style="font-size:11px;color:var(--sub)">与 PDA·AGV·任务 同源：待执行=置顶/删除 · 执行中=重置取货/卸货 · 历史=恢复取货/卸货${rj.live?'':'　<b style="color:var(--warn)">RCS 未连接：'+_esc(rj.err||'')+'</b>'}</span></div>
 <div style="overflow:auto;max-height:46vh"><table><thead><tr><th>任务号</th><th>起点→终点</th><th>车</th><th>托盘/类型</th><th>状态</th><th>节点</th><th>操作</th></tr></thead><tbody>${run.map(t=>`<tr${t.nav?' style="opacity:.72"':''}><td class="mono" style="font-size:11.5px">${_esc(t.no)}${t.pri==11?' 📌':''}</td><td class="mono" style="font-size:11.5px">${t.nav?'<span style="color:#00897b">🧭 自主导航（回待命点/去充电）· 非搬运任务</span>':_esc(t.sp||'?')+' → '+_esc(t.ep||'?')}</td><td>${carNm(t.car)}</td><td style="font-size:11px;color:var(--sub)">${t.nav?'—':_esc(t.pal||'-')+' · '+_esc(t.type||'-')}</td><td><span class="tag ${(TST[t.st]||['?','t-x'])[1]}">${(TST[t.st]||['状态'+t.st])[0]}</span></td><td style="font-size:10.5px;color:var(--sub);white-space:nowrap">${t.build?'建单 '+hhms(t.build):''}${t.exe?' · 接令 '+hhms(t.exe):''}${t.pick?' · 叉出 '+hhms(t.pick):''}${t.put?' · 放架 '+hhms(t.put):''}</td><td style="white-space:nowrap">${t.nav?'':t.st===0?actBtn(t.pri==11?'cancelTop':'top',t.no,t.pri==11?'取消置顶':'置顶')+ ' ' +actBtn('delete',t.no,'删除','r',1):t.st===1?actBtn('resetPick',t.no,'重置取货')+' '+actBtn('resetPut',t.no,'重置卸货'):''}</td></tr>`).join('')||'<tr><td colspan=7 style="color:var(--sub)">RCS 无进行中任务</td></tr>'}</tbody></table>
 ${dn.length?`<div style="font-size:12px;color:var(--sub);margin:8px 0 4px">最近历史（${dn.length}）</div><table><thead><tr><th>任务号</th><th>起点→终点</th><th>车</th><th>状态</th><th>完成</th><th>操作</th></tr></thead><tbody>${dn.map(t=>`<tr style="opacity:${t.nav?'.6':'.75'}"><td class="mono" style="font-size:11px">${_esc(t.no)}</td><td class="mono" style="font-size:11px">${t.nav?'<span style="color:#00897b">🧭 自主导航 · 非搬运</span>':_esc(t.sp||'?')+' → '+_esc(t.ep||'?')}</td><td>${carNm(t.car)}</td><td><span class="tag ${(TST[t.st]||['?','t-x'])[1]}">${(TST[t.st]||['状态'+t.st])[0]}</span></td><td style="font-size:11px;color:var(--sub)">${t.put||t.exe?new Date(t.put||t.exe).toLocaleString('zh-CN',{hour12:false}).slice(5,16):''}</td><td style="white-space:nowrap">${t.nav?'':actBtn('recoverPick',t.no,'恢复取货')+' '+actBtn('recoverPut',t.no,'恢复卸货')}</td></tr>`).join('')}</tbody></table>`:''}</div></div>
@@ -2032,6 +2056,8 @@ async function rUnlock(land,name){if(!confirm('⚠️ 解除交管 · 点位 '+l
 async function setMode(m){try{const j=await api('/api/agv/mode',{method:'POST',body:{mode:m,baseRev:window._cfgRev}});if(j.ok){T('✅ 模式已切为 '+(j.mode=='live'?'真实下发':'演算'),1);loadQ()}else T('❌ '+(j.msg||'失败'))}catch(_){T('切换失败')}}
 async function qPrio(code,off){try{const j=await api('/api/agv/queue/prio',{method:'POST',body:{code,off:!off}});T(j.ok?(off?'已取消置顶':'📌 已置顶'):('❌ '+(j.msg||'失败')));loadQ()}catch(_){T('操作失败')}}
 async function qCancel(code){if(!confirm('取消 '+code+' 的排队任务？'))return;try{const j=await api('/api/agv/queue/cancel',{method:'POST',body:{codes:[code]}});T(j.ok?'已取消':'❌ '+(j.msg||'失败'));loadQ()}catch(_){T('取消失败')}}
+// ㉖v198d 移库/拉下架取消（专用端点，键=队列项 at；已下发项服务器先试撤 WMAS，已叉出被拒则提示人工处理）
+async function tfCancel(at){if(!at){T('缺少任务标识');return}if(!confirm('取消该移库/拉下架任务？\n若 AGV 已叉出货架则无法撤回，需人工归位。'))return;try{const j=await api('/api/agv/transfer/cancel',{method:'POST',body:{id:String(at)}});T(j.ok?('✅ '+(j.msg||'已取消')):('❌ '+(j.msg||'失败')));loadQ()}catch(_){T('取消失败（服务需重启加载新代码）')}}
 async function loadMap(){const _rt=()=>{clearTimeout(window._mRt);window._mRt=setTimeout(()=>{if(TAB=='agv'&&AGVTAB=='map')loadMap();},10000);};try{if(!NET||!NET.ready){try{const n=await api('/api/rcs/net');if(n&&n.ready)NET=n;}catch(_){}}MAP=await api('/api/rcs/map');drawMap(); // ㉖v92i 失败原因可见+自动重试：旧版 catch(_) 吞异常只留"拉取失败"四个字，现场无从判断
  if(MAP&&MAP.msg&&!(MAP.cars||[]).length){const e=$('#maplg');if(e)e.innerHTML+='<span style="color:#e65100;font-weight:700"> ⚠️ '+_esc(MAP.msg)+' · 10秒后自动重试</span>';_rt();}}catch(e){const l=$('#maplg');if(l)l.innerHTML='❌ 地图数据拉取失败：'+_esc(String((e&&e.message)||e).slice(0,80))+' · 10秒后自动重试';_rt();}}
 function drawMap(){const cv=$('#cv');if(!cv||!MAP)return;const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;cv.width=W*dpr;cv.height=H*dpr;const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);bg(g,W,H);const L=NET.lands||{},pts=[];for(const k in L){if(FLOOR(L[k]))pts.push(L[k]);}const w2c=fit(pts,W,H,26);net(g,w2c);for(const s of(MAP.shelf||[])){const l=L[s.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);g.fillStyle='#90a4ae';g.fillRect(p[0]-1.5,p[1]-1.5,3,3);}for(const st of(MAP.stations||[])){const l=L[st.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);g.beginPath();g.arc(p[0],p[1],6,0,7);g.fillStyle=st.state=='有货'?'#ff6d00':st.state=='占用中'?'#29b6f6':'#66bb6a';g.fill();g.fillStyle='#37474f';g.font='9px sans-serif';g.fillText((st.code||'').split('-').pop(),p[0]+8,p[1]-6);}for(const j of(MAP.jam||[])){const l=L[j.land];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);g.strokeStyle='#ff5252';g.lineWidth=2;g.beginPath();g.arc(p[0],p[1],9,0,7);g.stroke();}if(HEAT)heatLayer(g,L,w2c);chargers(g,L,w2c);if(PTS){g.fillStyle='#90a4ae';g.font='7.5px monospace';for(const k in L){const l=L[k];if(!FLOOR(l))continue;const p=w2c(l.x,l.y);g.fillRect(p[0]-1.2,p[1]-1.2,2.4,2.4);g.fillText(k,p[0]+3,p[1]-3);}}const carStOf=(c)=>c.emerg?'急停':(c.mstop?'人工停':(c.blocked?'被交管':(!c.online?'离线':(c.alarm?'告警':((c.charging&&!c.full)?'充电':(c.task?(/^[0-9a-fA-F]{8}-/.test(String(c.task))?'待命/充电':'执行中'):((({pause:'暂停',error:'故障'})[c.state])||'空闲'))))))); // ㉖v92 告警优先于执行中；㉖v92c UUID调度号=自主导航标"待命/充电"与搬运区分
@@ -2066,33 +2092,103 @@ if(j.ok===false){EB0.innerHTML='<div class="card"><b style="font-size:13px">🚨
  (($('#evbody')||$('#agvbody'))).innerHTML=`<div class="card"><div class="row" style="align-items:center;flex-wrap:wrap;gap:6px"><b style="font-size:13px">🚨 事件流水</b><span class="tag ${un?'t-p':'t-d'}" style="font-size:11.5px">${un?un+' 条活动告警待认领':'无活动告警'}</span>${EVDAY?`<button class="pill" style="padding:3px 10px;font-size:12px;border-color:var(--pri);color:var(--pri)" title="点掉即恢复看全部日期" onclick="evDay('')">📅 只看 ${EVDAY} ✕</button>`:''}<button class="pill ${EVLO?'':'q'}" style="padding:3px 10px;font-size:12px" title="隐藏已实际了结的超时/堵点（服务器按业务实况标注）；红牌/告警请用左侧仅未认领" onclick="EVLO=EVLO?0:1;EVS.pg=1;loadEv()">${EVLO?'✓ 仅未了结':'仅未了结'}</button><button class="pill ${EVUN?'':'q'}" style="padding:3px 10px;font-size:12px" title="只看未认领的告警/红牌/升级" onclick="EVUN=EVUN?0:1;EVS.pg=1;loadEv()">${EVUN?'✓ 仅未认领':'仅未认领'}</button><select title="按类型筛（概览卡下钻自动带入）" style="padding:3px 6px;font-size:12px" onchange="EVK=this.value;EVS.pg=1;loadEv()"><option value="">全部类型</option>${[...new Set(all0.map((e)=>e.kind))].sort().map((kk)=>`<option value="${kk}" ${EVK==kk?'selected':''}>${kk}</option>`).join('')}</select><span class="sp"></span>${[['d','今天'],['w','近7天'],['a','全部']].map(([k,n])=>`<button class="pill ${win==k?'':'q'}" style="padding:3px 10px;font-size:12px" onclick="EVW='${k}';EVS.pg=1;loadEv()">${n}</button>`).join('')}<span style="font-size:11.5px;color:var(--sub)">命中 ${l.length} / 共 ${all.length} 条</span></div><div style="margin-top:8px;overflow:auto;max-height:60vh"><table><thead><tr>${sTh(EVS,'ts','时间',1,'evT')}<th>类型</th><th>对象</th><th>内容</th><th></th></tr></thead><tbody>${r}</tbody></table></div>${pgBar(EVS,l.length,'ev')}</div>`;clearInterval(window._evT);window._evT=setInterval(()=>{if(AGVTAB==='rev'||AGVTAB==='ev')srEv()},RFT());} // ㉖v113 守卫兼容：事件流水收进「异常与复盘」后 AGVTAB='rev'，旧值'ev'一并保留，否则静默刷新永不触发
 ﻿function inspTl(id){const q=(window._ispAll||[]).find((x)=>x.id===id);if(!q){T('工单不在当前列表');return}
  const _t=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}).slice(5,16):'';
+ // ㉖v198b 收口留痕写在 note 里（审计需要），画「发起事由」时必须剥掉那段，否则发起节点
+ // 显示成"事由：… | 人工移走收口→NB03-…"，看链的人会以为是发起时就填的去向。
+ const _why=String(q.note||'').split(' | 人工移走收口')[0];
+ const _rmTo=(String(q.note||'').match(/人工移走收口→(\S+?)（/)||[])[1]||'';
  const N=[];const P=(ms,lb,ex,col)=>{if(ms)N.push([ms,lb,ex||'',col||''])};
- P(q.at,'📋 发起检验下架',(q.by||'')+' · '+String(q.from||'')+' → 期望台 '+(q.station||'自动')+(q.note?' · 事由：'+q.note:''),'#3949ab');
+ P(q.at,'📋 发起检验下架',(q.by||'')+' · '+String(q.from||'')+' → 期望台 '+(q.station||'自动')+(_why?' · 事由：'+_why:''),'#3949ab');
  for(const t of ((q.legTrace||{}).out||[]))P(q.at,'🚚 下架调度',t,'#e65100');
  P(q.arriveAt,'🏁 框到站台 '+(q.station||''),'','#00897b');
  P(q.verdictAt,'🧪 检验结论：'+(q.verdict||''),(q.verdictBy||'')+(q.note2?' · '+q.note2:'')+(q.retReason?' · 退货原因：'+q.retReason:''),q.verdict==='通过'?'#2e7d32':(q.verdict==='退货'?'#c62828':'#e65100'));
- for(const t of ((q.legTrace||{}).back||[]))P(q.verdictAt||q.at,'🔙 归位调度',t,'');
- P(q.retAt,'📤 归位任务发车','','#e65100');
- P(q.doneAt,q.state==='returned'?'✅ 退货出账闭环（框不回货架）':'✅ 检验归位到位 · '+(q.from||''),'','#2e7d32');
+ if(!q.removed){for(const t of ((q.legTrace||{}).back||[]))P(q.verdictAt||q.at,'🔙 归位调度',t,'');P(q.retAt,'📤 归位任务发车','','#e65100')}
+ P(q.doneAt,q.state==='returned'?'✅ 退货出账闭环（框不回货架）':(q.removed?'📦 人已移走收口 · 账本改至 '+(_rmTo||'地面/货架格')+' ＋ '+(q.station||'站台')+' 已释放':'✅ 检验归位到位 · '+(q.from||'')),(q.removed?'货不在站台，AGV 未参与回架；'+(_rmTo&&/^NB03-/.test(_rmTo)?'回架走 PDA「采集·重新上架」':''):''),'#2e7d32');
  if(q.err)P(q.updAt||q.doneAt||q.at,'⚠ '+q.err,'','#c62828');
  N.sort((a,b)=>(a[0]||0)-(b[0]||0));
- $('#dw_t').innerHTML='📜 检验工单时间线 <span class="mono">'+_esc(q.code)+'</span> · '+_esc({'waitOut':'待协助下架','toStation':'下架途中','atStation':'站台待检','waitBack':'待协助归位','returning':'归位途中','done':'已归位','returned':'退货已出账','stuck':'超时待核','cancel':'已取消'}[q.state]||q.state);
+ $('#dw_t').innerHTML='📜 检验工单时间线 <span class="mono">'+_esc(q.code)+'</span> · '+_esc(q.removed?'人工移走收口':({'waitOut':'待协助下架','toStation':'下架途中','atStation':'站台待检','waitBack':'待协助归位','returning':'归位途中','done':'已归位','returned':'退货已出账','stuck':'超时待核','cancel':'已取消'}[q.state]||q.state));
  $('#dw_b').innerHTML='<div class="tl" style="margin:4px 0">'+N.map((x,i)=>'<div class="tl-i'+(i===N.length-1?' cur':'')+'"><div style="font-size:12.5px;'+(x[3]?'color:'+x[3]:'')+'">'+x[1]+(x[2]?' · '+_esc(x[2]):'')+'</div><div style="font-size:11px;color:var(--sub)">'+_t(x[0])+'</div></div>').join('')+'</div><div style="font-size:11.5px;color:var(--sub);border-top:1px solid var(--line);padding-top:8px">业务节点取自工单时间戳；调度行为该框下架/归位两腿的 AGV 队列留痕（选台原因/排除台/下发结果/超时判因）。</div>';
  $('#drawer').classList.add('dw-on');{const m=$('#dwmask');m.style.opacity='.4';m.style.pointerEvents='auto'}}
 function inspBtn(q,A,C){const s=q.state;const B=(cls,fn,tx)=>'<button class="pill '+cls+'" style="padding:2px 8px;font-size:11px" onclick="'+fn+'(\''+q.id+'\')">'+tx+'</button>';const CB=(['waitOut','toStation','returning'].includes(s)&&(A||q.mine))?B('q','inspCancel','✕ 取消'):'';
+ // ㉖v198「人已移走」：货被人从站台搬走后的正当出口。现场实锤（11-15）：8 框检验下架后人把货搬去
+ // 地面，而 取消(atStation拒绝)/归位(叫车去叉一个空台→stuck)/退货(货已不在台)三条通道全走不通，
+ // 站台被工单永久挂占 → 检验可用 8 台全占满，界面一直"暂无空闲站台"。人工清台也解不开（只解状态判据）。
+ const RB=(A&&['atStation','waitBack','stuck'].includes(s))?B('o','inspRemove','📦 人已移走'):'';
  if(A&&s==='waitOut')return B('','inspAssist','🤝 协助下架')+CB;
- if(s==='atStation'){if(C&&A)return B('g','inspRet','检验完·归位');if(C)return B('g','inspVerdict','填写检验结论');return '';}
- if(A&&s==='waitBack')return B('','inspAssist','🤝 协助归位');
- if(s==='stuck'&&C)return B('q','inspVerdict','补结论');
- return CB;}
+ if(s==='atStation'){if(C&&A)return B('g','inspRet','检验完·归位')+RB;if(C)return B('g','inspVerdict','填写检验结论')+RB;return RB;}
+ if(A&&s==='waitBack')return B('','inspAssist','🤝 协助归位')+RB;
+ if(s==='stuck'&&C)return B('q','inspVerdict','补结论')+RB;
+ return RB+CB;}
 async function inspAssist(id){if(!confirm('协助该检验工单的 AGV 动作？待下架=发下架任务(可指定站台)，待归位=发归位任务回原货位'))return;const fr=(window._ispFreeAll||[]).join('、');let st=(prompt('下架站台（留空=自动选空闲；仅"待协助下架"时有效）\n当前空闲：'+(fr||'（打不开工单时自动查询）'),(window._ispStnById||{})[id]||'')||'').trim().toUpperCase();try{const j=await api('/api/inspect/assist',{method:'POST',body:{id,station:st}});if(j.ok){T('✅ 协助任务已下发',1);loadInsp()}else T('❌ '+(j.msg||'失败'))}catch(_){T('操作失败（服务需重启加载新代码）')}}
 async function inspCancel(id){if(!confirm('取消该检验工单？未派车直接作废；下架/归位途中会先撤销 AGV 任务（已叉出则撤销被拒）。'))return;try{const j=await api('/api/inspect/cancel',{method:'POST',body:{id}});if(j.ok){T('✅ '+(j.msg||'已取消'),1);loadInsp()}else T('❌ '+(j.msg||'失败'))}catch(_){T('操作失败（服务需重启加载新代码）')}}
 async function inspVerdict(id){const vd=prompt('检验结论：填 通过 / 不合格 / 需复检 / 退货','通过');if(vd===null)return;let rr='';if(vd.trim()==='退货'){rr=prompt('退货原因（必填，如：来料不良/错料/供应商发错）：','')||'';if(!rr.trim()){T('退货必须填原因');return}}const note=prompt('检验备注（可空，记入工单留痕）：','')||'';try{const j=await api('/api/inspect/verdict',{method:'POST',body:{id,verdict:vd,note,retReason:rr}});if(j.ok){T(j.returned?'✅ 已判退货：货留站台，请按直调/领料出库流程出账':'✅ 结论已记录，已通知仓管协助归位',1);loadInsp()}else T('❌ '+(j.msg||'失败'))}catch(_){T('操作失败')}}
+// ㉖v198 人已移走收口（网页侧）：货被人工搬离站台后的闭环出口。去向=点选地面空格（推荐，服务器
+// 实时空闲口径）或手填格位；账本随单改位（等同位置登记，整框标签一起改+审计留痕）+ 工单结束 + 站台立释。
+// 放地面的框之后走采集·重新上架回架。
+let _rmvId='',_rmvZone='',_rmvGF=null,_rmvCode=''; // _rmvCode=显式框号（拉下架收口用，检验收口留空按 _rmvId 查 _ispAll）
+function inspRemove(id){const q=(window._ispAll||[]).find((x)=>x.id===id)||{};const stn=(window._ispStnById||{})[id]||q.station||'站台';
+ _rmvId=id;_rmvZone='';_rmvGF=null;
+ dlg('<h3>📦 人已移走收口</h3><div style="font-size:12.5px;color:var(--sub);line-height:1.75">框 <b class="mono">'+_esc(q.code||'')+'</b>（工单 '+_esc(q.from||'?')+' → '+_esc(stn)+'）<br>'
+ +'用在：货已被<b>人工从站台搬走</b>（放地面暂存，或人工放回货架）。此时「检验完·归位」会让 AGV 去叉一个空台（最后变超时待核），「取消」在本状态不可用，人工清台也解不开（工单仍占台）。<br>'
+ +'收口后三件事一起做完：账本改到你选的格位（<b>整框标签随改</b>，等同位置登记）＋ 工单结束 ＋ <b>'+_esc(stn)+' 立即释放</b>。</div>'
+ +'<label>货物现在实际在哪里（必填）</label><input id="rmv_loc" class="mono" placeholder="点下面「地面空格」点选，或手填 NB03-B-13-07 / 货架格 NB02-A-08-2F" style="width:100%" onkeydown="if(event.key==\'Enter\')inspRemoveGo(\''+id+'\')">'
+ +'<div id="rmvGF" style="margin-top:8px"><button class="pill q" style="font-size:12px" onclick="gfreeLoad()">🗺️ 点选地面空格（实时空闲）</button><span style="font-size:11px;color:var(--sub);margin-left:8px">放地面的货推荐点选，不会填出不存在的位</span></div>'
+ +'<div style="font-size:11.5px;color:var(--sub);margin-top:6px">放地面的框，之后回架走 PDA「采集录入 · AGV 站台模式 · 重新上架」；不确定实物在哪先到现场看清（填错可再收口一次纠正）。</div>'
+ +'<div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$(\'#mask\').classList.add(\'hide\')">取消</button><button class="pill" style="background:var(--warn);color:#fff" onclick="inspRemoveGo(\''+id+'\')">确认收口</button></div>');
+ setTimeout(()=>{const e=$('#rmv_loc');if(e)e.focus()},60);
+ gfreeLoad(); // 打开即自动预载空闲格（少一次点击；失败区里有提示可点按钮重试）
+}
+// 地面空格选择器：数据=服务器 /api/ground-free（判据与服务器自动分格完全同源：真实排号
+// 清单/逐排格数/停用排/账本∪预占占用），空格多的排靠前；点格直接回填。
+async function gfreeLoad(){const box=$('#rmvGF');box.innerHTML='<span style="font-size:12px;color:var(--sub)">正在查询地面空闲格…</span>';
+ const _q=_rmvCode?{code:_rmvCode}:((window._ispAll||[]).find((x)=>x.id===_rmvId)||{});
+ try{const j=await api('/api/ground-free?c='+encodeURIComponent(_q.code||''));if(!j.ok)throw 0;_rmvGF=j;_rmvZone='';gfreeRender()}catch(_){box.innerHTML='<span style="font-size:12px;color:var(--warn)">空闲查询失败（服务需重启加载新代码）——可在上方直接手填格位</span>'}}
+function gfreeRender(){const box=$('#rmvGF');if(!_rmvGF){return}
+ const rows=_rmvGF.rows||[];const zones=[...new Set(rows.map(r=>r.zone))];
+ const zf=_rmvZone?rows.filter(r=>r.zone===_rmvZone):rows;
+ const zc={};for(const r of rows){zc[r.zone]=(zc[r.zone]||0)+r.free}
+ let h='<div class="row" style="margin:0 0 6px;gap:4px"><span style="font-size:11px;color:var(--sub)">共空闲 '+_rmvGF.totalFree+' 格'+(_rmvGF.selfLoc?'（已自动排除本框现住 '+_rmvGF.selfLoc+'）':'')+'</span>';
+ h+='<span class="uiChip'+(_rmvZone===''?' on':'')+'" style="font-size:11px" onclick="_rmvZone=\'\';gfreeRender()">全部</span>';
+ for(const z of zones)h+='<span class="uiChip'+(_rmvZone===z?' on':'')+'" style="font-size:11px" onclick="_rmvZone=\''+z+'\';gfreeRender()">'+z+' 区('+(zc[z]||0)+'空)</span>';
+ h+='</div><div style="max-height:38vh;overflow:auto;border:1px solid var(--line);border-radius:8px">';
+ const sel=($('#rmv_loc')||{}).value||'';let n=0;
+ for(const r of zf){if(!r.free||n>=40)continue;n++;
+  h+='<div style="padding:5px 9px;border-bottom:1px solid var(--line)"><div style="font-size:11.5px;color:var(--sub);margin-bottom:3px"><b class="mono" style="color:var(--ink)">'+r.key+'</b>　空 '+r.free+'/'+r.slots+'</div><div class="row" style="margin:0;gap:3px">';
+  for(const c of r.freeCells)h+='<span class="uiChip'+(sel===r.key+'-'+c?' on':'')+'" style="font-size:11.5px;padding:3px 8px" onclick="gfreePick(\''+r.key+'-'+c+'\')">'+c+'</span>';
+  if(r.freeCells.length<r.free)h+='<span style="font-size:10.5px;color:var(--sub)">…另有 '+(r.free-r.freeCells.length)+' 空格（手填）</span>';
+  h+='</div></div>'}
+ if(!n)h+='<div style="padding:14px;font-size:12px;color:var(--warn)">当前筛选下没有空闲排，请换个区或手填格位</div>';
+ h+='</div>';box.innerHTML=h;}
+function gfreePick(loc){const e=$('#rmv_loc');if(e)e.value=loc;gfreeRender()}
+async function inspRemoveGo(id){const loc=($('#rmv_loc').value||'').trim().toUpperCase();if(!loc){T('请填写货物实际所在格位');return}
+ if(!confirm('确认：货物已由人工从站台搬走，现在实际在 '+loc+' ？\n\n将执行：账本改位 → '+loc+'（整框随改）＋ 工单结束 ＋ 站台释放，并记入审计。'))return;
+ const btn=$('#mask .pill[onclick^="inspRemoveGo"]');if(btn)btn.disabled=true;
+ try{const j=await api('/api/inspect/remove',{method:'POST',body:{id,loc}});if(j.ok){T('✅ '+(j.msg||'已收口'),1);$('#mask').classList.add('hide');loadInsp()}else{if(btn)btn.disabled=false;T('❌ '+(j.msg||'失败'))}}catch(_){if(btn)btn.disabled=false;T('操作失败（服务需重启加载新代码）')}}
+// ===== ㉖v198g 拉下架「人已移走收口」（照检验收口同款）=====
+// 入口有两处：AGV 队列控制台 transfer 行、站台看板"已送达待搬"卡片。
+// 弹窗/选格器复用检验收口那套（_rmvCode 显式传框号）。
+let _tfRm=null;
+function tfRemove(o){const code=o.code||'';const stn=o.stn||'';const at=o.at||'';
+ _tfRm={code,stn,at};_rmvCode=code;_rmvId='';_rmvZone='';_rmvGF=null;
+ dlg('<h3>📦 拉下架 · 人已移走收口</h3><div style="font-size:12.5px;color:var(--sub);line-height:1.75">框 <b class="mono">'+_esc(code)+'</b>'+(stn?('（拉向 '+_esc(stn)+'）'):'')+'<br>'
+ +'用在：AGV 已把框放到站台上，之后<b>人工把框搬走</b>（放地面暂存，或人工放回货架）——收账/位置登记没做、或想让系统立即知道货已离台时点这个。<br>'
+ +'收口后一起做完：账本改到你选的格位（<b>整框标签随改</b>）＋ 拉下架任务结束 ＋ '+(stn?'<b>'+_esc(stn)+' 立即释放</b>':'台位释放')+'。</div>'
+ +'<label>货物现在实际在哪里（必填）</label><input id="rmv_loc" class="mono" placeholder="点下面「地面空格」点选，或手填 NB03-B-13-07 / 货架格 NB02-A-08-2F" style="width:100%" onkeydown="if(event.key==\'Enter\')tfRemoveGo()">'
+ +'<div id="rmvGF" style="margin-top:8px"><button class="pill q" style="font-size:12px" onclick="gfreeLoad()">🗺️ 点选地面空格（实时空闲）</button><span style="font-size:11px;color:var(--sub);margin-left:8px">放地面的货推荐点选，不会填出不存在的位</span></div>'
+ +'<div style="font-size:11.5px;color:var(--sub);margin-top:6px">放地面的框，之后回架走 PDA「采集录入 · AGV 站台模式 · 重新上架」；填错可再收口一次纠正。</div>'
+ +'<div class="row" style="margin-top:12px;justify-content:flex-end"><button class="pill q" onclick="$(\'#mask\').classList.add(\'hide\')">取消</button><button class="pill" style="background:var(--warn);color:#fff" onclick="tfRemoveGo()">确认收口</button></div>');
+ setTimeout(()=>{const e=$('#rmv_loc');if(e)e.focus()},60);
+ gfreeLoad();
+}
+async function tfRemoveGo(){const loc=($('#rmv_loc').value||'').trim().toUpperCase();if(!loc){T('请填写货物实际所在格位');return}
+ if(!_tfRm){T('请从任务行或站台卡片进入');return}
+ if(!confirm('确认：框 '+_tfRm.code+' 已由人工搬离站台，现在实际在 '+loc+' ？\n\n将执行：账本改位 → '+loc+'（整框随改）＋ 拉下架结束 ＋ 站台释放，并记入审计。'))return;
+ const btn=$('#mask .pill[onclick^="tfRemoveGo"]');if(btn)btn.disabled=true;
+ try{const j=await api('/api/agv/transfer/remove',{method:'POST',body:{id:_tfRm.at?String(_tfRm.at):'',code:_tfRm.code,station:_tfRm.stn||'',loc}});if(j.ok){T('✅ '+(j.msg||'已收口'),1);$('#mask').classList.add('hide');if(TAB==='agv')loadQ()}else{if(btn)btn.disabled=false;T('❌ '+(j.msg||'失败'))}}catch(_){if(btn)btn.disabled=false;T('操作失败（服务需重启加载新代码）')}}
 
 async function pgInsp(){loadInsp()}
 async function loadInsp(){clearInterval(window._espT);let j;try{j=await api('/api/inspect/list');window._ispAll=j.list||[]}catch(_){window._ispAll=[];$('#main').innerHTML='<div class="card" style="color:var(--warn)">检验工单加载失败（服务需重启加载新代码）　<button class="pill" onclick="loadInsp()">重试</button></div>';return}
 const map={waitOut:['🤝待协助下架','t-p'],toStation:['下架途中','t-a'],atStation:['站台待检','t-p'],waitBack:['🤝待协助归位','t-p'],waitReturn:['🔁待退货出账','t-p'],returning:['归位途中','t-a'],done:['已归位','t-d'],returned:['已退货出账','t-d'],stuck:['⚠ 超时待核','t-x'],cancel:['已取消','t-x']};const ASSIST=(U.features||{}).insp_assist===true;const now=Date.now();const canCtl=(U.features||{}).inspect_mode===true||U.role==='admin'||U.role==='warehouse';window._ispFreeAll=j.freeStns||[];window._ispStnById={};
-const rows=(j.list||[]).map((q)=>{const mm=map[q.state]||[q.state,'t-x'];q.mine=q.uid===U.id;window._ispStnById[q.id]=q.station||'';const mins=Math.round((now-(q.arriveAt||q.at||now))/60000);let h='<tr><td class="mono" style="font-size:11.5px"><a href="javascript:void 0" style="color:var(--pri)" onclick="traceBox('+"'"+q.code+"'"+')">'+q.code+'</a></td><td style="font-size:11.5px">'+(q.from||'')+' → '+(q.station||'')+'</td><td><span class="tag '+mm[1]+'">'+mm[0]+'</span>'+(['atStation','waitOut','waitBack','waitReturn'].includes(q.state)?' <span style="font-size:11px;color:var(--sub)">已等'+mins+'分</span>':'')+(q.verdict?' <span style="font-size:11px;color:var(--ok)">['+q.verdict+(q.verdictBy?'·'+q.verdictBy:'')+']</span>':'')+(q.err?' <span style="font-size:11px;color:var(--bad)">'+q.err+'</span>':'')+'</td><td style="font-size:11.5px">'+(q.part||'')+(q.nm?' · '+q.nm:'')+'</td><td style="font-size:11.5px">'+(q.by||'')+'<div style="font-size:11px;color:var(--sub)">'+new Date(q.at||0).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+(q.note?' · '+String(q.note).slice(0,40):'')+'</div></td><td><button class="pill q" style="padding:2px 8px;font-size:11px" title="工单一生时间线（业务节点+两腿AGV调度原因）" onclick="inspTl(&#39;'+q.id+'&#39;)">📜</button> '+(inspBtn(q,ASSIST,canCtl))+'</td></tr>';return h}).join('');
+const rows=(j.list||[]).map((q)=>{const mm=q.removed?['📦收口离场','t-d']:(map[q.state]||[q.state,'t-x']);q.mine=q.uid===U.id;window._ispStnById[q.id]=q.station||'';const mins=Math.round((now-(q.arriveAt||q.at||now))/60000);const _nt=String(q.note||'').split(' | 人工移走收口')[0];const _rmTo=(String(q.note||'').match(/人工移走收口→(\S+?)（/)||[])[1]||'?';const _rm=q.removed?'<div style="font-size:11px;color:#2e7d32">→ 收口至 '+_rmTo+'（'+(q.verdict?'结论'+q.verdict+' ':'')+(q.cancelBy||'')+'）</div>':'';let h='<tr><td class="mono" style="font-size:11.5px"><a href="javascript:void 0" style="color:var(--pri)" onclick="traceBox('+"'"+q.code+"'"+')">'+q.code+'</a></td><td style="font-size:11.5px">'+(q.from||'')+' → '+(q.station||'')+'</td><td><span class="tag '+mm[1]+'">'+mm[0]+'</span>'+(['atStation','waitOut','waitBack','waitReturn'].includes(q.state)?' <span style="font-size:11px;color:var(--sub)">已等'+mins+'分</span>':'')+(q.verdict?' <span style="font-size:11px;color:var(--ok)">['+q.verdict+(q.verdictBy?'·'+q.verdictBy:'')+']</span>':'')+(q.err?' <span style="font-size:11px;color:var(--bad)">'+q.err+'</span>':'')+'</td><td style="font-size:11.5px">'+(q.part||'')+(q.nm?' · '+q.nm:'')+'</td><td style="font-size:11.5px">'+(q.by||'')+'<div style="font-size:11px;color:var(--sub)">'+new Date(q.at||0).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+(_nt?' · '+_nt.slice(0,40):'')+'</div>'+_rm+'</td><td><button class="pill q" style="padding:2px 8px;font-size:11px" title="工单一生时间线（业务节点+两腿AGV调度原因）" onclick="inspTl(&#39;'+q.id+'&#39;)">📜</button> '+(inspBtn(q,ASSIST,canCtl))+'</td></tr>';return h}).join('');
 $('#main').innerHTML='<div class="card"><div class="row" style="align-items:center"><b style="font-size:13px">🔎 检验工单（下架检验→备注→原样归位）</b><span class="sp"></span>'+(canCtl?'<button class="pill g" onclick="inspStartDlg()">▶ 发起检验下架</button>':'')+'</div><div style="font-size:11.5px;color:var(--sub);margin-bottom:6px">检验期间该框账本不动、禁止出库叫车；AGV 送回原货位核对到账本后自动完成。结论判「退货」的框不回原货位，挂在站台标🔁待退货出账（出库通道放行），仓管按直调/领料出库正常扫码出账后自动闭环（超30分钟催办）。检验员可发单/填结论，AGV 动作由仓管·管理员「协助」控制（超10分钟自动催办）。共 '+(j.list||[]).length+' 单。</div><div style="overflow:auto;max-height:62vh"><table><thead><tr><th>标签</th><th>货位→站台</th><th>状态</th><th>零件</th><th>发起/备注</th><th></th></tr></thead><tbody>'+(rows||'<tr><td colspan=6 style="color:var(--sub)">暂无检验工单</td></tr>')+'</tbody></table></div></div>';window._espT=setInterval(()=>{if(TAB==='insp')srInsp()},Math.max(1,Number(URS)||30)*1000)}
 async function inspStartDlg(){
  dlg('<h3>🔎 检验下架 · 按零件号找框</h3><p style="font-size:12px;color:var(--sub);margin:2px 0 8px">输入零件号片段或完整标签号 → 列出账本匹配在库框 → 点「下架」自动选空闲站台，点「选站台」指定目标。AGV 叉到站台检验，完成后在本页点「检验完·归位」原样放回。</p><div class="row"><input id="ispn" placeholder="零件号片段 / 标签号" style="flex:1;min-width:160px" autofocus onkeydown="if(event.key==\'Enter\')inspSearch()"><button class="pill" onclick="inspSearch()">搜索</button></div><div id="ispres" style="max-height:56vh;overflow:auto;margin-top:4px;font-size:12.5px;color:var(--sub)">等待搜索…</div><div class="row" style="margin-top:8px;justify-content:flex-end"><button class="pill q" onclick="document.getElementById(\'mask\').classList.add(\'hide\')">关闭</button></div>',1);setTimeout(()=>{const e=document.getElementById('ispn');if(e)e.focus()},80)}

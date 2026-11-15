@@ -57,8 +57,7 @@ class _InspectPageState extends State<InspectPage>
             .toList(); // ㉖ 列表自带空闲台：不搜索也能选台
         final al = r["aliases"];
         if (al is Map)
-          _stnAlias =
-              al.map((k, v) => MapEntry(k.toString(), v.toString()));
+          _stnAlias = al.map((k, v) => MapEntry(k.toString(), v.toString()));
         _err = "";
       } else if (!silent) {
         _err = (r["msg"] ?? "加载失败").toString();
@@ -266,9 +265,47 @@ class _InspectPageState extends State<InspectPage>
   }
 
   bool _canCancel(Map q, String st) {
-    if (!['waitOut', 'toStation', 'returning'].contains(st)) return false; // 框已在站台/待退货须走归位或退货通道
+    if (!['waitOut', 'toStation', 'returning'].contains(st))
+      return false; // 框已在站台/待退货须走归位或退货通道
     return _assist || q["uid"] == Auth.user?.id; // 本人发起或仓管/管理员可取消
   }
+
+  // ㉖v198 收口可用性：货已被人搬离站台后，取消(在站台态拒绝)/归位(AGV去叉空台→超时待核)/
+  // 退货(货已不在台)三条通道全部走不通，站台被工单永久挂占（11-15 现场 8 框占满 8 台实锤）。
+  // 本出口仅仓管/管理员（与服务器 insp_assist 权限同口径）。
+  bool _canRemove(String st) =>
+      _assist && ['atStation', 'waitBack', 'stuck'].contains(st);
+
+  Future<void> _removeWo(Map q) async {
+    final code = (q["code"] ?? "").toString();
+    final stn = (q["station"] ?? "站台").toString();
+    final loc = await _removeLocDialog(code, stn);
+    if (loc == null || loc.isEmpty || !mounted) return;
+    final yes = await showDialog<bool>(
+        context: context,
+        builder: (c2) => AlertDialog(
+                title: const Text("确认人工收口", style: TextStyle(fontSize: 16)),
+                content: Text("确认 $code 已由人工搬离 $stn，现实际在 $loc ？\n\n"
+                    "将同时完成：账本改位→$loc（整框标签随改）＋ 工单结束 ＋ $stn 立即释放，并记入审计。"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2, false),
+                      child: const Text("返回")),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(c2, true),
+                      child:
+                          Text("确认收口", style: TextStyle(color: Colors.white))),
+                ]));
+    if (yes != true || !mounted) return;
+    final r = await AuthApi.inspectRemove(q["id"].toString(), loc);
+    if (!mounted) return;
+    _toast(r["ok"] == true ? "✅ ${r["msg"] ?? "已收口"}" : "收口失败：${r["msg"]}");
+    _load();
+  }
+
+  /// ㉖v198g 收口去向弹层已抽为顶层函数 removeLocDialog（检验页与 AGV 移库卡共用弹层）。
+  Future<String?> _removeLocDialog(String code, String stn) =>
+      removeLocDialog(context, code, stn);
 
   Future<void> _cancelWo(Map q) async {
     final st = (q["state"] ?? "").toString();
@@ -293,9 +330,7 @@ class _InspectPageState extends State<InspectPage>
     if (yes != true || !mounted) return;
     final r = await AuthApi.inspectCancel(q["id"].toString());
     if (!mounted) return;
-    _toast(r["ok"] == true
-        ? "✅ ${r["msg"] ?? "工单已取消"}"
-        : "取消失败：${r["msg"]}");
+    _toast(r["ok"] == true ? "✅ ${r["msg"] ?? "工单已取消"}" : "取消失败：${r["msg"]}");
     _load();
   }
 
@@ -308,7 +343,9 @@ class _InspectPageState extends State<InspectPage>
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
           color: c.withOpacity(.1), borderRadius: BorderRadius.circular(8)),
-      child: Text(t, style: TextStyle(fontSize: 11, color: c, fontWeight: FontWeight.w600)));
+      child: Text(t,
+          style:
+              TextStyle(fontSize: 11, color: c, fontWeight: FontWeight.w600)));
 
   void _toast(String s) {
     if (mounted)
@@ -321,14 +358,16 @@ class _InspectPageState extends State<InspectPage>
                   : Colors.blueGrey)));
   }
 
-  String _stText(String s) => switch (s) {
+  String _stText(String s, {bool removed = false}) => switch (s) {
         "waitOut" => "🤝 待协助下架",
         "waitBack" => "🤝 待协助归位",
         "waitReturn" => "🔁 待退货出账",
         "toStation" => "🚚 下架途中",
         "atStation" => "📍 站台待检",
         "returning" => "🔙 归位途中",
-        "done" => "✅ 已归位",
+        // ㉖v198b done 态区分收口离场与 AGV 归位（removed=服务器按工单收口留痕判定），
+        // 一律显示"已归位"会把人工搬走的框标成 AGV 送回——看单的人会被带去错误现场。
+        "done" => removed ? "📦 收口离场" : "✅ 已归位",
         "returned" => "✅ 已退货出账",
         "stuck" => "⚠️ 超时待核",
         "cancel" => "已取消",
@@ -357,12 +396,9 @@ class _InspectPageState extends State<InspectPage>
     } else if (insp != null) {
       final v = (insp["v"] ?? "").toString();
       final at = (insp["at"] as num?)?.toInt() ?? 0;
-      final dt = at > 0
-          ? DateTime.fromMillisecondsSinceEpoch(at)
-          : null;
-      final dTx = dt == null
-          ? ""
-          : "·${dt.month}-${dt.day.toString().padLeft(2, "0")}";
+      final dt = at > 0 ? DateTime.fromMillisecondsSinceEpoch(at) : null;
+      final dTx =
+          dt == null ? "" : "·${dt.month}-${dt.day.toString().padLeft(2, "0")}";
       inspTx = "已检·$v$dTx";
       inspC = v == "需复检"
           ? const Color(0xFFE65100)
@@ -399,15 +435,14 @@ class _InspectPageState extends State<InspectPage>
                 if (can)
                   Container(
                       margin: const EdgeInsets.only(left: 6),
-                      padding:
-                          const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 2),
                       decoration: BoxDecoration(
                           color: Colors.green.shade50,
                           borderRadius: BorderRadius.circular(8)),
                       child: Text("可下架",
                           style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.green.shade800))),
+                              fontSize: 11, color: Colors.green.shade800))),
               ]),
               Text(
                   "$part$nmX · ${b["q"] ?? 0}件${lot.isNotEmpty ? " · 批次 $lot" : ""}${ct.isNotEmpty ? " · 容器 $ct" : ""}${(!can && why.isNotEmpty && !busy) ? " · $why" : ""}",
@@ -454,52 +489,69 @@ class _InspectPageState extends State<InspectPage>
     }
 
     final ns = <List<String>>[];
-    ns.add(["📋 发起检验下架", t(q["at"]),
-        "${q["by"] ?? ""} · ${q["from"] ?? ""} → 期望台 ${q["station"] ?? "自动"}"]);
+    ns.add([
+      "📋 发起检验下架",
+      t(q["at"]),
+      "${q["by"] ?? ""} · ${q["from"] ?? ""} → 期望台 ${q["station"] ?? "自动"}"
+    ]);
     for (final s in outL) {
       ns.add(["🚚 下架调度", t(q["at"]), s]);
     }
     if ((q["arriveAt"] as num?)?.toInt() != null)
       ns.add(["🏁 框到站台 ${q["station"] ?? ""}", t(q["arriveAt"]), ""]);
     if ((q["verdictAt"] as num?)?.toInt() != null && q["verdict"] != null)
-      ns.add(["🧪 结论：${q["verdict"]}", t(q["verdictAt"]),
-          "${q["verdictBy"] ?? ""}${(q["note2"] ?? "").toString().isNotEmpty ? " · ${q["note2"]}" : ""}${(q["retReason"] ?? "").toString().isNotEmpty ? " · 退货：${q["retReason"]}" : ""}"]);
+      ns.add([
+        "🧪 结论：${q["verdict"]}",
+        t(q["verdictAt"]),
+        "${q["verdictBy"] ?? ""}${(q["note2"] ?? "").toString().isNotEmpty ? " · ${q["note2"]}" : ""}${(q["retReason"] ?? "").toString().isNotEmpty ? " · 退货：${q["retReason"]}" : ""}"
+      ]);
     for (final s in backL) {
       ns.add(["🔙 归位调度", t(q["retAt"]), s]);
     }
     if ((q["doneAt"] as num?)?.toInt() != null)
       ns.add([
-        q["state"] == "returned" ? "✅ 退货出账闭环（不回货架）" : "✅ 归位到位 · ${q["from"] ?? ""}",
-        t(q["doneAt"]), ""
+        q["state"] == "returned"
+            ? "✅ 退货出账闭环（不回货架）"
+            : "✅ 归位到位 · ${q["from"] ?? ""}",
+        t(q["doneAt"]),
+        ""
       ]);
     if ((q["err"] ?? "").toString().isNotEmpty)
       ns.add(["⚠ ${q["err"]}", t(q["updAt"]), ""]);
     showDialog(
         context: context,
         builder: (c2) => AlertDialog(
-            title: Text("📜 工单时间线 · ${q["code"] ?? ""}"),
-            content: SizedBox(
-                width: double.maxFinite,
-                child: ListView(
-                    shrinkWrap: true,
-                    children: ns
-                        .map((n) => Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 3),
-                            child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(n[0] + (n[2].isNotEmpty ? " · ${n[2]}" : ""),
-                                      style: const TextStyle(fontSize: 12.5)),
-                                  Text(n[1],
-                                      style: const TextStyle(
-                                          fontSize: 10.5, color: Colors.grey)),
-                                ])))
-                        .toList())),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(c2),
-                  child: const Text("关闭")),
-            ]));
+                title: Text("📜 工单时间线 · ${q["code"] ?? ""}"),
+                content: SizedBox(
+                    width: double.maxFinite,
+                    child: ListView(
+                        shrinkWrap: true,
+                        children: ns
+                            .map((n) => Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 3),
+                                child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                          n[0] +
+                                              (n[2].isNotEmpty
+                                                  ? " · ${n[2]}"
+                                                  : ""),
+                                          style:
+                                              const TextStyle(fontSize: 12.5)),
+                                      Text(n[1],
+                                          style: const TextStyle(
+                                              fontSize: 10.5,
+                                              color: Colors.grey)),
+                                    ])))
+                            .toList())),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2),
+                      child: const Text("关闭")),
+                ]));
   }
 
   Widget _woCard(Map q) {
@@ -525,7 +577,7 @@ class _InspectPageState extends State<InspectPage>
                         fontWeight: FontWeight.bold,
                         fontFamily: "monospace",
                         fontSize: 15))),
-            Text(_stText(st),
+            Text(_stText(st, removed: q["removed"] == 1),
                 style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
@@ -557,9 +609,11 @@ class _InspectPageState extends State<InspectPage>
               alignment: Alignment.centerRight,
               child: TextButton.icon(
                   onPressed: () => _woTimeline(q),
-                  icon: const Icon(Icons.timeline, size: 16, color: Color(0xFF515BD4)),
+                  icon: const Icon(Icons.timeline,
+                      size: 16, color: Color(0xFF515BD4)),
                   label: const Text("时间线",
-                      style: TextStyle(fontSize: 12, color: Color(0xFF515BD4))))),
+                      style:
+                          TextStyle(fontSize: 12, color: Color(0xFF515BD4))))),
           Row(children: [
             Expanded(
                 child: Text(
@@ -601,6 +655,16 @@ class _InspectPageState extends State<InspectPage>
             if ((st == "waitOut" || st == "waitBack") && !_assist)
               Text(st == "waitOut" ? "等待仓管协助下架" : "等待仓管协助归位",
                   style: const TextStyle(fontSize: 11, color: Colors.grey)),
+            if (_canRemove(st)) ...[
+              const SizedBox(width: 6),
+              OutlinedButton.icon(
+                  onPressed: () => _removeWo(q),
+                  icon: const Icon(Icons.move_down, size: 16),
+                  label: const Text("人已移走"),
+                  style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFB26A00),
+                      padding: const EdgeInsets.symmetric(horizontal: 10))),
+            ],
             if (_canCancel(q, st)) ...[
               const SizedBox(width: 6),
               OutlinedButton.icon(
@@ -617,7 +681,8 @@ class _InspectPageState extends State<InspectPage>
                     onPressed: () => Navigator.push(
                         context,
                         MaterialPageRoute(
-                            builder: (_) => _InspectReturnPage(q: q, onDone: _load))),
+                            builder: (_) =>
+                                _InspectReturnPage(q: q, onDone: _load))),
                     icon: const Icon(Icons.outbox, size: 18),
                     label: const Text("退库出账"),
                     style: FilledButton.styleFrom(
@@ -625,7 +690,8 @@ class _InspectPageState extends State<InspectPage>
                         padding: const EdgeInsets.symmetric(horizontal: 14)))
               else
                 Text("等待仓管出库出账",
-                    style: const TextStyle(fontSize: 11, color: Color(0xFFB26A00))),
+                    style: const TextStyle(
+                        fontSize: 11, color: Color(0xFFB26A00))),
           ]),
         ]),
       ),
@@ -708,23 +774,18 @@ class _InspectPageState extends State<InspectPage>
                                         _sumChip(
                                             "共 ${_sum['boxes'] ?? 0} 框 · ${_num(_sum['qty'])} 件",
                                             const Color(0xFF0891B2)),
-                                        _sumChip(
-                                            "未检 ${_sum['un'] ?? 0}",
+                                        _sumChip("未检 ${_sum['un'] ?? 0}",
                                             const Color(0xFF2E7D32)),
                                         if ((_sum['re'] ?? 0) > 0)
-                                          _sumChip(
-                                              "需复检 ${_sum['re']}",
+                                          _sumChip("需复检 ${_sum['re']}",
                                               const Color(0xFFE65100)),
-                                        _sumChip(
-                                            "已检 ${_sum['ok'] ?? 0}",
+                                        _sumChip("已检 ${_sum['ok'] ?? 0}",
                                             Colors.blueGrey.shade600),
                                         if ((_sum['ret'] ?? 0) > 0)
-                                          _sumChip(
-                                              "退货 ${_sum['ret']}",
+                                          _sumChip("退货 ${_sum['ret']}",
                                               const Color(0xFFC62828)),
                                         if ((_sum['busy'] ?? 0) > 0)
-                                          _sumChip(
-                                              "检验中 ${_sum['busy']}",
+                                          _sumChip("检验中 ${_sum['busy']}",
                                               const Color(0xFF515BD4)),
                                       ])),
                           ])),
@@ -794,7 +855,8 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _locFocus.requestFocus());
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _locFocus.requestFocus());
   }
 
   @override
@@ -809,8 +871,7 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
   void _toast(String m, {bool err = true}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(m),
-        backgroundColor: err ? Colors.red : Colors.green));
+        content: Text(m), backgroundColor: err ? Colors.red : Colors.green));
   }
 
   void _refocus(FocusNode f) {
@@ -871,8 +932,7 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
     }
     setState(() => _busy = true);
     try {
-      final d = await mesGetData(
-          "/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
+      final d = await mesGetData("/api/v1/rawtransfer/GetBarCodeInfoOnHand", {
         "barcode": code,
         "warehouseCode": _to["WAREHOUSE_CODE"] ?? "",
         "districtCode": _to["DISTRICT_CODE"] ?? "",
@@ -896,7 +956,9 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
   }
 
   bool get _ready =>
-      (_to["LOC_CODE"] ?? "").isNotEmpty && _label != null && _woCode.isNotEmpty;
+      (_to["LOC_CODE"] ?? "").isNotEmpty &&
+      _label != null &&
+      _woCode.isNotEmpty;
 
   Future<void> _submit() async {
     if (_submitting || !_ready) return;
@@ -907,9 +969,12 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
               content: Text(
                   "标签 $_woCode（${widget.q["part"] ?? ""}）\n退往：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}\n数量：${_qty} 件\n\n提交后：MES 直调出账 → 库存扣减、该框库位清空 → 检验工单自动「已退货出账」闭环。不可撤销，确认？"),
               actions: [
-                TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("取消")),
+                TextButton(
+                    onPressed: () => Navigator.pop(c2, false),
+                    child: const Text("取消")),
                 FilledButton(
-                    style: FilledButton.styleFrom(backgroundColor: const Color(0xFFB26A00)),
+                    style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFB26A00)),
                     onPressed: () => Navigator.pop(c2, true),
                     child: const Text("确认退库")),
               ],
@@ -917,8 +982,11 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
     if (yes != true || !mounted) return;
     setState(() => _submitting = true);
     try {
-      final labelNo = (_label!["SCAN_BARCODE"] ?? _label!["LABEL_NO"] ?? _woCode).toString();
-      final label = Map<String, dynamic>.from(_label!)..["SCAN_BARCODE"] = labelNo;
+      final labelNo =
+          (_label!["SCAN_BARCODE"] ?? _label!["LABEL_NO"] ?? _woCode)
+              .toString();
+      final label = Map<String, dynamic>.from(_label!)
+        ..["SCAN_BARCODE"] = labelNo;
       final row = <String, dynamic>{
         "PART_NO": (widget.q["part"] ?? "").toString(),
         "MITEM_ID": _label!["MITEM_ID"],
@@ -934,10 +1002,13 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
       detail["TO_LOC_CODE"] = _to["LOC_CODE"];
       detail["isCheckSap"] = false;
       // ① MES 直调出账（同直调通道，失败抛异常进 catch，不落本地账）
-      await mesReq("POST", "/api/v1/rawtransfer/SaveTRBarcodes", body: {"details": [detail]});
+      await mesReq("POST", "/api/v1/rawtransfer/SaveTRBarcodes", body: {
+        "details": [detail]
+      });
       // ② 落出库台账 + 自动整框消账（库存减、库位清空、同步电脑）；失败不回滚 MES（已真实出账），仅提示
       try {
-        final ob = await createOutboundOrder([row], Map<String, String>.from(_to));
+        final ob =
+            await createOutboundOrder([row], Map<String, String>.from(_to));
         _toast("退库成功，已生成出库单 ${ob.orderNo}，工单将转「已退货出账」", err: false);
       } catch (e) {
         _toast("MES 已出账，但出库台账落库失败：$e");
@@ -965,15 +1036,20 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
                 color: Colors.white, borderRadius: BorderRadius.circular(10)),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text("检验工单：${widget.q["part"] ?? ""}${(widget.q["nm"] ?? "").toString().isNotEmpty ? " · ${widget.q["nm"]}" : ""}",
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(
+                  "检验工单：${widget.q["part"] ?? ""}${(widget.q["nm"] ?? "").toString().isNotEmpty ? " · ${widget.q["nm"]}" : ""}",
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14)),
               const SizedBox(height: 4),
-              Text("原货位 ${widget.q["from"] ?? ""} → 现压站台 ${widget.q["station"] ?? ""}",
+              Text(
+                  "原货位 ${widget.q["from"] ?? ""} → 现压站台 ${widget.q["station"] ?? ""}",
                   style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
               if ((widget.q["retReason"] ?? "").toString().isNotEmpty)
                 Text("退货原因：${widget.q["retReason"]}",
-                    style: const TextStyle(fontSize: 12, color: Color(0xFFB26A00))),
+                    style: const TextStyle(
+                        fontSize: 12, color: Color(0xFFB26A00))),
             ])),
         const SizedBox(height: 12),
         // 第一步：转入货位
@@ -992,14 +1068,20 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
           const SizedBox(width: 8),
           ElevatedButton(
               onPressed: _busy ? null : _scanLoc,
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF515BD4),
+                  foregroundColor: Colors.white),
               child: const Text("查询")),
         ]),
         if ((_to["LOC_CODE"] ?? "").isNotEmpty)
           Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text("转入：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}（${_to["LOC_CODE"]}）",
-                  style: const TextStyle(fontSize: 12.5, color: Color(0xFF00897B), fontWeight: FontWeight.w600))),
+              child: Text(
+                  "转入：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}（${_to["LOC_CODE"]}）",
+                  style: const TextStyle(
+                      fontSize: 12.5,
+                      color: Color(0xFF00897B),
+                      fontWeight: FontWeight.w600))),
         const SizedBox(height: 12),
         // 第二步：扫标签核对
         TextField(
@@ -1015,8 +1097,12 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
         if (_label != null)
           Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text("✓ 标签核对一致 · 在库 $_qty 件（${_label!["MITEM_DESC"] ?? _label!["MITEM_NAME"] ?? ""}）",
-                  style: const TextStyle(fontSize: 12.5, color: Colors.green, fontWeight: FontWeight.w600))),
+              child: Text(
+                  "✓ 标签核对一致 · 在库 $_qty 件（${_label!["MITEM_DESC"] ?? _label!["MITEM_NAME"] ?? ""}）",
+                  style: const TextStyle(
+                      fontSize: 12.5,
+                      color: Colors.green,
+                      fontWeight: FontWeight.w600))),
         const SizedBox(height: 18),
         ElevatedButton.icon(
             onPressed: (_ready && !_submitting) ? _submit : null,
@@ -1036,4 +1122,191 @@ class _InspectReturnPageState extends State<_InspectReturnPage> {
       ]),
     );
   }
+}
+
+/// ㉖v198b 收口去向弹层：手填 或 「点选地面空格」。点选数据=服务器 /api/ground-free
+/// （与服务器自动分格完全同源：真实排号清单/逐排格数覆盖/停用排除外/账本∪预占占用），
+/// 空格多的排靠前；两阶段=选排→点格，点中即返回完整编码。货架格仍走手填（AGV 货架位
+/// 数量大且收口场景少，点选价值低）。
+Future<String?> removeLocDialog(
+    BuildContext context, String code, String stn) async {
+  final ctl = TextEditingController();
+  List<Map> rows = [];
+  bool gfLoading = false, gfErr = false, gfTried = false;
+  int totalFree = 0;
+  String selfLoc = '';
+  Map? pickRow; // 第二阶段：选中的排
+  String? picked = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dc) => StatefulBuilder(builder: (dc2, setSt) {
+            void back() => setSt(() => pickRow = null);
+            Future<void> loadGf() async {
+              setSt(() {
+                gfLoading = true;
+                gfErr = false;
+              });
+              final r = await AuthApi.groundFree(code);
+              setSt(() {
+                gfLoading = false;
+                gfErr = r["ok"] != true;
+                if (r["ok"] == true) {
+                  rows = ((r["rows"] as List?) ?? [])
+                      .whereType<Map>()
+                      .where((x) => (x["free"] as num? ?? 0) > 0)
+                      .toList();
+                  totalFree = (r["totalFree"] as num?)?.toInt() ?? 0;
+                  selfLoc = (r["selfLoc"] ?? "").toString();
+                }
+              });
+            }
+
+            Future<void> pickCell(String loc) async {
+              ctl.text = loc;
+              Navigator.pop(dc, loc);
+            }
+
+            // 打开弹层即自动预载空闲格（服务器毫秒级查询，少一次点击=人性化重点）
+            if (!gfTried) {
+              gfTried = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) => loadGf());
+            }
+
+            final body = pickRow == null
+                ? Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (gfLoading)
+                        const Padding(
+                            padding: EdgeInsets.all(14),
+                            child: LinearProgressIndicator())
+                      else if (gfErr)
+                        const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8),
+                            child: Text("空闲查询失败——可在上方手填格位",
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.orange)))
+                      else if (rows.isEmpty)
+                        const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8),
+                            child: Text("地面暂无空闲排——可在上方手填格位",
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.grey)))
+                      else ...[
+                        Text(
+                            "共空闲 $totalFree 格${selfLoc.isNotEmpty ? '（已排除本框现住 $selfLoc）' : ''}　点排选格：",
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.blueGrey)),
+                        const SizedBox(height: 4),
+                        Flexible(
+                            child: SingleChildScrollView(
+                                child:
+                                    Wrap(spacing: 6, runSpacing: 6, children: [
+                          for (final r in rows.take(36))
+                            OutlinedButton(
+                                style: OutlinedButton.styleFrom(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 10, vertical: 6),
+                                    minimumSize: Size.zero),
+                                onPressed: () => setSt(() => pickRow = r),
+                                child: Text(
+                                    "${r["key"]} 空${r["free"]}/${r["slots"]}",
+                                    style: const TextStyle(fontSize: 12.5))),
+                        ]))),
+                      ],
+                    ],
+                  )
+                : Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(children: [
+                        TextButton.icon(
+                            onPressed: back,
+                            icon: const Icon(Icons.arrow_back, size: 16),
+                            label: const Text("换排",
+                                style: TextStyle(fontSize: 13))),
+                        Expanded(
+                            child: Text(
+                                "${pickRow!["key"]}　空 ${pickRow!["free"]}/${pickRow!["slots"]}　点空格选择",
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600))),
+                      ]),
+                      Flexible(
+                          child: SingleChildScrollView(
+                              child: Wrap(spacing: 6, runSpacing: 6, children: [
+                        for (final c in ((pickRow!["freeCells"] as List?) ?? [])
+                            .whereType<String>())
+                          OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 12, vertical: 8),
+                                  minimumSize: Size.zero),
+                              onPressed: () =>
+                                  pickCell("${pickRow!["key"]}-$c"),
+                              child: Text(c,
+                                  style: const TextStyle(fontSize: 14))),
+                      ]))),
+                    ],
+                  );
+            return AlertDialog(
+                title:
+                    Text("人已移走 · 收口去向", style: const TextStyle(fontSize: 15.5)),
+                content: SizedBox(
+                    width: 360,
+                    child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("框 $code 已被人工从 $stn 搬走，货物现在的实际格位：",
+                              style:
+                                  const TextStyle(fontSize: 12.5, height: 1.5)),
+                          const SizedBox(height: 6),
+                          TextField(
+                              controller: ctl,
+                              textCapitalization: TextCapitalization.characters,
+                              decoration: const InputDecoration(
+                                  hintText: "点选地面空格，或手填 NB02-A-08-2F",
+                                  isDense: true,
+                                  border: OutlineInputBorder())),
+                          const SizedBox(height: 8),
+                          Align(
+                              alignment: Alignment.centerLeft,
+                              child: OutlinedButton.icon(
+                                  onPressed: gfLoading
+                                      ? null
+                                      : () {
+                                          // 再点=刷新占用（别人刚登记的格会实时避让）
+                                          setSt(() => pickRow = null);
+                                          loadGf();
+                                        },
+                                  icon: const Icon(Icons.grid_view_outlined,
+                                      size: 16),
+                                  label: Text(
+                                      gfLoading
+                                          ? "正在查询空闲格…"
+                                          : (rows.isEmpty ? "点选地面空格" : "刷新空闲格"),
+                                      style: const TextStyle(fontSize: 13)))),
+                          Flexible(
+                              child: Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: body)),
+                        ])),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dc),
+                      child: const Text("取消")),
+                  FilledButton(
+                      onPressed: () {
+                        final v = ctl.text.trim().toUpperCase();
+                        if (v.isNotEmpty) Navigator.pop(dc, v);
+                      },
+                      child: const Text("用这个位置")),
+                ]);
+          }));
+  ctl.dispose();
+  return picked;
 }
