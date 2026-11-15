@@ -2,7 +2,8 @@
 // 用户实锤（新建盘点任务 3/4 截图）：货架键按 locs 遍历插入序出（A-03→B-06→C-03→A-04→C-11 乱序）。
 // 修复=渲染前 (keys..sort())，与地面排 zones 的 .sort() 同款；层格位原有 l.sort() 不变。
 const fs = require('fs');
-const dart = fs.readFileSync('D:/work_app/scan_station/lib/inventory_page.dart', 'utf8').replace(/\r\n/g, '\n');
+const path = require('path');
+const dart = fs.readFileSync(path.join(__dirname, '..', 'lib', 'inventory_page.dart'), 'utf8').replace(/\r\n/g, '\n');
 let t = 0, f = 0;
 const chk = (n, c, x) => { t++; if (!c) { f++; console.log('FAIL! [' + n + '] ' + (x || '')); } else console.log('PASS [' + n + ']'); };
 

@@ -2,7 +2,8 @@
 // 用户实锤（11-15 截图）：点名盘按项目翻框要手敲几十个零件号。v174 解析器本就支持批量混贴，
 // 但"哪些零件在架、各属哪个项目"人要翻 Excel——选择器把这份知识还给系统：搜索+按项目圈选+多选。
 const fs = require('fs');
-const dart = fs.readFileSync('D:/work_app/scan_station/lib/inventory_page.dart', 'utf8').replace(/\r\n/g, '\n');
+const path = require('path');
+const dart = fs.readFileSync(path.join(__dirname, '..', 'lib', 'inventory_page.dart'), 'utf8').replace(/\r\n/g, '\n');
 let t = 0, f = 0;
 const chk = (n, c, x) => { t++; if (!c) { f++; console.log('FAIL! [' + n + '] ' + (x || '')); } else console.log('PASS [' + n + ']'); };
 

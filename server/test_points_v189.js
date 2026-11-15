@@ -1,8 +1,9 @@
 // ㉖v189 AGV 实时地图「点位号」叠加 · 双端源码锚点 + 网页脚本语法闸
 // 用户诉求（11-15 附 RCS 官方图）：地图上加地标点位号，便于对照官方图定位。双端各加开关，默认关。
 const fs = require('fs');
-const pda = fs.readFileSync('D:/work_app/scan_station/lib/agv_map_page.dart', 'utf8').replace(/\r\n/g, '\n');
-const html = fs.readFileSync('D:/work_app/scan_station/server/public/console.html', 'utf8').replace(/\r\n/g, '\n');
+const path = require('path');
+const pda = fs.readFileSync(path.join(__dirname, '..', 'lib', 'agv_map_page.dart'), 'utf8').replace(/\r\n/g, '\n');
+const html = fs.readFileSync(path.join(__dirname, 'public', 'console.html'), 'utf8').replace(/\r\n/g, '\n');
 let t = 0, f = 0;
 const chk = (n, c, x) => { t++; if (!c) { f++; console.log('FAIL! [' + n + '] ' + (x || '')); } else console.log('PASS [' + n + ']'); };
 
