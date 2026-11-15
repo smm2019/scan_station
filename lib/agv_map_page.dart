@@ -13,6 +13,7 @@ class _AgvMapPageState extends State<AgvMapPage> {
   Timer? _timer;
   double _zoom = 1.0, _ox = 0, _oy = 0;
   double _zoomStart = 1.0; // 捏合手势起始倍率（d.scale是相对手势起点的累计值，必须乘基准而非逐帧累乘）
+  bool _pts = false; // ㉖v189 点位号显隐（用户对照 RCS 官方图要求）：地标号+灰点，默认关防全图密扰
 
   @override
   void initState() {
@@ -40,6 +41,10 @@ class _AgvMapPageState extends State<AgvMapPage> {
       appBar: AppBar(backgroundColor: const Color(0xFF101A2E), title: const Text("AGV 实时地图", style: TextStyle(fontSize: 16, color: Colors.white)),
         iconTheme: const IconThemeData(color: Colors.white),
         actions: [
+          IconButton(
+            icon: Icon(_pts ? Icons.tag : Icons.drive_file_rename_outline, color: _pts ? Colors.amber : Colors.white70),
+            tooltip: _pts ? "隐藏点位号" : "显示点位号（对照 RCS 官方图）",
+            onPressed: () => setState(() => _pts = !_pts)),
           IconButton(icon: const Icon(Icons.refresh, color: Colors.white70), onPressed: _load),
           Padding(padding: const EdgeInsets.only(right: 12), child: Center(child: Text(
             snap == null ? "" : "${(List<Map>.from(snap["cars"] ?? [])).where((c) => c["online"] == true).length}台在线 · ${reqTimeLocal(snap["at"])}",
@@ -55,15 +60,15 @@ class _AgvMapPageState extends State<AgvMapPage> {
                 onScaleStart: (_) => _zoomStart = _zoom,
                 onScaleUpdate: (d) { if (d.scale != 1.0) setState(() => _zoom = (_zoomStart * d.scale).clamp(0.4, 10.0)); if (d.focalPointDelta.distance > 0) setState(() { _ox += d.focalPointDelta.dx; _oy += d.focalPointDelta.dy; }); },
                 onDoubleTap: () => setState(() { _zoom = 1.0; _ox = 0; _oy = 0; }),
-                child: CustomPaint(size: Size.infinite, painter: _MapPainter(net, snap, _zoom, _ox, _oy)),
+                child: CustomPaint(size: Size.infinite, painter: _MapPainter(net, snap, _zoom, _ox, _oy, _pts)),
               )),
     );
   }
 }
 
 class _MapPainter extends CustomPainter {
-  final Map net, snap; final double zoom, ox, oy;
-  _MapPainter(this.net, this.snap, this.zoom, this.ox, this.oy);
+  final Map net, snap; final double zoom, ox, oy; final bool pts;
+  _MapPainter(this.net, this.snap, this.zoom, this.ox, this.oy, this.pts);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -90,6 +95,19 @@ class _MapPainter extends CustomPainter {
       final a = lands[e[0]] as Map?, b = lands[e[1]] as Map?;
       if (a == null || b == null) continue;
       canvas.drawLine(w2c(a["x"], a["y"]), w2c(b["x"], b["y"]), pEdge);
+    }
+    // ㉖v189 点位号（用户对照 RCS 官方图）：灰点+地标号全量渲染，开启后密集处靠双指放大细看；
+    // 画在所有业务元素之前（边之后最先画）=货架/站台/堵点/充电/车辆全部压在其上层，不遮挡实时信息
+    if (pts) {
+      final pDot = Paint()..color = const Color(0xFF90A4AE);
+      for (final e in lands.entries) {
+        final l = e.value as Map;
+        final x = l["x"], y = l["y"];
+        if (x == null || y == null) continue;
+        final c = w2c(x, y);
+        canvas.drawCircle(c, 2.6, pDot);
+        _txt(canvas, c + const Offset(0, -6), e.key, 7.5, const Color(0xFFB0BEC5));
+      }
     }
     // 货架占用（橙点，点大小=框数）
     final pShelf = Paint()..color = const Color(0xFFFFA726);

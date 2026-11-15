@@ -4057,6 +4057,25 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
             if (!_sr[_sk]) { _sr[_sk] = tombT || it.t; rejected.push(key + '（服务器已有更新登记 ' + localDT(new Date(Number(old.t) || 0).toISOString(), 16) + '，本机旧缓存未生效——拉取对齐即可，无需重新登记）'); }
             continue;
           }
+          // ㉖v186 旧骨架改位闸（11-15 N26J220047 实锤事故：宋明明 08:51 正确改位 16-01，刘向轩设备 09:08
+          // 重推 10/31 骨架行把位置覆盖回 16-05——该设备 10/31 推过此行有指纹档案、骨架经派生字段漂移
+          // （批次打印日期/容器归一）内容≠旧指纹，v97c 只防"从未推过该行的设备"，此形态全线脱靶）。
+          // 判据=【行比服务器现值登记时刻旧】∧【货位与现值不同】的交集：
+          //   · 合法改位必带新 t（PDA 重扫登记/位置登记/拉取 upsert 都以 now 或服务器 t 刷新 assignedAt）→ 不触闸
+          //   · v95c 字段修正（t 不变、l 不变，只修名称/批次）→ 位置相同不触闸
+          //   · 新登记（无 old）/同位重推 → 不触闸
+          // 拒回不改任何现值（数据安全=被拒行原样丢弃，服务器现值保持）；静默按 (键,服务器现值t) 去重，
+          // 该行再次被更新登记后旧骨架若再回灌会再点名一次（v97b 防弹窗循环同款）。
+          if (old && it.t > 0 && Number(old.t) > it.t && String(old.l || '').toUpperCase() !== String(it.l || '').toUpperCase()) {
+            skipped++;
+            _fpNew[key] = h; // 拒回也记指纹档案：同内容再推命中 4033"与本机上次一致"静默（此场景拉取即自愈，
+            // 与 4082 撞格【必须每次点名】相反——这里弹窗循环无处置价值，v82 墓碑防循环同款哲学）。
+            // 注：本轮无指纹档案设备首推命中本闸时，4049 回退闸已 continue 在前，fp 副作用到不了这里。
+            const _lr2 = (db.tombReject = db.tombReject || {});
+            const _lk2 = 'L|' + key + '|' + (Number(old.t) || 0);
+            if (!_lr2[_lk2]) { _lr2[_lk2] = rec0; rejected.push(key + '（本机货位 ' + it.l + ' 是旧缓存——服务器已于 ' + localDT(new Date(Number(old.t) || 0).toISOString(), 16) + ' 更新登记为 ' + String(old.l || '') + '，旧缓存改位不生效——拉取一次自动清掉，无需重新登记）'); }
+            continue;
+          }
           // ㉖v118 迁移方向闸：二楼库位→来料区(NB04) 逆流禁止——NB04 只是"未入库前"的家，已上二楼架/地面的框不得回流来料区
           // （否则账实倒挂：楼下清点会多出"账面已入库"的筐；确需纠正走网页「账本修正」，那里有原因审计）
           if (old && locRecv(it.l) && !locRecv(old.l)) {
@@ -7062,6 +7081,18 @@ return send(res, 200, {
           }
           const items = Array.isArray(b.items) ? b.items : [];
           const clean = [];
+          // ㉖v185 申请数服务端 FIFO 核准（11-15 现场实锤 LL2026111508381316：8894086418 十个框
+          //   40/80×7/90/80 混装，用户填 7 框被端上均值换算成 539 件，实际 FIFO 发 530 → 单据
+          //   永挂"缺 9"假缺口进催办与欠料统计）。修法=换算从前端时序移到服务端权威：
+          //   items 带原始框数 boxes（网页 v128 起就传；PDA 自 185 起补传，旧版无此字段走原逻辑），
+          //   换算与 /api/req/preview 逐字同码（pickSuggest need=1e12 纯 FIFO 取前 boxes 框求和），
+          //   不再依赖"预览是否恰好返回"；零在架（0 框可取）保留端上原值，防纯提醒/在途单被清零。
+          const _fifoSum = (pn, boxes) => { // 与预览同码：天文需求令够数即停失效，取前 boxes 框件数和
+            const sg = pickSuggest(pn, 1e12, undefined, undefined, undefined);
+            const picked = (sg.boxes || []).slice(0, boxes);
+            if (!picked.length) return null; // 无在架可取=不换算，保留端上原值
+            return picked.reduce((s, b) => s + (Number(b.q) || 0), 0);
+          };
           for (const it of items) {
             const partNo = String(it.partNo || '').trim();
             const qty = Number(it.qty);
@@ -7071,7 +7102,15 @@ return send(res, 200, {
               const dd = db.itemDict && (db.itemDict[partNo.toUpperCase()] || db.itemDict[partNo]);
               if (dd && dd.nm) itemName = String(dd.nm).replace(/[\uFFFD]/g, '').slice(0, 80);
             }
-            clean.push({ partNo, itemName, qty, issued: [], rush: it.rush === true }); // v55 行级急料（列表靠前=加急）
+            let finQty = qty;
+            const boxesRaw = Number(it.boxes);
+            if (Number.isFinite(boxesRaw) && boxesRaw > 0 && boxesRaw <= 50) {
+              const sum = _fifoSum(partNo, Math.round(boxesRaw));
+              if (sum != null && sum > 0) finQty = sum; // 有在架可取→FIFO实数权威；算不出/零在架→保留端值
+            }
+            const row = { partNo, itemName, qty: finQty, issued: [], rush: it.rush === true }; // v55 行级急料（列表靠前=加急）
+            if (finQty !== qty) row._qtyFix = `端上换算 ${qty} → FIFO选筐核准 ${finQty}（${it.boxes}框）`; // 仅差异行留痕
+            clean.push(row);
           }
           if (!clean.length) return send(res, 400, { ok: false, msg: '至少一行有效的零件号+数量' });
           if (clean.length > 20) return send(res, 400, { ok: false, msg: '一张单最多20行' });

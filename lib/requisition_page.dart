@@ -866,7 +866,9 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
       final int qtyPieces = pvOk
           ? (pvR["estQty"] as num).round() // 预占实数：按将发筐真实件数（混框防均值失真，与签收对账同源）
           : (p.perBoxQty > 0 ? (q * p.perBoxQty).round() : q); // 无预览/框数已改未回→回退 v71b 均值换算
-      out.add({"partNo": p.partNo, "itemName": p.itemName, "qty": qtyPieces, "rush": _rushLines.contains(pn)});
+      // ㉖v185 补传原始框数 boxes：申请数换算移到服务端 FIFO 权威核准（创建端点与预览同码
+      // 重算覆盖 qty），本地 qtyPieces 退居兜底初值——预览没回、均值失真的场景不再漏进单
+      out.add({"partNo": p.partNo, "itemName": p.itemName, "qty": qtyPieces, "boxes": q, "rush": _rushLines.contains(pn)});
     }
     return out;
   }

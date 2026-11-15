@@ -103,7 +103,7 @@ const push = (tk, list) => post('/api/scanlog/sync', tk, { items: list.map((e) =
       '格数持久化到SP': mLed.includes('gnd_slots_v122'),
       '格数启动恢复': mLed.includes('Future<void> gSlotsRestore()') && mMain.includes('gSlotsRestore();'),
       'picker打开前同步刷新': mLed.includes('await pullGroundSlots(); // ㉖v122 打开弹层前同步刷新格数覆盖'),
-      '自动分配前同步刷新': mLed.includes('await pullGroundSlots(); // ㉖v122 分配前确保格数覆盖最新'),
+      '自动分配前同步刷新': mLed.includes('await pullGroundSlots(); // ㉖v122 格数覆盖取最新'), // v163 地面分配收归服务器后调用点注释演进（11-15 stash对照：锚点漂移非功能回归，刷新语义不变）
       '推送附带cxAt': mLed.includes('"cxAt": _cxLocalOpAt[_sk] ?? 0'),
       '主动操作时刻登记': mLed.includes('_cxLocalOpAt[scanlogKeyOf(r)] = DateTime.now().millisecondsSinceEpoch'),
       'cxKept回写本机': mLed.includes('final kept = res["cxKept"]'),

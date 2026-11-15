@@ -712,13 +712,120 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
     }
   }
 
+  // ㉖v188 点名盘「从在架勾选」：搜索 + 按项目圈选 + 多选，确认填入点名输入框并自动展开
+  //（用户实锤 11-15：按项目翻框点名要手敲几十个零件号太不人性化。v174 解析器本就支持批量混贴，
+  // 但"哪些零件在架、各属哪个项目"人得去 Excel 里翻——勾选选择器把这份知识还给系统）
+  Future<void> _openPickPicker() async {
+    final lg = await AuthApi.ledgerGet().timeout(const Duration(seconds: 8)).catchError((e) => <String, dynamic>{"ok": false, "msg": "$e"});
+    if (!mounted) return;
+    if (lg["ok"] != true) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("拉取在架账本失败：${lg["msg"] ?? "网络问题"}"), backgroundColor: Colors.orange));
+      return;
+    }
+    Map<String, List<String>> pmap = const {};
+    List<String> projList = const [];
+    try {
+      final pr = await AuthApi.projGet().timeout(const Duration(seconds: 6));
+      if (pr["ok"] == true) {
+        final m = <String, List<String>>{};
+        (pr["map"] as Map?)?.forEach((k, v) { if (v is List) m[k.toString().toUpperCase()] = v.map((e) => e.toString().toUpperCase()).toList(); });
+        pmap = m;
+        projList = ((pr["list"] as List?) ?? []).map((x) => (x is Map ? x["code"] : x).toString().toUpperCase()).where((c) => c.isNotEmpty).toList();
+      }
+    } catch (_) {}
+    final nmMap = <String, String>{}, codesMap = <String, Set<String>>{}, locMap = <String, Set<String>>{};
+    for (final x0 in ((lg["items"] as List?) ?? const [])) {
+      final x = x0 as Map;
+      final pn = (x["p"] ?? "").toString().trim().toUpperCase();
+      if (pn.isEmpty) continue;
+      final nm = (x["n"] ?? "").toString().trim();
+      if (nm.isNotEmpty && (nmMap[pn] ?? "").isEmpty) nmMap[pn] = nm;
+      (codesMap[pn] ??= <String>{}).add((x["c"] ?? "").toString().trim().toUpperCase());
+      (locMap[pn] ??= <String>{}).add((x["l"] ?? "").toString().trim().toUpperCase());
+    }
+    if (!mounted) return;
+    if (codesMap.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("在架账本为空"), backgroundColor: Colors.orange));
+      return;
+    }
+    final sel = <String>{};
+    String pf = "", q = "";
+    await showModalBottomSheet<void>(
+      context: context, isScrollControlled: true, useSafeArea: true,
+      constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
+      backgroundColor: Colors.white,
+      builder: (bc) => StatefulBuilder(builder: (ctx2, ss) {
+        final kq = q.toUpperCase();
+        final pns = (codesMap.keys.where((pn) => (pf.isEmpty || (pmap[pn] ?? const []).contains(pf)) && (kq.isEmpty || pn.contains(kq) || (nmMap[pn] ?? "").toUpperCase().contains(kq))).toList())..sort();
+        final nCell = pns.fold<int>(0, (s, pn) => s + (locMap[pn]?.length ?? 0));
+        final selLabels = sel.fold<int>(0, (s, pn) => s + (codesMap[pn]?.length ?? 0));
+        return Padding(
+          padding: EdgeInsets.only(left: 12, right: 12, top: 10, bottom: MediaQuery.of(ctx2).viewInsets.bottom + 10),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Row(children: [
+              const Text("从在架勾选零件", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700)),
+              const Spacer(),
+              TextButton(onPressed: () => Navigator.pop(ctx2), child: const Text("关闭")),
+            ]),
+            TextField(
+              onChanged: (v) => ss(() => q = v.trim()),
+              decoration: const InputDecoration(isDense: true, prefixIcon: Icon(Icons.search, size: 18), hintText: "搜索零件号 / 物料名", border: OutlineInputBorder(), contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 6)),
+            ),
+            if (projList.isNotEmpty) SizedBox(
+              height: 40,
+              child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.only(top: 6), children: [
+                Padding(padding: const EdgeInsets.only(right: 6), child: ChoiceChip(label: const Text("全部项目"), selected: pf.isEmpty, onSelected: (_) => ss(() => pf = ""))),
+                for (final pc in projList) Padding(padding: const EdgeInsets.only(right: 6), child: ChoiceChip(label: Text(pc), selected: pf == pc, onSelected: (_) => ss(() => pf = pc))),
+              ]),
+            ),
+            Padding(padding: const EdgeInsets.symmetric(vertical: 2), child: Row(children: [
+              Text("筛出 ${pns.length} 种 · $nCell 格位", style: const TextStyle(fontSize: 12, color: Colors.blueGrey)),
+              const Spacer(),
+              if (pns.isNotEmpty) TextButton(onPressed: () => ss(() => sel.addAll(pns)), child: Text("全选这批", style: const TextStyle(fontSize: 12))),
+              if (sel.isNotEmpty) TextButton(onPressed: () => ss(() => sel.clear()), child: const Text("清空", style: TextStyle(fontSize: 12))),
+            ])),
+            Flexible(child: ListView(padding: EdgeInsets.zero, children: pns.map((pn) => CheckboxListTile(
+              dense: true, contentPadding: const EdgeInsets.only(left: 6), controlAffinity: ListTileControlAffinity.leading,
+              title: Row(children: [
+                SizedBox(width: 100, child: Text(pn, style: const TextStyle(fontSize: 12.5, fontFamily: "monospace", fontWeight: FontWeight.w600))),
+                Expanded(child: Text(nmMap[pn] ?? "", style: const TextStyle(fontSize: 11, color: Colors.blueGrey), overflow: TextOverflow.ellipsis)),
+              ]),
+              subtitle: Text("${(pmap[pn] ?? const []).join('/')}　${codesMap[pn]?.length ?? 0} 标签 · ${locMap[pn]?.length ?? 0} 格位", style: const TextStyle(fontSize: 11, fontFamily: "monospace")),
+              value: sel.contains(pn),
+              onChanged: (v) => ss(() { if (v == true) { sel.add(pn); } else { sel.remove(pn); } }),
+            )).toList())),
+            Padding(padding: const EdgeInsets.only(top: 6), child: Row(children: [
+              Expanded(child: Text(sel.isEmpty ? "点勾选，或筛项目后『全选这批』" : "已选 ${sel.length} 种 · $selLabels 标签框", overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: sel.isEmpty ? Colors.grey : const Color(0xFF2E7D32)))),
+              FilledButton(onPressed: sel.isEmpty ? null : () {
+                final old = _pickCtrl.text.trim();
+                final add = (sel.toList())..sort();
+                _pickCtrl.text = (old.isEmpty ? "" : "$old\n") + add.join("\n");
+                Navigator.pop(ctx2);
+              }, style: FilledButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white), child: const Text("填入输入框")),
+            ])),
+          ]),
+        );
+      }),
+    );
+    if (sel.isNotEmpty && mounted) _expandPick(); // 填入后自动展开点名清单，省一次点击
+  }
+
   // ㉖v174 点名盘 step2 界面：零件号/货位/标签号混贴输入 + 展开预览（应扫数 + 命中/警示）
   List<Widget> _pickStep2() => [
         Card(
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text("输入要盘的货（每行一个或逗号分隔；零件号 / 完整货位 / 标签号 可混贴）", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              // ㉖v188 手敲不再是唯一入口：可从在架账本勾选（支持按项目一键圈选）
+              Row(children: [
+                Expanded(child: const Text("输入要盘的货（每行一个或逗号分隔；零件号 / 完整货位 / 标签号 可混贴）", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600))),
+                TextButton.icon(
+                  onPressed: _openPickPicker,
+                  icon: const Icon(Icons.checklist_rounded, size: 18, color: Color(0xFF515BD4)),
+                  label: const Text("从在架勾选", style: TextStyle(fontSize: 12.5, color: Color(0xFF515BD4))),
+                  style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 8)),
+                ),
+              ]),
               const SizedBox(height: 6),
               TextField(
                 controller: _pickCtrl,
@@ -1041,7 +1148,10 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                             if (shelfGroups.isEmpty)
                               const Text("货位基准中没有货架格位数据", style: TextStyle(fontSize: 12, color: Colors.grey))
                             else
-                              Column(children: shelfGroups.entries.map((en) {
+                              // ㉖v187 修顺序乱（11-15 现场实锤）：货架键按 locs 遍历的插入序出（A-03→B-06→C-03→A-04…），
+                              // 层格位有 l.sort() 外层货架键却没有——按键升序渲染，与地图/占用图阅读顺序一致
+                              Column(children: (shelfGroups.keys.toList()..sort()).map((rackKey) {
+                                final en = MapEntry(rackKey, shelfGroups[rackKey]!);
                                 final cells = en.value;
                                 final on = _scope.where(cells.contains).length;
                                 return ExpansionTile(
