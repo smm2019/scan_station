@@ -58,7 +58,7 @@ T('R3c 落库地面/来料按快照', /groundLocation: wt0 == 1 \? gl0 : \(wt0 =
 T('R3d 落库容器用快照', /containerType: ct0,/.test(reg));
 T('R4a 校验2-AGV认快照台站', /if \(wt0 == 0\) \{\s*\n?\s*locationValid = st0 != null;/.test(reg) || (reg.indexOf('wt0 == 0') >= 0 && reg.indexOf('st0 != null') >= 0));
 T('R4b 第二道站台闸用快照', /if \(wt0 == 0 && st0 == null\) \{/.test(reg));
-T('R5 查重带快照 ret/wt', /_globalDupCheck\(code, recv: wt0 == 2, ret: ret0 && wt0 != 2\)/.test(reg));
+T('R5 查重带快照 ret/wt', /_globalDupCheck\(code, recv: wt0 == 2, ret: ret0 && wt0 != 2(?:, \w+: [^)]+)?\)/.test(reg)); // ㉖v198d 漂移修正：该调用追加了 reShelf: rs0 && wt0==0（重新上架豁免），锁 recv/ret 仍走快照变量 wt0/ret0 的本意不变；容忍尾部新增命名参数，防将来合法扩展再撞CI（v154同款教训）
 T('R6 站台占用查询用快照', /\.stationNoEqualTo\(st0\)/.test(reg));
 T('R7 叫车站台取自快照', /final autoCallSt =\s*\n?\s*wt0 == 0 \? \(st0 \?\? ""\) : "";/.test(reg));
 
