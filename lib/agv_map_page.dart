@@ -144,7 +144,9 @@ class _MapPainter extends CustomPainter {
       final x = (c["x"] as num?)?.toDouble(), y = (c["y"] as num?)?.toDouble();
       if (x == null || y == null) continue;
       final ctr = w2c(x, y);
-      final yaw = ((c["yaw"] as num?)?.toDouble() ?? 0);
+      // ㉖v191 ①RCS yaw 单位是【度】(实测最大179.98，旧版直接当弧度做cos/sin=车头近乎随机指向的根因，AGV06图实锤) ②车头对齐RCS官方图约定=航向+下发偏移(默认180°,现场实锤两端与RCS反向;参数可校正)
+      final yawDeg = ((c["yaw"] as num?)?.toDouble() ?? 0) + ((snap["yawOfsDeg"] as num?)?.toDouble() ?? 180);
+      final yaw = yawDeg * 3.141592653589793 / 180;
       final p = Path();
       const r = 7.0;
       for (var i = 0; i < 3; i++) {

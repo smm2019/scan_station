@@ -768,11 +768,13 @@ async function trSearch() {
 }
 
 async function pgParts(){TP=TP||{};
- $('#main').innerHTML=`<div class="grid" style="grid-template-columns:minmax(300px,360px) 1fr;align-items:start"><div class="card"><div class="row"><input id="pq" placeholder="搜零件号 / 物料名称" value="${TP.q||''}" style="flex:1;min-width:150px" onkeydown="if(event.key=='Enter')ppSearch()"><button class="pill" onclick="ppSearch()">查询</button><button class="pill q" title="清空关键字" onclick="TP.q='';pgParts()">↺ 重置</button></div><div id="pres" style="max-height:70vh;overflow:auto;margin-top:8px"><div style="color:var(--sub);font-size:12px">输入至少2个字符后查询（零件号支持片段匹配）</div></div></div><div id="pprof"><div class="card" style="color:var(--sub);font-size:12.5px">点击左侧零件查看档案：在架框明细、出入库历史、预约名单、待处理需求，可一键预约到料提醒。</div></div></div>`;
- if(TP.q&&TP.q.length>=2)ppSearch()}
-async function ppSearch(){const q=($('#pq')?$('#pq').value:'').trim();TP.q=q;if(q.length<2){T('至少输入2个字符');return}
- $('#pres').innerHTML='搜索中…';try{const j=await api('/api/parts?q='+encodeURIComponent(q));const L=j.list||[];
- $('#pres').innerHTML=L.length?`<table><tbody>${L.map((x)=>`<tr style="cursor:pointer" onclick="ppOpen('${x.pn}')"><td class="mono" style="font-size:12px">${x.pn}<div style="color:var(--sub);font-size:11px">${_esc(x.nm||'')}</div></td><td style="text-align:right;white-space:nowrap;color:var(--sub);font-size:11.5px">账本 ${x.n} 框</td></tr>`).join('')}</tbody></table>${L.length>=40?'<div style="color:var(--sub);font-size:11px;margin-top:6px">仅显示前40条，请缩小关键字</div>':''}`:'<div style="color:var(--sub);font-size:12px">无匹配（字典/账本/流水里都查过）</div>'}catch(_){$('#pres').innerHTML='<div style="color:var(--warn);font-size:12px">搜索失败（服务需重启加载新代码）</div>'}}
+ if(!window._projs){try{const pj=await api('/api/proj');window._projs=(pj&&pj.ok)?(pj.list||[]):[]}catch(_){window._projs=[]}} // ㉖v190 项目下拉数据源（与PDA库存页筛选同源字典）
+ const _popts=(window._projs||[]).map((p)=>`<option value="${_esc(p.code)}" ${TP.proj===p.code?'selected':''}>${_esc(p.code)}${p.nm?' '+_esc(p.nm):''}</option>`).join('');
+ $('#main').innerHTML=`<div class="grid" style="grid-template-columns:minmax(300px,360px) 1fr;align-items:start"><div class="card"><div class="row"><input id="pq" placeholder="搜零件号 / 物料名称" value="${TP.q||''}" style="flex:1;min-width:150px" onkeydown="if(event.key=='Enter')ppSearch()"><select id="ppj" title="按项目筛选（可不填关键字直接列该项目全部零件）" onchange="ppSearch()" style="max-width:118px;padding:5px 6px"><option value="">全部项目</option>${_popts}</select><button class="pill" onclick="ppSearch()">查询</button><button class="pill q" title="清空关键字与项目筛选" onclick="TP.q='';TP.proj='';pgParts()">↺ 重置</button></div><div id="pres" style="max-height:70vh;overflow:auto;margin-top:8px"><div style="color:var(--sub);font-size:12px">输入至少2个字符后查询（零件号支持片段匹配），或选择项目直接列出全部零件</div></div></div><div id="pprof"><div class="card" style="color:var(--sub);font-size:12.5px">点击左侧零件查看档案：在架框明细、出入库历史、预约名单、待处理需求，可一键预约到料提醒。</div></div></div>`;
+ if((TP.q&&TP.q.length>=2)||TP.proj)ppSearch()}
+async function ppSearch(){const q=($('#pq')?$('#pq').value:'').trim(),pr=($('#ppj')?$('#ppj').value:'');TP.q=q;TP.proj=pr;if(q.length<2&&!pr){T('至少输入2个字符，或先选择项目');return}
+ $('#pres').innerHTML='查询中…';try{const j=await api('/api/parts?q='+encodeURIComponent(q)+(pr?'&proj='+encodeURIComponent(pr):''));const L=j.list||[];
+ $('#pres').innerHTML=L.length?`<table><tbody>${L.map((x)=>`<tr style="cursor:pointer" onclick="ppOpen('${x.pn}')"><td class="mono" style="font-size:12px">${x.pn}<div style="color:var(--sub);font-size:11px">${_esc(x.nm||'')}${x.pj?` <span style="color:var(--pri);font-size:10px">[${_esc(x.pj)}]</span>`:''}</div></td><td style="text-align:right;white-space:nowrap;color:var(--sub);font-size:11.5px">账本 ${x.n} 框</td></tr>`).join('')}</tbody></table>${L.length>=40&&!pr?'<div style="color:var(--sub);font-size:11px;margin-top:6px">仅显示前40条，请缩小关键字或选项目</div>':(pr?`<div style="color:var(--sub);font-size:11px;margin-top:6px">${_esc(pr)} 项目共 ${L.length} 种零件</div>`:'')}`:'<div style="color:var(--sub);font-size:12px">无匹配'+(pr?`（${_esc(pr)} 项目下没有命中关键字的零件）`:'（字典/账本/流水里都查过）')+'</div>'}catch(_){$('#pres').innerHTML='<div style="color:var(--warn);font-size:12px">查询失败（服务需重启加载新代码）</div>'}}
 async function ppOpen(pn){TP.pn=pn;$('#pprof').innerHTML='<div class="card skl" style="height:160px"></div>';
  try{const j=await api('/api/part/profile?pn='+encodeURIComponent(pn));
  if(!j.ok){$('#pprof').innerHTML='<div class="card" style="color:var(--warn)">'+_esc(j.msg||'加载失败')+'</div>';return}
@@ -995,7 +997,7 @@ var _slD=14,_slJ='';
 async function ctSlow(){const b=$('#ctbody');try{if(!window._pjCodes)await pjLoad();const d=await api('/api/slow-moving?minDays='+_slD);
  const LA=(d.list||[]);const L=_slJ?LA.filter(x=>pjOf(x.pn).includes(_slJ)):LA;
  b.innerHTML=`<div class="card"><div class="row" style="align-items:center"><b style="font-size:13px">🐢 呆滞料排行</b><span style="font-size:11.5px;color:var(--sub)">≥${d.minDays}天未动的格位按零件聚合 · 共 ${L.length} 种${_slJ?'（项目 '+_esc(_slJ)+'）':''}</span><span class="sp"></span>${pjSel('slJ',_slJ,'_slJ')}<select onchange="_slD=+this.value;ctSeg('slow')" style="padding:3px 6px;font-size:12px"><option value="7" ${_slD===7?'selected':''}>≥7天</option><option value="14" ${_slD===14?'selected':''}>≥14天</option><option value="30" ${_slD===30?'selected':''}>≥30天</option></select></div>
- <div style="margin:6px 0;font-size:11.5px;color:var(--sub)">高架格位是稀缺资源：长期呆滞的料建议一键移地面消化（点行尾按钮，发起 AGV 移库到地面区）。</div>
+ <div style="margin:6px 0;font-size:11.5px;display:flex;align-items:center;gap:8px"><span style="color:var(--sub)">高架格位是稀缺资源：长期呆滞的料建议一键移地面消化（点行尾按钮，发起 AGV 移库到地面区）。</span><span class="sp"></span><button class="pill" style="padding:3px 10px;font-size:11.5px;background:#515BD4;color:#fff" title="不限呆滞天数：按项目勾选在架框，批量发起货架→地面移库" onclick="pjmvOpen()">📦 按项目直接移地面</button></div>
  <div style="overflow:auto;max-height:58vh"><table><thead><tr><th>零件号</th><th>物料名</th><th>所属项目</th><th>呆滞格数</th><th>件数</th><th>最长滞留</th><th>示例标签</th><th></th></tr></thead><tbody>${L.map(x=>`<tr style="border-top:1px solid var(--line)"><td class="mono"><a href="javascript:void 0" style="color:var(--pri)" onclick="go('trace');TRC.q='${_esc(x.pn)}';trSearch()">${_esc(x.pn)}</a></td><td>${_esc(x.nm||'')}</td><td style="font-size:11px;color:var(--sub)">${pjOf(x.pn).map(_esc).join('；')||'—'}</td><td>${x.cells}</td><td><b>${x.qty}</b></td><td style="color:${x.maxAge>=30?'var(--bad)':'var(--warn)'};font-weight:600">${x.maxAge} 天</td><td class="mono" style="font-size:10.5px;color:var(--sub)">${_esc(x.codes.join(' '))}</td><td><button class="pill" style="padding:2px 8px;font-size:11px" title="AGV把这格移下到地面区" onclick="slowMove('${_esc(x.codes[0]||'')}')">⬇ 移地面</button></td></tr>`).join('')||'<tr><td colspan=8 style="color:var(--sub)">'+(_slJ?'该项目下':'没有')+'呆滞格位'+(_slJ?'':'，库位很健康')+'</td></tr>'}</tbody></table></div></div>`;
 }catch(e){b.innerHTML='<div class="card" style="color:var(--warn)">加载失败：'+(e&&e.message?_esc(String(e.message)):'服务需重启加载新版')+'</div>'}}
 async function slowMove(code){if(!code){T('该零件暂无标签码');return}
@@ -1007,6 +1009,56 @@ async function slowMove(code){if(!code){T('该零件暂无标签码');return}
  const to=prompt('移库到地面格位（如 NB03-A-05-03）：',from.replace('NB02','NB03').replace(/-\d+F$/,'-01'));
  if(!to)return;
  try{const r=await api('/api/agv/transfer',{method:'POST',body:{from,to:to.trim().toUpperCase(),code:code.toUpperCase(),kind:'toGround'}});T(r.ok?('✅ 移库任务已发起：'+from+' → '+to):('❌ '+(r.msg||'失败')),r.ok?1:0)}catch(_){T('发起失败')}}
+// ===== ㉖v194 按项目直接移地面（不限呆滞天数）：项目→零件→在架货架框，多选批量 shelf→ground（复用 slowMove 同款 transfer 接口，零新后端）=====
+var _pjm={pn:'',box:[],rows:[],busy:false};
+const _pjmTo=(from)=>String(from).replace('NB02','NB03').replace(/-\d+F$/,'-01'); // 同区排地面格建议（与 slowMove 同款换算）
+async function pjmvOpen(){_pjm={pn:'',box:[],rows:[],busy:false};if(!window._pjCodes)await pjLoad();
+ dlg(`<h3>📦 按项目直接移地面 <span style="font-size:11px;color:var(--sub);font-weight:400">不限呆滞天数 · 勾选在架货架框批量发起 AGV 移库（货架→地面）</span></h3>
+ <div class="row" style="gap:8px;align-items:center"><select id="pjmpj" onchange="pjmvFill()" style="padding:4px 8px;font-size:12.5px"><option value="">选择项目码…</option>${(window._pjCodes||[]).map((c)=>`<option value="${_esc(c)}">${_esc(c)}${(window._pjNm&&window._pjNm[c])?' '+_esc(window._pjNm[c]):''}</option>`).join('')}</select><span id="pjmHint" style="font-size:11.5px;color:var(--sub)"></span></div>
+ <div id="pjmList" style="overflow:auto;max-height:52vh;margin-top:8px"><div style="color:var(--sub);font-size:12px;padding:12px">先选项目码：列出该项目当前在架的货架格位（=框，一格一框），默认全选、目标地面格自动建议</div></div>
+ <div class="row" style="margin-top:8px;gap:8px;align-items:center"><span id="pjmSel" style="font-size:12px;color:var(--pri)"></span><span class="sp"></span><button class="pill q" onclick="$('#mask').classList.add('hide')">关闭</button><button class="pill" style="background:#515BD4;color:#fff" onclick="pjmvSubmit()">⬇ 发起移地面</button></div>`,true);}
+async function pjmvFill(){const pj=(document.getElementById('pjmpj')||{}).value||'';const el=$('#pjmList');if(!el)return;
+ _pjm.pn=pj;_pjm.box=[];
+ if(!pj){el.innerHTML='<div style="color:var(--sub);font-size:12px;padding:12px">先选项目码</div>';const s0=$('#pjmSel');if(s0)s0.textContent='';return}
+ el.innerHTML='<div style="color:var(--sub);font-size:12px;padding:12px">加载账本…</div>';
+ let items=[];try{const j=await api('/api/ledger');items=j.items||[]}catch(_){el.innerHTML='<div style="color:var(--warn);padding:12px">账本拉取失败</div>';return}
+ const pns=new Set(Object.entries(window._pjMap||{}).filter((e2)=>((e2[1]||[]).map((c)=>String(c).toUpperCase())).includes(pj)).map((e2)=>e2[0])); // 项目→零件号集（前端本地映射，服务器零新接口）
+ const bx={};
+ for(const r of items){const pn=String(r.p||'').toUpperCase(),l=String(r.l||'').toUpperCase();
+  if(!pns.has(pn)||!/^NB02-/.test(l))continue; // 只搬在架的AGV货架框（地面/来料区框本就在地上）
+  const b=(bx[l]=bx[l]||{l,pn,nm:String(r.n||'').slice(0,20),codes:[]});b.codes.push(String(r.c||'').toUpperCase());}
+ _pjm.rows=Object.values(bx).sort((a,b)=>a.l.localeCompare(b.l));
+ if(!_pjm.rows.length){el.innerHTML='<div style="color:var(--sub);font-size:12px;padding:12px">该项目当前没有在架的货架格位（都在地面/来料区或已出库）</div>';const s1=$('#pjmSel');if(s1)s1.textContent='';return}
+ el.innerHTML=`<table><thead><tr><th><input type="checkbox" checked onchange="pjmvSelAll(this)" title="本页全选/全不选"></th><th>货架格位（框）</th><th>零件号</th><th>物料名</th><th>标签</th><th>目标地面格（自动建议·可单改）</th></tr></thead><tbody>${_pjm.rows.map((x,i)=>`<tr style="border-top:1px solid var(--line)">
+ <td><input type="checkbox" checked data-i="${i}" onchange="pjmvTg(this)"></td>
+ <td class="mono" style="font-size:11.5px">${_esc(x.l)}</td><td class="mono" style="font-size:11px">${_esc(x.pn)}</td><td style="font-size:11px">${_esc(x.nm)}</td>
+ <td class="mono" style="font-size:10.5px;color:var(--sub)">${_esc(x.codes.slice(0,3).join(' '))}${x.codes.length>3?' 等'+x.codes.length:''}</td>
+ <td><input id="pjmto${i}" value="${_pjmTo(x.l)}" style="width:132px;font-size:11.5px" onblur="pjmvAuto(${i},this)"></td></tr>`).join('')}</tbody></table>`;
+ const h=$('#pjmHint');if(h)h.textContent=`在架货架格 ${_pjm.rows.length} 框 · 目标=同区排地面格（可逐格改，AGV 送到地面后人工入格并「位置登记」收账）`;
+ pjmvCnt();}
+function pjmvTg(cb){_pjm.box[+cb.dataset.i]=cb.checked;pjmvCnt()}
+function pjmvAuto(i,el){const v=(el.value||'').trim().toUpperCase();if(!v)el.value=_pjmTo(_pjm.rows[i].l)} // 清空失焦时放回自动建议
+function pjmvSelAll(cb){document.querySelectorAll('#pjmList input[type=checkbox][data-i]').forEach((x)=>{x.checked=cb.checked;_pjm.box[+x.dataset.i]=cb.checked});pjmvCnt()}
+function pjmvCnt(){const e=$('#pjmSel');if(e)e.textContent=`已选 ${_pjm.rows.filter((_,i)=>_pjm.box[i]!==false).length} / ${_pjm.rows.length} 框`}
+async function pjmvSubmit(){
+ if(_pjm.busy)return;
+ const sel=_pjm.rows.map((x,i)=>({x,i})).filter((o)=>_pjm.box[o.i]!==false);
+ if(!sel.length){T('未勾选任何框');return}
+ const jobs=[],toSeen={},bad=[];
+ for(const o of sel){
+  const el=document.getElementById('pjmto'+o.i);const to=((el||{}).value||'').trim().toUpperCase();
+  const ok=/^NB03-[A-H]-\d{2}-\d{1,2}$/.test(to)&&to!==o.x.l; // 前端预检：地面格格式+不与本格同名（服务器 locStrict 还有硬闸）
+  if(!ok){if(el){el.style.borderColor='red';el.title='格式应为 NB03-A-05-03 且不能等于起点'}bad.push(o.x.l);continue}
+  if(toSeen[to]){bad.push(o.x.l+'→'+to+'（与 '+toSeen[to]+' 目标重复，两框不能进同一地面格）');if(el)el.style.borderColor='red';continue}
+  toSeen[to]=o.x.l;jobs.push({from:o.x.l,to});}
+ if(bad.length){T('⚠️ '+bad.length+' 行目标格有问题（红框标出：格式不符/目标重复）——改正后再提交：'+bad.slice(0,3).join('；'),1);return}
+ if(!confirm('确认为 '+jobs.length+' 框发起 AGV 移库？\n每框一条搬运任务（货架→地面格，起终点固定不改派）。\n框到地面后：人工入格 + 「位置登记」收账。'))return;
+ _pjm.busy=true;let okN=0;const fails=[];
+ for(let k=0;k<jobs.length;k++){
+  const h=$('#pjmHint');if(h)h.textContent='发起中 '+(k+1)+'/'+jobs.length+' …';
+  try{const r=await api('/api/agv/transfer',{method:'POST',body:{from:jobs[k].from,to:jobs[k].to,kind:'toGround'}});if(r.ok)okN++;else fails.push(jobs[k].from+'：'+(r.msg||'失败'))}catch(_){fails.push(jobs[k].from+'：请求异常')}}
+ _pjm.busy=false;pjmvFill();
+ T((okN?'✅ 已发起 ':'❌ ')+okN+'/'+jobs.length+' 框移库'+(fails.length?('｜失败 '+fails.length+'：'+fails.slice(0,3).join('、')+(fails.length>3?' 等':'')):''),okN?0:1);}
 var _cyD=null;
 async function ctCycle(){const b=$('#ctbody');try{const d=await api('/api/cycle?n=20');_cyD=d;
  const done=d.locs.filter(x=>x.v).length,ok=d.locs.filter(x=>x.v&&x.v.r==='ok').length,bad=done-ok;
@@ -1986,7 +2038,7 @@ function drawMap(){const cv=$('#cv');if(!cv||!MAP)return;const dpr=devicePixelRa
  const stColOf=(s)=>({'急停':'#e53935','人工停':'#e53935','被交管':'#ff6d00','离线':'#90a4ae','告警':'#ad1457','待命/充电':'#26a69a','充电':'#f9a825','充满':'#f9a825','执行中':'#1e88e5','暂停':'#8e24aa','故障':'#d81b60','空闲':'#43a047'}[s]||'#43a047');
  const rrd=(x,y,w,h,r)=>{g.beginPath();g.moveTo(x+r,y);g.arcTo(x+w,y,x+w,y+h,r);g.arcTo(x+w,y+h,x,y+h,r);g.arcTo(x,y+h,x,y,r);g.arcTo(x,y,x+w,y,r);g.closePath()};
  const lbls=[];
- for(const c of(MAP.cars||[])){if(!Number.isFinite(c.x))continue;const p=w2c(c.x,c.y);g.save();g.translate(p[0],p[1]);g.rotate(-(c.yaw||0)*Math.PI/180);{const col=stColOf(carStOf(c));g.fillStyle='#37474f';g.fillRect(-10,-7,13,14);g.strokeStyle='rgba(255,255,255,.6)';g.lineWidth=1;g.strokeRect(-10,-7,13,14);g.fillStyle=col;g.beginPath();g.moveTo(11,0);g.lineTo(3,6);g.lineTo(3,-6);g.closePath();g.fill();g.strokeStyle=col;g.lineWidth=1.8;g.beginPath();g.moveTo(11,-3.5);g.lineTo(17,-3.5);g.moveTo(11,3.5);g.lineTo(17,3.5);g.stroke();}g.restore(); /* ㉖v92d yaw度→弧度(旧漏乘=车头随机朝向根因)；车体=深灰车身+状态色车头箭头+双货叉，指向一眼可辨 */ if(FLASHCAR&&((c.name||('AGV'+c.id))===FLASHCAR||(c.id!=null&&('AGV'+String(c.id).padStart(2,'0'))===FLASHCAR))){g.strokeStyle='#ffd600';g.lineWidth=3;g.beginPath();g.arc(p[0],p[1],14+6*Math.abs(Math.sin(Date.now()/280)),0,7);g.stroke();g.fillStyle='#b28704';g.font='bold 10px sans-serif';g.fillText('🔦 '+FLASHCAR,p[0]-16,p[1]-20);}if(!c.online){g.strokeStyle='#e53935';g.lineWidth=2;g.beginPath();g.arc(p[0],p[1],11,0,7);g.stroke();}g.font='bold 11px sans-serif';const nm=String(c.name||('AGV'+c.id)),st=carStOf(c),col=stColOf(st),w1=g.measureText(nm).width+10,w2=g.measureText(st).width+12,lx=p[0]+13,ly0=p[1]-8;
+ for(const c of(MAP.cars||[])){if(!Number.isFinite(c.x))continue;const p=w2c(c.x,c.y);g.save();g.translate(p[0],p[1]);g.rotate(-(c.yaw||0)*Math.PI/180+(MAP.yawOfs||0)); /* ㉖v191 航向(度→弧)+下发偏移(默认180°)：车头对齐RCS官方图约定(现场实锤反向)。★本行为单行巨链风格，注释必须用块注释——行注释//会把行尾全部代码吞掉(11-16 ly0未定义地图白挂事故根因) */{const col=stColOf(carStOf(c));g.fillStyle='#37474f';g.fillRect(-10,-7,13,14);g.strokeStyle='rgba(255,255,255,.6)';g.lineWidth=1;g.strokeRect(-10,-7,13,14);g.fillStyle=col;g.beginPath();g.moveTo(11,0);g.lineTo(3,6);g.lineTo(3,-6);g.closePath();g.fill();g.strokeStyle=col;g.lineWidth=1.8;g.beginPath();g.moveTo(11,-3.5);g.lineTo(17,-3.5);g.moveTo(11,3.5);g.lineTo(17,3.5);g.stroke();}g.restore(); /* ㉖v92d yaw度→弧度(旧漏乘=车头随机朝向根因)；车体=深灰车身+状态色车头箭头+双货叉，指向一眼可辨 */ if(FLASHCAR&&((c.name||('AGV'+c.id))===FLASHCAR||(c.id!=null&&('AGV'+String(c.id).padStart(2,'0'))===FLASHCAR))){g.strokeStyle='#ffd600';g.lineWidth=3;g.beginPath();g.arc(p[0],p[1],14+6*Math.abs(Math.sin(Date.now()/280)),0,7);g.stroke();g.fillStyle='#b28704';g.font='bold 10px sans-serif';g.fillText('🔦 '+FLASHCAR,p[0]-16,p[1]-20);}if(!c.online){g.strokeStyle='#e53935';g.lineWidth=2;g.beginPath();g.arc(p[0],p[1],11,0,7);g.stroke();}g.font='bold 11px sans-serif';const nm=String(c.name||('AGV'+c.id)),st=carStOf(c),col=stColOf(st),w1=g.measureText(nm).width+10,w2=g.measureText(st).width+12,lx=p[0]+13,ly0=p[1]-8;
  let ly=ly0;for(let t=0;t<24;t++){let hit=false;for(const q of lbls){if(lx<q[0]+q[1]+4&&lx+w1+w2+4>q[0]&&ly<q[2]+16&&ly+15>q[2]){hit=true;ly=q[2]+17;break}}if(!hit)break}
  lbls.push([lx,w1+w2+4,ly]);
  rrd(lx,ly,w1,15,4);g.fillStyle='#eef1f6';g.fill();g.strokeStyle='#9fb0c3';g.lineWidth=1;g.stroke();g.fillStyle='#22303f';g.fillText(nm,lx+5,ly+11);

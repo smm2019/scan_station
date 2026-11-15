@@ -467,8 +467,15 @@ Future<Map<String, dynamic>> buildPickPlan(String raw) async {
   final warn = <String>[];
   if (toks.isEmpty) return {'codes': <String>[], 'warn': ['未输入任何零件号/货位/标签号']};
   // 与服务器账本对齐后再取清单：点名盘的意义=核对"账上该在的"，基准必须是全厂最新
-  await ledgerPullMerge(force: true);
+  final pr = await ledgerPullMerge(force: true);
+  // ㉖v194 展开清单同口径落后校验（11-15 双设备"20 vs 32 框"两个答案实锤：应扫清单从本机
+  //   缓存展开，缓存缺行=清单缺框且全程无提示）。账本快照 v98 早有同款警告，点名清单补齐：
+  //   拉取成功时 pr.total=服务器行数，本机 shelfPlacements 行数落后 → 清单头红字点名，当场自知
+  final _svrRows = pr["ok"] == true ? ((pr["total"] as num?)?.toInt() ?? -1) : -1;
   final sp = await _globalIsar.shelfPlacements.where().findAll();
+  if (_svrRows > 0 && sp.length < _svrRows) {
+    warn.add('⚠️ 本机账本 ${sp.length} 行 < 服务器 $_svrRows 行（落后 ${_svrRows - sp.length} 行）——本清单可能缺框！请到「位置登记/库存页」拉取对齐后重新展开；持续落后=本机账本同步异常，报管理员');
+  }
   final spByCode = <String, ShelfPlacement>{};
   for (final p in sp) {
     spByCode[p.goodsCode.trim().toUpperCase()] = p;
@@ -1229,7 +1236,7 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                         Text("盘点范围：${_scope.isEmpty ? "全盘" : _scopeType == 'shelf' ? "循环盘 · ${_scope.length} 个格位（${_scope.map(invShelfOf).toSet().join("、")}）" : "循环盘 · ${_scope.join("、")}"}"),
                         const SizedBox(height: 6),
                         if (_scopeType == 'shelf' && _scope.isNotEmpty) ...[
-                          const Text("创建时自动展开应扫清单 → 任务卡「AGV搬运」逐框发起：AGV 取框到站台 → 到台扫码核对 → 钉死归位；核对相符自动算已盘到。", style: TextStyle(fontSize: 12, color: Color(0xFF3949AB))),
+                          const Text("创建时自动展开应扫清单 → 创建后进盘点页，点顶部横幅右侧 🚚 图标一键发起 AGV 搬运（进度与发车/核对/归位全在页内「AGV 工作台」，不用去别的界面）；AGV 取框到站台 → 到台扫码核对 → 钉死归位，核对相符自动算已盘到。", style: TextStyle(fontSize: 12, color: Color(0xFF3949AB))),
                           const SizedBox(height: 6),
                         ],
                       ],
@@ -1330,18 +1337,210 @@ class _InvScanPageState extends State<_InvScanPage> {
   final List<InventoryScan> _recent = [];
   InvJudge? _lastJudge;
   String _lastCode = "";
+  // ㉖v193 AGV 货架盘点作业页整合：进度与操作不再跳"盲区抽盘"看板，全部留在本页工作台。
+  //   _agvQ=本任务已发起工单（应扫码→最新一单）；8 秒轮询刷新；扫码提交联动 countScan 一次扫码双闭环。
+  final Map<String, Map> _agvQ = {};
+  bool _agvOpen = false; // 工作台进度带展开态
+  Timer? _agvTimer;
+  int _lastMesQty = -1; // ㉖v193 本次扫码 MES 反查件数（-1=未知，防旧版 -1 传给服务器致"未传"误判数量不符——countScan 语义：不传=仅核标签）
 
   @override
   void initState() {
     super.initState();
     _loadRecent();
+    if (widget.task.invPickMode == 1 && widget.task.invPickShelf.isNotEmpty) {
+      _refreshAgv();
+      _agvTimer = Timer.periodic(const Duration(seconds: 8), (_) => _refreshAgv()); // 页面活跃期轮询（离页即停）
+    }
   }
 
   @override
   void dispose() {
+    _agvTimer?.cancel(); // ㉖v193 轮询随页面销毁，防泄漏
     _codeCtrl.dispose();
     _codeFocus.dispose();
     super.dispose();
+  }
+
+  /// ㉖v193 拉本任务 AGV 工单进度（同码多单取最新）；失败静默保上次数据（网络抖动不清屏）
+  Future<void> _refreshAgv() async {
+    try {
+      final cr = await AuthApi.countList(all: true);
+      if (!mounted) return;
+      final nxt = <String, Map>{};
+      for (final q in ((cr["list"] as List?) ?? const [])) {
+        final m = q as Map;
+        if ((m["pickBatch"] ?? "").toString() != widget.task.batchId) continue;
+        final cd = (m["code"] ?? "").toString().trim().toUpperCase();
+        final prev = nxt[cd];
+        if (prev == null || (num.tryParse('${m["at"]}') ?? 0) > (num.tryParse('${prev["at"]}') ?? 0)) nxt[cd] = m;
+      }
+      setState(() { _agvQ..clear()..addAll(nxt); });
+    } catch (_) {}
+  }
+
+  /// ㉖v193 一次扫码双闭环：本地盘点入账后，该框若有【已到台】的本任务 AGV 工单，自动代仓管核对
+  /// （mesQty=本次 MES 反查件数；反查失败按"仅核标签"口径不传）。不符红条提示不弹窗——
+  /// 本地记录已入账、工单不符由 mismatch 徽标与结束回流承接，弹窗只会被无脑划走反失严肃。
+  Future<void> _agvAutoScan(String code) async {
+    final q = _agvQ[code.trim().toUpperCase()];
+    if (q == null || (q["state"] ?? "").toString() != 'atStation') return;
+    try {
+      final r = await AuthApi.countScan(q["id"].toString(), code.trim(), mesQty: _lastMesQty);
+      if (!mounted) return;
+      if (r["ok"] == true) {
+        _agvSnack(r["match"] == true ? '🤖 框已到台：本次扫码已同步核对 AGV 工单（免二次扫）' : '⚠ AGV 工单核对不符：${r["msg"]}', err: r["match"] != true);
+        _refreshAgv();
+      }
+    } catch (_) {} // 联动失败不影响本地入账（工作台仍可手动核对兜底）
+  }
+
+  /// ㉖v193 AGV 工作台卡片：头部批次汇总+展开逐框行（排序=要办的在前；行内按状态给主操作：发车/核对/归位）
+  Widget _agvWorkCard() {
+    final shelf = widget.task.invPickShelf.map((e) => e.trim().toUpperCase()).toSet();
+    final started = _agvQ.length;
+    int okN = 0, actN = 0;
+    for (final q in _agvQ.values) {
+      final st = (q["state"] ?? "").toString();
+      if (st == 'done') okN++;
+      if (st == 'mismatch' || st == 'atStation' || st == 'pending') actN++;
+    }
+    final rows = _agvQ.values.toList()
+      ..sort((a, b) {
+        final r = _agvRank((a["state"] ?? "").toString()).compareTo(_agvRank((b["state"] ?? "").toString()));
+        return r != 0 ? r : '${a["code"]}'.compareTo('${b["code"]}');
+      });
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+      decoration: BoxDecoration(color: const Color(0xFFF3F4FB), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFF515BD4))),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => setState(() => _agvOpen = !_agvOpen),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.local_shipping, size: 18, color: Color(0xFF3949AB)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(started == 0
+                        ? 'AGV 工作台：${shelf.length} 框待发起（点右上 🚚 一键发起）'
+                        : 'AGV 工作台：已核对 $okN/${shelf.length} 框${actN > 0 ? " · $actN 框待处理" : ""}${started < shelf.length ? "｜${shelf.length - started} 框未发起" : ""}',
+                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: Color(0xFF303F9F))),
+                  ),
+                  if (started > 0 && actN > 0)
+                    TextButton(
+                      onPressed: () async {
+                        final r = await AuthApi.countDeploy(sid: widget.task.batchId); // 批量发车：本任务全部待发车一次下发
+                        _agvSnack('批量发车：${r["msg"] ?? (r["ok"] == true ? "已下发" : "失败")}', err: r["ok"] != true);
+                        if (mounted) _refreshAgv();
+                      },
+                      child: const Text("一键发车", style: TextStyle(fontSize: 12)),
+                    ),
+                  Icon(_agvOpen ? Icons.expand_less : Icons.expand_more, size: 20, color: const Color(0xFF3949AB)),
+                ],
+              ),
+            ),
+          ),
+          if (_agvOpen)
+            if (rows.isEmpty)
+              const Padding(padding: EdgeInsets.only(bottom: 8), child: Text("尚未发起：点上方 🚚 图标一键发起拉架", style: TextStyle(fontSize: 11.5, color: Colors.blueGrey)))
+            else
+              Column(children: rows.map((q) {
+                final st = (q["state"] ?? "").toString();
+                final b = _agvBadge(q);
+                final id = q["id"].toString();
+                Widget? btn;
+                if (st == 'pending') btn = _agvMiniBtn('发车', () { _agvAct('发车', (i) => AuthApi.countDeploy(id: i), id); });
+                if (st == 'atStation') btn = _agvMiniBtn('核对', () { _agvCheckOne(q); });
+                if (st == 'scanned') btn = _agvMiniBtn('归位', () { _agvAct('归位', (i) => AuthApi.countReturn(i), id); });
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  child: Row(
+                    children: [
+                      SizedBox(width: 116, child: Text('${q["code"]}', style: const TextStyle(fontSize: 12, fontFamily: "monospace"))),
+                      Expanded(child: Text(b.$1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11.5, color: b.$2, fontWeight: FontWeight.w600))),
+                      btn ?? const SizedBox.shrink(),
+                      IconButton(tooltip: "取消工单", visualDensity: VisualDensity.compact, iconSize: 16, onPressed: () => _agvCancelOne(q), icon: const Icon(Icons.close, color: Colors.grey)),
+                    ],
+                  ),
+                );
+              }).toList()),
+        ],
+      ),
+    );
+  }
+
+  Widget _agvMiniBtn(String t, VoidCallback fn) => FilledButton(
+        onPressed: fn,
+        style: FilledButton.styleFrom(backgroundColor: const Color(0xFF515BD4), foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), minimumSize: const Size(0, 30)),
+        child: Text(t, style: const TextStyle(fontSize: 12)),
+      );
+
+  /// 工作台短提示（联动/动作共用，成功绿失败红）
+  void _agvSnack(String m, {bool err = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m), backgroundColor: err ? Colors.red : const Color(0xFF2E7D32), duration: const Duration(seconds: 4)));
+  }
+
+  /// 逐框手动核对：先 MES 反查实数再 countScan（与盲区看板 _scan 同口径：反查失败 mesQty=-1 不传，服务器按"仅核标签"）
+  Future<void> _agvCheckOne(Map q) async {
+    final mr = await mesQueryLabel(q["code"].toString());
+    final mq = mr["ok"] == true ? ((mr["qty"] as num?)?.toInt() ?? -1) : -1;
+    final r = await AuthApi.countScan(q["id"].toString(), q["code"].toString(), mesQty: mq);
+    _agvSnack('${r["msg"] ?? "已核对"}', err: r["ok"] != true);
+    if (mounted) _refreshAgv();
+  }
+
+  /// 工作台统一动作（发车/归位/取消）：结果短提示 + 立即刷新进度
+  Future<void> _agvAct(String label, Future<Map> Function(String id) fn, String id) async {
+    try {
+      final r = await fn(id);
+      _agvSnack('$label：${r["msg"] ?? (r["ok"] == true ? "已执行" : "失败")}');
+      if (mounted) _refreshAgv();
+    } catch (e) { _agvSnack('$label失败：$e', err: true); }
+  }
+
+  /// 工单取消（复用盲区通道取消语义：已下发先撤 WMAS 任务，防"强撤后框被送到无人认领"）
+  Future<void> _agvCancelOne(Map q) async {
+    final reason = await showDialog<String>(
+        context: context,
+        builder: (dc) => AlertDialog(
+              title: Text("取消工单 ${q["code"]}"),
+              content: const Text("取消后该框 AGV 不再搬运（已下发的搬运任务会先向 AGV 系统撤销）。常用场景：工单取消了要重新发起。"),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(dc), child: const Text("不取消")),
+                FilledButton(onPressed: () => Navigator.pop(dc, '盘点页人工取消'), child: const Text("确认取消")),
+              ],
+            ));
+    if (reason == null) return;
+    await _agvAct('取消工单', (id) => AuthApi.countCancel(id, reason), q["id"].toString());
+  }
+
+  /// 工单行动优先级（进度带排序：人要处理的在前）
+  static int _agvRank(String st) => switch (st) {
+        'mismatch' => 0, 'atStation' => 1, 'pending' => 2, 'outQueued' => 3, 'outCalled' => 3, 'dispensed' => 3,
+        'scanned' => 4, 'returning' => 5, 'stuck' => 5, 'done' => 6, 'canceled' => 7, _ => 8,
+      };
+  static (String, Color) _agvBadge(Map q) {
+    final st = (q["state"] ?? "").toString();
+    final df = q["diff"] is Map ? q["diff"] as Map : null;
+    if (st == 'mismatch' || (st == 'scanned' && df != null)) {
+      // df 可空：先安全提取再拼文案（旧写法内插里 df["x"] 直取下标编译不过）
+      final kind = df?["kind"]?.toString() ?? '';
+      return ('🔴核对不符${kind == "qty" ? " 账${df?["expect"] ?? "?"}/实${df?["actual"] ?? "?"}" : (df == null ? "（看工单详情）" : " 站台实扫 ${df["scanned"]}")}', Colors.red);
+    }
+    return switch (st) {
+      'atStation' => ('🟠在台待扫', const Color(0xFFE65100)),
+      'pending' => ('⚪待发车', Colors.blueGrey),
+      'outQueued' || 'outCalled' || 'dispensed' => ('🔵取框在途', const Color(0xFF1565C0)),
+      'scanned' => ('🟢已核对 待归位', const Color(0xFF2E7D32)),
+      'returning' || 'stuck' => ('🟢归位中', const Color(0xFF2E7D32)),
+      'done' => ('✅已归位', const Color(0xFF2E7D32)),
+      'canceled' => ('灰 工单已取消', Colors.grey),
+      _ => (st, Colors.grey),
+    };
   }
 
   Future<List<String>> _locOptions() async {
@@ -1485,6 +1684,7 @@ class _InvScanPageState extends State<_InvScanPage> {
           rec.itemName = mes["itemName"];
           rec.lotNo = mes["lotNo"];
           rec.qty = mes["qty"];
+          _lastMesQty = (mes["qty"] as num?)?.toInt() ?? -1; // ㉖v193 暂存MES实数：入账成功后联动AGV工单核对用（-1=反查失败，联动时按"仅核标签"传）
           // ㉖v97 串位防错闸：单货位模式下核对该标签货位账本登记位，与当前绑定位不符→现场三选一确认
           //（修"在 -03 扫了 -05 的标签整框记到 -03，造成一边假盈一边假亏"）
           if (_curLoc.isNotEmpty) {
@@ -1639,9 +1839,11 @@ class _InvScanPageState extends State<_InvScanPage> {
         _codeCtrl.clear();
       });
       if (judge.level == "red" || judge.level == "purple") _offerEvidence(code, rec, judge.msg); // ④异常拍照留证
+      unawaited(_agvAutoScan(code)); // ㉖v193 一次扫码双闭环：该框若已到台，本地入账后自动替仓管核对该 AGV 工单（不等他再点一次）
       _codeFocus.requestFocus();
     } finally {
       _busy = false;
+      _lastMesQty = -1; // ㉖v193 防上一次的 MES 数串到下一次扫码（扫码中途 return 的分支也经 finally 复位）
     }
   }
 
@@ -1740,8 +1942,8 @@ class _InvScanPageState extends State<_InvScanPage> {
       } else {
         msg = "发起失败：$netErr";
       }
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg), backgroundColor: okN > 0 ? const Color(0xFF2E7D32) : Colors.orange, duration: const Duration(seconds: 6)));
-      if (okN > 0 && mounted) await Navigator.push(context, MaterialPageRoute(builder: (_) => const ShelfCountPage())); // 跳工单看板跟进发车/核对/归位
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg + (okN > 0 ? "\n下方工作台可逐框跟进：发车→核对→归位" : "")), backgroundColor: okN > 0 ? const Color(0xFF2E7D32) : Colors.orange, duration: const Duration(seconds: 6)));
+      if (okN > 0) { _agvOpen = true; await _refreshAgv(); } // ㉖v193 留本页：发起即展开工作台并刷新进度（旧版跳 ShelfCountPage 盲区看板）
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("AGV 搬运发起异常：$e"), backgroundColor: Colors.red));
     } finally {
@@ -1811,6 +2013,7 @@ class _InvScanPageState extends State<_InvScanPage> {
       }
       missJson = jsonEncode(rows);
     }
+    final notDepN = task.invPickMode == 1 ? task.invPickShelf.length - _agvQ.keys.map((e) => e.trim().toUpperCase()).toSet().intersection(task.invPickShelf.map((e) => e.trim().toUpperCase()).toSet()).length : 0; // ㉖v193 从未发起AGV搬运的货架框数
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -1821,7 +2024,8 @@ class _InvScanPageState extends State<_InvScanPage> {
                 "· 仍在架未扫到：$missN 框 ${missN > 0 ? "（需现场复核：缺失/串位/架还没拉过来）" : ""}\n"
                 "· 已出库或已消账：$goneN 框（盘点期间正常流转，不算缺失）"
                 "${agvBadN > 0 ? "\n· ⚠ AGV 核对不符：$agvBadN 框（请看清单备注，人工处理后方可结案）" : ""}"
-                "${missN == 0 && goneN == 0 && agvBadN == 0 ? "\n全部盘到 ✅" : ""}\n\n结束后进入差异报表，之后不可再扫描。确认结束？"
+                "${notDepN > 0 ? "\n· ⚠️ 从未发起 AGV 搬运：$notDepN 框（还没拉下来核对过！回工作台发起再盘，或结束后现场人工复核）" : ""}"
+                "${missN == 0 && goneN == 0 && agvBadN == 0 && notDepN == 0 ? "\n全部盘到 ✅" : ""}\n\n结束后进入差异报表，之后不可再扫描。确认结束？"
             : "结束后进入差异报表，之后不可再扫描。确认结束？"),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("继续盘点")),
@@ -1894,6 +2098,8 @@ class _InvScanPageState extends State<_InvScanPage> {
               ],
             ),
           ),
+          // ㉖v193 AGV 货架盘点工作台：进度+逐框发车/核对/归位全在本页，不再跳盲区看板
+          if (widget.task.invPickMode == 1 && widget.task.invPickShelf.isNotEmpty) _agvWorkCard(),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             child: Row(

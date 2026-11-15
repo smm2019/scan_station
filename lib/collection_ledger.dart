@@ -1499,12 +1499,29 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
     final tombAdds = <String, int>{};
     final pidPatches = <String, String>{}; // ㉖v99 跳过行的托号补写集（码→托号）
     final now = DateTime.now().millisecondsSinceEpoch;
+    // ㉖v195 僵尸墓碑自愈：墓碑挡住拉入 + 服务器账本【已有该码在架行】(t>0) + 墓碑超10分钟宽限
+    // → 判僵尸撤碑复活。动因（11-15 现场实锤）：v173c 并发竞态把在架行误删并落碑后，该设备拉取、
+    //   重启、重装全救不回——墓碑台账存 SharedPreferences 随重装保留，epoch 未变不清缓存，"拉取+重启
+    //   都没用"即此病灶（僵尸碑永久挡行=各设备在架数不一致/点名清单缺框的又一根源）。
+    //   安全性：真删除的墓碑要等服务器账本重出现该码在架行才会被判僵尸（删了又正常重登=本就该复活），
+    //   且 10 分钟宽限期覆盖"删除尚未推上服务器"的断网重推窗口，不会截断正常删除上报。
+    final _srvByCode = {for (final x in items) (x["c"] ?? "").toString().trim().toUpperCase(): x};
+    final tombZombie = <String>{};
+    tombMap.forEach((c, tv) {
+      final sx = _srvByCode[c];
+      final st = sx == null ? 0 : ((sx["t"] as num?)?.toInt() ?? 0);
+      if (st > 0 && tv < now - 600000) { tombZombie.add(c); }
+    });
     for (final x in items) {
       final c = (x["c"] ?? "").toString().trim().toUpperCase();
       final l = (x["l"] ?? "").toString().trim().toUpperCase();
       if (c.isEmpty || l.isEmpty) continue;
       final t = (x["t"] as num?)?.toInt() ?? 0;
-      if ((tombMap[c] ?? 0) >= t && t > 0) continue; // 本机已删除且更新 → 不复活
+      if ((tombMap[c] ?? 0) >= t && t > 0) {
+        if (!tombZombie.contains(c)) continue; // 本机已删除且更新 → 不复活
+        final _bt = DateTime.fromMillisecondsSinceEpoch(tombMap[c] ?? 0);
+        LocalLog.op('账本墓碑自愈', '僵尸墓碑撤除复活：$c（本机碑 ${_bt.month}/${_bt.day} ${_bt.hour}:${_bt.minute.toString().padLeft(2, "0")}，服务器在架行更新且已超10分钟宽限）'); // 复活放行（碑随本轮写回撤销）
+      }
       final me = localMap[c];
       if (me != null && me.assignedAt >= t) {
         // ㉖v99 托号自愈：行未变化走跳过分支，但旧版缓存的 LabelInfo 没有托号——服务器有而本机无则补写，
@@ -1577,9 +1594,16 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
         }
       }
     });
-    if (tombAdds.isNotEmpty) {
+    if (tombAdds.isNotEmpty || tombZombie.isNotEmpty) {
       final m = await _loadTombs();
       m.addAll(tombAdds);
+      // ㉖v195 僵尸墓碑撤销落账：仅撤本轮判定的码；本轮又落了更新墓碑（真删除重报）的保留新碑。
+      // 服务器该码若恰在写库前又被别台删除，墓碑会在下次拉取的"服务器墓碑比本机新"分支重新落下，
+      // 自愈不会把真删除的碑永久抹掉
+      for (final c in tombZombie) {
+        if (tombAdds.containsKey(c)) continue; // 本轮又落了新碑（真删除）→ 保留
+        m.remove(c);
+      }
       await _saveTombs(m);
     }
     unawaited(pullGroundSlots()); // ⑮顺带刷新地面排格数
