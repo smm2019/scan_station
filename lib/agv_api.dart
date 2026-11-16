@@ -2564,6 +2564,20 @@ Future<void> showTransferDialog(BuildContext context,
   List<Map> stnList = [];
   bool stnLoading = false;
   String stnErr = "";
+  List<String> pickedBoxes = []; // ㉖v199 弹窗→外层带出的勾选框列表（起点框留空时批量下发）
+  // ㉖v199 选框（用户实需：弹窗里没有零件号输入处、没有项目批量下拉）：
+  // 零件/标签模糊查 或 项目批量下拉 → 结果列表勾选 → 起点自动回填/多框批量下发。
+  // 行判据与网页 pjmvFill 逐字同口径（项目→零件号集 + /^NB02-/ + 排 -CK-|-RK- 台挂行）。
+  final qC = TextEditingController();
+  final projCodes = <Map>[]; // [{code,nm}]
+  Map<String, List> projMap = {}; // 零件→项目码列表
+  bool projLoaded = false;
+  String projErr = "";
+  String projSel = "";
+  List<Map> rows = []; // [{l,pn,nm,codes:[..]}]
+  final sel = <String>{}; // 勾选的货架格位集合（默认全选）
+  bool rowsLoading = false;
+  String rowsErr = "";
   InputDecoration di(String hint) => InputDecoration(
       isDense: true, border: const OutlineInputBorder(), hintText: hint);
   final choice = await showDialog<String>(
@@ -2585,6 +2599,97 @@ Future<void> showTransferDialog(BuildContext context,
               });
             }
 
+            // 项目字典（码表+映射）：首次展开批量下拉时懒加载，失败可重试（网页 pjLoad 同款）
+            Future<void> loadProj() async {
+              setDlg(() {
+                projErr = "";
+              });
+              final r = await AuthApi.projDict();
+              setDlg(() {
+                if (r["ok"] == true) {
+                  projLoaded = true;
+                  projCodes
+                    ..clear()
+                    ..addAll(((r["list"] as List?) ?? []).whereType<Map>());
+                  projMap = ((r["map"] as Map?) ?? {}).map(
+                      (k, v) => MapEntry(k.toString(), (v as List?) ?? []));
+                  if (projCodes.isEmpty) projErr = "项目字典为空（先到网页「项目映射」维护）";
+                } else {
+                  projErr = r["msg"]?.toString() ?? "项目字典拉取失败";
+                }
+              });
+            }
+
+            // 选框查询：项目码→零件号集→账本在架货架行（判据与网页 pjmvFill 逐字一致）
+            Future<void> doSearch(String mode) async {
+              if (mode == "q" && qC.text.trim().isEmpty && projSel.isEmpty) {
+                setDlg(() {
+                  rowsErr = "输入零件号/标签查询，或用上方项目批量下拉";
+                  rows = [];
+                });
+                return;
+              }
+              setDlg(() {
+                rowsLoading = true;
+                rowsErr = "";
+                rows = [];
+                sel.clear();
+              });
+              List items = [];
+              try {
+                final r = mode == "proj"
+                    ? await AuthApi.ledgerGet()
+                    : await AuthApi.ledgerFuzzy(qC.text.trim());
+                items = (r["items"] as List?) ?? [];
+              } catch (_) {
+                setDlg(() {
+                  rowsLoading = false;
+                  rowsErr = "账本拉取失败（服务器不通？）";
+                });
+                return;
+              }
+              Set<String>? pns;
+              if (mode == "proj") {
+                pns = {};
+                for (final e in projMap.entries) {
+                  if (e.value
+                      .map((c) => c.toString().toUpperCase())
+                      .contains(projSel)) pns.add(e.key.toUpperCase());
+                }
+              }
+              final bx = <String, Map>{};
+              for (final it in items.whereType<Map>()) {
+                final pn = (it["p"] ?? "").toString().toUpperCase();
+                final l = (it["l"] ?? "").toString().toUpperCase();
+                if (!l.startsWith("NB02-") ||
+                    l.contains("-CK-") ||
+                    l.contains("-RK-"))
+                  continue; // 在架AGV货架框才有拉下架意义（台挂=待搬、地面/来料=AGV通道不适用）
+                if (pns != null && !pns.contains(pn)) continue;
+                final b = bx.putIfAbsent(
+                    l,
+                    () => {
+                          "l": l,
+                          "pn": pn,
+                          "nm": (it["n"] ?? "").toString(),
+                          "codes": <String>[]
+                        });
+                (b["codes"] as List)
+                    .add((it["c"] ?? "").toString().toUpperCase());
+              }
+              rows = bx.values.toList()
+                ..sort((a, b) => a["l"].compareTo(b["l"]));
+              sel.addAll(rows.map((x) => x["l"] as String)); // 默认全选（网页同款）
+              setDlg(() {
+                rowsLoading = false;
+                rowsErr = rows.isEmpty
+                    ? (mode == "proj"
+                        ? "该项目当前没有在架货架框（都在地面/来料区或已出库）"
+                        : "没有匹配「${qC.text.trim()}」的在架货架框")
+                    : "";
+              });
+            }
+
             return AlertDialog(
               title: const Text("🔄 货架移库 / 拉下架"),
               content: SingleChildScrollView(
@@ -2592,7 +2697,198 @@ Future<void> showTransferDialog(BuildContext context,
                 TextField(
                     controller: fromC,
                     textCapitalization: TextCapitalization.characters,
-                    decoration: di("起点货架格（如 NB02-A-08-2F）")),
+                    decoration: di("起点货架格（可留空，用下方选框代替）")),
+                const SizedBox(height: 8),
+                // —— ㉖v199 选框区：零件/标签模糊 或 项目批量（用户点名缺的两样）——
+                Row(children: [
+                  Expanded(
+                    child: TextField(
+                        controller: qC,
+                        textCapitalization: TextCapitalization.characters,
+                        onSubmitted: (_) => doSearch("q"),
+                        decoration: di("🔍 零件号/标签模糊查（回车）")),
+                  ),
+                  const SizedBox(width: 6),
+                  ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                          visualDensity: VisualDensity.compact),
+                      onPressed: rowsLoading
+                          ? null
+                          : () => doSearch(
+                              qC.text.trim().isEmpty && projSel.isNotEmpty
+                                  ? "proj"
+                                  : "q"),
+                      child:
+                          const Text("查询", style: TextStyle(fontSize: 12.5))),
+                ]),
+                const SizedBox(height: 6),
+                // 项目批量下拉（懒加载字典；选中即出该项目全部在架框列表）
+                InkWell(
+                  onTap: () async {
+                    if (!projLoaded && projErr.isEmpty) await loadProj();
+                    if (!context.mounted) return;
+                    final pick = await showModalBottomSheet<String>(
+                        context: context,
+                        isScrollControlled: true,
+                        builder: (bc) => SafeArea(
+                            child: SizedBox(
+                                height: 340,
+                                child: projErr.isNotEmpty
+                                    ? Center(
+                                        child: Column(
+                                            mainAxisAlignment:
+                                                MainAxisAlignment.center,
+                                            children: [
+                                            Text(projErr,
+                                                style: const TextStyle(
+                                                    fontSize: 12,
+                                                    color: Colors.orange)),
+                                            TextButton(
+                                                onPressed: () =>
+                                                    Navigator.pop(bc),
+                                                child: const Text("关闭")),
+                                          ]))
+                                    : Column(children: [
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                              vertical: 8),
+                                          child: Text("按项目批量选框",
+                                              style: const TextStyle(
+                                                  fontWeight: FontWeight.bold)),
+                                        ),
+                                        Expanded(
+                                            child: ListView(
+                                                shrinkWrap: true,
+                                                children: [
+                                              for (final p in projCodes)
+                                                ListTile(
+                                                  dense: true,
+                                                  leading: const Icon(
+                                                      Icons
+                                                          .folder_copy_outlined,
+                                                      size: 18),
+                                                  title: Text(
+                                                      "${p["code"]}${(p["nm"] ?? "").toString().isNotEmpty ? " · ${p["nm"]}" : ""}",
+                                                      style: const TextStyle(
+                                                          fontSize: 13.5)),
+                                                  onTap: () => Navigator.pop(
+                                                      bc, p["code"].toString()),
+                                                ),
+                                            ])),
+                                      ]))));
+                    if (pick != null && pick.isNotEmpty) {
+                      setDlg(() => projSel = pick);
+                      await doSearch("proj");
+                    }
+                  },
+                  child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 9),
+                      decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade400),
+                          borderRadius: BorderRadius.circular(6)),
+                      child: Row(children: [
+                        const Icon(Icons.folder_copy_outlined,
+                            size: 16, color: Colors.blueGrey),
+                        const SizedBox(width: 6),
+                        Expanded(
+                            child: Text(
+                                projSel.isEmpty
+                                    ? "项目批量下拉：选项目码 → 该项目全部在架框"
+                                    : "项目：$projSel（重选可换）",
+                                style: TextStyle(
+                                    fontSize: 12.5,
+                                    color: projSel.isEmpty
+                                        ? Colors.grey
+                                        : Colors.black87))),
+                        const Icon(Icons.arrow_drop_down,
+                            size: 20, color: Colors.grey),
+                      ])),
+                ),
+                // 选框结果：勾选=要拉的框（默认全选）。起点框留空时按勾选批量下发；
+                // 起点框填了值则单框模式（勾选区忽略）。
+                if (rowsLoading)
+                  const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: LinearProgressIndicator())
+                else if (rows.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                      constraints: const BoxConstraints(maxHeight: 190),
+                      decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade300),
+                          borderRadius: BorderRadius.circular(6)),
+                      child: Column(children: [
+                        Padding(
+                            padding: const EdgeInsets.fromLTRB(8, 6, 8, 2),
+                            child: Row(children: [
+                              Text(
+                                  "在架 ${rows.length} 框 · 已选 ${sel.length}（台满自动排队接力）",
+                                  style: const TextStyle(
+                                      fontSize: 11.5,
+                                      color: Colors.blueGrey,
+                                      fontWeight: FontWeight.w600)),
+                              const Spacer(),
+                              TextButton(
+                                  style: TextButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: EdgeInsets.zero),
+                                  onPressed: () => setDlg(() {
+                                        if (sel.length == rows.length) {
+                                          sel.clear();
+                                        } else {
+                                          sel.addAll(rows
+                                              .map((x) => x["l"] as String));
+                                        }
+                                      }),
+                                  child: Text(
+                                      sel.length == rows.length ? "全不选" : "全选",
+                                      style: const TextStyle(fontSize: 12))),
+                            ])),
+                        Expanded(
+                            child: ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: rows.length,
+                                itemBuilder: (_, i) {
+                                  final x = rows[i];
+                                  final cs = (x["codes"] as List);
+                                  return CheckboxListTile(
+                                    dense: true,
+                                    visualDensity: VisualDensity.compact,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                        horizontal: 8),
+                                    controlAffinity:
+                                        ListTileControlAffinity.leading,
+                                    value: sel.contains(x["l"]),
+                                    onChanged: (v) => setDlg(() {
+                                      if (v == true) {
+                                        sel.add(x["l"] as String);
+                                      } else {
+                                        sel.remove(x["l"]);
+                                      }
+                                    }),
+                                    title: Text(
+                                        "${x["l"]}　${x["pn"]}${(x["nm"] ?? "").toString().isNotEmpty ? " ${x["nm"]}" : ""}",
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                            fontSize: 12.5,
+                                            fontFamily: "monospace")),
+                                    subtitle: Text(
+                                        "标签 ${cs.take(2).join(' ')}${cs.length > 2 ? ' 等${cs.length}码' : ''}",
+                                        style: const TextStyle(
+                                            fontSize: 10.5,
+                                            color: Colors.grey)),
+                                  );
+                                })),
+                      ])),
+                ] else if (rowsErr.isNotEmpty)
+                  Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(rowsErr,
+                          style: const TextStyle(
+                              fontSize: 11.5, color: Colors.orange))),
                 const SizedBox(height: 10),
                 // —— 终点模式三选（检验下架同款：可自动、可手动、留痕透明）——
                 Row(children: [
@@ -2718,10 +3014,18 @@ Future<void> showTransferDialog(BuildContext context,
                     onPressed: () => Navigator.pop(ctx2),
                     child: const Text("取消")),
                 FilledButton(
-                    onPressed: () => Navigator.pop(
-                        ctx2, dry ? "dry" : "go"), // ㉖v197 goG（终点地面）分支随伪功能移除
-                    child: Text(
-                        toMode == 1 && pickedStn.isEmpty ? "选一个站台" : "下一步")),
+                    onPressed: () {
+                      // 起点框留空=批量模式：把勾选带出去（模式0无需选台；模式1需先点选一台）
+                      pickedBoxes =
+                          fromC.text.trim().isEmpty ? sel.toList() : [];
+                      Navigator.pop(
+                          ctx2, dry ? "dry" : "go"); // ㉖v197 goG（终点地面）分支随伪功能移除
+                    },
+                    child: Text(fromC.text.trim().isEmpty
+                        ? (toMode == 1 && pickedStn.isEmpty
+                            ? "选一个站台"
+                            : (sel.isEmpty ? "勾选要拉的框" : "批量拉 ${sel.length} 框"))
+                        : "下一步")),
               ],
             );
           }));
@@ -2732,10 +3036,79 @@ Future<void> showTransferDialog(BuildContext context,
       : toMode == 1
           ? pickedStn
           : toShelfC.text.trim().toUpperCase();
-  if (from.isEmpty || to.isEmpty) {
+  final batch = from.isEmpty && pickedBoxes.isNotEmpty; // 起点框留空+有勾选=批量
+  if (!batch && (from.isEmpty || to.isEmpty)) {
     if (context.mounted)
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text("❌ 起点货位必填；终点请选台/填格")));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("❌ 起点货位必填（或勾选框走批量）；终点请选台/填格")));
+    return;
+  }
+  if (batch && toMode == 2) {
+    if (context.mounted)
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content:
+              Text("❌ 批量只能拉往 CK 站台（一个货架格放不下多框）——请改「自动分配」或「手动选台」，或填起点走单框移库")));
+    return;
+  }
+  if (batch) {
+    // —— 批量拉下架：逐框下发，服务器并发闸门排队+台满接力（与网页 pjmvSubmit 同语义）——
+    void tb(String m, [bool errN = false]) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(m),
+          backgroundColor: errN ? Colors.red : null,
+          duration: const Duration(seconds: 2)));
+    }
+
+    final toDisp = toMode == 0 ? "自动分配空闲台" : to;
+    final okN = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+                title: const Text("⚠️ 确认批量拉下架",
+                    style: TextStyle(color: Colors.deepOrange)),
+                content: Text("共 ${pickedBoxes.length} 框 → $toDisp\n\n"
+                    "每框一条任务：货架 → CK 站台（${toMode == 0 ? "空闲台自动分配，" : ""}台满自动排队接力：前一框到台被你清走后，调度器自动发下一框）。\n"
+                    "到台后：人工把框转去地面 + 「位置登记」收账，或 AGV 页「人已移走」一键收口。\n\n确认下发？"),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text("取消")),
+                  FilledButton(
+                      style: FilledButton.styleFrom(
+                          backgroundColor: Colors.deepOrange),
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: Text("下发 ${pickedBoxes.length} 框",
+                          style: const TextStyle(color: Colors.white)))
+                ]));
+    if (okN != true || !context.mounted) return;
+    tb("⏳ 批量下发中（0/${pickedBoxes.length}）");
+    int ok = 0, failN = 0;
+    final failMsgs = <String>[];
+    for (int i = 0; i < pickedBoxes.length; i++) {
+      if (!context.mounted) break;
+      final r = await AuthApi.agvTransfer(
+          from: pickedBoxes[i],
+          to: to,
+          kind: "shelf2shelf",
+          palletType: palC.text.trim(),
+          dry: choice == "dry");
+      if (r["ok"] == true) {
+        ok++;
+      } else {
+        failN++;
+        failMsgs.add("${pickedBoxes[i]}：${r["msg"]}");
+      }
+      if (!context.mounted) break;
+      tb("⏳ 批量下发中（${i + 1}/${pickedBoxes.length}）");
+    }
+    if (!context.mounted) return;
+    tb(
+        failN == 0
+            ? "✅ 批量拉下架已下发 $ok 框${choice == "dry" ? "（演算）" : ""}——到台后人工转地面+「位置登记」收账"
+            : "⚠️ 成功 $ok / 失败 $failN：${failMsgs.take(3).join('；')}",
+        failN > 0);
+    LocalLog.op('移库批量', '${choice == "dry" ? "演算" : "下发"} 成$ok 败$failN');
+    if (ok > 0) onDone?.call();
     return;
   }
   final toDisp = to == "AUTO" ? "自动分配空闲台" : to;

@@ -380,6 +380,13 @@ class AuthApi {
   static Future<Map> ledgerGetByCode(String c) async =>
       _req("GET", "/api/ledger?c=" + Uri.encodeComponent(c),
           token: await AuthStore.token());
+  /// ㉖v199 拉下架选框：模糊查（零件号/标签/货位 任一含子串，服务器 fz 参数）
+  static Future<Map> ledgerFuzzy(String fz) async =>
+      _req("GET", "/api/ledger?fz=" + Uri.encodeComponent(fz),
+          token: await AuthStore.token());
+  /// ㉖v199 项目字典（码表 list + 零件→项目映射 map）：拉下架「项目批量」下拉数据源
+  static Future<Map> projDict() async =>
+      _req("GET", "/api/proj", token: await AuthStore.token());
   // ---- 采集流水 / 出库单同步（流水按键增量合并；删批次单独上报） ----
   static Future<Map> scanlogSync(List items) async =>
       _req("POST", "/api/scanlog/sync",
