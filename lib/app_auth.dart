@@ -599,12 +599,14 @@ class AuthApi {
       _req("POST", "/api/count/cancel",
           body: {"id": id, "reason": reason}, token: await AuthStore.token());
   static Future<Map> inspectStart(String from, String note,
-          {String station = ""}) async =>
+          {String station = "", String recheckReason = ""}) async =>
       _req("POST", "/api/inspect/start",
           body: {
             "from": from,
             "note": note,
-            if (station.isNotEmpty) "station": station
+            if (station.isNotEmpty) "station": station,
+            // ㉖v199c 再检原因：框有历史结论时必填，服务器硬闸校验并拼进工单留痕
+            if (recheckReason.isNotEmpty) "recheckReason": recheckReason
           },
           token: await AuthStore.token());
   static Future<Map> sysStatus() async =>

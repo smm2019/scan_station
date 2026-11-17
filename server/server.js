@@ -6354,12 +6354,21 @@ return send(res, 200, {
         const code = String(srcBox.c || '').toUpperCase();
         if ((db.inspects || []).some((q) => (q.from === from || String(q.code).toUpperCase() === code) && ['waitOut','toStation','atStation','waitBack','returning','waitReturn'].includes(q.state))) return send(res, 400, { ok: false, msg: '该货位已有进行中的检验任务' });
         if ((db.agvQueue || []).some((x) => x.type !== 'transfer' && String(x.fromLoc).toUpperCase() === from && ['排队', '下发中', '已下发'].includes(x.state))) return send(res, 400, { ok: false, msg: '该货位已在出库任务中，不能同时检验下架' });
+        // ㉖v199c 闭环最后一块「再检必留因」（与方案一"归位必有结论"配一对）：框有 inspSeen=
+        // 已出过结论（v55 填结论即写，含框内全兄弟码）。旧流程可无声再发单，检验史形同虚设。
+        // 再发必须带原因，服务器拼进工单 note（时间线/卡片可见）+ 活动流单独留痕。
+        const _sbx = inspSibs(code);
+        const _pv = _sbx.map((c2) => (db.inspSeen || {})[c2]).filter(Boolean).sort((a, b2) => (Number(b2.at) || 0) - (Number(a.at) || 0))[0] || null;
+        const _rc = String(b.recheckReason || '').trim().slice(0, 200);
+        if (_pv && !_rc) return send(res, 409, { ok: false, code: 'needRecheck', prev: { v: String(_pv.v || ''), at: Number(_pv.at) || 0, by: String(_pv.by || '') }, msg: '该框已检验过[' + String(_pv.v || '?') + ']，再次检验须填写原因（如：误判改判/新批次到货/上级要求复核）' });
+        const _rcNote = _pv ? ' | 再检原因：' + _rc + '（前检：' + (String(_pv.by || '') || '?') + ' 判' + (String(_pv.v || '') || '?') + '）' : '';
+        if (_pv) pushOps(u, '检验再发单', code, _rc + '（前判' + (String(_pv.v || '') || '?') + '）');
         // ㉖ 指定站台优先：可用性与自动找同一判据；未指定则自动找空闲（CK-01 起顺序找）
         const want = String(b.station || '').trim().toUpperCase(); let to = '';
         if (want) { if (!AGV_STNS.includes(want)) return send(res, 400, { ok: false, msg: '站台编码不在 12 个站台范围（NB02-CK-01~12）' }); if (!inspStationFree(want, Date.now())) return send(res, 400, { ok: false, msg: '站台 ' + want + ' 当前被占用（有货/队列/检验中），请改选或稍后再试' }); to = want; }
         else { for (const st of AGV_STNS) { if (!inspStationFree(st, Date.now())) continue; to = st; break; } }
         if (!to) return send(res, 400, { ok: false, msg: '暂无空闲站台放下架框，请稍后再试' });
-        const rec = { id: newId('insp'), code, from, station: to, palletType: (String(srcBox.f || '').trim() || palletTypeOf(code)).toUpperCase(), part: String(srcBox.p || ''), nm: String(srcBox.n || ''), uid: u.id, by: u.name, note: String(b.note || '').slice(0, 120), state: 'toStation', at: Date.now(), updAt: Date.now(), taskNo: '' };
+        const rec = { id: newId('insp'), code, from, station: to, palletType: (String(srcBox.f || '').trim() || palletTypeOf(code)).toUpperCase(), part: String(srcBox.p || ''), nm: String(srcBox.n || ''), uid: u.id, by: u.name, note: (String(b.note || '').slice(0, 120) + _rcNote), state: 'toStation', at: Date.now(), updAt: Date.now(), taskNo: '' };
         if (!canFeature(u, 'insp_assist')) { // 检验员发单 → 待协助下架，等仓管/管理员点协助
           rec.state = 'waitOut'; db.inspects = db.inspects || []; db.inspects.push(rec); save();
           pushOps(u, '检验发单', code, from + (to ? ' 期望台' + to : ''));
@@ -6402,12 +6411,15 @@ return send(res, 200, {
           db.users.filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin') && canFeature(x, 'insp_assist')).forEach((x) => notify(x.id, 'inspect', '🤝 检验协助请求：' + rec.code + ' 已出结论[' + vd + ']，请协助归位回 ' + rec.from, ''));
           return send(res, 200, { ok: true, rec, wait: true });
         }
+        // ㉖v199c 方案一·归位强制质量结论（11-17 4单实锤：仓管点归位仅填备注"1"即上架，verdict/verdictBy 全空=质量判定被跳过）。
+        // 归位前 rec.verdict 必须已存在；退货走 waitReturn 不经此路。检验员路径在同请求内当场写 verdict，天然满足。
+        if (!rec.verdict) return send(res, 400, { ok: false, msg: '归位前须先有检验结论：请先点「结论/退货」填写判定（通过/不合格/需复检/退货）后再归位——质量判定不可跳过' });
         const item = await inspEnqueue(rec, 'back', u, rec.station, rec.from, 'JCG-' + rec.code);
         if (item.state === '失败') return send(res, 400, { ok: false, msg: '归位任务下发失败：' + item.err });
-        rec.note2 = String(b.note || '').slice(0, 200); rec.state = item.state === '已下发' ? 'returning' : 'waitBack'; rec.taskNo2 = item.wmsTask || ''; rec.retAt = Date.now(); rec.updAt = Date.now();
+        // ㉖v199c 归位不再改写 rec.note2（结论备注由 verdict 接口写入，此处覆盖会清空质量结论留痕）；只推进状态
+        rec.state = item.state === '已下发' ? 'returning' : 'waitBack'; rec.taskNo2 = item.wmsTask || ''; rec.retAt = Date.now(); rec.updAt = Date.now();
         if (item.state === '排队') rec.backQueued = 1; // ㉖ 已入队待发车：催办暂停，队列驱动转 returning
-        save(); pushOps(u, '检验归位', rec.code, '→归位 ' + rec.from + (item.state === '排队' ? '（已入队，空闲自动发车）' : '') + (rec.note2 ? ' 备注:' + rec.note2 : ''));
-        if (rec.note2) { rec.note = (rec.note ? rec.note + ' | ' : '') + '检验备注：' + rec.note2; save(); }
+        save(); pushOps(u, '检验归位', rec.code, '→归位 ' + rec.from + (item.state === '排队' ? '（已入队，空闲自动发车）' : '') + (rec.verdict ? ' 结论:' + rec.verdict : ''));
         return send(res, 200, { ok: true, rec, queued: item.state === '排队' });
       }
       if (req.method === 'POST' && p === '/api/inspect/assist') { // ㉖ 仓管/管理员协助控制AGV：waitOut→下架 / waitBack→归位（㉖并入调度队列，演算模式/站台忙则排队）

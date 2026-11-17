@@ -666,8 +666,10 @@ class _RequisitionPageState extends State<RequisitionPage>
                                                               : FontWeight.w500,
                                                           color:
                                                               waitH[1] as Color)),
+                                                const SizedBox(height: 5),
+                                                reqStepsBar(r), // ㉖v199c 卡片级流程条：下单→接单→备齐→签收
                                               ]),
-                                          isThreeLine: waitH == null, // 有等待行时交 ListTile 自适应高度，防三行预留高裁掉第四行
+                                          isThreeLine: false, // ㉖v199c 常驻流程条后行数可变，交自适应高度（v129 防裁行教训同款）
                                           trailing: Container(
                                               padding:
                                                   const EdgeInsets.symmetric(
@@ -710,6 +712,64 @@ String reqDurCn(int min) {
   final h = min ~/ 60, mm = min % 60;
   if (h < 24) return mm == 0 ? "$h 小时" : "$h 小时 $mm 分";
   return "${h ~/ 24} 天${h % 24} 小时";
+}
+
+/// ㉖v199c 领料单卡片级流程条（对齐检验工单同款）：下单→接单→备齐→签收 四段，
+/// 当前步高亮（蓝=进行中、绿=完成、红=中止），一眼看到每张单走到哪一步。
+/// rejected/cancelled 不走四段，渲染红色"已中止"单段防误导。
+Widget reqStepsBar(Map r) {
+  final st = r["status"]?.toString() ?? "";
+  final dead = st == "rejected" || st == "cancelled";
+  if (dead) {
+    return Row(children: [
+      Expanded(
+          child: Container(
+              height: 4,
+              decoration: BoxDecoration(
+                  color: Colors.red.shade300,
+                  borderRadius: BorderRadius.circular(2)))),
+      const SizedBox(width: 6),
+      Text(st == "rejected" ? "已拒绝" : "已取消",
+          style: TextStyle(fontSize: 8.5, color: Colors.red.shade400)),
+    ]);
+  }
+  final done = st == "pending"
+      ? 1
+      : st == "accepted"
+          ? 2
+          : st == "ready"
+              ? 3
+              : st == "done"
+                  ? 4
+                  : 0;
+  final labels = ["下单", "接单", "备齐", "签收"];
+  return Row(children: [
+    for (int i = 0; i < 4; i++)
+      Expanded(
+          child: Column(children: [
+        Container(
+            height: 4,
+            decoration: BoxDecoration(
+                color: i < done
+                    ? const Color(0xFF00897B)
+                    : i == done
+                        ? const Color(0xFF515BD4)
+                        : const Color(0xFFE3E7EE),
+                borderRadius: BorderRadius.circular(2))),
+        const SizedBox(height: 2),
+        Text(labels[i],
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                fontSize: 8.5,
+                fontWeight: i == done ? FontWeight.w700 : FontWeight.normal,
+                color: i < done
+                    ? const Color(0xFF00897B)
+                    : i == done
+                        ? const Color(0xFF515BD4)
+                        : Colors.grey))
+      ])),
+  ]);
 }
 
 /// ㉖v129 在办单"卡在这一步多久"提示——列表人性化的核心缺环：

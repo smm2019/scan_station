@@ -128,6 +128,25 @@ class _InspectPageState extends State<InspectPage>
     final why = await _prompt("检验事由备注（必填，将记入工单与留痕）", "");
     if (why == null || why.trim().isEmpty) return;
     if (!mounted) return;
+    // ㉖v199c 再检必留因：框有 inspSeen 结论记录（卡上"已检·xx"徽标同数据源）→
+    // 必须再填一条原因才能发单；服务器同款硬闸兜底（绕行端点也拦）
+    final insp0 = b["insp"] is Map ? Map.from(b["insp"]) : null;
+    String recheckReason = "";
+    if (insp0 != null) {
+      final v0 = (insp0["v"] ?? "?").toString();
+      final at0 = (insp0["at"] as num?)?.toInt() ?? 0;
+      final dTx = at0 > 0
+          ? " · ${DateTime.fromMillisecondsSinceEpoch(at0).toString().substring(5, 10)}"
+          : "";
+      final rr = await _prompt(
+          "该框已检验过[$v0$dTx]\n再检原因（必填，如：误判改判/新批次到货/上级复核）", "");
+      if (rr == null || rr.trim().isEmpty) {
+        _toast("再次检验必须填写原因");
+        return;
+      }
+      recheckReason = rr.trim();
+      if (!mounted) return;
+    }
     final loc = (b["loc"] ?? "").toString();
     final codes = List<String>.from(b["codes"] ?? []);
     final part = (b["part"] ?? "").toString();
@@ -142,7 +161,7 @@ class _InspectPageState extends State<InspectPage>
         builder: (c2) => AlertDialog(
                 title: const Text("确认检验下架"),
                 content: Text(
-                    "货位 $loc\n零件 $part$nmX · ${b["q"] ?? 0}件\n标签 $firstTag$more\n\n站台：$stTip\n检验完成后在本页点「检验完·归位」，AGV 原样送回 $loc。"),
+                    "货位 $loc\n零件 $part$nmX · ${b["q"] ?? 0}件\n标签 $firstTag$more\n\n站台：$stTip\n到台检验后填结论（通过/不合格/需复检/退货），有结论才可归位。"),
                 actions: [
                   TextButton(
                       onPressed: () => Navigator.pop(c2, false),
@@ -152,7 +171,8 @@ class _InspectPageState extends State<InspectPage>
                       child: const Text("发起下架")),
                 ]));
     if (yes != true || !mounted) return;
-    final r = await AuthApi.inspectStart(loc, why.trim(), station: station);
+    final r = await AuthApi.inspectStart(loc, why.trim(),
+        station: station, recheckReason: recheckReason);
     if (!mounted) return;
     if (r["ok"] == true) {
       final rec = Map.from(r["rec"] ?? {});
@@ -172,10 +192,33 @@ class _InspectPageState extends State<InspectPage>
   Future<void> _assistAct(Map q) async {
     final st = (q["state"] ?? "").toString();
     String station = "";
+    bool usedPreset = false; // ㉖v199c 工单已带站台(检验员发单指定或系统分配)→协助直接用, 不再弹选台框
     if (st == "waitOut") {
-      final pick = await _pickStation();
-      if (pick == null) return; // 无空闲台或用户取消
-      station = pick;
+      final preset = (q["station"] ?? "").toString().trim();
+      if (preset.isNotEmpty) {
+        // 检验员发单时已定站台(网页"货位→站台"列即此台), 协助只需确认派车, 不重复选台
+        final yes = await showDialog<bool>(
+            context: context,
+            builder: (c2) => AlertDialog(
+                    title: const Text("协助下架"),
+                    content: Text(
+                        "确认派 AGV 将 ${q["code"] ?? ""} 从 ${q["from"] ?? ""} 下架到站台 ${_stnLabel(preset)}？\n\n（检验员发单时已指定该站台）"),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(c2, false),
+                          child: const Text("取消")),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(c2, true),
+                          child: const Text("确认下架")),
+                    ]));
+        if (yes != true || !mounted) return;
+        station = preset;
+        usedPreset = true;
+      } else {
+        final pick = await _pickStation();
+        if (pick == null || !mounted) return; // 无空闲台或用户取消
+        station = pick;
+      }
     } else {
       final yes = await showDialog<bool>(
           context: context,
@@ -193,8 +236,19 @@ class _InspectPageState extends State<InspectPage>
                   ]));
       if (yes != true) return;
     }
-    final r = await AuthApi.inspectAssist(q["id"].toString(), station: station);
+    var r = await AuthApi.inspectAssist(q["id"].toString(), station: station);
     if (!mounted) return;
+    // ㉖v199c 原定台若已被别的框占用致下架失败 → 回退弹选台框改选, 兜底不丢
+    if (st == "waitOut" && usedPreset && r["ok"] != true) {
+      final m = (r["msg"] ?? "").toString();
+      if (m.contains("站台") || m.contains("占用") || m.contains("不可用")) {
+        _toast("原定站台 $station 不可用（$m），请改选空闲站台");
+        final pick = await _pickStation();
+        if (pick == null || !mounted) return;
+        r = await AuthApi.inspectAssist(q["id"].toString(), station: pick);
+        if (!mounted) return;
+      }
+    }
     _toast(r["ok"] == true
         ? (r["queued"] == true
             ? "✅ 已入队（${((r["rec"] as Map?)?["station"]) ?? ""}），站台空闲且真实下发模式时自动发车"
@@ -229,15 +283,6 @@ class _InspectPageState extends State<InspectPage>
             ? "✅ 已判退货：货留在站台，请仓管按直调/领料出库流程出账"
             : "✅ 结论已记录[$v2]${r["wait"] == true ? '，已通知仓管协助归位' : ''}")
         : "失败：${r["msg"]}");
-    if (r["ok"] == true) _load();
-  }
-
-  Future<void> _ret(Map q) async {
-    final note = await _prompt("检验结果备注（必填，将记入工单留痕）", "");
-    if (note == null || note.trim().isEmpty) return;
-    final r = await AuthApi.inspectReturn(q["id"].toString(), note.trim());
-    if (!mounted) return;
-    _toast(r["ok"] == true ? "✅ 归位任务已下发，AGV 送回原货位后自动完成" : "失败：${r["msg"]}");
     if (r["ok"] == true) _load();
   }
 
@@ -554,6 +599,55 @@ class _InspectPageState extends State<InspectPage>
                 ]));
   }
 
+  /// ㉖v199c 五步流程条：发起→调度→到台受检→结论→归位闭环（方案一后"结论"成为归位前置硬步）
+  Widget _stepsBar(Map q) {
+    final st = (q["state"] ?? "").toString();
+    final isRet = st == "waitReturn" || st == "returned";
+    final bool hasVerdict = (q["verdict"] ?? "").toString().isNotEmpty;
+    final done = isRet
+        ? 4
+        : st == "waitOut" || st == "toStation"
+            ? 1
+            : st == "atStation" || st == "stuck"
+                ? (hasVerdict ? 3 : 2) // 结论已填(如判退货待处理)也算第4步完成
+                : st == "waitBack" || st == "returning"
+                    ? 4
+                    : st == "done"
+                        ? 5
+                        : 0;
+    final curRed = st == "stuck";
+    final labels = ["发起", "调度", "到台受检", "结论", isRet ? "退库出账" : "归位闭环"];
+    return Row(
+        children: [
+          for (int i = 0; i < 5; i++)
+            Expanded(
+                child: Column(children: [
+              Container(
+                  height: 4,
+                  decoration: BoxDecoration(
+                      color: i < done
+                          ? const Color(0xFF00897B)
+                          : i == done
+                              ? (curRed ? Colors.red : const Color(0xFF515BD4))
+                              : const Color(0xFFE3E7EE),
+                      borderRadius: BorderRadius.circular(2))),
+              const SizedBox(height: 2),
+              Text(labels[i],
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                      fontSize: 8.5,
+                      fontWeight: i == done ? FontWeight.w700 : FontWeight.normal,
+                      color: i < done
+                          ? const Color(0xFF00897B)
+                          : i == done
+                              ? (curRed ? Colors.red : const Color(0xFF515BD4))
+                              : Colors.grey))
+            ])),
+        ],
+    );
+  }
+
   Widget _woCard(Map q) {
     final st = (q["state"] ?? "").toString();
     final mins = st == "atStation"
@@ -605,6 +699,8 @@ class _InspectPageState extends State<InspectPage>
                 style:
                     const TextStyle(fontSize: 11, color: Colors.orangeAccent)),
           const SizedBox(height: 6),
+          _stepsBar(q), // ㉖v199c 流程条：一眼看到工单走到哪步（当前步高亮）
+          const SizedBox(height: 6),
           Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(
@@ -614,20 +710,20 @@ class _InspectPageState extends State<InspectPage>
                   label: const Text("时间线",
                       style:
                           TextStyle(fontSize: 12, color: Color(0xFF515BD4))))),
-          Row(children: [
-            Expanded(
-                child: Text(
-                    "${q["by"] ?? ""} · ${((q["at"] ?? 0) as num).toInt() > 0 ? DateTime.fromMillisecondsSinceEpoch((q["at"] as num).toInt()).toString().substring(5, 16) : ""}",
-                    style: const TextStyle(fontSize: 11, color: Colors.grey))),
+          // ㉖v199c 操作人信息独立成行 + 动作按钮 Wrap 自动换行：旧 Row+Expanded 在
+          // 「归位+结论/退货+人已移走」三按钮占满行宽时，把"操作人·时间"压成一字一列（11-17 工单卡截图实锤）
+          Text(
+              "${q["by"] ?? ""} · ${((q["at"] ?? 0) as num).toInt() > 0 ? DateTime.fromMillisecondsSinceEpoch((q["at"] as num).toInt()).toString().substring(5, 16) : ""}",
+              style: const TextStyle(fontSize: 11, color: Colors.grey)),
+          const SizedBox(height: 4),
+          Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              alignment: WrapAlignment.end,
+              children: [
             if (st == "atStation" && _assist) ...[
-              FilledButton.icon(
-                  onPressed: () => _ret(q),
-                  icon: const Icon(Icons.restore, size: 16),
-                  label: const Text("检验完·归位"),
-                  style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF00897B),
-                      padding: const EdgeInsets.symmetric(horizontal: 10))),
-              const SizedBox(width: 6),
+              // ㉖v199c 方案一：到台先填质量结论（填完工单自动转"待协助归位"再出归位按钮）。
+              // 旧「检验完·归位」允许仓管只填备注就上架，质量判定被跳过（11-17 4单"备注1"实锤），移除。
               FilledButton.icon(
                   onPressed: () => _verdict(q),
                   icon: const Icon(Icons.fact_check_outlined, size: 16),
