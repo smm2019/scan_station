@@ -2101,6 +2101,12 @@ function labelBlockReason(st, purpose, opts) { // purpose: in(采集入库)|out(
     // 就会提示历史位置，现场照提示去找实物会找不到 → 改按 t 取【最近一次】。
     // 提示目的是让现场判断"误拦还是真重复"，故给全四项：时间 / 登记人 / 位置 / 批次，各归各位。
     if (st.inScanlog.length) {
+      // ㉖v199b 重新上架扫描历史豁免（11-17 现场实锤：框收账/出库后账本行已不在架，
+      // rs 勾选被"已有采集记录"拦→被迫"强制继续+消位"绕路，宋明明对5框各手动放行）：
+      // 能进本分支=账本已无此框行（有行会先在上面 return），框物理上不在架；操作员勾
+      // rs=声明"实物已搬到CK站台、要重新上架"。这是合法重新入库，直接放行——不再用
+      // 历史流水的 gl 位置二次设卡（框历史上架过货架正说明它该被重新上架，而非真重复）。
+      if (opts && opts.reShelf) return '';
       const last = st.inScanlog.slice().sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0))[0];
       const where = String(last.gl || last.st || '');
       const lot = String(last.lot || '');
@@ -9791,7 +9797,13 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
       if (!_led) _bad = '框 ' + q.code + ' 货位账本查无此框（位置不详，AGV 到 ' + _from + ' 会叉空）——请先在位置登记补账再叫车';
       else if (_l !== _from) _bad = '账本显示框 ' + q.code + ' 在 ' + (_l || '未知') + '，与叫车起点 ' + _from + ' 不符（可能拿错框或货已挪动未登记），拒绝下发';
     } else if ((q.type === 'inbound' || q.type === 'countback') && _l && _l !== _from && _l !== _to) { // 入库/盘点归位：账本位置与任务两端都对不上
-      _bad = '账本显示框 ' + q.code + ' 已在 ' + _l + '，与本' + (q.type === 'countback' ? '盘点归位' : '入库') + '任务（' + _from + '→' + _to + '）矛盾，拒绝下发——请核对框是否在别处/账本是否需要更正';
+      // ㉖v199b 重新上架合法动线豁免（11-17 现场 5 框实锤）：框收账时账本落在地面格(NB03)，
+      // 人工搬到站台后 AGV 模式登记→叫车，起点=台、终点=新货架格，地面位当然"两头都不像"。
+      // 这不是矛盾而是设计动线（采集重扫被流水闸拦、消位重扫又会触发"重复有效流水"告警，
+      // 现场被迫绕路）——入库腿认地面源：AGV 从台面叉走，账本随后随叫车改到终点，账实一致。
+      const _gndOk = /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(_l) && q.type === 'inbound';
+      if (!_gndOk) _bad = '账本显示框 ' + q.code + ' 已在 ' + _l + '，与本' + (q.type === 'countback' ? '盘点归位' : '入库') + '任务（' + _from + '→' + _to + '）矛盾，拒绝下发——请核对框是否在别处/账本是否需要更正';
+      else (q.trace = q.trace || []).push('位货绑定闸：账本在地面格 ' + _l + '，按重新上架动线放行（实物应在 ' + _from + ' 台面）');
     }
     if (_bad) {
       q.state = '失败'; q.err = _bad; q.updAt = nowMs;

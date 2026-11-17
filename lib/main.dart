@@ -2743,7 +2743,9 @@ class _MainPageState extends State<MainPage>
       setState(() {
         _selectedTags.clear(); //录入完成清空多选标签
         _retMode = false; // ㉖v122 退库勾选单次生效：本筐已按退料入账，自动关闭防下一筐普通新料被误豁免
-        _reShelfMode = false; // ㉖v198 重新上架勾选同款项下：本筐已重新入账，自动关闭防下一框真·新料被当成重新上架豁免查重
+        // ㉖v199b 重新上架不再入账即自关（11-17 批量回架实锤：一次勾只护一框，5 框连扫
+        // 漏勾即撞"已在库"拦被迫强过+消位绕路）——改模式会话：勾一次持续生效，切模式即清
+        // （_workType 切换处同款清理），误用方向有服务器闸兜底（在架框扫描查重各归各闸）
         _remarkInputCtrl.clear();
         if (!pallet0) {
           _containerType = null; // 新增：保存成功，容器类型取消选中
@@ -4096,7 +4098,7 @@ class _MainPageState extends State<MainPage>
                           Expanded(
                               child: Text(
                                   _reShelfMode
-                                      ? "重新上架已开启：本筐已从地面搬到站台，将分配新货架格由 AGV 上架，入账后自动关闭"
+                                      ? "重新上架已开启：框已从地面搬到站台，连续扫的每一框都分配新货架格由 AGV 上架（回架批次全部传完记得取消勾选）"
                                       : "重新上架：地面框已由人工搬到 CK 站台时勾选（免'已在库'重复拦·自动换新货架格）",
                                   style: TextStyle(
                                       fontSize: 12,
