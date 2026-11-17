@@ -6278,11 +6278,11 @@ class _MessageHubPageState extends State<MessageHubPage> {
 
   void _openGroup(Map g) async {
     final ms = _of(g);
-    // ㉖v199e 三层各弹各的：线程页点击自弹线程 → 本回调再弹消息中心（两层连 pop）→
-    // 主页回调只管切页签。旧链路只弹线程一层，消息中心盖在目标页上="点了没进去"。
+    // ㉖v199e 修黑屏（实锤：消息详情一点就黑屏）：_tapMsg 的 jump() 已经弹掉线程页，
+    // 本回调再连弹两层（它注释里以为栈顶还是线程页）→ 实际弹掉 消息中心+主页 = 路由栈空 = 黑屏。
+    // 职责归位一层不多一层不少：线程页=jump 弹；消息中心=这里弹；主页只切页签不弹。
     void leave(void Function() go) {
-      Navigator.of(context).pop(); // 线程页（栈顶）
-      Navigator.of(context).pop(); // 消息中心自己
+      Navigator.of(context).pop(); // 只弹消息中心自己这一层
       go();
     }
     await Navigator.push(
@@ -6582,8 +6582,10 @@ class _HubThreadPage extends StatelessWidget {
         jump(() => onJumpTab("inv"));
         break;
       case "watch_in":
-        jump(() => Navigator.push(context,
-            MaterialPageRoute(builder: (_) => const WatchListPage())));
+        // ㉖v199e 独立页类不弹层：直接压到线程页之上（context 存活），返回回线程页→消息中心，
+        // 栈行为自然；旧写法先 pop 再用已卸载 context push=未定义行为（黑屏同族隐患）
+        Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const WatchListPage()));
         break;
       case "transfer_done":
       case "car_alarm":
@@ -6591,8 +6593,8 @@ class _HubThreadPage extends StatelessWidget {
         break;
       case "wmas_auth":
       case "sys_err":
-        jump(() => Navigator.push(
-            context, MaterialPageRoute(builder: (_) => const DiagPage())));
+        Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const DiagPage()));
         break;
       default:
         if (text.isEmpty) return;
