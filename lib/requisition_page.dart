@@ -634,7 +634,8 @@ class _RequisitionPageState extends State<RequisitionPage>
                                       return Card(
                                         margin: const EdgeInsets.symmetric(
                                             vertical: 5),
-                                        child: ListTile(
+                                        child: Column(children: [
+                                          ListTile(
                                           leading: CircleAvatar(
                                               backgroundColor: _statusColor(st)
                                                   .withOpacity(0.14),
@@ -666,10 +667,8 @@ class _RequisitionPageState extends State<RequisitionPage>
                                                               : FontWeight.w500,
                                                           color:
                                                               waitH[1] as Color)),
-                                                const SizedBox(height: 5),
-                                                reqStepsBar(r), // ㉖v199c 卡片级流程条：下单→接单→备齐→签收
                                               ]),
-                                          isThreeLine: false, // ㉖v199c 常驻流程条后行数可变，交自适应高度（v129 防裁行教训同款）
+                                          isThreeLine: false, // ㉖v199c 行数可变交自适应高度（v129 防裁行教训同款）
                                           trailing: Container(
                                               padding:
                                                   const EdgeInsets.symmetric(
@@ -689,6 +688,13 @@ class _RequisitionPageState extends State<RequisitionPage>
                                                           _statusColor(st)))),
                                           onTap: () => _detail(r),
                                         ),
+                                          // ㉖v199c 流程条移出 ListTile 到卡片底沿全宽（参考出库卡进度线样式）：
+                                          // 原放 subtitle 内被左侧头像+右侧状态徽标夹在中间只剩半宽，用户实嫌"太短"
+                                          Padding(
+                                              padding: const EdgeInsets
+                                                  .fromLTRB(16, 2, 16, 12),
+                                              child: reqStepsBar(r)),
+                                        ]),
                                       );
                                     },
                                   ))

@@ -1090,7 +1090,11 @@ function buildExport(ds, fRaw) {
     for (const q of db.agvQueue || []) { if (['完成', '取消'].includes(q.state)) continue; const at = Number(q.at) || 0; if ((from && at < from) || at > to) continue; rows.push([q.wmsTask || q.taskNo || '未生成', q.type === 'transfer' ? '移库' : q.type === 'inbound' ? '入库' : q.type === 'insp' ? '检验下架' : q.type === 'inspback' ? '检验归位' : '出库', q.fromLoc || q.from || '', q.station || q.to || '', '', '', expTs(q.sentAt || 0) || '', expTs(q.dockAt || 0) || '', Math.round((Date.now() - at) / 1000), q.state, q.reqNo || '', String(q.code || '').toUpperCase(), mitemOf(q.code || '', '')]); } // ㉖ 检验任务入队后方向列完整映射
     return mk('AGV任务', ['任务号', '方向', '起点', '终点', '车辆', '接令', '叉出', '到站', '时长秒', '状态', '关联单', '标签号', '物料号'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S'], rows, 'RCS任务沉淀（近30天六节点；完成行=历史沉淀无标签信息）+未完成在途队列（时长秒=已耗时；在途行含标签号/物料号）'); }
   if (ds === 'D6') { // ㉕B11 补持续时长/是否恢复：同车事件流内配对（告警→该车其后首条恢复；无配对=至今未恢复）
-    const evs = buildEvents(); const pend = {};
+    // ㉖v199e 只导出车辆/交管类事件（用户实锤：D6"AGV异常事件"混入 FIFO违反/超发确认/幽灵出库/出库台账/改位冲突 等业务留痕，
+    // 因 buildEvents() 是"事件流水"全量统一流——网页"异常与复盘"页有意全显（脉冲图含 fifo/conflict 行），但 D6 名叫"AGV异常事件"就该只装车辆）。
+    // 白名单=车辆告警族+交管堵点+低电+AGV任务超时；业务运营留痕（FIFO/超发/幽灵出库/改位/台账/拉下架/盘点）默认排除，新增业务kind不会自动漏进D6。
+    const _agvEv = new Set(['告警', '红牌', '升级', '恢复', '已认领', '堵点', '堵点解除', '低电', '低电恢复', '出库超时', '入库超时', 'AGV卡单补推']);
+    const evs = buildEvents().filter((e) => _agvEv.has(e.kind)); const pend = {};
     for (let i = evs.length - 1; i >= 0; i--) { const e = evs[i]; const w = String(e.who || ''); if (e.kind === '告警' || e.kind === '红牌' || e.kind === '升级') { pend[w] = e; } else if (e.kind === '恢复' && pend[w] && e.ts >= pend[w].ts) { pend[w]._rt = e.ts; pend[w] = null; } }
     const rows = evs.map((e) => {
       let dur = '', recd = '';
@@ -1395,9 +1399,11 @@ function fullFlowAlert() {
     const fresh = hits.filter((h) => { if (nowMs - (Number(seen[h.c]) || 0) < 7 * 864e5) return false; seen[h.c] = nowMs; return true; });
     if (!fresh.length) { save(); return; } // 老问题不重复吵，去重标记仍落盘
     const lst = fresh.slice(0, 6).map((h) => h.c + '@' + h.g + '（滞留 ' + Math.round((nowMs - h.t) / 60000) + ' 分钟' + (h.op ? '·' + h.op : '') + '）').join('、');
-    try { pushOps(null, '格位未上账', fresh.slice(0, 10).map((h) => h.c).join('/'), fresh.length + ' 框流水已带完整格位但持续未进账本（判龄 ' + ageMin + ' 分钟）——PDA 账本推送可能卡死（世代/断网/旧版本缺陷），请让该设备打开库存页触发一次同步，或到「位置登记」重扫该框：' + lst); } catch (_) { }
+    let _diagTxt = ''; // ㉖v199d 附设备诊断（搭车体检包直给根因：世代/心跳/积压原因，不再靠截图猜）
+    try { const _ops = [...new Set(fresh.map((h) => h.op).filter(Boolean))]; _diagTxt = _ops.length ? '｜设备诊断：' + _ops.slice(0, 3).map((op) => op + '→' + diagWhyFor(op, nowMs)).join('；') : ''; } catch (_) { }
+    try { pushOps(null, '格位未上账', fresh.slice(0, 10).map((h) => h.c).join('/'), fresh.length + ' 框流水已带完整格位但持续未进账本（判龄 ' + ageMin + ' 分钟）——PDA 账本推送可能卡死（世代/断网/旧版本缺陷），请让该设备打开库存页触发一次同步，或到「位置登记」重扫该框：' + lst + _diagTxt); } catch (_) { }
     const _who = (db.users || []).filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled);
-    _who.forEach((x) => { try { notify(x.id, 'ghost_out', '📥 未上账滞留：' + fresh.length + ' 框扫码时货位是完整格位，但超过 ' + ageMin + ' 分钟仍未进账本（' + lst + '）——多半是该台 PDA 账本没推上来：让它在库存页下拉触发同步；仍不行就重扫补登', '', { solo: true }); } catch (_) { } });
+    _who.forEach((x) => { try { notify(x.id, 'ghost_out', '📥 未上账滞留：' + fresh.length + ' 框扫码时货位是完整格位，但超过 ' + ageMin + ' 分钟仍未进账本（' + lst + '）' + _diagTxt + '——按诊断处置：旧版→升级 APP；心跳静默→重启 APP；积压→库存页下拉同步；仍不行重扫补登', '', { solo: true }); } catch (_) { } });
     console.log(`[full-alert] ⚠ 完整格位持续未上账 ${fresh.length} 框: ${fresh.map((h) => h.c + '@' + h.g).slice(0, 6).join(' ')}`);
     save(); // 去重标记必须落盘（同 coarseSweep 教训：notify 不含 save，不补则重启后重轰）
   } catch (e) { console.log('[full-alert] 失败：', e.message); logErr('fullFlowAlert', e); }
@@ -1405,6 +1411,75 @@ function fullFlowAlert() {
 function fullSweep() { try { fullFlowAlert(); } catch (_) { } }
 setTimeout(fullSweep, 13000).unref(); // 与 coarse(10s)/invariant(14s) 错开 tick，启动三个全库扫不同时挤盘
 setInterval(fullSweep, 5 * 60 * 1000).unref();
+// ---- ㉖v199d 诊断搭车上报（用户点题："为什么有异常不能自动上传服务器"）----
+// 背景实锤：11-17 15:26 三框流水在、账本无，设备账本推送 15:17 后【哑死】（连失败请求都没有），
+// 服务器只能靠间接证据猜"多半 PDA 没推上来"；诊断页 106 行纯本地零上报，截图是唯一外带方式。
+// 从此：①PDA 每次流水/账本推送搭车 ~200B 体检包（零新增请求）②60 秒独立心跳（/api/diag/pulse，
+// 心跳消失=APP死，这是"哑死"形态唯一可检测信号）�3 服务器按操作员名存最新快照（一人一机形态）。
+// 消费：fullFlowAlert 告警附设备诊断（根因一眼见）+ diagDeadSweep 设备级静默巡检点名 + GET 快照端点。
+let _pulseSaveAt = 0;
+function noteDiagPulse(u, dp) {
+  try {
+    if (!dp || typeof dp !== 'object') return;
+    const name = String((u && u.name) || '').trim(); if (!name) return;
+    db.diagPulse = db.diagPulse || {};
+    const s2 = (v, n) => { const s = String(v == null ? '' : v); return s.length > n ? s.slice(0, n) : s; };
+    db.diagPulse[name] = {
+      at: Date.now(), who: name, host: s2(dp.host, 30), app: s2(dp.app, 16), ip: s2(dp.ip, 40),
+      epoch: s2(dp.epoch, 40), ledgerCnt: Math.max(0, Number(dp.ledgerCnt) || 0),
+      pending: !!dp.pending, retryN: Math.max(0, Number(dp.retryN) || 0),
+      lastOkAt: Number(dp.lastOkAt) || 0, lastErr: s2(dp.lastErr, 140),
+      lastErrAt: Number(dp.lastErrAt) || 0, lastRejN: Math.max(0, Number(dp.lastRejN) || 0),
+    };
+    if (Date.now() - _pulseSaveAt > 60000) { _pulseSaveAt = Date.now(); save(); } // sync 高频调用，落盘每60秒节流
+  } catch (_) { }
+}
+// 操作员名 → 设备诊断一句话（fullFlowAlert 与 diagDeadSweep 共用口径）
+function diagWhyFor(op, nowMs) {
+  const d = (db.diagPulse || {})[String(op || '').trim()];
+  if (!d) return '未收到设备心跳（旧版APP未升级，或设备离线）';
+  if (nowMs - (d.at || 0) > 10 * 60000) return `设备心跳已 ${Math.round((nowMs - d.at) / 60000)} 分钟静默（APP被杀/后台受限/断网）`;
+  if (d.epoch && db.ledgerEpoch && d.epoch !== db.ledgerEpoch) return `账本世代未对齐（本机=${String(d.epoch).slice(0, 8)}…，等待拉取对齐；持续=对齐循环缺陷）`;
+  if (d.pending === true && d.lastOkAt && nowMs - d.lastOkAt > Math.max(5, Number(P().diagDeadMin) || 15) * 60000) return `账本推送积压 ${Math.round((nowMs - d.lastOkAt) / 60000)} 分钟（末次失败：${d.lastErr || '无失败记录'}，重试${d.retryN}次）`;
+  if (d.pending === true) return `账本推送中（积压 ${Math.round((nowMs - (d.lastOkAt || d.at)) / 60000)} 分钟内，重试${d.retryN}次）`;
+  if (d.lastOkAt && nowMs - d.lastOkAt < 6 * 60000) return `设备账本推送正常（${Math.round((nowMs - d.lastOkAt) / 1000)} 秒前刚成功），本框或在途/合并滞后，5 分钟后复查`;
+  return `设备称已推平但服务器账本缺行（上次推送被拒回 ${d.lastRejN || 0} 条，查 sync 拒回原因）`;
+}
+function diagDeadSweep() {
+  try {
+    if (!Number(P().diagDeadMin)) return; // 0=关
+    const nowMs = Date.now();
+    const FULL = /^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$/; // 与 fullFlowAlert 同口径（不含 NB04）
+    const onLed = new Set((db.ledger || []).map((x) => String(x.c || '').toUpperCase()));
+    const tomb = new Set((db.ledgerTomb || []).map((x) => String(x.c || '').toUpperCase()));
+    const so = db.seenOut || {};
+    const who = {}; // 每个操作员最新一条"完整格位流水未进账本"（6小时内才算，历史滞留归 fullAlert 管）
+    for (const v of Object.values(db.scanlog || {})) {
+      if (!v || v.cx) continue;
+      const c = String(v.code || '').toUpperCase(), g = String(v.gl || '').toUpperCase(), op = String(v.op || '').trim();
+      if (!op || !FULL.test(g) || onLed.has(c) || so[c] || tomb.has(c)) continue;
+      const t = Number(v.t) || 0; if (!t || nowMs - t > 6 * 3600e3) continue;
+      if (!who[op] || t > who[op].t) who[op] = { t, c, g };
+    }
+    const seen = (db.diagDeadAlert = db.diagDeadAlert || {});
+    const hits = [];
+    for (const op of Object.keys(who)) {
+      if (nowMs - (Number(seen[op]) || 0) < 7 * 864e5) continue; // 同人 7 天吵一次
+      const h = who[op], why = diagWhyFor(op, nowMs);
+      if (/账本推送中/.test(why)) continue; // 刚扫没几分钟且正在推=正常防抖窗口
+      seen[op] = nowMs; hits.push([op, h, why]);
+    }
+    if (!hits.length) return;
+    const lst = hits.slice(0, 5).map(([op, h, why]) => `${op}: ${h.c}@${h.g}（未入账 ${Math.round((nowMs - h.t) / 60000)} 分钟）— ${why}`).join(' ｜ ');
+    try { pushOps(null, '设备账本推送异常', hits.map(([op]) => op).join('/'), hits.length + ' 人有流水未进账本，设备诊断：' + lst); } catch (_) { }
+    const _who = (db.users || []).filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled);
+    _who.forEach((x) => { try { notify(x.id, 'ghost_out', '🩺 设备账本推送异常：' + hits.length + ' 人 — ' + lst + '（按"原因"处置：旧版→升级 APP；心跳静默→重启 APP；世代未对齐持续→报修）', '', { solo: true }); } catch (_) { } });
+    console.log(`[diag-dead] ⚠ 设备级未入账诊断 ${hits.length} 人: ${hits.map(([op, , why]) => op + '(' + why.slice(0, 26) + ')').join(' ')}`);
+    save();
+  } catch (e) { console.log('[diag-dead] 失败：', e.message); }
+}
+setTimeout(() => { try { diagDeadSweep(); } catch (_) { } }, 17000).unref(); // 与 coarse(10)/full(13)/invariant(14) 错峰
+setInterval(diagDeadSweep, 5 * 60 * 1000).unref();
 // ---- ㉖v152 同标签重复有效流水告警 ----
 // ⚠️v166 判据重构（现场消息中心被这类告警刷屏：一次 20+ 条，且用 ghost_out=必达+绕个人退订+夜间不静默）
 // 排查结论：【这不是重复采集的 bug，是判据选错了信号——它把"框被挪过位置/重新采集"当异常报】。
@@ -2213,6 +2288,7 @@ const PARAMS = {
   coarseAlertAgeMin: { grp: '告警阈值', name: '粗码滞留告警判龄', unit: '分钟', min: 1, max: 1440, d: 5, tip: '㉖v165 粗码流水存在【正常中间态】：14:43:14 扫入即写 gl=区码（H9）→ 自动分格回填完整格位 → 账本经 30 秒防抖才推达；旧版 sync 当场判定"账本无此码即告警"，正好扫在这个窗口里（11-12 实测一天误报 7 次，含 N26K120113→H9，该框 14:45:31 被告警、随后自行上账 H-09-03）。全库 28 条粗码流水【28/28 全部自愈】，证实粗码即中间态。新口径：流水年龄 ≥ 本值【且】账本无此框【且】无出库留痕（已出库=当时已补全格位并发走，非滞留）才告警；由每 5 分钟周期兜底扫描发现（现场扫完就放弃、不再重扫的框也能报出来，不会漏）' },
   fullAlertOn:    { grp: '告警阈值', name: '格位未上账告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v173f 流水已带 NB02/NB03 完整格位但持续未进账本（账本无+无出库留痕+无墓碑）→ ops 留痕+必达点名仓管"让该设备触发同步或重扫补登"。动因：v93 世代卡死拖 5分41秒、v154 快照竞态这类"扫了但账本推不上"全靠人盯网页发现；判据经真实全库核对现状 0 命中，上线第一天零误报' },
   fullAlertAgeMin: { grp: '告警阈值', name: '格位未上账判龄', unit: '分钟', min: 1, max: 240, d: 2, tip: '㉖v173f 正常链=扫码即写流水→账本 ≤30 秒防抖推达，默认 2 分钟已含 4 倍余量（再长现场就会先于系统看见橙标"未上账"）。排除项缺一不可：账本已有=已上账 / seenOut 有出库史=正常流转走掉 / ledgerTomb 有墓碑=PDA 已消位（实测不排除墓碑会把 2 个正常拣下架框当滞留报出）；NB04 来料区不判（账本无该区）' },
+  diagDeadMin:    { grp: '告警阈值', name: '设备账本静默判死', unit: '分钟', min: 0, max: 240, d: 15, tip: '㉖v199d 诊断搭车上报消费阈值：设备流水在推、账本却超此分钟数无成功推送（或心跳静默/世代卡死）→ 点名仓管"设备诊断一句话"（心跳静默→重启APP / 旧版→升级 / 世代→对齐）。0=关。同操作员 7 天只吵一次；正常设备账本推送每30秒一次远低于此阈值，判据零误报' },
   wmasReloginGapS: { grp: '调度节奏', name: 'WMAS重登冷却', unit: '秒', min: 0, max: 300, d: 30, tip: '㉖v160 WMAS 登录失败后的重登冷却秒数（0=不节流）。凭证被挤下线时若不节流，实测 20 次取票=20 次真实登录，WMAS 可能因频繁失败锁定账号；且每次登录成功会把对方会话踢下线，双方互挤成死循环。默认 30 秒＝最长 30 秒内恢复、又不打爆对方。现场在 WMAS 改密后重新保存 WMAS 配置会立即重置本冷却，不受影响' },
   agvAuthYieldMin: { grp: '调度节奏', name: '退出登录让位时长', unit: '分钟', min: 1, max: 180, d: 15, tip: '㉖v161 人工点「退出登录」后，服务器在这段时间内【不自动登录】WMAS/AGV 调度系统，把单账号会话让给现场人员。两套系统都是同一账号后登录者踢掉前者：现场为改密/查数据人工登录 → 服务器会话被踢反复 401；服务器若立刻自动重登 → 又把现场人员的窗口踢掉，双方互挤谁都干不成。让位期内 AGV 叫车不可用（提示会写明剩余时间），到期自动恢复；重新保存 WMAS/RCS 配置=人工宣告已处理完，立即解除让位' },
   dupFlowAlertOn: { grp: '告警阈值', name: '重复有效流水告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 同一标签存在多条未作废采集流水 → 留痕 ops（审计线索）。⚠️v166 判据重构：旧版按"≥2条未作废 + 位置不同"必达点名，把【框挪过位置/先后经过不同台站】当异常刷屏（现网 61 个全是这类噪音；台站只是中转点，同一框先后经 CK-06、CK-07 完全正常，v152 当初的触发案例 N26K100170 本身即误判；实测两次采集跨度 <1分钟 0 例、>10分钟 61 例，不存在毫秒级双写缺陷）。新判据只有【同一排/同列内出现 ≥2 个不同格位】（一个框不可能同时占两个格位）才升 ghost_out 必达点名人工裁决；挪位/跨模式/台站差异只留痕不吵人。判据变更后自动重置旧 7 天去重标记，避免真冲突被旧噪音标记静默一周' },
@@ -3921,7 +3997,15 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       if (fz) list = list.filter(x => String(x.c).toUpperCase().includes(fz) || String(x.l).toUpperCase().includes(fz) || String(x.p || '').toUpperCase().includes(fz) || String(x.n || '').toUpperCase().includes(fz));
       if (fc) list = list.filter(x => String(x.c).toUpperCase().startsWith(fc));
       if (fl) list = list.filter(x => String(x.l).toUpperCase().startsWith(fl));
-      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, epoch: db.ledgerEpoch || '', items: list, tomb: db.ledgerTomb || [] }); // ㉖v69 世代标记：PDA旧缓存凭此识别清理
+      // ㉖v199e 在途移库清单（11-17 实锤：框已在拉下架途中，网页/PDA 选框列表仍列出可勾，勾了提交才被
+      // 双闸拒=误导）。排队/下发中/已下发三态的 transfer 起点货架格与框码随账本带出，两端选框统一剔除；
+      // 到站态不带——其账本行已改到 -CK- 台挂位，前端既有台挂行过滤自排。
+      const inTf = [];
+      for (const x of db.agvQueue || []) {
+        if (x.type !== 'transfer' || !['排队', '下发中', '已下发'].includes(x.state)) continue;
+        inTf.push({ from: String(x.from || '').toUpperCase(), code: String(x.code || '').toUpperCase() });
+      }
+      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, epoch: db.ledgerEpoch || '', items: list, tomb: db.ledgerTomb || [], inTf }); // ㉖v69 世代标记：PDA旧缓存凭此识别清理
     }
 
     // ---- 货位账本：电脑查询页（表格地图式：按货位排序，同位多标签并排显示）----
@@ -4069,6 +4153,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       if (req.method === 'POST' && p === '/api/ledger/sync') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步货位账本' });
         const b = await readBody(req);
+        noteDiagPulse(u, b.diag); // ㉖v199d 诊断搭车：世代闸拒绝后仍留快照（世代卡死正是最需要诊断的时刻）
         const raw = Array.isArray(b.items) ? b.items : [];
         if (!Array.isArray(b.del)) b.del = [];
         if (!raw.length && !b.del.length) return send(res, 400, { ok: false, msg: 'items/del 均为空，已拒绝（防止误清空白账本）' });
@@ -4077,7 +4162,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         // ㉖v82c 回审修正：只拦【声称有世代但不匹配】的新PDA；完全不带世代的旧PDA(v75及以前)放行给下方 _staleCut 切割线处理——
         // 旧版无 epochStale 自愈逻辑，此前一刀切拒绝会把未升级设备的新登记永久挡在门外（与 _staleCut 设计意图矛盾）
         const _epSent = String(b.epoch || '').trim();
-        if (db.ledgerEpoch && _epSent && _epSent !== db.ledgerEpoch) return send(res, 200, { ok: false, code: 'epochStale', epoch: db.ledgerEpoch, msg: '本机账本为旧世代（服务器账本已整表替换），请先拉取对齐后再推送' });
+        if (db.ledgerEpoch && _epSent && _epSent !== db.ledgerEpoch) { save(); return send(res, 200, { ok: false, code: 'epochStale', epoch: db.ledgerEpoch, msg: '本机账本为旧世代（服务器账本已整表替换），请先拉取对齐后再推送' }); } // ㉖v199d save先行：诊断快照必须随拒绝落盘（搭车钩子60秒节流，世代卡死循环正是最需要看诊断的时刻，不能等下一次顺带save）
         const seen = new Set(); const clean = [];
         // ㉖v100 货位格式防线①：账本 l 必须是完整格位/货架位。实测在库 356 行 100% 符合 locStrict、
         // 0 行站台码(NB02-CK-xx)/粗码(H09)混入 → 硬拦零误伤。病值一旦上账，选位/地图/链路/seenIn/导出
@@ -4323,16 +4408,25 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
             for (const it of clean) { if (seenNew.has(it.c) && it.p) { newParts.add(String(it.p).toUpperCase()); if (locRecv(it.l)) recvParts.add(String(it.p).toUpperCase()); } }
             if (newParts.size) {
               const doneK = new Set();
+              const _nowMs = Date.now(), _iuTh = 12 * 3600e3; // ㉖v199e 同单同零件 12 小时只提醒一次（账本合并高频，防"待接单+新框陆续上账"连环轰炸）
+              const uiSeen = (db.urgentInSeen = db.urgentInSeen || {});
               for (const r of db.requisitions || []) {
                 if (!['pending', 'accepted'].includes(r.status)) continue;
                 for (const it of r.items || []) {
                   const pn = String(it.partNo || '').toUpperCase();
                   if (!pn || !newParts.has(pn)) continue;
                   const k = r.id + '|' + pn; if (doneK.has(k)) continue; doneK.add(k);
+                  // ㉖v199e 尚缺件数闸门：领料允许缺料下单（缺料登记+到料提醒正是本闭环设计），故"到货即提醒"须先确认该行【还没发满】——
+                  // 旧版不判剩余需求，货早发齐/新框是盈余也照发"所缺零件X可安排领用"=误导。issued 为 {c,q} 数组，尚缺=需求-已发合计。
+                  const needQty = Number(it.qty) || 0;
+                  let issuedQty = 0; for (const e of (it.issued || [])) { if (e && typeof e === 'object') issuedQty += Number(e.q) || 0; } // {c,q,l} 元素取 q；旧数据纯字符串(无件数)按0=宁可多提醒不误压
+                  const shortBy = needQty - issuedQty;
+                  if (needQty > 0 && shortBy <= 0) continue; // 已发满=不缺料不打扰（needQty=0 的纯提醒单不因缺件数被压掉）
+                  const uk = r.no + '|' + pn; if (_nowMs - (Number(uiSeen[uk]) || 0) < _iuTh) continue; uiSeen[uk] = _nowMs;
                   const _rv = recvParts.has(pn) ? '（当前在来料区，需二楼转入后货架才可拣）' : '';
-                  const msg = `📦 急货入库提醒：领料单 ${r.no}（${r.byName}）所缺零件 ${pn} 刚有货上账（${u.name} 登记）${_rv}，可安排领用`;
-                  notify(r.by, 'req_new', msg, r.id);
-                  db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_new', msg, r.id));
+                  const msg = `📦 急货入库提醒：领料单 ${r.no}（${r.byName}）所缺零件 ${pn} 尚缺约 ${shortBy} 件，刚有货上账（${u.name} 登记）${_rv}，可安排领用`;
+                  notify(r.by, 'req_ready', msg, r.id); // ㉖v199e 归"接单与进度"(req_ready)：这是到货进展提醒，旧标 req_new 掉进"派单与超时"分组误导（消息中心已登记两组）
+                  db.users.filter((x) => (x.role === 'warehouse' || x.role === 'admin') && x.enabled).forEach((x) => notify(x.id, 'req_ready', msg, r.id));
                   console.log('[urgent-in] ' + msg);
                 }
               }
@@ -4344,10 +4438,23 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         return send(res, 200, { ok: true, rev: db.ledgerRev, count: db.ledger.length, added, updated, kept, skipped, delApplied, delSkipped, locConflict, rejected: rejected.slice(0, 50), rejectedLoc: rejectedLoc.slice(0, 20) });
       }
 
+      // ---- ㉖v199d 诊断心跳独立通道（60秒/次，与账本推送成败完全解耦）----
+      // 心跳消失=APP被杀/断网，这是账本推送"哑死"（连失败请求都不发）形态唯一可检测信号。
+      // 体积极小(~300B)，任意登录用户可报（不挑角色，心跳本身无数据写权限）。
+      if (req.method === 'POST' && p === '/api/diag/pulse') {
+        const b = await readBody(req);
+        noteDiagPulse(u, b.diag || b);
+        return send(res, 200, { ok: true, epoch: db.ledgerEpoch || '' }); // 回带世代：PDA 可对照自校
+      }
+      if (req.method === 'GET' && p === '/api/diag/devices') { // 网页侧查设备快照（仓管/管理员）
+        if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '无权' });
+        return send(res, 200, { ok: true, now: Date.now(), epoch: db.ledgerEpoch || '', devices: Object.values(db.diagPulse || {}).sort((a, x) => (x.at || 0) - (a.at || 0)) });
+      }
       // ================= 采集流水 / 出库单同步（PDA 全量推送，仓管/管理员） =================
       if (req.method === 'POST' && p === '/api/scanlog/sync') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可同步采集流水' });
         const b = await readBody(req);
+        noteDiagPulse(u, b.diag); // ㉖v199d 诊断搭车·流水通道：账本推送哑死时流水仍在推，诊断照收（11-17哑死形态正是靠这条腿拿到体检包）
         const raw = Array.isArray(b.items) ? b.items : [];
         if (!raw.length) return send(res, 400, { ok: false, msg: 'items 为空，已拒绝' });
         if (raw.length > 50000) return send(res, 400, { ok: false, msg: '条目超过5万，疑似异常' });
@@ -4363,6 +4470,8 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         // ②普通推送（cxAt=0，扫码/周期回灌）：服务器对该键做过权威动作(cxA)且晚于本行扫码(t)→压回，旧缓存不得复活网页作废
         //   （11-07 18:43 实锤：网页作废三框后本机重推同键，Object.assign 整体覆盖回"正常"）
         // 被压回且状态不一致的键回传 cxKept=[[k,服务器cx]]，PDA 据此回写本机 isCancel——双向闭环。
+        // ㉖v199e "本次新流入键"必须在合并前取（Object.assign 后全部键都已存在，判据恒假——首版实测踩中）
+        const _newKeys = new Set(Object.keys(snap).filter((k) => !db.scanlog || !db.scanlog[k]));
         const _cxKept = []; const _sl = db.scanlog = db.scanlog || {}; { for (const [k, v] of Object.entries(snap)) { const old = _sl[k]; if (!old) continue; const srvOp = Number(old.cxA) || 0, cliOp = Number(v.cxAt) || 0; if (cliOp > 0) { if (srvOp > cliOp) { if (!!old.cx !== !!v.cx) _cxKept.push([k, !!old.cx]); v.cx = !!old.cx; v.cxB = old.cxB; v.cxA = srvOp; } else { v.cxB = u.name; v.cxA = cliOp; } } else if (srvOp > (Number(v.t) || 0)) { if (!!old.cx !== !!v.cx) _cxKept.push([k, !!old.cx]); v.cx = !!old.cx; v.cxB = old.cxB; v.cxA = srvOp; } } }
         db.scanlog = Object.assign(_sl, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
         // v85b gl粗码实时对齐（v84防降级超集）：推送gl非完整格位时——①库里已是完整格位→保留库内值（防旧缓存打回）
@@ -4392,8 +4501,10 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         // （流水=现场原始证据铁律），但账本源头闸已拒其上账——留痕点名设备与操作人，供追查"开关关了怎么还扫上"的幽灵流水；
         // PDA 侧已同步从入口闸住（locs?recv=1 下发开关+未启用即中止保存），本条为旧版 PDA/竞态窗口的兜底可见性。
         if (!receivingOn()) {
-          const _rOff = Object.values(snap).filter((v) => /^NB04-/.test(String(v.gl || '').toUpperCase()));
-          if (_rOff.length) { console.log(`[recv-off] ⚠ ${u.name} 来料区停用期流入 ${_rOff.length} 条 NB04 流水：${_rOff.slice(0, 5).map((v) => v.code + '@' + v.gl).join(' ; ')}`); try { pushOps(u, '来料区停用期误扫', _rOff.length + ' 条 NB04 流水（账本已拒未上账）', _rOff.slice(0, 5).map((v) => String(v.code || '?') + '@' + v.gl).join(' ; ')); } catch (_) {} }
+          // ㉖v199e 只判【本次新流入】（键不在服务器 ∪ 扫码 24 小时内）：旧版把 PDA 每次全量回灌的历史 NB04 流水
+          // 当"停用期流入"重报——11-17 实锤同一 3 框（11-07 扫、11-08 已出库）留痕 239 次，把真幽灵流水淹没在复读噪声里。
+          const _rOff = Object.entries(snap).filter(([k, v]) => /^NB04-/.test(String(v.gl || '').toUpperCase()) && _newKeys.has(k) && (v.t || 0) > Date.now() - 24 * 3600e3);
+          if (_rOff.length) { console.log(`[recv-off] ⚠ ${u.name} 来料区停用期流入 ${_rOff.length} 条 NB04 流水：${_rOff.slice(0, 5).map(([, v]) => v.code + '@' + v.gl).join(' ; ')}`); try { pushOps(u, '来料区停用期误扫', _rOff.length + ' 条 NB04 流水（账本已拒未上账）', _rOff.slice(0, 5).map(([, v]) => String(v.code || '?') + '@' + v.gl).join(' ; ')); } catch (_) {} }
         }
         for (const s of Object.values(snap)) { feedDict(s.pn, s.nm, '采集流水'); feedMitem(s.pn, s.mc, '采集流水'); } // ㉒G7 字典沉淀；㉖v98c 物料号同步沉淀
         // ㉖v103 数量对账防线：本批有效扫码若与账本行件数不符 → 按扫码（MES 直读）纠正账本。

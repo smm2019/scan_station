@@ -1543,6 +1543,7 @@ class _MainPageState extends State<MainPage>
   Map<String, int> _myQueueCnt = {};
   String _queueMode = "dry";
   Timer? _myQueueTimer;
+  Timer? _diagPulseTimer; // ㉖v199d 诊断心跳60秒（独立于账本推送，消失=APP被杀/断网）
 
   final TextEditingController _goodsInputCtrl = TextEditingController();
   final TextEditingController _remarkInputCtrl = TextEditingController();
@@ -1654,6 +1655,10 @@ class _MainPageState extends State<MainPage>
     kAgvQueueTick.addListener(_loadMyQueue);
     _myQueueTimer =
         Timer.periodic(const Duration(seconds: 30), (_) => _loadMyQueue());
+    // ㉖v199d 诊断心跳：60秒独立通道（与账本推送成败解耦——心跳消失=APP被杀/断网，
+    // 服务器 diagWhyFor/未上账告警 由此直给根因，不再靠人截图诊断页）
+    unawaited(diagPulseNow());
+    _diagPulseTimer = Timer.periodic(const Duration(seconds: 60), (_) => unawaited(diagPulseNow()));
     PrefsSync.changed.addListener(_onPrefsChanged); // ㉖B14 服务器偏好回写后刷新工作模式
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
@@ -1728,21 +1733,29 @@ class _MainPageState extends State<MainPage>
       kReqJump.value = "${rid}@${DateTime.now().millisecondsSinceEpoch}";
   }
 
+  /// ㉖v199e 消息中心→主页页签精准直达：本函数只管切页签，"弹掉消息中心/线程页"
+  /// 由各自路由自己 pop（三层各弹各的，不靠主页猜 canPop）；
+  /// 页签可能被角色权限/自定义隐藏，找不到时明确提示而不是越界崩
+  void _openTabFrom(String tab) {
+    if (!mounted) return;
+    final i = _tabKeys.indexOf(tab);
+    if (i >= 0) {
+      _tabController.animateTo(i);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("该页签未在你的首页显示（角色权限或已隐藏），请到「其他与系统 → 首页页签」开启"),
+          duration: Duration(seconds: 2)));
+    }
+  }
+
   Future<void> _openHub() async {
     await Navigator.push(
         context,
         MaterialPageRoute(
             builder: (_) => MessageHubPage(
-                  onOpenReq: () => _tabController.animateTo(
-                      _tabKeys.indexOf("req") >= 0
-                          ? _tabKeys.indexOf("req")
-                          : 0),
-                  onOpenAgv: () => _tabController.animateTo(
-                      _tabKeys.indexOf("agv") >= 0
-                          ? _tabKeys.indexOf("agv")
-                          : (_tabKeys.indexOf("req") >= 0
-                              ? _tabKeys.indexOf("req")
-                              : 0)),
+                  onOpenReq: () => _openTabFrom("req"),
+                  onOpenAgv: () => _openTabFrom("agv"),
+                  onOpenTab: _openTabFrom, // ㉖v199e 线程页按消息类型精准跳页签
                 )));
     _recountUnread();
   }
@@ -1911,6 +1924,7 @@ class _MainPageState extends State<MainPage>
     PrefsSync.changed.removeListener(_onPrefsChanged); // ㉖B14
     kAgvQueueTick.removeListener(_loadMyQueue); // ㉖ 队列刷新监听释放
     _myQueueTimer?.cancel();
+    _diagPulseTimer?.cancel(); // ㉖v199d 诊断心跳随页销毁（定时器泄漏红线）
     _notifTimer?.cancel();
     _tabController.removeListener(_onTabSettled); // ㉖v53
     _tabController.dispose();
@@ -6067,7 +6081,9 @@ const _kHubGroups = <Map<String, dynamic>>[
   {
     "key": "work",
     "name": "派单与超时",
-    "types": ["req_new", "req_timeout", "req_reassign"],
+    // ㉖v199e req_rush（急料提交/催接）一直无人登记→掉"其他与系统"兜底组，
+    // 用户点"急料｜胡志文 提交了领料单"跳不了领料页的成因之一
+    "types": ["req_new", "req_rush", "req_timeout", "req_reassign"],
     "icon": Icons.assignment_add,
     "color": Color(0xFF515BD4)
   },
@@ -6118,9 +6134,19 @@ const _kHubGroups = <Map<String, dynamic>>[
   {
     "key": "stock",
     "name": "断料与预约",
-    "types": ["stock_out", "watch_in"],
+    "types": ["stock_out", "watch_in", "shortage", "shortage_done"], // ㉖v199e 断料闭环两类此前也掉兜底组
     "icon": Icons.inventory_2,
     "color": Color(0xFF546E7A)
+  },
+  {
+    // ㉖v199e 账实与系统告警独立组：ghost_out（幽灵出库/未上账滞留/重复流水）、
+    // loc_conflict 位货冲突、wmas_auth 凭证掉线、sys_err 系统异常——此前全堆"其他"
+    // 与闲聊消息混在一起，且条目不可点（无 reqId）；本组条目按类型跳库存/流水/诊断页
+    "key": "alert",
+    "name": "账实与系统告警",
+    "types": ["ghost_out", "loc_conflict", "wmas_auth", "sys_err"],
+    "icon": Icons.policy_outlined,
+    "color": Color(0xFFC62828)
   },
   {
     "key": "other",
@@ -6132,6 +6158,7 @@ const _kHubGroups = <Map<String, dynamic>>[
 ];
 const _kHubKnown = {
   "req_new",
+  "req_rush",
   "req_timeout",
   "req_reassign",
   "req_urge",
@@ -6148,12 +6175,23 @@ const _kHubKnown = {
   "car_alarm",
   "stock_out",
   "watch_in",
+  "shortage",
+  "shortage_done",
+  "ghost_out",
+  "loc_conflict",
+  "wmas_auth",
+  "sys_err",
 };
 
 class MessageHubPage extends StatefulWidget {
   final VoidCallback onOpenReq;
   final VoidCallback? onOpenAgv; // ㉖v50 车辆告警一键直达 AGV 看板
-  const MessageHubPage({super.key, required this.onOpenReq, this.onOpenAgv});
+  final void Function(String tab)? onOpenTab; // ㉖v199e 线程页按消息类型精准跳页签
+  const MessageHubPage(
+      {super.key,
+      required this.onOpenReq,
+      this.onOpenAgv,
+      this.onOpenTab});
   @override
   State<MessageHubPage> createState() => _MessageHubPageState();
 }
@@ -6240,6 +6278,13 @@ class _MessageHubPageState extends State<MessageHubPage> {
 
   void _openGroup(Map g) async {
     final ms = _of(g);
+    // ㉖v199e 三层各弹各的：线程页点击自弹线程 → 本回调再弹消息中心（两层连 pop）→
+    // 主页回调只管切页签。旧链路只弹线程一层，消息中心盖在目标页上="点了没进去"。
+    void leave(void Function() go) {
+      Navigator.of(context).pop(); // 线程页（栈顶）
+      Navigator.of(context).pop(); // 消息中心自己
+      go();
+    }
     await Navigator.push(
         context,
         MaterialPageRoute(
@@ -6248,10 +6293,13 @@ class _MessageHubPageState extends State<MessageHubPage> {
                 icon: g["icon"] as IconData,
                 color: g["color"] as Color,
                 msgs: ms,
-                onJumpReq: () {
-                  Navigator.of(context).pop();
-                  widget.onOpenReq();
-                })));
+                onJumpReq: () => leave(widget.onOpenReq),
+                onJumpTab: (tab) => leave(() {
+                  // onOpenTab 缺失（旧构造点）时回退领料页——与车辆告警卡
+                  // onOpenAgv??onOpenReq 同款保底，不拿 VoidCallback 塞带参位
+                  if (widget.onOpenTab != null) widget.onOpenTab!(tab);
+                  else widget.onOpenReq();
+                }))));
     final ts = List<String>.from(g["types"] ?? []);
     if (ts.isNotEmpty) unawaited(AuthApi.notificationsReadGroup(ts));
     if (mounted) _load();
@@ -6492,12 +6540,67 @@ class _HubThreadPage extends StatelessWidget {
   final Color color;
   final List<Map> msgs;
   final VoidCallback onJumpReq;
+  final void Function(String tab) onJumpTab; // ㉖v199e 按类型直达主页对应页签（检验/库存/AGV）
   const _HubThreadPage(
       {required this.title,
       required this.icon,
       required this.color,
       required this.msgs,
-      required this.onJumpReq});
+      required this.onJumpReq,
+      required this.onJumpTab});
+
+  /// ㉖v199e 消息→去处精准映射（用户点名"分析消息能否精准进入所说页面"）：
+  /// 领料全家桶（含 req_rush 急料）带 reqId→领料单详情；inspect→检验页签；
+  /// ghost_out 未上账/幽灵出库→库存页（登记/核对现场）；loc_conflict→库存页；
+  /// stock_out/shortage→库存页（断料就在库存语境）；watch_in→观察清单；
+  /// transfer_done/car_alarm→AGV页签；wmas_auth/sys_err→诊断页。
+  /// 返回 null=不可跳（toast 提示替代"点了没反应"）。
+  void _tapMsg(BuildContext context, Map m) {
+    final type = m["type"]?.toString() ?? "";
+    final rid = (m["reqId"]?.toString() ?? "");
+    final text = m["text"]?.toString() ?? "";
+    void jump(void Function() go) {
+      Navigator.of(context).pop();
+      go();
+    }
+    if (type.startsWith("req") && rid.isNotEmpty) {
+      // ㉖v199e 先写跳号再切页签：领料页 kReqJump 监听器（L105）收到即自动打开该单详情，
+      // 只切页签不带号=用户还得自己找单（系统通知路由 L1733 同款口径）
+      kReqJump.value = "$rid@${DateTime.now().millisecondsSinceEpoch}";
+      jump(onJumpReq); // StatelessWidget 字段直取，无 widget 前缀
+      return;
+    }
+    switch (type) {
+      case "inspect":
+        jump(() => onJumpTab("insp"));
+        break;
+      case "ghost_out":
+      case "loc_conflict":
+      case "stock_out":
+      case "shortage":
+      case "shortage_done":
+        jump(() => onJumpTab("inv"));
+        break;
+      case "watch_in":
+        jump(() => Navigator.push(context,
+            MaterialPageRoute(builder: (_) => const WatchListPage())));
+        break;
+      case "transfer_done":
+      case "car_alarm":
+        jump(() => onJumpTab("agv"));
+        break;
+      case "wmas_auth":
+      case "sys_err":
+        jump(() => Navigator.push(
+            context, MaterialPageRoute(builder: (_) => const DiagPage())));
+        break;
+      default:
+        if (text.isEmpty) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("该消息暂无可跳转页面，请见正文说明"),
+            duration: Duration(seconds: 2)));
+    }
+  }
 
   String _rel(String t) {
     final d = DateTime.tryParse(t);
@@ -6544,13 +6647,9 @@ class _HubThreadPage extends StatelessWidget {
                               child: Text(_rel(m["time"]?.toString() ?? ""),
                                   style: const TextStyle(
                                       fontSize: 11, color: Colors.grey))),
-                          trailing: (m["reqId"]?.toString() ?? "").isNotEmpty
-                              ? const Icon(Icons.chevron_right,
-                                  size: 20, color: Color(0xFF515BD4))
-                              : null,
-                          onTap: (m["reqId"]?.toString() ?? "").isEmpty
-                              ? null
-                              : onJumpReq,
+                          trailing: const Icon(Icons.chevron_right,
+                              size: 20, color: Color(0xFF515BD4)),
+                          onTap: () => _tapMsg(context, m),
                         )),
                 ]),
     );

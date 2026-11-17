@@ -1142,6 +1142,7 @@ const _kLedgerEpoch = "ledger_epoch_v69";
 String? _ledgerEpochSeen; // 本进程已对齐的世代；null=尚未对齐
 void scheduleLedgerPush({int seconds = 15}) {
   _ledgerPushPending = true;
+  AuthApi.kDiagPulse["pending"] = true; // ㉖v199d 登记即写袋：流水通道搭车时服务器立刻见"有积压"，判死计时有锚点
   // ㉖⑰ 节流不重置：原实现每次登记重置定时器，连续扫码账本永远推不出去（网页"查不到新料"根因）
   if (_pushLedgerTimer?.isActive == true) return;
   _pushLedgerTimer = Timer(Duration(seconds: seconds), ledgerPushNow);
@@ -1150,6 +1151,42 @@ void scheduleLedgerPush({int seconds = 15}) {
 void _ledgerPushRetry() {
   _pushLedgerTimer?.cancel();
   _pushLedgerTimer = Timer(const Duration(seconds: 30), ledgerPushNow);
+}
+
+// ===== ㉖v199d 诊断搭车上报：设备体检包生产者 =====
+// 服务器只能看到"流水在、账本无"的间接证据，诊断页 106 行纯本地零上报（截图唯一外带方式）。
+// 从此推送成败都写进 kDiagPulse（AuthApi 全局袋，两 sync 通道自动搭车），另 60 秒独立心跳
+// diagPulseNow——心跳消失=APP被杀/断网，这是账本推送"哑死"（连失败请求都不发）唯一可检测信号。
+int _diagRetryN = 0; // 连续失败计数（成功归零；服务器 diagWhyFor 据此说"重试N次"）
+int _diagStaticAt = 0; // 静态字段上次刷新毫秒（10分钟一档，心跳60秒只带动态字段）
+Future<void> _diagFillStatic() async {
+  final now = DateTime.now().millisecondsSinceEpoch;
+  if (now - _diagStaticAt < 600000) return;
+  _diagStaticAt = now;
+  try {
+    final sp = await SharedPreferences.getInstance();
+    AuthApi.kDiagPulse["epoch"] = sp.getString(_kLedgerEpoch) ?? "";
+    // dynamic 调用绕静态检查：shelfPlacements getter 在 Isar 生成码里（CI 生成后存在），
+    // 直写会+1条本地 undefined_getter 基线告警；诊断计数值仅参考，异常时保留旧值即可
+    try { AuthApi.kDiagPulse["ledgerCnt"] = await (_globalIsar as dynamic).shelfPlacements.where().count(); } catch (_) {}
+    AuthApi.kDiagPulse["host"] = Platform.localHostname;
+    AuthApi.kDiagPulse["app"] =
+        "${AppUpdater.localVersion}+${AppUpdater.localBuild}";
+    try {
+      final ifs = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      AuthApi.kDiagPulse["ip"] =
+          ifs.expand((e) => e.addresses.map((a) => a.address)).join(",");
+    } catch (_) {}
+  } catch (_) {}
+}
+/// 心跳：静态补齐 + 动态随带 → POST /api/diag/pulse（失败不重试，sync 通道自然覆盖）
+Future<void> diagPulseNow() async {
+  await _diagFillStatic();
+  AuthApi.kDiagPulse["pending"] = _ledgerPushPending;
+  AuthApi.kDiagPulse["retryN"] = _diagRetryN;
+  try {
+    await AuthApi.diagPulse(Map.of(AuthApi.kDiagPulse));
+  } catch (_) {}
 }
 
 Future<Map> ledgerPushNow() async {
@@ -1285,15 +1322,25 @@ Future<Map> ledgerPushNow() async {
       await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
       _ledgerPushPending = false; // ㉖⑰ 推送成功清 pending
       _ledgerEpochSeen = sp0.getString(_kLedgerEpoch) ?? ""; // ㉖v69 推送成功=与当前世代对齐
+      _diagRetryN = 0; // ㉖v199d 诊断袋：成功归零计数、记成功时刻与拒回数
+      AuthApi.kDiagPulse["lastOkAt"] = DateTime.now().millisecondsSinceEpoch;
+      AuthApi.kDiagPulse["lastRejN"] = rejL.length + rejLocL.length;
+      if (rejL.isNotEmpty || rejLocL.isNotEmpty) AuthApi.kDiagPulse["lastErr"] = "拒回${rejL.length}+格式${rejLocL.length}"; // 被拒回=推送通了但条目没进账，与失败分开表述
     } else {
       if (r["code"] == "epochStale") {
         _ledgerEpochSeen = null; // ㉖v69 双保险：被服务器世代闸拦下 → 强制重新对齐清旧缓存
         unawaited(ledgerPullMerge(force: true));
       }
+      _diagRetryN++; // ㉖v199d 诊断袋：失败原因与次数随下次搭车上报（服务器 diagWhyFor 直给"末次失败：xxx 重试N次"）
+      AuthApi.kDiagPulse["lastErr"] = "${r["code"] ?? ""} ${r["msg"] ?? "?"}".trim();
+      AuthApi.kDiagPulse["lastErrAt"] = DateTime.now().millisecondsSinceEpoch;
       _ledgerPushRetry(); // 失败30秒后自动重试
     }
     return r;
   } catch (e) {
+    _diagRetryN++; // ㉖v199d 异常入袋（断网/超时等，异常对象转字符串截 140 与服务器字段上限一致）
+    AuthApi.kDiagPulse["lastErr"] = "$e".length > 140 ? "$e".substring(0, 140) : "$e";
+    AuthApi.kDiagPulse["lastErrAt"] = DateTime.now().millisecondsSinceEpoch;
     _ledgerPushRetry(); // ㉖⑰ 异常同样自动重试，防断网期间账本滞留本机
     return {"ok": false, "msg": "$e"};
   }

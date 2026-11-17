@@ -357,15 +357,25 @@ class AuthApi {
 
   // ---- 货位账本同步（PDA ↔ 电脑服务器，增量合并：新者胜+墓碑删除） ----
   /// items: [{c:标签, l:货位, f:料框, t:毫秒, pid:托号}]；del: [{c:标签, t:删除时间}] 墓碑
+  /// ㉖v199d 诊断搭车：两个 sync 通道自动携带全局诊断袋 kDiagPulse（~200B，调用方零改动）；
+  /// 采集层在账本推送成败点更新该袋（pending/lastOkAt/lastErr/retryN），心跳函数补静态字段。
+  static final Map<String, dynamic> kDiagPulse = {};
   static Future<Map> ledgerSync(List<Map> items,
           {List<Map> del = const [], String epoch = ""}) async =>
       _req("POST", "/api/ledger/sync",
           body: {
             "items": items,
             "del": del,
-            if (epoch.isNotEmpty) "epoch": epoch
+            if (epoch.isNotEmpty) "epoch": epoch,
+            if (kDiagPulse.isNotEmpty) "diag": Map.of(kDiagPulse),
           }, // ㉖v69 世代：服务器据此拦旧缓存防污染新账本
           token: await AuthStore.token());
+
+  /// ㉖v199d 诊断心跳：60 秒独立通道，与账本推送成败完全解耦——心跳消失=APP被杀/断网，
+  /// 这是账本"哑死"形态（连失败请求都不发）唯一可检测信号。任意登录用户可报。
+  static Future<Map> diagPulse(Map<String, dynamic> diag) async =>
+      _req("POST", "/api/diag/pulse",
+          body: {"diag": diag}, token: await AuthStore.token());
 
   /// 拉取电脑服务器上的账本全量（公开只读；含墓碑，PDA 合并用）
   static Future<Map> ledgerGet() async => _req("GET", "/api/ledger");
@@ -390,7 +400,11 @@ class AuthApi {
   // ---- 采集流水 / 出库单同步（流水按键增量合并；删批次单独上报） ----
   static Future<Map> scanlogSync(List items) async =>
       _req("POST", "/api/scanlog/sync",
-          body: {"items": items}, token: await AuthStore.token());
+          body: {
+            "items": items,
+            if (kDiagPulse.isNotEmpty) "diag": Map.of(kDiagPulse) // ㉖v199d 诊断搭车·流水通道：账本哑死时流水照带（根因照拿）
+          },
+          token: await AuthStore.token());
   static Future<Map> scanlogDeleteBatch(String batch) async =>
       _req("POST", "/api/scanlog/delete",
           body: {"batch": batch}, token: await AuthStore.token());

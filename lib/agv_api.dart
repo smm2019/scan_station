@@ -2636,11 +2636,16 @@ Future<void> showTransferDialog(BuildContext context,
                 sel.clear();
               });
               List items = [];
+              final tfL = <String>{}, tfC = <String>{}; // ㉖v199e 在途移库起点/框码（与网页 pjmvFill 同判据）：已在拉下架途中的框不再列出，勾了才被服务器双闸拒=误导
               try {
                 final r = mode == "proj"
                     ? await AuthApi.ledgerGet()
                     : await AuthApi.ledgerFuzzy(qC.text.trim());
                 items = (r["items"] as List?) ?? [];
+                for (final t in (r["inTf"] as List? ?? []).whereType<Map>()) {
+                  tfL.add((t["from"] ?? "").toString().toUpperCase());
+                  tfC.add((t["code"] ?? "").toString().toUpperCase());
+                }
               } catch (_) {
                 setDlg(() {
                   rowsLoading = false;
@@ -2663,8 +2668,10 @@ Future<void> showTransferDialog(BuildContext context,
                 final l = (it["l"] ?? "").toString().toUpperCase();
                 if (!l.startsWith("NB02-") ||
                     l.contains("-CK-") ||
-                    l.contains("-RK-"))
-                  continue; // 在架AGV货架框才有拉下架意义（台挂=待搬、地面/来料=AGV通道不适用）
+                    l.contains("-RK-") ||
+                    tfL.contains(l) ||
+                    tfC.contains((it["c"] ?? "").toString().toUpperCase()))
+                  continue; // 在架AGV货架框才有拉下架意义（台挂=待搬、地面/来料=AGV通道不适用）；㉖v199e 排已在途（排队/下发中/已下发）起点与框码（与网页pjmvFill逐字同口径）
                 if (pns != null && !pns.contains(pn)) continue;
                 final b = bx.putIfAbsent(
                     l,
@@ -2973,9 +2980,12 @@ Future<void> showTransferDialog(BuildContext context,
                                                   color: Colors.grey)),
                                       onTap: s["ok"] == true
                                           ? () {
+                                              // ㉖v199e 修"选完台弹窗整个消失、报起点必填"（11-17 实锤）：
+                                              // 旧 onTap 直接 pop(go) 是单框旧流程遗留——弹窗关了 pickedBoxes
+                                              // 还没被底部按钮带出=空，外层判"起点空+无勾选"直接拒。
+                                              // 现在只记选中态（该行即刻打✓），下发交底部按钮统一收口。
                                               setDlg(() => pickedStn =
                                                   s["code"].toString());
-                                              Navigator.pop(ctx2, "go");
                                             }
                                           : null,
                                     ),

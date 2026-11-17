@@ -1111,7 +1111,9 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
                     // 静态类型是可变 List<String>，analyzer 查不出——只有真机点到该分支才炸，教训入档。
                     final List<String> zones = <String>[];
                     if (_scopeType != 'shelf') {
-                      zones.addAll(locs.where((c) { if (_scopeType.isEmpty) return true; if (!c.startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04')) return false; return !c.contains('-CK-'); }).map(invZoneOf)); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
+                      // ㉖v199e 去重（11-17 截图实锤 NB03-A-11 连刷 8 行）：货位基准行是"位×零件"，
+                      // 同排挂 8 个零件=8 行 → 区码重复 8 次。L1560 整区盘点处一直有 toSet，本处漏了。
+                      zones.addAll(locs.where((c) { if (_scopeType.isEmpty) return true; if (!c.startsWith(_scopeType == 'shelf' ? 'NB02' : _scopeType == 'ground' ? 'NB03' : 'NB04')) return false; return !c.contains('-CK-'); }).map(invZoneOf).toSet()); // ㉖v120 三类前缀映射（原二元判断会把来料区误归地面）
                       zones.sort();
                     }
                     // 每格位在架框数=账本在架码数（㉖v181：与创建时 buildPickPlan 展开同源于
