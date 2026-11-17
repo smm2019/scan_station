@@ -4445,19 +4445,16 @@ class _MainPageState extends State<MainPage>
                     final ci = _tabKeys.indexOf('collect'); // ㉖v53 采集可能被用户挪位，按键定位
                     if (ci >= 0) _tabController.animateTo(ci);
                   } else if (idx == 1) {
-                    // ㉑消息中枢：分组卡片流，点消息跳领料页
+                    // ㉑消息中枢：分组卡片流，点消息跳目标页签
+                    // ㉖v193f 补 onOpenTab：此构造点此前漏传（nullable+缺失回退领料页），
+                    // 车辆告警点击被静默兜到领料页（用户实锤）；统一走 _openTabFrom 带页签隐藏提示
                     await Navigator.push(
                         context,
                         MaterialPageRoute(
                             builder: (_) => MessageHubPage(
-                                  onOpenReq: () => _tabController.animateTo(
-                                      _tabKeys.indexOf('req') >= 0
-                                          ? _tabKeys.indexOf('req')
-                                          : 0),
-                                  onOpenAgv: () => _tabController.animateTo(
-                                      _tabKeys.indexOf('agv') >= 0
-                                          ? _tabKeys.indexOf('agv')
-                                          : 0),
+                                  onOpenReq: () => _openTabFrom("req"),
+                                  onOpenAgv: () => _openTabFrom("agv"),
+                                  onOpenTab: _openTabFrom,
                                 )));
                     // 已读时间戳落盘后重算未读（进页面看过即消，不再无脑清零）
                     _recountUnread();
@@ -6186,12 +6183,14 @@ const _kHubKnown = {
 class MessageHubPage extends StatefulWidget {
   final VoidCallback onOpenReq;
   final VoidCallback? onOpenAgv; // ㉖v50 车辆告警一键直达 AGV 看板
-  final void Function(String tab)? onOpenTab; // ㉖v199e 线程页按消息类型精准跳页签
+  // ㉖v193f 改 required：此前 nullable + "缺失回退领料页"保底，底部导航那个构造点漏传
+  // → 车辆告警(onJumpTab('agv'))被静默兜到领料页（用户实锤）。required 后漏传编译期即报错。
+  final void Function(String tab) onOpenTab; // ㉖v199e 线程页按消息类型精准跳页签
   const MessageHubPage(
       {super.key,
       required this.onOpenReq,
-      this.onOpenAgv,
-      this.onOpenTab});
+      required this.onOpenTab,
+      this.onOpenAgv});
   @override
   State<MessageHubPage> createState() => _MessageHubPageState();
 }
@@ -6294,12 +6293,8 @@ class _MessageHubPageState extends State<MessageHubPage> {
                 color: g["color"] as Color,
                 msgs: ms,
                 onJumpReq: () => leave(widget.onOpenReq),
-                onJumpTab: (tab) => leave(() {
-                  // onOpenTab 缺失（旧构造点）时回退领料页——与车辆告警卡
-                  // onOpenAgv??onOpenReq 同款保底，不拿 VoidCallback 塞带参位
-                  if (widget.onOpenTab != null) widget.onOpenTab!(tab);
-                  else widget.onOpenReq();
-                }))));
+                // ㉖v193f onOpenTab 已 required（此前 nullable+缺失回退领料页正是车辆告警进错页根因），直调即可
+                onJumpTab: (tab) => leave(() => widget.onOpenTab(tab)))));
     final ts = List<String>.from(g["types"] ?? []);
     if (ts.isNotEmpty) unawaited(AuthApi.notificationsReadGroup(ts));
     if (mounted) _load();
