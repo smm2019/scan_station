@@ -2647,6 +2647,12 @@ function labelBlockReason(st, purpose, opts) { // purpose: in(采集入库)|out(
       // rs=声明"实物已搬到CK站台、要重新上架"。这是合法重新入库，直接放行——不再用
       // 历史流水的 gl 位置二次设卡（框历史上架过货架正说明它该被重新上架，而非真重复）。
       if (opts && opts.reShelf) return '';
+      // ㉖v199c 生产退库(ret=1)同样放行（11-18 现场实锤：勾了退库重扫仍弹"已有采集记录"）：
+      // 能进本分支=账本已无此框行（框物理上不在架），ret 勾选=操作员显式声明生产退料，
+      // 再验 everOut 确有出库历史——出库的框退料回库正是合法重新入库，历史流水不该设卡。
+      // 旧版 ret 放行判定挂在下面 everOut 分支（原码回扫豁免），被本分支历史流水短路永远够不到
+      // （v199b 给 rs 开豁免时漏了 ret 同形态；现场被迫"强制继续+消位"绕路）。
+      if (opts && opts.ret && st.everOut) return '';
       const last = st.inScanlog.slice().sort((a, b) => (Number(b.t) || 0) - (Number(a.t) || 0))[0];
       const where = String(last.gl || last.st || '');
       const lot = String(last.lot || '');
@@ -4761,8 +4767,11 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
             continue pushLoop;
           }
           _fpNew[key] = h; // 本轮该设备视图留档
-          // ㉖ 货位互斥闸：同一货位不允许被不同框同时占用（多PDA并发登记、过期副本回填都会撞位）；同框兄弟码（同托号）豁免
-          if (it.l) {
+          // ㉖v199c 同位重推豁免（11-18 现场弹窗实锤：N26K160021/22 同托两码不同零件号，重推未带托号，
+          // 互斥豁免(靠托号键/同零件号)够不到 → 两条互指对方占用，双双拒回的死锁弹窗）：
+          // 互斥闸的本职=拦【新增占用】；推送货位与服务器现值相同 → 占用关系不变、无新增，不该撞。
+          // 改位覆盖形态(l≠old.l)由上面 v186 旧骨架闸在先处理；新占位(无 old 或 l 不同)照撞不误。
+          if (it.l && !(old && String(old.l || '').toUpperCase() === it.l)) {
             const _bk = boxKeyOf(it);
             for (const [oc, orow] of cur) {
               if (oc === key || String(orow.l || '').toUpperCase() !== it.l) continue;
