@@ -2697,7 +2697,7 @@ const SUPERSEDE_TTL_MS = 20 * 60 * 1000; // 取代凭证有效期：强过后 20
 function pruneSupersede(nowMs) { // 过期凭证清除（防操作员强过后直接放弃，凭证长期挂着）
   const sv = db.supersede = db.supersede || {};
   let n = 0;
-  for (const [c, v] of Object.entries(sv)) { if (!v || !(Number(v.at) > 0) || nowMs - Number(v.at) > SUPERSEDE_TTL_MS) { delete sv[c]; n++; } }
+  for (const [c, v] of Object.entries(sv)) { const _t = v && Number(v.ttl) > 0 ? Number(v.ttl) : SUPERSEDE_TTL_MS; if (!v || !(Number(v.at) > 0) || nowMs - Number(v.at) > _t) { delete sv[c]; n++; } } // ㉖v199e 自带 ttl 的凭证（退库自动=24h）按其自身时效剪
   return n;
 }
 // 兑现取代：该标签本次新记录已落账 → 把凭证里登记的旧有效流水作废。返回被作废的流水键数组（无则 null）
@@ -2709,7 +2709,7 @@ function settleSupersede(codeU, byName) {
   if (!sv) return null;
   delete db.supersede[String(codeU || '').toUpperCase()]; // 一次凭证只兑现一次，无论成败都不重放
   const now = Date.now();
-  if (now - Number(sv.at) > SUPERSEDE_TTL_MS) return null; // 已过期（本函数前若未被 prune 清掉）
+  if (now - Number(sv.at) > (Number(sv.ttl) > 0 ? Number(sv.ttl) : SUPERSEDE_TTL_MS)) return null; // 已过期（本函数前若未被 prune 清掉）；㉖v199e 凭证可自带 ttl（退库自动凭证=24h 离线宽限），无则用全局 20 分钟
   const done = [];
   for (const k of (Array.isArray(sv.keys) ? sv.keys : [])) {
     const rec0 = (db.scanlog || {})[k];
@@ -7313,6 +7313,22 @@ return send(res, 200, {
         const st = labelStatus(cs);
         // ㉖v168 必须带 me：盲窗拦截靠它区分"自己重扫"与"他人已扫"，不传则本人正常重扫也被硬拦
         const inReason = labelBlockReason(st, 'in', { ret: retMode, recv: recvMode, reShelf: reShelfMode, me: u.name });
+        // ㉖v199e 退库放行=自动覆盖（用户实锤 N26K110063：勾退库重扫成功入账，但 11-11 旧有效流水原样挂着
+        // →流水表一对双行靠网页"去重计"兜底，每退一筐积一对，人工裁决尾巴清不完）。v167 取代机制只挂在
+        // 【被拦→强制继续→填原因】链上，退库走直接放行（PDA 不弹强过窗）凭证从未生成=旧流水无人作废。
+        // 修：放行确实由 ret 豁免触发（无拦由头 ∧ ret勾选 ∧ 确有出库留痕 ∧ 账本无行=物理不在架 ∧ 存在旧有效
+        // 流水）→ 当场挂自动取代凭证：keys=此刻旧有效流水键快照（本次新流水未落账、天然不在快照内，
+        // 与 v167 同一防误伤设计——绝不用设备时钟比先后）；经 /api/ledger/merge 真正落账时兑现作废，
+        // 一个框任何时刻只留一条有效流水。ttl=24h（PDA 离线宽限上限，覆盖"扫了当场没推"；过期未落账自动
+        // 撤销，旧流水原样保留不误伤）。反例不受影响：无出库留痕的框走不到本豁免；账本有行=已在库照拦。
+        if (retMode && !inReason && st.everOut && !st.inLedger.length && st.inScanlog.length) {
+          const _ks = Object.keys(db.scanlog || {}).filter((k) => { const v = (db.scanlog || {})[k]; return v && !v.cx && String(v.code || '').toUpperCase() === cs; });
+          if (_ks.length) {
+            (db.supersede = db.supersede || {})[cs] = { at: Date.now(), by: u.name, why: '生产退库重扫自动取代（旧流水=出库前入库记录，实物已出库又退回落新位）', keys: _ks, ttl: 24 * 3600 * 1000 };
+            pushOps(u, '退库自动取代挂账', cs, '本框存在 ' + _ks.length + ' 条旧有效流水，重扫入账后自动作废（24小时内未落账自动撤销）');
+            save();
+          }
+        }
         const recvLoc = st.inLedger.length && st.inLedger.every((x) => locRecv(x.l)) ? String(st.inLedger[0].l || '') : '';
         return send(res, 200, { ok: true, code: cs, seen: !!(inReason || st.inLedger.length || st.inScanlog.length || st.everIn || st.everOut), blockIn: !!inReason, everIn: !!st.everIn, reason: inReason, loc: st.inLedger.length ? String(st.inLedger[0].l || '') : '', part: st.inLedger.length ? String(st.inLedger[0].p || '') : '', batch: st.inScanlog.length ? String(st.inScanlog[0].gl || st.inScanlog[0].st || '') : (st.everOut ? String(st.everOut.batch || '') : ''), by: st.inLedger.length ? String(st.inLedger[0].by || '') : (st.inScanlog.length ? String(st.inScanlog[0].op || '') : ''), everOut: st.everOut ? { at: st.everOut.at, batch: st.everOut.batch || '' } : null, recvLoc, seenOut: !!st.everOut }); // ㉖v118 recvLoc=在账且全为来料区位（二楼转入判据）；seenOut=曾出库（退库原码提示）
       }
