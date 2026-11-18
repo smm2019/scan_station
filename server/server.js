@@ -897,7 +897,7 @@ const EXP_CAL = {
   'AGV任务': [['方向', '出库=货架→站台；入库=站台→货架'], ['接令/叉出/到站', 'RCS任务节点完成时刻；空=未发生'], ['时长秒', '接令到完成执行秒数；在途未完成=至今已耗时'], ['状态', '完成（RCS沉淀）/排队/下发中/已下发/到站/失败（在途队列并入）'], ['关联单', '按RCS任务号配对领料单号；配不到=空'], ['范围', 'RCS任务沉淀近30天+当前在途队列（WMAS对执行结果无感知，本表为权威）']],
   'AGV异常事件': [['类型', '告警/恢复/已认领/升级/红牌/堵点/低电/出库超时/改位冲突'], ['范围', '车辆告警近500条+堵点/低电/超时/冲突实时聚合'], ['时间', '事件发生时刻（服务器时钟）'], ['持续时长(分)', '告警→同车下一条恢复的分钟数；未恢复=至今'], ['是否恢复', '已恢复/未恢复/仍在告警；低电=未回充/已回充']],
   '工作量报表': [['入库框', '采集流水按托号去重（同托多码计1框），框数记入首次入库日'], ['出库框/件', '出库单标签去重与件数合计，按出库单创建日'], ['接单', '领料单历史"接单"事件；平均接单=下单到接单分钟'], ['修正/返架', '改位+补登记+消位计修正，返架单列（人工动作，不含系统自动）'], ['范围', '默认近14天；日期归属用服务器时钟本地日']],
-  '月度对账包': [['包含', '库位表+库存汇总+入库流水+出库流水 四工作表+口径说明'], ['用途', '与SAP/供应商对账的标准包；文件内口径说明即对账依据']],
+  '月度对账包': [['包含', '运营看板(KPI/趋势/占用/呆滞/人效/AGV/异常) + 库位表 + 库存汇总 + 入库流水 + 出库流水 + 差异说明 + 口径说明'], ['看板窗口', '跟随本次导出的时间范围；未选=近30天；环比对紧邻等长前一周期'], ['用途', '看板给管理层汇报，四表给SAP/供应商对账；文件内口径说明即依据'], ['看板性质', '只读汇总不改账；账实差异以盘点结果(D10)为准']],
 };
 function expTs(ms) { return ms ? new Date(ms).toLocaleString('zh-CN', { hour12: false }) : ''; }
 // ㉖v131 盘点区域摘要 / ㉖v133 巷道粒度（用户拍板对齐 APP：显示 NB03-H-12 而非 NB03-H）：实扫货位巷道 ∪ scope 巷道 并集去重排序
@@ -906,10 +906,83 @@ function invAreas(r) { const s = new Set(); for (const l of (r.locs || [])) { co
 function expX(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 function expCsvCell(v) { v = v == null ? '' : String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
 function expCsv(d, meta) { const L = meta.map((m) => '#' + m); L.push(d.headers.map(expCsvCell).join(',')); for (const r of d.rows) L.push(r.map(expCsvCell).join(',')); return '\uFEFF' + L.join('\r\n') + '\r\n'; }
+// ㉖v200 看板样式表（SpreadsheetML Styles）：banner/区块条/KPI彩色大数字/表头/斑马/涨跌/数据条/热力档
+const _XLS_STYLES = '<Styles>'
+  + '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Border/><Font ss:FontName="Microsoft YaHei" ss:Size="10" ss:Color="#333333"/><Interior/><NumberFormat/><Protection/></Style>'
+  + '<Style ss:ID="sBanner"><Font ss:FontName="Microsoft YaHei" ss:Color="#FFFFFF" ss:Bold="1" ss:Size="18"/><Interior ss:Color="#1F3864" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sSub"><Font ss:Color="#D6DCE5" ss:Size="10"/><Interior ss:Color="#1F3864" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sSection"><Font ss:Color="#FFFFFF" ss:Bold="1" ss:Size="12"/><Interior ss:Color="#2E5C8A" ss:Pattern="Solid"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sKpiLbl"><Font ss:Color="#7F7F7F" ss:Size="9"/><Alignment ss:Horizontal="Center" ss:Vertical="Top"/></Style>'
+  + '<Style ss:ID="sKpiVal"><Font ss:Color="#1F3864" ss:Bold="1" ss:Size="20"/><Interior ss:Color="#EAF1FB" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sGood"><Font ss:Color="#1B7837" ss:Bold="1" ss:Size="20"/><Interior ss:Color="#E7F4E9" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sBad"><Font ss:Color="#B02A2A" ss:Bold="1" ss:Size="20"/><Interior ss:Color="#FBE9E9" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sWarn"><Font ss:Color="#98630B" ss:Bold="1" ss:Size="20"/><Interior ss:Color="#FDF2E0" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sDeltaUp"><Font ss:Color="#1B7837" ss:Size="9" ss:Bold="1"/><Alignment ss:Horizontal="Center"/></Style>'
+  + '<Style ss:ID="sDeltaDn"><Font ss:Color="#B02A2A" ss:Size="9" ss:Bold="1"/><Alignment ss:Horizontal="Center"/></Style>'
+  + '<Style ss:ID="sTh"><Font ss:Color="#FFFFFF" ss:Bold="1" ss:Size="10"/><Interior ss:Color="#2E5C8A" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#1F3864"/></Borders></Style>'
+  + '<Style ss:ID="sTd"><Font ss:Size="10"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E3E7EE"/></Borders><Alignment ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sTdAlt"><Font ss:Size="10"/><Interior ss:Color="#F5F7FA" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E3E7EE"/></Borders><Alignment ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sTdN"><Font ss:Size="10"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E3E7EE"/></Borders><Alignment ss:Horizontal="Right" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sTdNAlt"><Font ss:Size="10"/><Interior ss:Color="#F5F7FA" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E3E7EE"/></Borders><Alignment ss:Horizontal="Right" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sBar"><Font ss:FontName="Consolas" ss:Color="#2E5C8A" ss:Size="10"/><Alignment ss:Horizontal="Left" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sH0"><Interior ss:Color="#E7F4E9" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sH1"><Interior ss:Color="#D6ECD9" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sH2"><Interior ss:Color="#FDF2D0" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sH3"><Interior ss:Color="#FBDCC4" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sH4"><Interior ss:Color="#F6C6C6" ss:Pattern="Solid"/><Alignment ss:Horizontal="Center" ss:Vertical="Center"/></Style>'
+  + '<Style ss:ID="sNote"><Font ss:Color="#5A5A5A" ss:Size="9.5"/><Alignment ss:Horizontal="Left" ss:Vertical="Top" ss:WrapText="1"/></Style>'
+  + '</Styles>';
+// 单元格生成：s=样式ID(空=Default) t=类型(S/N) a=mergeAcross r=mergeDown
+function _xc(v, s, t, a, r) {
+  const st = s ? ` ss:StyleID="${s}"` : '';
+  const ma = a ? ` ss:MergeAcross="${a}"` : '';
+  const md = r ? ` ss:MergeDown="${r}"` : '';
+  const isN = t === 'N' && v !== '' && v != null && Number.isFinite(Number(v));
+  const body = `<Data ss:Type="${isN ? 'Number' : 'String'}">${expX(isN ? Number(v) : (v == null ? '' : v))}</Data>`;
+  return `<Cell${st}${ma}${md}>${body}</Cell>`;
+}
+// 看板 sheet 渲染：大标题条 + KPI 色块带 + 数据条图 + 斑马表 + 热力 + 口径注
+function _renderBoard(p) {
+  const cols = p.cols || [];
+  let x = `<Worksheet ss:Name="${expX(p.label).slice(0, 28)}"><Table ss:DefaultRowHeight="16">`;
+  if (cols.length) x += cols.map((w, i) => `<Column ss:Index="${i + 1}" ss:Width="${w}"/>`).join('');
+  const N = cols.length || 12;
+  if (p.title) { x += `<Row ss:Height="34">${_xc(p.title, 'sBanner', 'S', N - 1)}</Row>`; x += `<Row ss:Height="16">${_xc(p.subtitle || '', 'sSub', 'S', N - 1)}</Row>`; }
+  const toneStyle = { good: 'sGood', bad: 'sBad', warn: 'sWarn' };
+  for (const sec of p.sections || []) {
+    x += `<Row ss:Height="22">${_xc(sec.title || '', 'sSection', 'S', N - 1)}</Row>`;
+    if (sec.type === 'kpi') {
+      const items = sec.items || [];
+      x += `<Row ss:Height="30">` + items.map((it) => _xc(it.v, toneStyle[it.tone] || 'sKpiVal', 'S', 1) + _xc('', null, 'S')).join('') + '</Row>';
+      x += `<Row ss:Height="16">` + items.map((it) => _xc(it.k + (it.unit ? ' · ' + it.unit : ''), 'sKpiLbl', 'S', 1) + _xc('', null, 'S')).join('') + '</Row>';
+      if (items.some((it) => it.delta)) x += `<Row ss:Height="14">` + items.map((it) => _xc(it.delta || '', it.deltaDir === 'dn' ? 'sDeltaDn' : 'sDeltaUp', 'S', 1) + _xc('', null, 'S')).join('') + '</Row>';
+    } else if (sec.type === 'bars') {
+      for (const b of sec.items || []) {
+        const ratio = b.max > 0 ? Math.max(0, Math.min(1, b.v / b.max)) : 0;
+        const bars = '█'.repeat(Math.round(ratio * 26)) + '░'.repeat(26 - Math.round(ratio * 26));
+        x += '<Row>' + _xc(b.k, 'sTd', 'S') + _xc(bars + '  ' + (b.disp != null ? b.disp : b.v), 'sBar', 'S') + '</Row>';
+      }
+    } else if (sec.type === 'table') {
+      const hd = sec.headers || [], tp = sec.types || [];
+      x += '<Row ss:Height="20">' + hd.map((h) => _xc(h, 'sTh', 'S')).join('') + '</Row>';
+      (sec.rows || []).forEach((r, ri) => { const z = ri % 2 ? 'Alt' : ''; x += '<Row>' + r.map((c, ci) => _xc(c, (tp[ci] === 'N' ? 'sTdN' : 'sTd') + z, tp[ci] === 'N' ? 'N' : 'S')).join('') + '</Row>'; });
+    } else if (sec.type === 'heat') {
+      // 热力表：heatCols=列索引→该格值须为 {d:显示文本, h:0..4档位}；其余格正常渲染
+      const hd = sec.headers || [], hc = sec.heatCols || [];
+      x += '<Row ss:Height="20">' + hd.map((h) => _xc(h, 'sTh', 'S')).join('') + '</Row>';
+      (sec.rows || []).forEach((r) => { x += '<Row>' + r.map((c, ci) => { if (hc.includes(ci) && c && typeof c === 'object') return _xc(c.d, 'sH' + Math.max(0, Math.min(4, c.h | 0)), 'S'); return _xc(c, 'sTd', 'S'); }).join('') + '</Row>'; });
+    } else if (sec.type === 'note') {
+      for (const ln of sec.lines || []) x += `<Row ss:Height="14">${_xc(ln, 'sNote', 'S', N - 1)}</Row>`;
+    }
+    x += '<Row/>';
+  }
+  return x + '</Table></Worksheet>';
+}
 function expXls(d) {
   const parts = d.parts || [d];
-  let x = '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n';
+  let x = '<?xml version="1.0" encoding="UTF-8"?>\n<?mso-application progid="Excel.Sheet"?>\n<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">\n' + _XLS_STYLES;
   for (const p of parts) {
+    if (p.board) { x += _renderBoard(p) + '\n'; continue; } // 看板 sheet 走样式渲染分支
     x += `<Worksheet ss:Name="${expX(p.label).slice(0, 28)}"><Table><Row>` + p.headers.map((h) => `<Cell><Data ss:Type="String">${expX(h)}</Data></Cell>`).join('') + '</Row>\n';
     for (const r of p.rows) x += '<Row>' + r.map((c, i) => { const t = p.types && p.types[i] === 'N' && c !== '' && c != null && Number.isFinite(Number(c)); return `<Cell><Data ss:Type="${t ? 'Number' : 'String'}">${expX(t ? Number(c) : (c == null ? '' : c))}</Data></Cell>`; }).join('') + '</Row>\n';
     x += '</Table></Worksheet>\n';
@@ -918,6 +991,383 @@ function expXls(d) {
   x += '<Worksheet ss:Name="口径说明"><Table><Row><Cell><Data ss:Type="String">项目</Data></Cell><Cell><Data ss:Type="String">说明</Data></Cell></Row>\n';
   for (const c of cal) x += `<Row><Cell><Data ss:Type="String">${expX(c[0])}</Data></Cell><Cell><Data ss:Type="String">${expX(c[1])}</Data></Cell></Row>\n`;
   return x + '</Table></Worksheet></Workbook>';
+}
+// ㉖v200b 看板预览纯文本渲染：看板 sheet 数据在 sections（无 rows），导出中心预览只吃 rows/headers 会显示"0行"空白——
+// 预览出口把 sections 拍平成二维表（KPI三行组/表格/数据条/热力/口径注释），预览弹窗所见即看板结构（导出仍走样式 XML 分支）
+function renderBoardText(b) {
+  const rows = [];
+  for (const sec of b.sections || []) {
+    if (sec.title) rows.push(['▍' + sec.title]);
+    if (sec.type === 'kpi') {
+      rows.push((sec.items || []).map((it) => it.k + (it.unit ? '(' + it.unit + ')' : '')));
+      rows.push((sec.items || []).map((it) => String(it.v == null ? '' : it.v)));
+      rows.push((sec.items || []).map((it) => it.delta ? ((it.deltaDir === 'dn' ? '▼' : '▲') + String(it.delta).replace(/^[▲▼]\s*/, '')) : ''));
+    } else if (sec.type === 'bars') {
+      const mx = Math.max(1, ...(sec.items || []).map((x) => x.v || 0));
+      for (const x of sec.items || []) rows.push([x.k, '█'.repeat(Math.round((x.v || 0) / mx * 24)) + ' ' + (x.disp != null ? x.disp : x.v)]);
+    } else if (sec.type === 'table' || sec.type === 'heat') {
+      if (sec.headers && sec.headers.some((h) => String(h).trim())) rows.push(sec.headers.map((h) => String(h == null ? '' : h)));
+      for (const r of sec.rows || []) rows.push(r.map((c) => (c && typeof c === 'object') ? String(c.d == null ? '' : c.d) : String(c == null ? '' : c)));
+    } else if (sec.type === 'note') {
+      for (const ln of sec.lines || []) rows.push([String(ln)]);
+    }
+    if (sec.type !== 'kpi') rows.push(['']);
+  }
+  return rows;
+}
+// ===== ㉖v201 零依赖 .xlsx(OOXML) 写入器：月度对账包看板带 Excel 原生图表 =====
+// 为什么：SpreadsheetML(.xls) 规范上不支持内嵌图表——v200 的色块/数据条是伪可视化，给领导汇报不合格。
+// .xlsx = zip(OOXML parts, store 不压缩)：workbook+sheet+styles+chart+drawing；验证=python openpyxl 真加载+图表计数（测试端）。
+// 范围克制：只有 PACK 强制走 xlsx，其余数据集维持 SpreadsheetML 不动；任何数据集显式 fmt=xlsx 也支持（无图表=纯表）。
+const _XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const _CRC_T = (() => { const t = new Int32Array(256); for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[i] = c; } return t; })();
+function _crc32(buf) { let c = ~0; for (let i = 0; i < buf.length; i++) c = _CRC_T[(c ^ buf[i]) & 255] ^ (c >>> 8); return (~c >>> 0); }
+// zip store：本地头+中央目录+EOCD；0x0800=UTF-8文件名标志；日期固定1980-01-01（zip 规范下限）
+function _zipStore(files) {
+  const chunks = [], cen = []; let off = 0;
+  for (const [name, buf] of files) {
+    const nb = Buffer.from(name, 'utf8'), crc = _crc32(buf);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x0800, 6); lh.writeUInt16LE(0, 8);
+    lh.writeUInt16LE(1980, 10); lh.writeUInt16LE(0, 12); // 时间+日期字段（1980-01-01 00:00）
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(buf.length, 18); lh.writeUInt32LE(buf.length, 22);
+    lh.writeUInt16LE(nb.length, 26); lh.writeUInt16LE(0, 28);
+    chunks.push(lh, nb, buf);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0x0800, 8);
+    ch.writeUInt16LE(0, 10); ch.writeUInt16LE(1980, 12); ch.writeUInt16LE(0, 14);
+    ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(buf.length, 20); ch.writeUInt32LE(buf.length, 24);
+    ch.writeUInt16LE(nb.length, 28); ch.writeUInt16LE(0, 30); ch.writeUInt16LE(0, 32); ch.writeUInt16LE(0, 34); ch.writeUInt16LE(0, 36);
+    ch.writeUInt32LE(0, 38); ch.writeUInt32LE(off, 42);
+    cen.push(ch, nb);
+    off += 30 + nb.length + buf.length;
+  }
+  const cb = Buffer.concat(cen), end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(cb.length, 12); end.writeUInt32LE(off, 16);
+  return Buffer.concat([...chunks, cb, end]);
+}
+const _xq = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const _xcol = (i) => { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - m - 1) / 26); } return s; };
+// 图表 XML：type=line|bar|pie（bar 支持横条 barDir）；数据区单元格引用+双缓存（Excel 打开即用，不必读表）
+function _xchartXml(cf) {
+  const n = cf.cats.length;
+  const numCache = (vals) => `<c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${n}"/>` + vals.map((v, i) => `<c:pt idx="${i}"><c:v>${Number(v) || 0}</c:v></c:pt>`).join('') + '</c:numCache>';
+  const strCache = (vals) => `<c:strCache><c:ptCount val="${n}"/>` + vals.map((v, i) => `<c:pt idx="${i}"><c:v>${_xq(v)}</c:v></c:pt>`).join('') + '</c:strCache>';
+  const catXml = cf.catNum
+    ? `<c:cat><c:numRef><c:f>${cf.catRef}</c:f>${numCache(cf.cats)}</c:numRef></c:cat>`
+    : `<c:cat><c:strRef><c:f>${cf.catRef}</c:f>${strCache(cf.cats)}</c:strRef></c:cat>`;
+  const titleXml = `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1100" b="1"><a:solidFill><a:srgbClr val="1F3864"/></a:solidFill><a:latin typeface="Microsoft YaHei"/></a:defRPr></a:pPr><a:r><a:rPr lang="zh-CN" sz="1100" b="1"><a:solidFill><a:srgbClr val="1F3864"/></a:solidFill><a:latin typeface="Microsoft YaHei"/></a:rPr><a:t>${_xq(cf.title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>`;
+  const serXml = (s, si) => {
+    const tx = `<c:tx><c:strRef><c:f>${s.ref}</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${_xq(s.name)}</c:v></c:pt></c:strCache></c:strRef></c:tx>`;
+    const val = `<c:val><c:numRef><c:f>${s.ref}</c:f>${numCache(s.data)}</c:numRef></c:val>`;
+    const sp = `<c:spPr><a:solidFill><a:srgbClr val="${s.color}"/></a:solidFill><a:ln><a:solidFill><a:srgbClr val="${s.color}"/></a:solidFill></a:ln></c:spPr>`;
+    const ord = `<c:idx val="${si}"/><c:order val="${si}"/>`;
+    if (cf.type === 'pie') return `<c:ser>${ord}${sp}${catXml}<c:dLbls><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>${val}</c:ser>`;
+    if (cf.type === 'line') return `<c:ser>${ord}${tx}${sp}<c:marker><c:symbol val="none"/></c:marker>${catXml}${val}<c:smooth val="0"/></c:ser>`;
+    return `<c:ser>${ord}${tx}${sp}<c:invertIfNegative val="0"/>${catXml}${val}</c:ser>`;
+  };
+  const axes = cf.type === 'pie' ? '' :
+    `<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/><c:majorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/><c:majorTickMark val="out"/><c:tickLblPos val="nextTo"/><c:crossAx val="1"/></c:valAx>`;
+  const body = cf.type === 'pie'
+    ? `<c:pieChart><c:varyColors val="1"/>${cf.series.map(serXml).join('')}</c:pieChart>`
+    : cf.type === 'line'
+      ? `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${cf.series.map(serXml).join('')}<c:marker val="1"/><c:axId val="1"/><c:axId val="2"/></c:lineChart>`
+      : `<c:barChart><c:barDir val="${cf.bar === 'bar' ? 'bar' : 'col'}"/><c:grouping val="clustered"/><c:varyColors val="0"/>${cf.series.map(serXml).join('')}<c:gapWidth val="60"/><c:overlap val="-20"/><c:axId val="1"/><c:axId val="2"/></c:barChart>`;
+  const legend = `<c:legend><c:legendPos val="${cf.type === 'pie' ? 'r' : 'b'}"/><c:overlay val="0"/></c:legend>`;
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:lang val="zh-CN"/><c:roundedCorners val="0"/><c:chart>' + titleXml + `<c:plotArea><c:layout/>${body}${axes}<c:spPr><a:noFill/></c:spPr></c:plotArea>` + legend + '</c:chart><c:spPr><a:noFill/></c:spPr></c:chartSpace>';
+}
+// 样式表：与 SpreadsheetML 版同套视觉（深藏青横幅/区块条/四色KPI/表头/斑马/热力五档）
+const _XQ_STYLES = (() => {
+  const font = (sz, color, b) => `<font><sz val="${sz}"/>${b ? '<b/>' : ''}<color rgb="FF${color}"/><name val="Microsoft YaHei"/></font>`;
+  const fonts = [font(10, '1C2430'), font(18, 'FFFFFF', 1), font(9, 'D6DCE5'), font(12, 'FFFFFF', 1), font(20, '1F3864', 1), font(20, '1B7837', 1), font(20, 'B02A2A', 1), font(20, '98630B', 1), font(9, '7F7F7F'), font(9, '1B7837', 1), font(9, 'B02A2A', 1), font(10, 'FFFFFF', 1), font(9, '5A5A5A')];
+  const fill = (c) => `<fill><patternFill patternType="solid"><fgColor rgb="FF${c}"/><bgColor indexed="64"/></patternFill></fill>`;
+  const fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>', fill('1F3864'), fill('2E5C8A'), fill('EAF1FB'), fill('E7F4E9'), fill('FBE9E9'), fill('FDF2E0'), fill('F5F7FA'), fill('D6ECD9'), fill('FDF2D0'), fill('FBDCC4'), fill('F6C6C6')];
+  const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>', '<border><left/><right/><top/><bottom style="thin"><color rgb="FFE3E7EE"/></bottom><diagonal/></border>'];
+  // cellXfs：0默认 1横幅 2副题 3区块 4KPI蓝 5绿 6红 7橙 8KPI标签 9涨 10跌 11表头 12格线 13斑马格线 14右 15斑马右 16~20热力五档 21注释
+  const xf = (fid, fillId, align, bd) => `<xf fontId="${fid}" fillId="${fillId}" borderId="${bd || 0}" xfId="0"${bd ? ' applyBorder="1"' : ''}${align ? ` applyAlignment="1"><alignment ${align}/></xf>` : '/>'}`;
+  const xfs = [xf(0, 0), xf(1, 2, 'horizontal="center" vertical="center"'), xf(2, 2, 'horizontal="center" vertical="center"'), xf(3, 3, 'horizontal="left" vertical="center"'), xf(4, 4, 'horizontal="center" vertical="center"'), xf(5, 5, 'horizontal="center" vertical="center"'), xf(6, 6, 'horizontal="center" vertical="center"'), xf(7, 7, 'horizontal="center" vertical="center"'), xf(8, 0, 'horizontal="center" vertical="top"'), xf(9, 0, 'horizontal="center"'), xf(10, 0, 'horizontal="center"'), xf(11, 3, 'horizontal="center" vertical="center" wrapText="1"', 1), xf(0, 0, 'vertical="center"', 1), xf(0, 8, 'vertical="center"', 1), xf(0, 0, 'horizontal="right" vertical="center"', 1), xf(0, 8, 'horizontal="right" vertical="center"', 1), xf(0, 5, 'horizontal="center" vertical="center"', 1), xf(0, 9, 'horizontal="center" vertical="center"', 1), xf(0, 10, 'horizontal="center" vertical="center"', 1), xf(0, 11, 'horizontal="center" vertical="center"', 1), xf(0, 12, 'horizontal="center" vertical="center"', 1), xf(12, 0, 'horizontal="left" vertical="top" wrapText="1"')];
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="0" formatCode="General"/></numFmts><fonts count="' + fonts.length + '">' + fonts.join('') + '</fonts><fills count="' + fills.length + '">' + fills.join('') + '</fills><borders count="' + borders.length + '">' + borders.join('') + '</borders><cellStyleXfs count="1"><xf fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="' + xfs.length + '">' + xfs.join('') + '</cellXfs><cellStyles count="1"><cellStyle name="常规" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+})();
+// OOXML 工作簿装配：看板 sheet 带图表（数据区落在看板底部，图表引用活单元格），其余 sheet 纯表
+function expXlsx(d) {
+  const partsAll = (d.parts || [d]).slice();
+  const boardP = partsAll.find((p) => p.board);
+  const sheets = []; // {name, xml, charts:[{anchorRow,anchorCol,cf,drawingId}]}
+  const sheetNames = [];
+  const used = {};
+  const uniqName = (nm) => { nm = String(nm || 'sheet').replace(/[\\\/?*\[\]:：]/g, '_').slice(0, 28) || 'sheet'; let s = nm; while (used[s]) s = (nm + '_' + (used[nm] = (used[nm] || 1) + 1)).slice(0, 31); used[s] = used[s] ? 1 : 1; return s.slice(0, 31); };
+  for (const p of partsAll) sheetNames.push(uniqName(p.label));
+  partsAll.forEach((p, pi) => {
+    const sn = sheetNames[pi];
+    if (!p.board) {
+      const rows = [[...(p.headers || []).map((h) => ({ v: h, s: 11 }))]].concat((p.rows || []).map((r, ri) => r.map((c, ci) => ({ v: (p.types && p.types[ci] === 'N' && c !== '' && c != null && Number.isFinite(Number(c))) ? Number(c) : (c == null ? '' : String(c)), s: ((p.types && p.types[ci] === 'N') ? (ri % 2 ? 15 : 14) : (ri % 2 ? 13 : 12)) }))));
+      sheets.push({ name: sn, sh: { rows, widths: ((p.headers || []).length ? undefined : undefined) || (p.headers || []).map(() => 16), merges: [] } , charts: [] });
+      return;
+    }
+    // ── 看板 sheet：横幅+KPI+（浮动图表区）+底部数据区 ──
+    const N = 12, grid = [], merges = [];
+    const put = (ri, ci, cell) => { while (grid.length <= ri) grid.push([]); const r0 = grid[ri]; while (r0.length < ci) r0.push(null); r0[ci] = cell; };
+    const span = (ri, ci, txt, s, nspan) => { put(ri, ci, { v: txt, s }); for (let k = 1; k <= nspan; k++) put(ri, ci + k, { v: '', s }); if (nspan > 0) merges.push(`${_xcol(ci)}${ri + 1}:${_xcol(ci + nspan)}${ri + 1}`); };
+    const ROWH = {}; grid._ht = undefined;
+    if (p.title) { span(0, 0, p.title, 1, N - 1); span(1, 0, p.subtitle || '', 2, N - 1); ROWH[0] = 30; ROWH[1] = 15; }
+    const toneMap = { good: 5, bad: 6, warn: 7 };
+    let ri = 3;
+    const kpis = (p.sections || []).filter((s) => s.type === 'kpi');
+    for (const sec of kpis) {
+      span(ri, 0, sec.title, 3, N - 1); ROWH[ri] = 20; ri++;
+      const items = sec.items || []; const w = Math.floor(N / Math.max(1, items.length));
+      put(ri, 0, null);
+      items.forEach((it, k) => { const c0 = k * w; const st = toneMap[it.tone] || 4; const vnum = (typeof it.v === 'number') ? it.v : (it.v == null ? '' : String(it.v)); put(ri, c0, { v: vnum, s: st }); for (let k2 = 1; k2 < w; k2++) put(ri, c0 + k2, { v: '', s: st }); if (w > 1) merges.push(`${_xcol(c0)}${ri + 1}:${_xcol(c0 + w - 1)}${ri + 1}`); ROWH[ri] = 26; });
+      ri++;
+      items.forEach((it, k) => { const c0 = k * w; put(ri, c0, { v: it.k + (it.unit ? '(' + it.unit + ')' : ''), s: 8 }); for (let k2 = 1; k2 < w; k2++) put(ri, c0 + k2, { v: '', s: 8 }); if (w > 1) merges.push(`${_xcol(c0)}${ri + 1}:${_xcol(c0 + w - 1)}${ri + 1}`); });
+      ri++;
+      if (items.some((it) => it.delta)) { items.forEach((it, k) => { const c0 = k * w; const up = it.deltaDir !== 'dn'; put(ri, c0, { v: it.delta ? ((up ? '▲ ' : '▼ ') + String(it.delta).replace(/^[▲▼]\s*/, '')) : '', s: up ? 9 : 10 }); for (let k2 = 1; k2 < w; k2++) put(ri, c0 + k2, { v: '', s: up ? 9 : 10 }); if (w > 1) merges.push(`${_xcol(c0)}${ri + 1}:${_xcol(c0 + w - 1)}${ri + 1}`); }); ri++; }
+      ri++;
+    }
+    // 数据区（图表引用活单元格）：周数｜入库框｜出库件｜领料单 ／ 库区｜占用率… ／ 零件｜件数… …
+    const blocks = [];
+    const tbl = (p.sections || []).find((s) => s.type === 'table' && /周吞吐/.test(s.title || ''));
+    if (tbl && (tbl.rows || []).length) blocks.push({ kind: 'wk', rows: tbl.rows });
+    const heat = (p.sections || []).find((s) => s.type === 'heat');
+    if (heat && (heat.rows || []).length) blocks.push({ kind: 'zone', rows: heat.rows });
+    const st = (p.sections || []).find((s) => s.type === 'table' && /呆滞/.test(s.title || ''));
+    if (st && (st.rows || []).length) blocks.push({ kind: 'stale', rows: st.rows });
+    const pf = (p.sections || []).find((s) => s.type === 'table' && /人员效率/.test(s.title || ''));
+    if (pf && (pf.rows || []).length) blocks.push({ kind: 'people', rows: pf.rows });
+    const ag = (p.sections || []).find((s) => s.type === 'table' && /AGV 车辆/.test(s.title || ''));
+    if (ag && (ag.rows || []).length) blocks.push({ kind: 'agv', rows: ag.rows });
+    const ev = (p.sections || []).find((s) => s.type === 'table' && /异常事件/.test(s.title || ''));
+    if (ev && (ev.rows || []).length && !/无车辆异常/.test(String(ev.rows[0][0]))) blocks.push({ kind: 'events', rows: ev.rows });
+    const charts = [];
+    const pal = ['515BD4', 'E07000', '2E7D32', '909399', '7B1FA2', '00897B'];
+    // ㉖v201b 修崩溃（导出500 dr is not defined）：dr 原声明在 if(blocks.length) 块内，
+    // 但下方"口径说明"块块外 dr++——块级作用域越界，带看板导出必崩（500 响应体实证）
+    let dr = 14 + Math.ceil(Math.max(1, blocks.length) / 2) * 15 + 1; // 图表浮动区让位（每图占约15行×6列）
+    if (blocks.length) {
+      span(dr - 1, 0, '▍图表数据区 Chart Data（上方图表引用此区，改数即改图）', 3, N - 1);
+      for (const b of blocks) {
+        let hd = [], rows2 = [], catCol = 0, catNum = false, series = [], chart = null;
+        if (b.kind === 'wk') {
+          hd = ['周数', '入库框', '出库件', '领料单'];
+          rows2 = b.rows.map((r, k) => [k + 1, Number(r[1]) || 0, Number(r[2]) || 0, Number(r[3]) || 0]);
+          catNum = true; series = [{ name: '入库框', col: 1 }, { name: '出库件', col: 2 }, { name: '领料单', col: 3 }];
+          chart = { type: 'line', title: '周吞吐趋势 Weekly Throughput' };
+        } else if (b.kind === 'zone') {
+          hd = ['库区', '占用率%', '已占用格', '总格数', '地面在架'];
+          rows2 = b.rows.map((r) => { const pctv = parseFloat((r[3] && r[3].d != null ? r[3].d : String(r[3] || '')).replace('%', '')) || 0; return [String(r[0]).replace(' 区', ''), pctv, Number(r[2]) || 0, Number(r[1]) || 0, Number(r[4]) || 0]; });
+          series = [{ name: '占用率%', col: 1 }]; chart = { type: 'bar', title: '库区占用率% Zone Utilization（A~H，每区64格）' };
+        } else if (b.kind === 'stale') {
+          hd = ['零件号', '呆滞件数', '呆滞格数', '最长滞留天'];
+          rows2 = b.rows.map((r) => { const m = String(r[4] || '').match(/(\d+)/); return [String(r[0]), Number(r[3]) || 0, Number(r[2]) || 0, m ? Number(m[1]) : 0]; });
+          series = [{ name: '呆滞件数', col: 1 }]; chart = { type: 'bar', bar: 'bar', title: '呆滞料 Top（≥14天未动 · 件数）' };
+        } else if (b.kind === 'people') {
+          hd = ['姓名', '入库框', '出库框', '接单'];
+          rows2 = b.rows.map((r) => [String(r[0]), Number(r[1]) || 0, Number(r[2]) || 0, Number(r[4]) || 0]);
+          series = [{ name: '入库框', col: 1 }, { name: '出库框', col: 2 }, { name: '接单', col: 3 }]; chart = { type: 'bar', title: '人员吞吐 Top（框=托去重）' };
+        } else if (b.kind === 'agv') {
+          hd = ['车辆', '总任务', '其中出库', '其中入库'];
+          rows2 = b.rows.map((r) => [String(r[0]), Number(r[4]) || 0, Number(r[1]) || 0, Number(r[2]) || 0]);
+          series = [{ name: '总任务', col: 1 }]; chart = { type: 'bar', title: 'AGV 工作量（按车）' };
+        } else {
+          hd = ['类型', '次数']; rows2 = b.rows.map((r) => [String(r[0]), Number(r[1]) || 0]);
+          series = [{ name: '次数', col: 1 }]; chart = { type: 'pie', title: '车辆异常构成' };
+        }
+        const base = dr + 1; // 1-based 数据首行
+        span(dr, 0, '▍' + hd.join('｜') + ' @' + (dr + 1), 3, N - 1); dr++;
+        hd.forEach((h2, ci) => put(dr, ci, { v: h2, s: 11 })); dr++;
+        const r1 = dr;
+        rows2.forEach((r) => { r.forEach((v, ci) => put(dr, ci, { v, s: ci === 0 ? 12 : (catNum ? 14 : 14) })); dr++; });
+        const nD = rows2.length;
+        const snQ = "'" + sn + "'";
+        const catRef = `${snQ}!$${_xcol(catCol)}$${r1}:$${_xcol(catCol)}$${r1 + nD - 1}`;
+        charts.push(Object.assign({}, chart, { cats: rows2.map((r) => r[catCol]), catNum, catRef, series: series.map((s2, si) => ({ name: s2.name, data: rows2.map((r) => r[s2.col]), ref: `${snQ}!$${_xcol(s2.col)}$${r1}:$${_xcol(s2.col)}$${r1 + nD - 1}`, color: pal[si % pal.length] })), _anchor: charts.length }));
+        dr += 2;
+      }
+    }
+    // 剩余 note/口径 sections 落在数据区后
+    const notes = (p.sections || []).filter((s) => s.type === 'note');
+    if (notes.length) { dr++; for (const sec of notes) { if (sec.title) { span(dr, 0, '▍' + sec.title, 3, N - 1); dr++; } for (const ln of sec.lines || []) { span(dr, 0, ln, 21, N - 1); ROWH[dr] = 14; dr++; } } }
+    // 网格行数补齐 ht 记录
+    grid.forEach((r0, k) => { if (ROWH[k]) r0._ht = ROWH[k]; });
+    const widths = [14, 13, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11];
+    sheets.push({ name: sn, sh: { rows: grid, widths, merges }, charts, rowHeights: ROWH });
+  });
+  // 逐 sheet 生成 XML + rels（看板带 drawing 引用；图表锚点 6 张内）
+  const files = [];
+  const ct = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'];
+  ct[0] = ct[0];
+  const overrides = [];
+  const wbRels = [];
+  overrides.push('<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>');
+  overrides.push('<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>');
+  const drawingCharts = [];
+  let relSeq = 0;
+  sheets.forEach((sh, si) => {
+    relSeq++; const rid = 'rId' + relSeq;
+    const esc = sh.name.replace(/"/g, '_');
+    sh.escName = esc;
+    wbRels.push(`<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${si + 1}.xml"/>`);
+    overrides.push(`<Override PartName="/xl/worksheets/sheet${si + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`);
+    const sRels = ['<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'];
+    let shRid = 0;
+    if (sh.charts && sh.charts.length) {
+      shRid++; const drId = 'rId' + shRid;
+      sRels.push(`<Relationship Id="${drId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing${si + 1}.xml"/>`);
+      sh.charts.forEach((cf, ci) => { cf.sheetIdx = si + 1; cf.chartNo = ci + 1; drawingCharts.push(cf); });
+    }
+    sRels.push('</Relationships>');
+    sh.relsXml = sRels.join('');
+    sh.rowHeights = sh.rowHeights || {};
+    let sxml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr/>'.replace('<sheetPr/>', '');
+    if (sh.sh.widths && sh.sh.widths.length) sxml += '<cols>' + sh.sh.widths.map((w2, i2) => `<col min="${i2 + 1}" max="${i2 + 1}" width="${w2}" customWidth="1"/>`).join('') + '</cols>';
+    sxml += '<sheetData>';
+    (sh.sh.rows || []).forEach((r0, ri2) => {
+      if (!r0 || !r0.length) return;
+      const ht = sh.rowHeights[ri2] || 18;
+      sxml += `<row r="${ri2 + 1}" ht="${ht}" customHeight="1">`;
+      let lastCi = -1;
+      r0.forEach((cell, ci) => { if (cell !== null && cell !== undefined) lastCi = ci; });
+      for (let ci = 0; ci <= lastCi; ci++) {
+        const cell = r0[ci];
+        const ref = _xcol(ci) + (ri2 + 1);
+        if (cell === null || cell === undefined) continue;
+        const stl = cell.s ? ` s="${cell.s}"` : '', v = cell.v;
+        if (v == null || v === '') sxml += `<c r="${ref}"${stl}/>`;
+        else if (typeof v === 'number' && Number.isFinite(v)) sxml += `<c r="${ref}"${stl}><v>${v}</v></c>`;
+        else sxml += `<c r="${ref}"${stl} t="inlineStr"><is><t xml:space="preserve">${_xq(v)}</t></is></c>`;
+      }
+      sxml += '</row>';
+    });
+    sxml += '</sheetData>';
+    const mgs = (sh.sh.merges || []);
+    if (mgs.length) sxml += `<mergeCells count="${mgs.length}">` + mgs.map((m) => `<mergeCell ref="${m}"/>`).join('') + '</mergeCells>';
+    if (sh.charts && sh.charts.length) { const drId2 = 'rId1'; sxml += `<drawing r:id="${drId2}"/>`; }
+    sxml += '</worksheet>';
+    files.push(['xl/worksheets/sheet' + (si + 1) + '.xml', Buffer.from(sxml, 'utf8')]);
+    files.push(['xl/worksheets/_rels/sheet' + (si + 1) + '.xml.rels', Buffer.from(sh.relsXml, 'utf8')]);
+  });
+  // drawing：图表浮动锚点（每带 2 列，15 行高）
+  if (drawingCharts.length) {
+    const bySheet = {};
+    drawingCharts.forEach((cf) => { (bySheet[cf.sheetIdx] = bySheet[cf.sheetIdx] || []).push(cf); });
+    Object.entries(bySheet).forEach(([si2, cfList]) => {
+      let dx = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">';
+      const dRels = ['<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'];
+      cfList.forEach((cf, ci2) => {
+        const band = Math.floor(ci2 / 2), lane = ci2 % 2;
+        const aRow = 14 + band * 15 - 1, aCol = lane * 6;
+        dx += `<xdr:oneCellAnchor><xdr:from><xdr:col>${aCol}</xdr:col><xdr:colOff>95250</xdr:colOff><xdr:row>${aRow}</xdr:row><xdr:rowOff>47625</xdr:rowOff></xdr:from><xdr:ext cx="3714750" cy="2571750"/><xdr:graphicFrame macro=""><xdr:name>chart${cf.chartNo}</xdr:name><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart"><c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rId${ci2 + 1}"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:oneCellAnchor>`;
+        dRels.push(`<Relationship Id="rId${ci2 + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart${cf.sheetIdx}_${cf.chartNo}.xml"/>`);
+        overrides.push(`<Override PartName="/xl/charts/chart${cf.sheetIdx}_${cf.chartNo}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`);
+        files.push(['xl/charts/chart' + cf.sheetIdx + '_' + cf.chartNo + '.xml', Buffer.from(_xchartXml(cf), 'utf8')]);
+        files.push(['xl/charts/_rels/chart' + cf.sheetIdx + '_' + cf.chartNo + '.xml.rels', Buffer.from(`<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="../worksheets/sheet${cf.sheetIdx}.xml"/></Relationships>`, 'utf8')]);
+      });
+      dRels.push('</Relationships>');
+      dx += '</xdr:wsDr>';
+      overrides.push(`<Override PartName="/xl/drawings/drawing${si2}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`);
+      files.push(['xl/drawings/drawing' + si2 + '.xml', Buffer.from(dx, 'utf8')]);
+      files.push(['xl/drawings/_rels/drawing' + si2 + '.xml.rels', Buffer.from(dRels.join(''), 'utf8')]);
+    });
+  }
+  relSeq++;
+  wbRels.push(`<Relationship Id="rId${relSeq}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`);
+  const wbXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>' +
+    sheets.map((sh, si) => `<sheet name="${_xq(sh.name)}" sheetId="${si + 1}" r:id="rId${si + 1}"/>`).join('') + '</sheets><bookViews><workbookView activeTab="0"/></bookViews></workbook>';
+  const topRels = '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>';
+  const wbRelsXml = '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' + wbRels.join('') + '</Relationships>';
+  files.push(['[Content_Types].xml', Buffer.from(ct.join('') + overrides.join('') + '</Types>', 'utf8')]);
+  files.push(['_rels/.rels', Buffer.from(topRels, 'utf8')]);
+  files.push(['xl/workbook.xml', Buffer.from(wbXml, 'utf8')]);
+  files.push(['xl/_rels/workbook.xml.rels', Buffer.from(wbRelsXml, 'utf8')]);
+  files.push(['xl/styles.xml', Buffer.from(_XQ_STYLES, 'utf8')]);
+  return _zipStore(files);
+}
+// ㉖v200 仓库运营看板（PACK 首页 sheet）：KPI 色块 + 环比 + 周吞吐 + 区域占用热力 + 人员效率 + AGV 运行 + 异常事件
+// 全部指标复用现成口径（框=托去重 boxKeyOf / 呆滞=登记时刻 t / 入库=二楼上架剔 NB04 / 占用=NB02 非台挂 / 人员车辆=buildWork），单一实现防漂移。
+function buildBoard(F, T, fRaw) {
+  const n = (x) => Number(x) || 0;
+  const pct = (a, b) => (b > 0 ? Math.round((a / b) * 1000) / 10 : 0);
+  const dstr = (ms) => { const d = new Date(ms); return (d.getMonth() + 1) + '/' + d.getDate(); };
+  // 周期吞吐（复用于环比）：入库框=二楼上架标签去重（剔 NB04），出库件=出库明细合计，出库框=条码去重
+  function metric(A, B) {
+    const up = new Set();
+    for (const s of Object.values(db.scanlog || {})) { if (s.cx) continue; const t = n(s.t); if (t < A || t > B || !s.code) continue; if (String((s.st || s.gl) || '').toUpperCase().startsWith('NB04-')) continue; up.add(String(s.code).toUpperCase()); }
+    let outQty = 0; const ob = new Set();
+    for (const o of Object.values(db.outbound || {})) { const t = n(o.createdAt); if (t < A || t > B) continue; for (const it of (o.items || [])) { outQty += n(it.qty); String(it.barcode || '').toUpperCase().split(/[;；]/).forEach((x) => { x = x.trim(); if (x) ob.add(x); }); } }
+    return { inBoxes: up.size, outQty, outBoxes: ob.size };
+  }
+  const cur = metric(F, T), span = Math.max(1, T - F), prev = metric(F - span, F);
+  const dl = (c, p) => (p > 0 ? { delta: (c >= p ? '▲ +' : '▼ ') + Math.round(((c - p) / p) * 100) + '% 环比', deltaDir: c >= p ? 'up' : 'dn' } : { delta: '— 无同期', deltaDir: 'up' });
+  // 当前在架（框=托去重）/ 占用 / 呆滞（登记时刻 t 基准，剔台挂）/ 地面在架
+  const boxSeen = {}, shelfZone = {}, gndZone = {};
+  let onShelfBoxes = 0, shelfUsed = 0, staleBoxes = 0; const staleBy = {};
+  const nowMs = Date.now(), minD = 14;
+  const shelfTotal = 8 * 16 * 4; // nb02MasterSeq：8 区 ×16 排 ×4 层
+  const locSeen = new Set();
+  for (const l of db.ledger || []) {
+    const c = String(l.c || '').toUpperCase(), p = String(l.p || '').toUpperCase(), lo = String(l.l || '').toUpperCase();
+    if (!c) continue;
+    const bk = boxKeyOf(l); // 框=托去重复用全系统同一 boxKeyOf（同托多码 1 框；无托按位+零件），防看板与库存页口径漂移
+    if (!boxSeen[bk]) { boxSeen[bk] = 1; onShelfBoxes++; }
+    if (locOnStn(lo)) continue; // 台挂中转位非存储，不计占用/呆滞
+    const zm = lo.match(/^NB02-([A-H])-/);
+    if (zm) { if (!locSeen.has(lo)) { locSeen.add(lo); shelfUsed++; shelfZone[zm[1]] = (shelfZone[zm[1]] || 0) + 1; } }
+    const gzm = lo.match(/^NB03-([A-H])-/); if (gzm) gndZone[gzm[1]] = (gndZone[gzm[1]] || 0) + 1;
+    const ageD = Math.floor((nowMs - (n(l.t))) / 864e5);
+    if (ageD >= minD) { if (!boxSeen['S' + bk]) { boxSeen['S' + bk] = 1; staleBoxes++; } const a = staleBy[p || '(无零件号)'] = staleBy[p || '(无零件号)'] || { pn: p || '(无零件号)', nm: (db.itemDict && db.itemDict[p] && db.itemDict[p].nm) || '', boxes: 0, qty: 0, max: 0 }; a.qty += n(l.q); if (ageD > a.max) a.max = ageD; const bk2 = p + '|' + lo; if (!boxSeen['B' + bk2]) { boxSeen['B' + bk2] = 1; a.boxes++; } }
+  }
+  const occPct = pct(shelfUsed, shelfTotal);
+  // 领料单周期
+  let reqN = 0, reqDone = 0; for (const r of db.requisitions || []) { const t = Date.parse(r.createdAt) || 0; if (t >= F && t <= T) { reqN++; if (r.status === 'done') reqDone++; } }
+  // AGV 周期完成 / 失败
+  let agvOk = 0, agvFail = 0; for (const q of db.agvQueue || []) { const t = n(q.updAt || q.sentAt || q.at); if (t < F || t > T) continue; if (q.state === '完成') agvOk++; else if (q.state === '失败') agvFail++; }
+  const w = buildWork(F, T);
+  // 周吞吐表
+  const wk = 7 * 864e5, nb = Math.max(1, Math.min(13, Math.ceil((span + 1) / wk)));
+  const buck = []; for (let i = 0; i < nb; i++) buck.push({ f: F + i * wk, e: Math.min(T, F + (i + 1) * wk - 1), in: new Set(), out: 0, req: 0 });
+  const bIdx = (t) => Math.max(0, Math.min(nb - 1, Math.floor((t - F) / wk)));
+  for (const s of Object.values(db.scanlog || {})) { if (s.cx || !s.code) continue; const t = n(s.t); if (t < F || t > T) continue; if (String((s.st || s.gl) || '').toUpperCase().startsWith('NB04-')) continue; buck[bIdx(t)].in.add(String(s.code).toUpperCase()); }
+  for (const o of Object.values(db.outbound || {})) { const t = n(o.createdAt); if (t < F || t > T) continue; const q = (o.items || []).reduce((s, it) => s + n(it.qty), 0); buck[bIdx(t)].out += q; }
+  for (const r of db.requisitions || []) { const t = Date.parse(r.createdAt) || 0; if (t >= F && t <= T) buck[bIdx(t)].req++; }
+  // 异常事件（车辆类）周期计数
+  const evCnt = {}; for (const e of db.carEvents || []) { const t = n(e.ts); if (t < F || t > T) continue; if (!/告警|恢复|堵点|低电|红牌|升级|已认领|超时/.test(String(e.kind))) continue; evCnt[e.kind] = (evCnt[e.kind] || 0) + 1; }
+  const evRows = Object.entries(evCnt).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => [k, v]);
+  // 区域占用热力（A-H）
+  const heatTier = (p0) => (p0 >= 85 ? 4 : p0 >= 70 ? 3 : p0 >= 45 ? 2 : p0 >= 20 ? 1 : 0);
+  const zoneRows = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map((z) => { const u = shelfZone[z] || 0, pp = pct(u, 16 * 4); return [z + ' 区', 16 * 4, u, { d: pp + '%', h: heatTier(pp) }, gndZone[z] || 0]; });
+  const stRows = Object.values(staleBy).sort((a, b) => b.qty - a.qty).slice(0, 10).map((x) => [x.pn, String(x.nm).slice(0, 16), x.boxes, x.qty, x.max + '天']);
+  const psRows = Object.values(w.persons).sort((a, b) => (b.inB + b.outB + b.outQ / 20 + b.acc + b.fix + b.ret) - (a.inB + a.outB + a.outQ / 20 + b.acc + b.fix + b.ret)).slice(0, 10).map((p) => [p.name, p.inB, p.outB, p.outQ, p.acc, p.finN ? Math.round(p.finMin / p.finN) : '', p.fix, p.ret]);
+  const carRows = Object.entries(w.cars).map(([k, c]) => [k, c.out, c.in, c.other, c.n, c.n ? Math.round(c.dur / c.n / 60) : '']).sort((a, b) => b[4] - a[4]).slice(0, 10);
+  const board = {
+    label: '仓库运营看板', board: true, src: '账本+采集流水+出库单+领料单+AGV队列+工作量聚合',
+    rows: [], headers: [], types: [], total: 0, // 数据在 sections；补空 rows 供 PACK total 累加不崩
+    cols: [130, 160, 72, 72, 84, 92, 84, 92, 64, 64, 64, 64],
+    title: '仓 库 运 营 看 板', subtitle: `统计区间 ${dstr(F)} ~ ${dstr(T)} · 生成 ${new Date().toLocaleString('zh-CN', { hour12: false })} · 数据源=服务器权威账`,
+    caliber: [['入库框', '周期内二楼上架标签去重（剔除 NB04 来料区登记）'], ['出库件/框', '出库单明细件数合计 / 条码去重'], ['在架框', '当前账本按"框=托"去重（同托多码计1框）'], ['货架占用', '在架 NB02 存储格数 ÷ 512（8区×16排×4层，不含台挂中转位）'], ['呆滞框', '登记时刻 t 距今 ≥14 天未物理移动（剔台挂）'], ['人员/AGV', '工作量聚合 buildWork（入库框=托去重/出库件/接单/平均接单分钟）'], ['环比', '与紧邻的等长前一周期对比']],
+    sections: [
+      { type: 'kpi', title: '核心指标 Core KPIs', items: [
+        { k: '入库框数', v: cur.inBoxes, unit: '框', tone: 'good', ...dl(cur.inBoxes, prev.inBoxes) },
+        { k: '出库件数', v: cur.outQty, unit: '件', tone: 'good', ...dl(cur.outQty, prev.outQty) },
+        { k: '出库框数', v: cur.outBoxes, unit: '框', tone: '', ...dl(cur.outBoxes, prev.outBoxes) },
+        { k: '领料完成', v: reqDone + '/' + reqN, unit: '单', tone: 'good' },
+      ] },
+      { type: 'kpi', title: '健康与效率 Health & Efficiency', items: [
+        { k: '在架框数', v: onShelfBoxes, unit: '框', tone: '' },
+        { k: '货架占用率', v: occPct + '%', tone: occPct >= 85 ? 'bad' : occPct >= 70 ? 'warn' : 'good' },
+        { k: '呆滞框', v: staleBoxes, unit: '框', tone: staleBoxes > 40 ? 'bad' : staleBoxes > 0 ? 'warn' : 'good' },
+        { k: 'AGV完成/失败', v: agvOk + '/' + agvFail, tone: agvFail > agvOk * 0.05 ? 'warn' : 'good' },
+      ] },
+      { type: 'table', title: '周吞吐趋势 Weekly Throughput', headers: ['周次', '入库框', '出库件', '领料单', '', '', '', ''], types: ['S', 'N', 'N', 'N', 'S', 'S', 'S', 'S'], rows: buck.map((b, i) => ['第' + (i + 1) + '周 ' + dstr(b.f) + '~' + dstr(b.e), b.in.size, b.out, b.req, '', '', '', '']) },
+      { type: 'heat', title: '库区占用 Zone Utilization', headers: ['库区', '货架格数', '已占用', '占用率', '地面在架框', '', '', '', '', '', '', ''], heatCols: [3], rows: zoneRows.map((r) => [...r, '', '', '', '']) },
+      { type: 'table', title: '呆滞料排行 Top 10（≥14天未动 · 一键移地面消化）', headers: ['零件号', '物料名称', '呆滞格数', '呆滞件数', '最长滞留', '', '', ''], types: ['S', 'S', 'N', 'N', 'S', 'S', 'S', 'S'], rows: stRows.map((r) => [...r, '', '', '']) },
+      { type: 'table', title: '人员效率排行 Top 10', headers: ['姓名', '入库框', '出库框', '出库件', '接单', '平均接单(分)', '修正', '返架'], types: ['S', 'N', 'N', 'N', 'N', 'N', 'N', 'N'], rows: psRows },
+      { type: 'table', title: 'AGV 车辆运行 Workload by Vehicle', headers: ['车辆', '出库', '入库', '其他', '总任务', '平均时长(分)', '', ''], types: ['S', 'N', 'N', 'N', 'N', 'N', 'S', 'S'], rows: carRows.map((r) => [...r, '', '']) },
+      { type: 'table', title: '异常事件统计（车辆/交管/超时类）', headers: ['类型', '次数', '', '', '', '', '', ''], types: ['S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows: evRows.length ? evRows.map((r) => [...r, '', '', '', '', '', '']) : [['周期内无车辆异常事件', '', '', '', '', '', '', '']] },
+      { type: 'note', title: '口径说明 Caliber', lines: ['· 入库框=周期内二楼上架标签去重（剔除 NB04 来料区登记）；出库件/框=出库单明细件数 / 条码去重', '· 在架框=当前账本按"框=托"去重（同托多码计1框，无托按货位+零件合并）；货架占用=在架 NB02 存储格 ÷ 512，不含台挂中转位', '· 呆滞框=登记时刻 t 距今 ≥14 天未物理移动（t 仅在重扫登记/改位时刷新=真实物理移动语义，与红牌/库存页三口径互证）', '· 人员与 AGV 运行取自工作量聚合 buildWork，与「工作量报表(D7)」同源；环比=与紧邻等长前一周期对比', '· 本看板只读汇总，不改任何账；账实差异以盘点结果(D10)为准'] },
+    ],
+  };
+  return board;
 }
 // ---- ㉓G12 工作量报表聚合：入库(框=托去重)/出库/修正/返架按人按日 + 领料时效 + AGV按车 ----
 function wdstr(ms) { const d = new Date(ms); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
@@ -1135,7 +1585,9 @@ function buildExport(ds, fRaw) {
     for (const o of Object.values(db.outbound || {})) { if ((Number(o.createdAt) || 0) < d7) continue; for (const i of (o.items || [])) { const pn = String(i.code || '').toUpperCase() || '(无零件号)'; (mv[pn] = mv[pn] || { i: 0, o: 0 }).o += Number(i.qty) || 0; } }
     const diffRows = Object.entries(mv).filter(([, v]) => v.i !== v.o).sort((a, b) => Math.abs(b[1].i - b[1].o) - Math.abs(a[1].i - a[1].o)).slice(0, 300).map(([pn, v]) => [pn, v.i, v.o, v.i - v.o]);
     parts.push({ label: '差异说明', headers: ['零件号', '近7日入库(件)', '近7日出库(件)', '净流入'], types: ['S', 'N', 'N', 'N'], rows: diffRows, src: '主库近7日流水/出库（更早数据在data/archive）', caliber: [['用途', '对账前先看哪些零件近7日仍在大幅进出；净流入=入-出，为负即净消耗'], ['局限', '主库窗口外历史在归档目录；全月口径用导出中心「含归档」单导D3/D4'], ['注意', '本页不是账实差异——账实差异以盘点结果(D10)为准']] });
-    const total = parts.reduce((s, p) => s + p.rows.length, 0); return { label: '月度对账包', parts, rows: [], total, f: parts[0].f }; }
+    // ㉖v200 运营看板置首页：try 保护——看板是"锦上添花"，装配失败绝不连累对账四表导出；f 用作用域对象（原 parts[0].f 在 unshift 后语义会变）
+    try { const _bT = (Number.isFinite(to) && to) ? to : Date.now(); parts.unshift(buildBoard(from || (_bT - 30 * 864e5), _bT, fRaw)); } catch (e) { console.log('[board] 运营看板装配失败（不影响本次导出）：', e.message); }
+    const total = parts.reduce((s, p) => s + (p.rows ? p.rows.length : 0), 0); return { label: '月度对账包', parts, rows: [], total, f }; }
   return null;
 }
 
@@ -3703,6 +4155,8 @@ function devReg(req, b, u) { // 登录时登记设备：id/类型/ip/UA/首末�
   db.devices = db.devices || {};
   const d = db.devices[dev] || (db.devices[dev] = { id: dev, kind, ip, ua, firstAt: Date.now(), users: {}, trusted: false, blocked: false, note: '' });
   d.kind = kind; d.ip = ip; d.ua = ua; d.lastAt = Date.now(); d.users[u.id] = Date.now();
+  // ㉖v201 APK 版本上链路：PDA 登录 body 带 ver=build 号（老版 APK 不报=无字段，面板显"—"），设备档案留最新一次
+  { const _v = Math.floor(Number((b && b.ver) || 0)); if (_v > 0 && _v < 99999) d.ver = _v; }
   devAuditPush('登录', dev, ip, u, kind);
   return d;
 }
@@ -5608,18 +6062,21 @@ return send(res, 200, {
         const ds = String(url.searchParams.get('ds') || '').toUpperCase();
         if (ds === 'D9' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '活动流审计仅管理员可导出' }); // ㉕A1 角色门禁（方案6.6）
         if ((ds === 'D8' || ds === 'D10') && u.role === 'material') return send(res, 403, { ok: false, msg: '该数据集需仓管员/管理员权限' });
-        const fmt = ['xls', 'json'].includes(url.searchParams.get('fmt')) ? url.searchParams.get('fmt') : 'csv';
+        const fmt = ['xls', 'xlsx', 'json'].includes(url.searchParams.get('fmt')) ? url.searchParams.get('fmt') : 'csv';
         const fRaw = { from: url.searchParams.get('from') || '', to: url.searchParams.get('to') || '', batchId: url.searchParams.get('batchId') || '', arch: url.searchParams.get('arch') || '', zero: url.searchParams.get('zero') || '', loc: url.searchParams.get('loc') || '' }; // ㉖v120 loc=货位前缀过滤（NB04 来料区单独导出）
         let d;
         try { d = buildExport(ds, fRaw); } catch (e) { return send(res, 500, { ok: false, msg: '导出构建失败：' + e.message }); }
         if (!d) return send(res, 400, { ok: false, msg: 'ds 需为 D1库位表/D2库存汇总/D3入库/D4出库/D5AGV任务/D6异常/D7工作量/D8领料/PACK对账包' });
         if (url.searchParams.get('preview') === '1') { // ㉔铁律4：先预览后导出（前20行+总行数，不落盘不登记）
           const _p0 = (d.parts && d.parts[0]) || d; // ㉖v61 多sheet数据集(D7工作量/PACK对账包)：预览取首sheet表头与样例行
-          const cols = (_p0.headers || d.headers || []).length;
-          const rowsAll = _p0.rows || d.rows || [];
+          // ㉖v200b 看板 sheet 数据在 sections（无 rows），旧写法预览显示"仓库运营看板(0行)·前0行"空白——
+          // 预览出口把 sections 拍平成二维表（所见即看板结构：KPI/表格/数据条/热力/口径），导出仍走样式 XML 分支
+          const _pv0 = _p0.board ? renderBoardText(_p0) : (_p0.rows || d.rows || []);
+          const cols = (_p0.headers || d.headers || []).length || _pv0.reduce((m, r) => Math.max(m, r.length), 1);
+          const rowsAll = _pv0;
           const cells = rowsAll.slice(0, 20).map((r) => r.map((v) => String(v === undefined || v === null ? '' : v).slice(0, 40)));
           const flat = rowsAll.reduce((s, r) => s + r.reduce((a, v) => a + String(v === undefined || v === null ? '' : v).length + 1, 0), 0);
-          const sheets = d.parts ? d.parts.map((pp) => ({ name: pp.label, rows: (pp.rows || []).length, cols: (pp.headers || []).length })) : null;
+          const sheets = d.parts ? d.parts.map((pp) => ({ name: pp.label, rows: pp.board ? renderBoardText(pp).length : (pp.rows || []).length, cols: (pp.headers || []).length })) : null;
           return send(res, 200, { ok: true, label: d.label, total: d.total, cols, head: _p0.headers || d.headers, sample: cells, estBytes: flat, sheets: sheets, sheetName: sheets ? _p0.label : null });
         }
         if (fmt === 'json') { // ㉕F8 JSON导出（SAP/BI对接：血缘+数据双段，同样登记快照可重下）
@@ -5633,9 +6090,14 @@ return send(res, 200, {
         }
         const crypto2 = require('crypto');
         let body, mime, ext;
-        if (fmt === 'xls' || ds === 'PACK' || ds === 'D7' || ds === 'D10') { body = expXls(d); mime = 'application/vnd.ms-excel'; ext = 'xls'; }
+        // ㉖v201 PACK 走 .xlsx(OOXML 带图表)：SpreadsheetML 不支持内嵌图表，看板要真图表必须 OOXML；
+        //        其余数据集维持 SpreadsheetML 不动，任何数据集显式 fmt=xlsx 也支持（无图表=纯表）
+        // ㉖v199f D10 摘除强转 xls：expCsv 已支持 parts 多段拼接，盘点结果按用户所选格式导出（D7 保持强转——csv 旧写法只出首表）
+        if (ds === 'PACK' || fmt === 'xlsx') { body = expXlsx(d); mime = _XLSX_MIME; ext = 'xlsx'; }
+        else if (fmt === 'xls' || ds === 'D7') { body = expXls(d); mime = 'application/vnd.ms-excel'; ext = 'xls'; }
         else { body = expCsv(d, ['expId=待分配', 'ds=' + d.label, 'by=' + u.name, 'at=' + new Date().toISOString(), 'filter=' + JSON.stringify(d.f)]); mime = 'text/csv'; ext = 'csv'; }
-        const sha = crypto2.createHash('sha1').update(body, 'utf8').digest('hex').slice(0, 12);
+        const _shaSrc = Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8');
+        const sha = crypto2.createHash('sha1').update(_shaSrc).digest('hex').slice(0, 12);
         db.exports = db.exports || [];
         const expId = 'exp' + (db.exports.length + 1);
         db.exports.push({ id: expId, at: Date.now(), by: u.name, ds: d.label, fmt: ext, f: d.f, rows: d.total, sha });
@@ -5643,15 +6105,17 @@ return send(res, 200, {
         if (db.exports.length > 2000) db.exports = db.exports.slice(-2000);
         save();
         if (ext === 'csv') { body = body.replace('#expId=待分配', '#expId=' + expId); } // 血缘回填（哈希与内容不再对应，仅登记用）
+        const _out = Buffer.isBuffer(body) ? body : Buffer.from(body, 'utf8'); // 二进制(xlsx)与文本统一字节流：落盘/长度/响应同一份
         const cn = encodeURIComponent(`${d.label}_${fRaw.from || ''}${fRaw.to ? '~' + fRaw.to : ''}_${expId}.${ext}`);
         try { // ㉔快照落盘：重下同一份字节；90天轮删
           const _ed = path.join(DATA_DIR, 'exports'); fs.mkdirSync(_ed, { recursive: true });
-          fs.writeFileSync(path.join(_ed, expId + '.' + ext), body);
+          fs.writeFileSync(path.join(_ed, expId + '.' + ext), _out);
           const _fl = fs.readdirSync(_ed).filter((x) => /^exp\d+\./.test(x)).map((x) => [x, fs.statSync(path.join(_ed, x)).mtimeMs]).sort((a, b) => a[1] - b[1]);
           while (_fl.length && Date.now() - _fl[0][1] > 90 * 86400000) { try { fs.unlinkSync(path.join(_ed, _fl.shift()[0])); } catch (_) { break; } }
         } catch (e) { console.log('[export] 快照落盘失败（不影响本次下载）：', e.message); }
-        res.writeHead(200, { 'Content-Type': mime + '; charset=utf-8', 'Content-Disposition': `attachment; filename="${ds}_${expId}.${ext}"; filename*=UTF-8''${cn}`, 'Content-Length': Buffer.byteLength(body) });
-        res.end(body);
+        const _cs = (ext === 'csv' || ext === 'json') ? '; charset=utf-8' : ''; // xlsx/xls 二进制不带 charset
+        res.writeHead(200, { 'Content-Type': mime + _cs, 'Content-Disposition': `attachment; filename="${ds}_${expId}.${ext}"; filename*=UTF-8''${cn}`, 'Content-Length': _out.length });
+        res.end(_out);
         console.log(`[export] ${u.name} 导出 ${d.label} ${ext} ${d.total}行 ${expId} sha=${sha}`);
         return;
       }
@@ -5665,7 +6129,10 @@ return send(res, 200, {
         const fp = path.join(DATA_DIR, 'exports', eid + '.' + rec.fmt);
         if (!fs.existsSync(fp)) return send(res, 404, { ok: false, msg: '快照文件已过期清理（保留90天），请重新导出' });
         const buf = fs.readFileSync(fp);
-        res.writeHead(200, { 'Content-Type': (rec.fmt === 'xls' ? 'application/vnd.ms-excel' : rec.fmt === 'json' ? 'application/json' : 'text/csv') + '; charset=utf-8', 'Content-Disposition': `attachment; filename="${eid}.${rec.fmt}"; filename*=UTF-8''${encodeURIComponent(rec.ds + '_重下_' + eid + '.' + rec.fmt)}`, 'Content-Length': buf.length });
+        // ㉖v201b 重下补 xlsx 二进制：xls/xlsx 是二进制不能带 charset（否则 UTF-8 转换损坏字节流），此前漏 xlsx 会落到 text/csv 分支
+        const _mt = rec.fmt === 'xlsx' ? _XLSX_MIME : rec.fmt === 'xls' ? 'application/vnd.ms-excel' : rec.fmt === 'json' ? 'application/json' : 'text/csv';
+        const _cs = (rec.fmt === 'csv' || rec.fmt === 'json') ? '; charset=utf-8' : '';
+        res.writeHead(200, { 'Content-Type': _mt + _cs, 'Content-Disposition': `attachment; filename="${eid}.${rec.fmt}"; filename*=UTF-8''${encodeURIComponent(rec.ds + '_重下_' + eid + '.' + rec.fmt)}`, 'Content-Length': buf.length });
         res.end(buf);
         console.log(`[export] ${u.name} 重下 ${eid}（${rec.ds}）`);
         return;
@@ -8276,7 +8743,10 @@ return send(res, 200, {
       if (req.method === 'GET' && p === '/api/admin/devices') {
         if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员' });
         const list = Object.values(db.devices || {}).map((d) => ({ ...d, online: devOnline(d.id), usersList: Object.keys(d.users || {}).map((uid) => { const uu = db.users.find((x) => x.id === uid); return uu ? uu.name : uid; }) })).sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
-        return send(res, 200, { ok: true, list, audit: (db.devAudit || []).slice(-200).reverse() });
+        // ㉖v201 最新发布 build（发布台 version.json，路径内联防块级作用域不可见）随列表下发：面板据此标"落后N版/需升级"
+        let latestBuild = 0;
+        try { const _vf = path.join(DATA_DIR, 'app', 'version.json'); if (fs.existsSync(_vf)) latestBuild = Math.floor(Number(JSON.parse(fs.readFileSync(_vf, 'utf8')).build) || 0); } catch (_) {}
+        return send(res, 200, { ok: true, list, latestBuild, audit: (db.devAudit || []).slice(-200).reverse() });
       }
       if (req.method === 'POST' && p === '/api/admin/devices') {
         if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员' });

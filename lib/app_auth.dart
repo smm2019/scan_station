@@ -172,7 +172,8 @@ class AuthApi {
             "username": username,
             "password": password,
             "dev": await deviceId(),
-            "kind": "pda"
+            "kind": "pda",
+            "ver": AppUpdater.localBuild // ㉖v201 登录上报 APK build 号：管理后台设备面板直接看各台版本/是否落后，免现场翻"关于"页
           },
           serverOverride: server);
   static Future<Map> me() async =>

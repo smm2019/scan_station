@@ -3432,8 +3432,11 @@ class _MainPageState extends State<MainPage>
   String _recStatusOf(ScanRecord r) {
     if (r.isCancel) return "cx";
     final gc = r.goodsCode.toUpperCase();
-    if (_recOut.contains(gc)) return "out";
+    // ㉖v201 在架权威=账本（与统计口径 _slot、库存页 v98c/v103 同序）：账本(_recLoc)命中即在架。
+    // 旧版先判 _recOut——出库台账只增不减，导致"出过库又重新入库/移回"的框永远显🟧已出库
+    // （现场实锤：5 框都带"现NB02-E-xF"当前位置却标橙，误导）。出库历史仅在账本已无此框时才成立。
     if (_recLoc.containsKey(gc)) return "shelf";
+    if (_recOut.contains(gc)) return "out";
     return "wait";
   }
 
