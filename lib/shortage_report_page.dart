@@ -66,11 +66,14 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       _kAt = "sr_at_names",
       _kLow = "sr_low_line",
       _kProj = "sr_projects",
+      _kDefDesc = "sr_def_desc", // ㉖v199d 异常描述默认值（用户要求自定义；缺料反馈弹层与缺料单共用）
       _kShowLast = "sr_show_last"; // ㉖v179 分享模板自定义：是否随文案显示末次领用（日期+数量）
+  static const _defDescFallback = "生产急需，请安排采购/到货"; // 未自定义时的内置默认
   String _unit = "鄞州豪斯特生产部",
       _duty = "鄞州豪斯特运营部",
       _conf = "宋明明",
       _at = "Eleven、星光熠熠、雪哥儿";
+  String _defDesc = _defDescFallback; // ㉖v199d 异常描述默认值（可自定义，缺料反馈弹层未显式指定描述时用它）
   bool _showLast = true; // ㉖v179 默认显示末次领用（现场最想知道的就是"多久没来过货"）
   double _lowLine = 0; // 低水位阈值（0=不启用）
   bool _showZero = true, _showShort = true, _showLow = true; // 口径开关（低水位阈值未开时不显示该chip）
@@ -98,6 +101,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         _duty = sp.getString(_kDuty) ?? _duty;
         _conf = sp.getString(_kConf) ?? _conf;
         _at = sp.getString(_kAt) ?? _at;
+        _defDesc = (sp.getString(_kDefDesc) ?? "").trim().isEmpty ? _defDescFallback : sp.getString(_kDefDesc)!.trim(); // ㉖v199d
         _lowLine = (sp.getDouble(_kLow) ?? 0);
         _projects = sp.getStringList(_kProj) ?? _defProjects;
         _showLast = sp.getBool(_kShowLast) ?? true; // ㉖v179 分享模板：末次领用行开关（默认显示）
@@ -350,6 +354,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     await sp.setString(_kDuty, _duty);
     await sp.setString(_kConf, _conf);
     await sp.setString(_kAt, _at);
+    await sp.setString(_kDefDesc, _defDesc); // ㉖v199d 异常描述默认值
     await sp.setDouble(_kLow, _lowLine);
     await sp.setStringList(_kProj, _projects); // ㉖v75 自定义项目表
     await sp.setBool(_kShowLast, _showLast); // ㉖v179 分享模板：末次领用开关
@@ -360,6 +365,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         d = TextEditingController(text: _duty),
         c = TextEditingController(text: _conf),
         a = TextEditingController(text: _at),
+        dd = TextEditingController(text: _defDesc), // ㉖v199d 异常描述默认值（共享键 sr_def_desc，缺料反馈弹层未显式指定描述时带出）
         l = TextEditingController(text: _lowLine > 0 ? _fmtInvNum(_lowLine) : ""),
         pj = TextEditingController(text: _projects.join("、")); // ㉖v75 项目自定义（顿号/逗号分隔，物料名包含即命中）
     // ㉖v179b 开关值必须是弹窗自己的局部状态：showDialog 的内容属独立路由，
@@ -381,6 +387,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                   TextField(controller: d, decoration: const InputDecoration(labelText: "责任单位", isDense: true)),
                   TextField(controller: c, decoration: const InputDecoration(labelText: "确认人", isDense: true)),
                   TextField(controller: a, decoration: const InputDecoration(labelText: "@人员（顿号分隔）", isDense: true)),
+                  TextField(controller: dd, maxLines: 2, minLines: 1, decoration: const InputDecoration(labelText: "异常描述（默认值）", isDense: true, helperText: "缺料反馈/缺料单的异常描述默认带此文案，反馈时仍可临时改", helperStyle: TextStyle(fontSize: 10))), // ㉖v199d 用户要求：异常描述可自定义为默认字段
                   TextField(controller: pj, decoration: const InputDecoration(labelText: "项目分类（顿号/逗号分隔）", isDense: true, helperText: "物料名包含关键字即归入该项目，如 EX11、E281、V446K", helperStyle: TextStyle(fontSize: 10))),
                   TextField(controller: l, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "低水位阈值（件，0=不启用）", isDense: true, helperText: "在库低于此值且有人下单不够发才算缺料纳入；有货无人要=不缺货，不纳入", helperStyle: TextStyle(fontSize: 10))),
                   // ㉖v179 分享模板自定义：末次领用行（日期+数量+多少天没领过）
@@ -402,6 +409,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         _duty = d.text.trim().isEmpty ? _duty : d.text.trim();
         _conf = c.text.trim().isEmpty ? _conf : c.text.trim();
         _at = a.text.trim().isEmpty ? _at : a.text.trim();
+        _defDesc = dd.text.trim().isEmpty ? _defDesc : dd.text.trim(); // ㉖v199d 异常描述默认值（空=不改）
         _lowLine = double.tryParse(l.text.trim()) ?? 0;
         _showLast = sl; // ㉖v179b 采纳弹窗内的开关值
         final np = pj.text

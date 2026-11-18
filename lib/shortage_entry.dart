@@ -521,9 +521,23 @@ Future<void> showShortageSheet(BuildContext context, {required List<_ShortGap> r
       content: Text("缺料反馈：新提交 $okN 项" + (dupN > 0 ? " · 重复 $dupN 项" : "") + (skipN > 0 ? " · 有货未提交 $skipN 项" : "") + (failN > 0 ? " · 失败 $failN 项" : "") + "\n" + msgs.take(3).join("\n"), style: const TextStyle(fontSize: 12.5))));
 }
 
+/// ㉖v199d 异常描述共享默认值（用户要求可自定义）：调用方显式给了描述→尊重显式；
+/// 未给（空）→读「缺料单默认字段」里自定义的 sr_def_desc（与 shortage_report_page._kDefDesc 同键），
+/// 没自定义过→内置兜底。所有缺料反馈入口（建单/库存/搜索卡/模板）统一走本函数，一处设置全端生效。
+Future<String> shortDefDesc(String given) async {
+  if (given.trim().isNotEmpty) return given.trim();
+  try {
+    final sp = await SharedPreferences.getInstance();
+    final v = (sp.getString("sr_def_desc") ?? "").trim();
+    if (v.isNotEmpty) return v;
+  } catch (_) {}
+  return "生产急需，请安排采购/到货";
+}
+
 /// 入口统一动作：拉全厂缺口 → 预览弹层。失败不发假数据：询问后才裸文案发送。
-Future<void> shortageFeedback(BuildContext context, List<String> pns, {String title = "缺料反馈", String defaultDesc = "生产急需，请安排采购/到货", String hint = ""}) async {
+Future<void> shortageFeedback(BuildContext context, List<String> pns, {String title = "缺料反馈", String defaultDesc = "", String hint = ""}) async {
   final ms = ScaffoldMessenger.of(context);
+  final desc0 = await shortDefDesc(defaultDesc); // ㉖v199d 未显式指定→读「缺料单默认字段」自定义值（一处设置全端带出）
   ms.showSnackBar(const SnackBar(content: Text("正在核算全厂缺口…"), backgroundColor: Colors.blueGrey));
   final gaps = await shortGapLoad(pns);
   if (!context.mounted) return;
@@ -542,10 +556,10 @@ Future<void> shortageFeedback(BuildContext context, List<String> pns, {String ti
     if (go != true || !context.mounted) return;
     await showShortageSheet(context,
         rows: list.map((p) => _ShortGap(p, "", 0, 0, 0, 0, 0, true, noData: true)).toList(),
-        title: title, defaultDesc: defaultDesc, hint: "注：发送时缺口数据不可用，仅基础字段");
+        title: title, defaultDesc: desc0, hint: "注：发送时缺口数据不可用，仅基础字段");
     return;
   }
   await showShortageSheet(context,
       rows: list.map((p) => gaps[p] ?? _ShortGap(p, "", 0, 0, 0, 0, 0, false)).toList(),
-      title: title, defaultDesc: defaultDesc, hint: hint);
+      title: title, defaultDesc: desc0, hint: hint);
 }

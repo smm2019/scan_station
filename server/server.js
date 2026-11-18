@@ -8098,7 +8098,12 @@ return send(res, 200, {
             // ★ 只认真实发过货的：ready/done（到齐/已签收）或该行有实发（备料中途接新单中断的历史单）。
             //   pending/accepted 一件没发、未发行的行都不算"领用"——否则"刚下单还没发"会被显示成上次领用
             const real = r.status === 'ready' || r.status === 'done';
-            const t = Date.parse(r.confirmedAt) || Number(r.readyAt) || Date.parse(r.acceptedAt) || Date.parse(r.createdAt) || 0;
+            // ㉖v199d 领用时间=发料日优先（用户实锤 LL2026111716021545：11/17 发完料、11/18 才签收，
+            // 缺料单显示"上次领用 11-18"——仓库视角"上次领用"= 上次实际发掉货的日子，签收只是物料员补确认，
+            // 隔日签收把发料日整体推后一天，缺口账期跟着失真）。旧序 confirmedAt 在前=签收日吞掉发料日。
+            // readyAt=进入待签收那一刻（发料全部完成的权威盖章, 8310/8592 两处均盖, 签收后不被覆盖）；
+            // 无 readyAt 的历史老单回退 acceptedAt（接单≈开始发料）→createdAt；confirmedAt 降为最后兜底。
+            const t = Number(r.readyAt) || Date.parse(r.acceptedAt) || Date.parse(r.createdAt) || Date.parse(r.confirmedAt) || 0;
             if (!t) continue;
             for (const it of r.items || []) {
               const pn = String(it.partNo || '').toUpperCase();
