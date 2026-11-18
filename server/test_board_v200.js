@@ -138,6 +138,24 @@ function xmlWellFormed(file) {
     C('R6 看板指标入表（标题/占用率/呆滞 落 sheet1）', /仓 库 运 营 看 板/.test(s1) && /货架占用率/.test(s1) && /呆滞框/.test(s1), '');
     const c1 = await unzipPart(OUT, 'xl/charts/chart1_1.xml');
     C('R7 图表 part 为 OOXML 原生 chartSpace（line/bar/pie 之一）', /<c:chartSpace/.test(c1) && /<c:(lineChart|barChart|pieChart)/.test(c1), c1.slice(0, 50));
+    // ㉖v201 图例显数据根因回归锁：系列名 <c:tx> 的 c:f 必须指向【单个表头格】，
+    // 旧版误指向数据列整段($B$21:$B$24)→Excel 照引用读成"179 1099…"数据串显示在图例。
+    const txRefs = [...c1.matchAll(/<c:tx><c:strRef><c:f>([^<]+)<\/c:f>/g)].map((m) => m[1]);
+    C('R7b ★★★ 图例系列名引用为单格(非数据列区间，修图例显数字根因)', txRefs.length >= 1 && txRefs.every((f) => /\$[A-Z]+\$\d+$/.test(f)) && !txRefs.some((f) => (f.split('!').pop() || '').includes(':')), txRefs.slice(0, 3).join(' '));
+    C('R7c ★★★ 周吞吐线画入库框/出库框/领料单(同量级框口径)，出库件不进图(否则百万级压平其余线)', /<c:v>入库框<\/c:v>/.test(c1) && /<c:v>出库框<\/c:v>/.test(c1) && !/<c:v>出库件<\/c:v>/.test(c1), 'tx=' + txRefs.join(','));
+    // ㉖v201b off-by-one 回归锁：引用起点必须落在数据行。sheet 字符串格=inlineStr、数字格=<v>，
+    // 按引用地址回取 sheet1 真格：tx 格=系列名文字；cat/val 起点格=数据(数字/类别)而非表头词。
+    const cellAt = (col, row) => { const m = new RegExp('<c r="' + col + row + '"[^>]*?>(?:<is><t[^>]*>([^<]*)</t></is>|<v>([^<]*)</v>)').exec(s1); return m ? (m[1] !== undefined ? m[1] : 'NUM:' + m[2]) : 'MISSING'; };
+    const _txTxt = txRefs.map((f) => { const m = /!\$([A-Z]+)\$(\d+)$/.exec(f); return m ? cellAt(m[1], m[2]) : 'BADREF'; });
+    C('R7d ★★★ 系列名引用格真内容=系列名(表头格，非数据/非表头词"周数")', _txTxt.join(',') === '入库框,出库框,领料单', _txTxt.join(','));
+    const _dataRefs = [...c1.matchAll(/<c:(?:cat|val)><c:(?:num|str)Ref><c:f>[^!]*!\$([A-Z]+)\$(\d+):/g)].map((m) => cellAt(m[1], m[2]));
+    C('R7e ★★★ cat/val引用起点格=数据行(数字/类别)，非"周数"表头(off-by-one修复，饼图混入假类别根因)', _dataRefs.length >= 2 && _dataRefs.every((x) => x !== 'MISSING' && x !== 'BADREF' && x !== '周数' && x !== '周次'), _dataRefs.slice(0, 4).join(','));
+    const c6 = await unzipPart(OUT, 'xl/charts/chart1_6.xml');
+    const _dPt = (c6.match(/<c:dPt>/g) || []).length;
+    const _dPtColors = [...new Set([...c6.matchAll(/<c:dPt>[\s\S]*?<a:srgbClr val="([0-9A-F]{6})"/g)].map((m) => m[1]))];
+    C('R7f ★★★ 饼图逐扇区着色(dPt≥类别数且多色，修整饼单色实锤)', /<c:pieChart/.test(c6) && /<c:varyColors val="1"\/>/.test(c6) && _dPt >= 2 && _dPtColors.length >= _dPt, 'dPt=' + _dPt + ' colors=' + _dPtColors.length);
+    const _pieCat0 = /<c:cat><c:strRef><c:f>[^!]*!\$([A-Z]+)\$(\d+):/.exec(c6);
+    C('R7g ★★★ 饼图类别引用起点=数据行(告警/恢复/堵点)，不含"类型"表头假类别', !!_pieCat0 && ['告警', '恢复', '堵点'].includes(cellAt(_pieCat0[1], _pieCat0[2])), _pieCat0 ? cellAt(_pieCat0[1], _pieCat0[2]) : 'noCatRef');
     const stx = await unzipPart(OUT, 'xl/styles.xml');
     C('R8 ★★★ styles.xml 合规（fill 包裹层在位 + alignment 无错误自闭合）', /<fills[^>]*><fill><patternFill/.test(stx) && !/<alignment[^>]*\/><\/alignment>/.test(stx) && /<cellStyles/.test(stx), '');
     const ctx_ = await unzipPart(OUT, '[Content_Types].xml');

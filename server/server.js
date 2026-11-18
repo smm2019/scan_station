@@ -1052,6 +1052,8 @@ const _xcol = (i) => { let s = ''; i++; while (i > 0) { const m = (i - 1) % 26; 
 // 图表 XML：type=line|bar|pie（bar 支持横条 barDir）；数据区单元格引用+双缓存（Excel 打开即用，不必读表）
 function _xchartXml(cf) {
   const n = cf.cats.length;
+  // ㉖v201b 饼图调色板：色相跨度大 + 白描边，任意扇区数不重色混淆（旧版系列级单色填充整饼一色）
+  const pal2 = ['515BD4', 'E07000', '2E7D32', 'C62828', '7B1FA2', '00897B', 'F9A825', '455A64'];
   const numCache = (vals) => `<c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${n}"/>` + vals.map((v, i) => `<c:pt idx="${i}"><c:v>${Number(v) || 0}</c:v></c:pt>`).join('') + '</c:numCache>';
   const strCache = (vals) => `<c:strCache><c:ptCount val="${n}"/>` + vals.map((v, i) => `<c:pt idx="${i}"><c:v>${_xq(v)}</c:v></c:pt>`).join('') + '</c:strCache>';
   const catXml = cf.catNum
@@ -1059,11 +1061,19 @@ function _xchartXml(cf) {
     : `<c:cat><c:strRef><c:f>${cf.catRef}</c:f>${strCache(cf.cats)}</c:strRef></c:cat>`;
   const titleXml = `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1100" b="1"><a:solidFill><a:srgbClr val="1F3864"/></a:solidFill><a:latin typeface="Microsoft YaHei"/></a:defRPr></a:pPr><a:r><a:rPr lang="zh-CN" sz="1100" b="1"><a:solidFill><a:srgbClr val="1F3864"/></a:solidFill><a:latin typeface="Microsoft YaHei"/></a:rPr><a:t>${_xq(cf.title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>`;
   const serXml = (s, si) => {
-    const tx = `<c:tx><c:strRef><c:f>${s.ref}</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${_xq(s.name)}</c:v></c:pt></c:strCache></c:strRef></c:tx>`;
+    // ㉖v201 修图例显数据根因：系列名 tx 的 c:f 必须指向【含系列名的单个表头单元格】(s.nameRef)，
+    // 旧版误指向数据列整段(s.ref)，Excel 按该引用取首格读成数据串（图例显"入库框 179 1099…"）。
+    const tx = `<c:tx><c:strRef><c:f>${s.nameRef || s.ref}</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${_xq(s.name)}</c:v></c:pt></c:strCache></c:strRef></c:tx>`;
     const val = `<c:val><c:numRef><c:f>${s.ref}</c:f>${numCache(s.data)}</c:numRef></c:val>`;
     const sp = `<c:spPr><a:solidFill><a:srgbClr val="${s.color}"/></a:solidFill><a:ln><a:solidFill><a:srgbClr val="${s.color}"/></a:solidFill></a:ln></c:spPr>`;
     const ord = `<c:idx val="${si}"/><c:order val="${si}"/>`;
-    if (cf.type === 'pie') return `<c:ser>${ord}${sp}${catXml}<c:dLbls><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>${val}</c:ser>`;
+    // ㉖v201b 饼图逐扇区上色：系列级 solidFill 会把 varyColors 锁成单色（实锤截图整饼一色），
+    // 改 dPt 逐点显式调色板色；spPr 只留描边白线（扇区分隔）。图例色块随 dPt 与扇区一致。
+    if (cf.type === 'pie') {
+      const dPts = cf.cats.map((_, i) => `<c:dPt><c:idx val="${i}"/><c:bubble3D val="0"/><c:spPr><a:solidFill><a:srgbClr val="${pal2[i % pal2.length]}"/></a:solidFill><a:ln><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:w val="12700"/></a:ln></c:spPr></c:dPt>`).join(''); // ㉖v201c 每点独立完整<c:dPt>…</c:dPt>：旧写法整组共用一对开合标签(一点开多点合)，ET良构但schema非法→Excel忽略配色整饼一色（用户截图实锤）
+      const pieSp = `<c:spPr><a:ln><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:w val="12700"/></a:ln></c:spPr>`;
+      return `<c:ser>${ord}${pieSp}${dPts}${catXml}<c:dLbls><c:showLegendKey val="0"/><c:showVal val="1"/><c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>${val}</c:ser>`;
+    }
     if (cf.type === 'line') return `<c:ser>${ord}${tx}${sp}<c:marker><c:symbol val="none"/></c:marker>${catXml}${val}<c:smooth val="0"/></c:ser>`;
     return `<c:ser>${ord}${tx}${sp}<c:invertIfNegative val="0"/>${catXml}${val}</c:ser>`;
   };
@@ -1149,10 +1159,10 @@ function expXlsx(d) {
       for (const b of blocks) {
         let hd = [], rows2 = [], catCol = 0, catNum = false, series = [], chart = null;
         if (b.kind === 'wk') {
-          hd = ['周数', '入库框', '出库件', '领料单'];
-          rows2 = b.rows.map((r, k) => [k + 1, Number(r[1]) || 0, Number(r[2]) || 0, Number(r[3]) || 0]);
-          catNum = true; series = [{ name: '入库框', col: 1 }, { name: '出库件', col: 2 }, { name: '领料单', col: 3 }];
-          chart = { type: 'line', title: '周吞吐趋势 Weekly Throughput' };
+          hd = ['周数', '入库框', '出库框', '出库件', '领料单']; // ㉖v201 增出库框(框口径)，图表画入库框/出库框/领料单三条同量级线；出库件(件,百万级)留表不进图，否则压平其余两线
+          rows2 = b.rows.map((r, k) => [k + 1, Number(r[1]) || 0, Number(r[2]) || 0, Number(r[3]) || 0, Number(r[4]) || 0]);
+          catNum = true; series = [{ name: '入库框', col: 1 }, { name: '出库框', col: 2 }, { name: '领料单', col: 4 }];
+          chart = { type: 'line', title: '周吞吐趋势 Weekly Throughput（框）' };
         } else if (b.kind === 'zone') {
           hd = ['库区', '占用率%', '已占用格', '总格数', '地面在架'];
           rows2 = b.rows.map((r) => { const pctv = parseFloat((r[3] && r[3].d != null ? r[3].d : String(r[3] || '')).replace('%', '')) || 0; return [String(r[0]).replace(' 区', ''), pctv, Number(r[2]) || 0, Number(r[1]) || 0, Number(r[4]) || 0]; });
@@ -1180,8 +1190,11 @@ function expXlsx(d) {
         rows2.forEach((r) => { r.forEach((v, ci) => put(dr, ci, { v, s: ci === 0 ? 12 : (catNum ? 14 : 14) })); dr++; });
         const nD = rows2.length;
         const snQ = "'" + sn + "'";
-        const catRef = `${snQ}!$${_xcol(catCol)}$${r1}:$${_xcol(catCol)}$${r1 + nD - 1}`;
-        charts.push(Object.assign({}, chart, { cats: rows2.map((r) => r[catCol]), catNum, catRef, series: series.map((s2, si) => ({ name: s2.name, data: rows2.map((r) => r[s2.col]), ref: `${snQ}!$${_xcol(s2.col)}$${r1}:$${_xcol(s2.col)}$${r1 + nD - 1}`, color: pal[si % pal.length] })), _anchor: charts.length }));
+        // ㉖v201b 修引用错一行（off-by-one 实锤：饼图图例混入"类型"表头假类别）：put(表头,0-based dr)
+        // 落在 Excel 1-based 行 dr+1，旧版把数据首行当 r1 起引 → cat/val 从表头行开始、多吞一行且错位。
+        const dr0 = r1 - 1; // 表头 0-based 行（= put 表头时的 dr）
+        const catRef = `${snQ}!$${_xcol(catCol)}$${dr0 + 2}:$${_xcol(catCol)}$${dr0 + 1 + nD}`;
+        charts.push(Object.assign({}, chart, { cats: rows2.map((r) => r[catCol]), catNum, catRef, series: series.map((s2, si) => ({ name: s2.name, data: rows2.map((r) => r[s2.col]), ref: `${snQ}!$${_xcol(s2.col)}$${dr0 + 2}:$${_xcol(s2.col)}$${dr0 + 1 + nD}`, nameRef: `${snQ}!$${_xcol(s2.col)}$${dr0 + 1}`, color: pal[si % pal.length] })), _anchor: charts.length }));
         dr += 2;
       }
     }
@@ -1325,10 +1338,10 @@ function buildBoard(F, T, fRaw) {
   const w = buildWork(F, T);
   // 周吞吐表
   const wk = 7 * 864e5, nb = Math.max(1, Math.min(13, Math.ceil((span + 1) / wk)));
-  const buck = []; for (let i = 0; i < nb; i++) buck.push({ f: F + i * wk, e: Math.min(T, F + (i + 1) * wk - 1), in: new Set(), out: 0, req: 0 });
+  const buck = []; for (let i = 0; i < nb; i++) buck.push({ f: F + i * wk, e: Math.min(T, F + (i + 1) * wk - 1), in: new Set(), ob: new Set(), out: 0, req: 0 }); // ㉖v201 ob=出库框去重集(供周吞吐图取与入库框同量级的框口径)
   const bIdx = (t) => Math.max(0, Math.min(nb - 1, Math.floor((t - F) / wk)));
   for (const s of Object.values(db.scanlog || {})) { if (s.cx || !s.code) continue; const t = n(s.t); if (t < F || t > T) continue; if (String((s.st || s.gl) || '').toUpperCase().startsWith('NB04-')) continue; buck[bIdx(t)].in.add(String(s.code).toUpperCase()); }
-  for (const o of Object.values(db.outbound || {})) { const t = n(o.createdAt); if (t < F || t > T) continue; const q = (o.items || []).reduce((s, it) => s + n(it.qty), 0); buck[bIdx(t)].out += q; }
+  for (const o of Object.values(db.outbound || {})) { const t = n(o.createdAt); if (t < F || t > T) continue; const bk = bIdx(t); buck[bk].out += (o.items || []).reduce((s, it) => s + n(it.qty), 0); for (const it of (o.items || [])) { String(it.barcode || '').toUpperCase().split(/[;；]/).forEach((x) => { x = x.trim(); if (x) buck[bk].ob.add(x); }); } } // ㉖v201 同步累计出库框去重(与metric口径同)
   for (const r of db.requisitions || []) { const t = Date.parse(r.createdAt) || 0; if (t >= F && t <= T) buck[bIdx(t)].req++; }
   // 异常事件（车辆类）周期计数
   const evCnt = {}; for (const e of db.carEvents || []) { const t = n(e.ts); if (t < F || t > T) continue; if (!/告警|恢复|堵点|低电|红牌|升级|已认领|超时/.test(String(e.kind))) continue; evCnt[e.kind] = (evCnt[e.kind] || 0) + 1; }
@@ -1358,7 +1371,7 @@ function buildBoard(F, T, fRaw) {
         { k: '呆滞框', v: staleBoxes, unit: '框', tone: staleBoxes > 40 ? 'bad' : staleBoxes > 0 ? 'warn' : 'good' },
         { k: 'AGV完成/失败', v: agvOk + '/' + agvFail, tone: agvFail > agvOk * 0.05 ? 'warn' : 'good' },
       ] },
-      { type: 'table', title: '周吞吐趋势 Weekly Throughput', headers: ['周次', '入库框', '出库件', '领料单', '', '', '', ''], types: ['S', 'N', 'N', 'N', 'S', 'S', 'S', 'S'], rows: buck.map((b, i) => ['第' + (i + 1) + '周 ' + dstr(b.f) + '~' + dstr(b.e), b.in.size, b.out, b.req, '', '', '', '']) },
+      { type: 'table', title: '周吞吐趋势 Weekly Throughput', headers: ['周次', '入库框', '出库框', '出库件', '领料单', '', '', ''], types: ['S', 'N', 'N', 'N', 'N', 'S', 'S', 'S'], rows: buck.map((b, i) => ['第' + (i + 1) + '周 ' + dstr(b.f) + '~' + dstr(b.e), b.in.size, b.ob.size, b.out, b.req, '', '', '']) }, // ㉖v201 增出库框(框去重)列：图表画入库框/出库框/领料单(同量级)，出库件(件)留表不进图
       { type: 'heat', title: '库区占用 Zone Utilization', headers: ['库区', '货架格数', '已占用', '占用率', '地面在架框', '', '', '', '', '', '', ''], heatCols: [3], rows: zoneRows.map((r) => [...r, '', '', '', '']) },
       { type: 'table', title: '呆滞料排行 Top 10（≥14天未动 · 一键移地面消化）', headers: ['零件号', '物料名称', '呆滞格数', '呆滞件数', '最长滞留', '', '', ''], types: ['S', 'S', 'N', 'N', 'S', 'S', 'S', 'S'], rows: stRows.map((r) => [...r, '', '', '']) },
       { type: 'table', title: '人员效率排行 Top 10', headers: ['姓名', '入库框', '出库框', '出库件', '接单', '平均接单(分)', '修正', '返架'], types: ['S', 'N', 'N', 'N', 'N', 'N', 'N', 'N'], rows: psRows },
