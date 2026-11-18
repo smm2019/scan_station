@@ -144,10 +144,14 @@ Future<_StockAgg> computeStock() async {
 
   // 统一按"框"聚合后再算库存：MES 标签数量是整框数（同托每码都回整框值），
   // 框键=托号优先，其次"货位+零件号"（同位同件视为同框），都缺才一码一框。
+  // ㉖v202 托号键补零件号（11-18 实锤 TP1794981031625 一托挂两个不同零件各300件：旧键 P|pid
+  // 把两框并成一框，件数全记进先入框的零件→汇总页 2240=0/2241=600 双倍虚高，详情页逐框算=300
+  // 同页打架；1821 盘点 LIVE 基准(本机拼账)原样继承账面 600/0+假已出库。兄弟码合并语义不变：
+  // 同托同零件多码照常并框相加，只禁止不同零件互相吞并——不同零件本就不可能是同一框）
   final boxesByKey = <String, _StockBox>{}; // ㉖v52 键改标签号：同托多码仍各自留框（分布/滞留需要），下方汇总处再按框键合并
   String boxKey(String pid, String loc, String partNo, String code) => pid
           .isNotEmpty
-      ? "P|$pid"
+      ? "P|$pid|$partNo"
       : (loc.isNotEmpty && partNo.isNotEmpty ? "L|$loc|$partNo" : "C|$code");
   void addBox(String key, _StockBox box) {
     boxesByKey[key] = box;
@@ -1305,14 +1309,61 @@ class _FlowTabState extends State<_FlowTab> {
 // ---------- Tab4 期初导入（页签已下线，类保留备用） ----------
 
 /// 盘点·系统实时在库账本快照 → 基准两表（免上传CSV；NB02货架+NB03地面全覆盖）。
-/// 口径与库存页完全一致：账面=在库框数量合计（零库存零件不入基准，扫到即账外料）；货位=各货位在库框按零件号合计。
+/// ㉖v202 方案B：基准=【服务器权威账本聚合】（/api/inventory/baseline）——任何一台 PDA 发起结果一致。
+/// 旧版本机拼账实锤缺陷（11-18 任务183）：本机只有自家采集流水，同码多形态（AGV站台流水在前、
+/// 格位流水在他机）位置取错、缺件号/缺MES缓存框被吞 → 账本明明有 226 件基准账面=0（假盘盈）。
+/// 服务器不可达/旧版服务器无端点 → 降级走旧本机拼账路（保断网可用，meta.srvBuilt=false 留痕可查）。
 /// 只覆盖 baselineBooks/baselineLocs 两张盘点基准表（与CSV导入同样的整表替换），不触碰采集/发料/账本数据。
 Future<Map<String, dynamic>> buildLiveBaseline() async {
-  final pr = await ledgerPullMerge(force: true); // 先与电脑账本合并：多台PDA的在库状态对齐（盘点基准必须最新，强制拉）
-  final agg = await computeStock();
+  final pr = await ledgerPullMerge(force: true); // 本机账本对齐（服务器基准不依赖它，但盘点会话内扫码判定/其他页面要新鲜）
   final key = "LIVE@${DateTime.now().millisecondsSinceEpoch}";
-  // ㉖v94u 快照留痕：服务器账本版本 vs 本机合并后行数——现场"明明有2框却报差异"时可判定快照是否落后/拉取失败
   final localRows = await _globalIsar.shelfPlacements.where().count();
+  // ── 主路：服务器权威聚合 ──
+  try {
+    final j = await AuthApi.invBaseline().timeout(const Duration(seconds: 15));
+    if (j["ok"] == true && j["books"] is List && j["locs"] is List) {
+      final books = <BaselineBook>[];
+      for (final x in (j["books"] as List)) {
+        final m = Map<String, dynamic>.from(x as Map);
+        final pn = m["pn"]?.toString() ?? "";
+        if (pn.isEmpty) continue;
+        books.add(BaselineBook(fileKey: key, partNo: pn, itemName: m["nm"]?.toString() ?? "", bookQty: ((m["book"] as num?) ?? 0).toDouble()));
+      }
+      final locMap = <String, BaselineLoc>{};
+      for (final x in (j["locs"] as List)) {
+        final m = Map<String, dynamic>.from(x as Map);
+        final lc = m["loc"]?.toString() ?? "", pn = m["pn"]?.toString() ?? "";
+        if (lc.isEmpty || pn.isEmpty) continue;
+        final cs = ((m["codes"] as List?) ?? []).map((s) => s.toString()).toList();
+        locMap["$lc|$pn"] = BaselineLoc(fileKey: key, locCode: lc, partNo: pn, qty: ((m["book"] as num?) ?? 0).toDouble(), goodsCode: cs.isEmpty ? "" : cs.first.split("|").first);
+      }
+      await _globalIsar.writeTxn(() async {
+        await _globalIsar.baselineBooks.where().deleteAll();
+        await _globalIsar.baselineBooks.putAll(books);
+        await _globalIsar.baselineLocs.where().deleteAll();
+        await _globalIsar.baselineLocs.putAll(locMap.values.toList());
+      });
+      final meta = <String, dynamic>{
+        "pullOk": pr["ok"] == true,
+        "srvRev": (j["rev"] as num?)?.toInt() ?? -1,
+        "srvTotal": (j["total"] as num?)?.toInt() ?? -1,
+        "srvAt": j["srvAt"] ?? "",
+        "srvBy": j["srvBy"] ?? "",
+        "localRows": localRows,
+        "msg": "基准=服务器权威账本（全设备一致）",
+        "srvBuilt": true, // 调用方据此不再喊"本机落后"（基准与本机账本无关）
+        "noPn": ((j["noPn"] as List?) ?? []).length, // 缺件号未入基准码数（扫到按账外如实报）
+      };
+      try {
+        final sp = await SharedPreferences.getInstance();
+        await sp.setString("inv_live_meta_$key", jsonEncode(meta));
+      } catch (_) {}
+      return {"key": key, "books": books.length, "locs": locMap.length, "meta": meta};
+    }
+  } catch (_) {}
+  // ── 降级：服务器不可达/旧版服务器无端点 → 旧本机拼账（有本机视角缺陷风险，meta 留痕 srvBuilt=false）──
+  final agg = await computeStock();
+  // ㉖v94u 快照留痕：服务器账本版本 vs 本机合并后行数——现场"明明有2框却报差异"时可判定快照是否落后/拉取失败
   final meta = <String, dynamic>{
     "pullOk": pr["ok"] == true,
     "srvRev": (pr["rev"] as num?)?.toInt() ?? -1,
@@ -1321,6 +1372,7 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
     "srvBy": pr["srvBy"] ?? "",
     "localRows": localRows,
     "msg": pr["msg"] ?? "",
+    "srvBuilt": false,
   };
   final books = <BaselineBook>[];
   for (final r in agg.parts.values) {
@@ -1978,12 +2030,157 @@ class _PartProfilePageState extends State<PartProfilePage> {
   bool _watched = false;
   Map? _watchRow; // ㉖v96 本零件预约记录（target/arrived/due/done/reqNo），按钮进度显示与改约用
   String _itemNameCache = ""; // 档案数据到位后回填，供预约弹窗显示物料名
+  // ㉖v202 每日出入库（服务器全厂口径逐日聚合，与网页零件档案同数据源；失败静默不挡档案主体）
+  int _ppDays = 30;
+  Map? _ppDaily;
 
   @override
   void initState() {
     super.initState();
     _f = loadPartProfile(widget.partNo);
     _loadWatch();
+    _loadPnDaily();
+  }
+
+  Future<void> _loadPnDaily() async {
+    try {
+      final j = await AuthApi.pnDaily(widget.partNo, days: _ppDays);
+      if (!mounted) return;
+      if (j["ok"] == true) setState(() => _ppDaily = j);
+    } catch (_) {} // 旧版服务器无端点/断网：静默=图不显示，档案主体不受影响
+  }
+
+  // ㉖v202 每日出入库卡片：横滚双柱（蓝=入库件/橙=出库件；近48h未定=淡显），点柱弹当日单据明细
+  Widget _pnDailyCard() {
+    final j = _ppDaily!;
+    final days = (j["days"] as List? ?? [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    final freshFrom = (j["freshFrom"] as num?)?.toInt() ?? 0;
+    double mx = 1;
+    for (final x in days) {
+      final a = (x["inQ"] as num?)?.toDouble() ?? 0, b = (x["outQ"] as num?)?.toDouble() ?? 0;
+      if (a > mx) mx = a;
+      if (b > mx) mx = b;
+    }
+    final totIn = (j["totIn"] as num?)?.toInt() ?? 0;
+    final totOut = (j["totOut"] as num?)?.toInt() ?? 0;
+    final pendQ = (j["pend"] is Map ? ((j["pend"] as Map)["q"] as num?)?.toInt() ?? 0 : 0);
+    // 预构建柱列（扁平 for，避免深层嵌套闭包括号错位）
+    final cols = <Widget>[];
+    for (final x in days) {
+      final iq = (x["inQ"] as num?)?.toDouble() ?? 0;
+      final oq = (x["outQ"] as num?)?.toDouble() ?? 0;
+      final dayMs = DateTime.tryParse("${x["d"]}T12:00:00")?.millisecondsSinceEpoch ?? 0;
+      final isFresh = freshFrom > 0 && dayMs >= freshFrom;
+      Widget bar(double q, Color c) => GestureDetector(
+          onTap: () => _pnDaySheet(x, isFresh),
+          child: Opacity(
+              opacity: isFresh ? 0.45 : 1,
+              child: Container(
+                  width: 10,
+                  margin: const EdgeInsets.only(left: 1.5),
+                  decoration: BoxDecoration(
+                      color: q > 0 ? c : const Color(0xFFE3E8F0),
+                      borderRadius: const BorderRadius.vertical(top: Radius.circular(2))),
+                  height: q > 0 ? (q / mx * 84).clamp(4.0, 84.0) : 2)));
+      cols.add(Column(mainAxisSize: MainAxisSize.min, children: [
+        SizedBox(
+            height: 88,
+            child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              bar(iq, const Color(0xFF2E7D32)),
+              bar(oq, const Color(0xFFE65100)),
+            ])),
+        SizedBox(
+            width: 22,
+            child: RotatedBox(
+                quarterTurns: 3,
+                child: Text((x["d"] ?? "").toString().length >= 5 ? (x["d"] ?? "").toString().substring(5) : (x["d"] ?? "").toString(), textAlign: TextAlign.left, style: const TextStyle(fontSize: 8, color: Colors.blueGrey)))),
+      ]));
+    }
+    return Card(
+        margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+        child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                const Text("📅 每日出入库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                const Spacer(),
+                for (final n in [7, 30, 90])
+                  Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: ChoiceChip(
+                          visualDensity: VisualDensity.compact,
+                          label: Text(n == 7 ? "7天" : "$n", style: const TextStyle(fontSize: 11)),
+                          selected: _ppDays == n,
+                          onSelected: (_) {
+                            setState(() => _ppDays = n);
+                            _loadPnDaily();
+                          })),
+              ]),
+              const SizedBox(height: 2),
+              const Text("蓝柱=入库件 · 橙柱=出库件 · 淡显=近48h未定（他机可能未推送）· 点柱看当日单据",
+                  style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+              SizedBox(
+                  height: 112,
+                  child: days.isEmpty
+                      ? const Center(child: Text("窗口内无任何出入库", style: TextStyle(fontSize: 12, color: Colors.grey)))
+                      : SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols))),
+              const SizedBox(height: 2),
+              Text("窗口合计：入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件（无逐日时刻，不计入橙柱）" : ""}",
+                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF37474F))),
+              const Text("口径：入库=上架扫入按扫描时刻归日（剔一楼登记与作废）；出库=已转MES按单时刻归日；全厂数据",
+                  style: TextStyle(fontSize: 9.5, color: Colors.blueGrey)),
+            ])));
+  }
+
+  // 点柱弹当日单据明细（入/出两表；未定期加醒目提示）
+  Future<void> _pnDaySheet(Map<String, dynamic> x, bool fresh) async {
+    final fmt = (num? ms) => ms == null || ms <= 0
+        ? ""
+        : DateTime.fromMillisecondsSinceEpoch(ms.toInt()) // toInt 而非 as int：JSON 数字反序列化成 double 时 as int 直接崩
+            .toString()
+            .substring(5, 16);
+    final ins = (x["ins"] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final outs = (x["outs"] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    if (!mounted) return;
+    showModalBottomSheet(
+        context: context,
+        isScrollControlled: true,
+        builder: (c) => DraggableScrollableSheet(
+            expand: false,
+            initialChildSize: .55,
+            builder: (bc, ctlr) => ListView(
+                controller: ctlr,
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 20),
+                children: [
+                  Text("${x["d"]} 当日明细",
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w700)),
+                  Text(
+                      "入 ${(x["inN"] ?? 0)}笔/${x["inB"] ?? 0}框/${x["inQ"] ?? 0}件 · 出 ${x["outQ"] ?? 0}件${fresh ? " · ⚠近48h未定（他机可能还未推送）" : ""}",
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: fresh ? const Color(0xFFE65100) : Colors.blueGrey)),
+                  const SizedBox(height: 8),
+                  const Text("入库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32))),
+                  if (ins.isEmpty)
+                    const Text("当日无入库笔", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  ...ins.map((e) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Text(
+                          "${fmt(e["t"] as num?)}  ${e["code"]}  ${_fmtInvNum((e["q"] as num?)?.toDouble() ?? 0)}件${(e["lot"] ?? "").toString().isNotEmpty ? " · 批${e["lot"]}" : ""}${(e["gl"] ?? "").toString().isNotEmpty ? " · ${e["gl"]}" : ""} · ${e["op"] ?? ""}",
+                          style: const TextStyle(fontSize: 12)))),
+                  const SizedBox(height: 10),
+                  const Text("出库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFFE65100))),
+                  if (outs.isEmpty)
+                    const Text("当日无出库单（已发未转的货不在这——见卡角标）", style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  ...outs.map((e) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Text(
+                          "${fmt(e["t"] as num?)}  ${e["no"]}  ${(e["bc"] ?? "").toString().split(";").first}  ${_fmtInvNum((e["q"] as num?)?.toDouble() ?? 0)}件${(e["to"] ?? "").toString().isNotEmpty ? " →${e["to"]}" : ""} · ${e["op"] ?? ""}",
+                          style: const TextStyle(fontSize: 12)))),
+                ])));
   }
 
   Future<void> _loadWatch() async {
@@ -2572,6 +2769,8 @@ class _PartProfilePageState extends State<PartProfilePage> {
                                             ? Colors.blueGrey
                                             : Colors.orange)),
                               ])))),
+              // ㉖v202 每日出入库：服务器全厂口径逐日双柱（蓝=入库件/橙=出库件，近48h斜纹=未定）
+              if (_ppDaily != null) _pnDailyCard(),
               if (d.demand.isNotEmpty)
                 Padding(
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),

@@ -538,6 +538,14 @@ class AuthApi {
   static Future<Map> invReport(Map payload) async =>
       _req("POST", "/api/inventory/report",
           body: payload, token: await AuthStore.token());
+  // ㉖v202 方案B：LIVE 盘点基准=服务器权威账本聚合（任何设备发起结果一致）
+  static Future<Map> invBaseline() async =>
+      _req("GET", "/api/inventory/baseline", token: await AuthStore.token());
+  // ㉖v202 零件日流水（零件档案每日出入库图数据源，服务器全厂口径）
+  static Future<Map> pnDaily(String pn, {int days = 30}) async => _req(
+      "GET",
+      "/api/report/pn-daily?pn=${Uri.encodeComponent(pn)}&days=$days",
+      token: await AuthStore.token());
   static Future<Map> ttsModelInfo() async =>
       _req("GET", "/api/tts/info", token: await AuthStore.token());
   static Future<Map> setPrefs(Map body) async => _req("POST", "/api/prefs",

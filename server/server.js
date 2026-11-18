@@ -2138,6 +2138,59 @@ setInterval(dailyExport, 30 * 60 * 1000).unref();
 const RPT_DIR = () => { const p = path.join(DATA_DIR, 'reports'); try { fs.mkdirSync(p, { recursive: true }); } catch (_) {} return p; };
 function rptDayKey(d) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function rptKeys(s) { const a = String(s).split('-').map(Number); return new Date(a[0], a[1] - 1, a[2]).getTime(); }
+// ㉖v202 零件日流水：单零件逐日出入库聚合（零件档案日图数据源，服务器全厂口径，任何端发起结果一致）
+// 口径（诚实性设计）：
+// · 入库=scanlog 有效流水按 t（扫描时刻）归日；剔除 NB04 来料区登记（与看板 buildBoard 入库同口径）；
+//   框数=托号去重（无托按码）。PDA 积压补推会让历史某天数字事后长高（120009 实证），故 freshFrom 之后
+//   的日子由前端标「未定」；
+// · 出库=出库台账（MES 转单）按 createdAt 归日，框=条码去重、件=明细 qty 累加（退货重发=真实出库事件，如实计）；
+// · 领料发料未转【无逐日时间戳】（issued 明细不带时刻）——硬归日=造假数据，故只给当前快照 pend，
+//   逐日柱只有已转 MES 出库；口径写进 notes 随数据下发，前端如实展示不猜。
+function buildPnDaily(pnU, days) {
+  const nowMs = Date.now(), F = nowMs - days * 864e5;
+  const outAll = new Set(); // 全库出库条码（判未转用，不限窗口）
+  for (const o of Object.values(db.outbound || {})) for (const it of (o.items || [])) { String(it.barcode || '').toUpperCase().split(/[;；]/).forEach((x) => { x = x.trim(); if (x) outAll.add(x); }); }
+  const byDay = {};
+  const slot = (k) => (byDay[k] = byDay[k] || { d: k, inB: new Set(), inQ: 0, inN: 0, outSet: new Set(), outQ: 0, outN: 0, ins: [], outs: [] });
+  for (const s of Object.values(db.scanlog || {})) {
+    if (s.cx || String(s.pn || '').toUpperCase() !== pnU) continue;
+    const t0 = Number(s.t) || 0;
+    if (t0 < F || t0 > nowMs) continue;
+    if (String((s.st || s.gl) || '').toUpperCase().startsWith('NB04-')) continue;
+    const sl = slot(rptDayKey(new Date(t0)));
+    const code = String(s.code || '').toUpperCase();
+    if (code) sl.inB.add(String(s.pid || '').toUpperCase() ? 'P|' + String(s.pid).toUpperCase() : code);
+    sl.inQ += Number(s.q) || 0; sl.inN++;
+    if (sl.ins.length < 30) sl.ins.push({ t: t0, code, q: Number(s.q) || 0, op: String(s.op || '').slice(0, 20), gl: String(s.gl || s.st || '').slice(0, 20), lot: String(s.lot || '').slice(0, 12) });
+  }
+  for (const o of Object.values(db.outbound || {})) {
+    const t0 = Number(o.createdAt) || 0;
+    if (t0 < F || t0 > nowMs) continue;
+    for (const it of (o.items || [])) {
+      if (String(it.code || '').toUpperCase() !== pnU) continue;
+      const sl = slot(rptDayKey(new Date(t0)));
+      String(it.barcode || '').toUpperCase().split(/[;；]/).forEach((x) => { x = x.trim(); if (x) sl.outSet.add(x); });
+      sl.outQ += Number(it.qty) || 0; sl.outN++;
+      if (sl.outs.length < 30) sl.outs.push({ t: t0, no: String(o.orderNo || '').slice(0, 24), bc: String(it.barcode || '').slice(0, 40), q: Number(it.qty) || 0, to: String(o.toLoc || '').slice(0, 20), op: String(o.operator || '').slice(0, 20) });
+    }
+  }
+  let pendQ = 0, pendC = 0; // 当前"已发未转"快照（无法归日的诚实兜底）
+  for (const r of db.requisitions || []) {
+    if (['cancelled', 'rejected'].includes(r.status)) continue;
+    for (const it of (r.items || [])) {
+      if (String(it.partNo || '').toUpperCase() !== pnU) continue;
+      for (const e of (it.issued || [])) {
+        const c = String(typeof e === 'string' ? e : (e && e.c) || '').toUpperCase();
+        if (!c || outAll.has(c)) continue;
+        pendQ += Number(typeof e === 'string' ? 0 : (e && e.q)) || 0; pendC++;
+      }
+    }
+  }
+  const list = Object.values(byDay).sort((a, b) => (a.d < b.d ? -1 : 1)).map((x) => ({ d: x.d, inB: x.inB.size, inQ: x.inQ, inN: x.inN, outB: x.outSet.size, outQ: x.outQ, outN: x.outN, ins: x.ins, outs: x.outs }));
+  let ti = 0, to = 0;
+  list.forEach((x) => { ti += x.inQ; to += x.outQ; });
+  return { days: list, totIn: ti, totOut: to, pend: { q: pendQ, c: pendC }, freshFrom: nowMs - 2 * 864e5 };
+}
 function buildDayReport(dayKey) {
   const F = Date.parse(dayKey + 'T00:00:00'), T = F + 86399999;
   const w = buildWork(F, T);
@@ -2718,6 +2771,36 @@ function settleSupersede(codeU, byName) {
     done.push(k);
   }
   return done.length ? done : null;
+}
+
+// ㉖v202 服务器侧盘点基准聚合（方案B：LIVE 基准由服务器权威账本直接聚合，发起机不再有"本机视角"）
+// 根因（11-18 任务183 实锤）：旧 buildLiveBaseline 在发起 PDA 本机拼账——本机只有自家采集流水，
+// 同码多形态（AGV站台流水在前+格位流水在他机）时位置永远取成站台、缺件号/缺MES缓存的框被本机聚合
+// 整框吞掉 → 账本明明有 226 件，基准账面=0/440、货位行整行缺失，假盘盈。账本行自带
+// c/l/p/q/n/by/t（拉取时由 scanlog 富化），是天然的全厂唯一事实源；台挂中转位与旧版"在库"口径
+// 一致剔除（locOnStn），台挂框被扫到按"账外/待归位"如实报。
+function buildInvBaseline() {
+  const parts = {}, locs = {}, noPn = [];
+  const seen = new Set(); // 一码一行：账本理论 unique goodsCode，脏数据重复行只计首行
+  for (const l of db.ledger || []) {
+    const c = String(l.c || '').toUpperCase();
+    if (!c || seen.has(c)) continue;
+    seen.add(c);
+    const loc = String(l.l || '').toUpperCase();
+    const q = Number(l.q) || 0;
+    const pn = String(l.p || '').toUpperCase();
+    if (!pn || q <= 0) { noPn.push({ c, l: loc, q }); continue; } // 缺零件号/无件数：不入基准，盘点扫到按账外口径如实报（宁缺勿假）
+    if (locOnStn(loc)) continue; // 台挂中转位非在库（与旧本机在库口径一致）
+    const p = (parts[pn] = parts[pn] || { pn, nm: String(l.n || '').slice(0, 80), book: 0, boxes: 0 });
+    p.book += q; p.boxes += 1;
+    const k = loc + '|' + pn;
+    const lo = (locs[k] = locs[k] || { loc, pn, book: 0, boxes: 0, codes: [] });
+    lo.book += q; lo.boxes += 1;
+    if (lo.codes.length < 12) lo.codes.push(c + '|' + q); // 货位级账面码清单（每行上限12防大包）
+  }
+  const pl = Object.values(parts).filter((x) => x.book > 0).sort((a, b) => a.pn < b.pn ? -1 : 1);
+  const ll = Object.values(locs).sort((a, b) => (a.loc + a.pn) < (b.loc + b.pn) ? -1 : 1);
+  return { books: pl, locs: ll, total: seen.size, noPn: noPn.slice(0, 100) };
 }
 
 function hashPw(pw, salt) { return crypto.scryptSync(String(pw), salt, 32).toString('hex'); }
@@ -5303,7 +5386,17 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         const tfdAct = {};
         { const led = {}; for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (/-CK-|-RK-/.test(l)) (led[l] = led[l] || []).push(String(x.c || '').toUpperCase()); }
           for (const s of Object.keys(led)) { const q = (db.agvQueue || []).find((x) => x.type === 'transfer' && String(x.to || '').toUpperCase() === s && ['排队', '下发中', '已下发', '到站'].includes(x.state)); tfdAct[s] = { codes: led[s], by: (q && q.by) || '', at: (q && q.at) || 0, hasTfd: !!q || led[s].length > 0 }; } } // hasTfd=台上有拉下架挂账框（含送达后队列已归档的），收口入口显示判据
-        const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station)).map((s) => { const m = stnMetaOf(s.station); const k = String(s.station).toUpperCase(); return { ...s, alias: m.alias || '', role: ['any', 'out', 'in', 'insp'].includes(m.role) ? m.role : 'any', off: m.off === true, inspOrders: inspAct[k] || [], tfLedger: tfdAct[k] || null, hasTfd: !!(tfdAct[k] && tfdAct[k].hasTfd) }; }); // ㉖⑫ 附站台身份（PDA 站台页/叫车/检验选台按此显示与过滤）
+        // ㉖v202 PDA 站台横条化：status 补今日吞吐——与 stBoard 逐字同语义：今出=出库任务【终点】=本台
+        // （框被送到台上待搬走），今回=入库任务【起点】=本台（框从台上被取走上架）；同读 db.rcsTasks。
+        // 旧版只有 stBoard 有这俩字段，PDA 轮询的 status 没有，横条行想要就得多拉一次接口
+        const _t0 = (() => { const x = new Date(); return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); })();
+        const _outN = {}, _inN = {};
+        for (const t of Object.values(db.agvTasks || {})) {
+          if ((t.fin || 0) < _t0) continue;
+          if (t.ck === 'out') { const ep = String(t.ep || '').toUpperCase(); if (ep) _outN[ep] = (_outN[ep] || 0) + 1; }
+          else if (t.ck === 'in') { const sp = String(t.sp || '').toUpperCase(); if (sp) _inN[sp] = (_inN[sp] || 0) + 1; }
+        }
+        const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station)).map((s) => { const m = stnMetaOf(s.station); const k = String(s.station).toUpperCase(); const _h = (db.rcsHoldStat || {})[k]; return { ...s, alias: m.alias || '', role: ['any', 'out', 'in', 'insp'].includes(m.role) ? m.role : 'any', off: m.off === true, inspOrders: inspAct[k] || [], tfLedger: tfdAct[k] || null, hasTfd: !!(tfdAct[k] && tfdAct[k].hasTfd), todayOut: _outN[k] || 0, todayIn: _inN[k] || 0, holdAvg: _h && _h.n ? Math.round(_h.sum / _h.n) : 0 }; }); // ㉖⑫ 附站台身份（PDA 站台页/叫车/检验选台按此显示与过滤）
         const aliases = {}; for (const c of AGV_STNS) { const a = stnAlias(c); if (a) aliases[c] = a; }
         const holdAvg = {}; for (const [k, v] of Object.entries(db.rcsHoldStat || {})) holdAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
         return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).map((q) => Object.assign({}, q, { stage: agvStage(q) })), recent: (db.agvQueue || []).filter((q) => ['完成', '取消'].includes(q.state)).sort((a, b) => (b.updAt || 0) - (a.updAt || 0)).slice(0, 60).map((q) => Object.assign({}, q, { stage: agvStage(q) })), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, agingMin: P().agingMin, cfgRev: db.cfgRev || 0 }); // ㉖ recent=完成/取消终态（留2小时；失败项仍在 queue 活跃表带原因展示），队列控制台"最近任务"卡片数据源；㉖v61 agingMin透传前端同口径排
@@ -6053,6 +6146,7 @@ return send(res, 200, {
         if (b.pickRaw) rec.pickRaw = String(b.pickRaw).replace(/\uFFFD/g, '').slice(0, 2000);
         if (b.pickMiss) { try { const mm = JSON.parse(b.pickMiss); if (Array.isArray(mm)) rec.pickMiss = mm.slice(0, 500).map((r) => ({ c: String((r || {}).c || '').slice(0, 20), p: String((r || {}).p || '').toUpperCase().slice(0, 40), l: String((r || {}).l || '').toUpperCase().slice(0, 20) })); } catch (_) {} }
         // ㉖v95 实时基准快照留痕透传（白名单定长清洗，旧版PDA不带该字段=undefined不影响）
+        // ㉖v202 方案B：srvBuilt=基准来源（1=服务器权威聚合，0=本机拼账降级路）；noPn=服务器账本缺件号未入基准码数（留痕假盘盈高危名单规模）
         if (b.liveMeta && typeof b.liveMeta === 'object') {
           rec.liveMeta = {
             pullOk: b.liveMeta.pullOk === true,
@@ -6060,6 +6154,7 @@ return send(res, 200, {
             srvAt: String(b.liveMeta.srvAt || '').slice(0, 40), srvBy: String(b.liveMeta.srvBy || '').slice(0, 40),
             localRows: num(b.liveMeta.localRows), bookRows: num(b.liveMeta.bookRows), locRows: num(b.liveMeta.locRows),
             msg: String(b.liveMeta.msg || '').replace(/\uFFFD/g, '').slice(0, 160),
+            srvBuilt: b.liveMeta.srvBuilt === true, noPn: num(b.liveMeta.noPn),
           };
         }
         db.inventories = db.inventories || {};
@@ -6078,6 +6173,11 @@ return send(res, 200, {
         const r = (db.inventories || {})[id];
         if (!r) return send(res, 404, { ok: false, msg: '无此盘点记录' });
         return send(res, 200, { ok: true, rec: r });
+      }
+      // ㉖v202 方案B：LIVE 盘点基准=服务器权威账本聚合（任何一台 PDA 发起结果一致，本机视角整类消灭）
+      if (req.method === 'GET' && p === '/api/inventory/baseline') {
+        if (!canFeature(u, 'inventory')) return send(res, 403, { ok: false, msg: '当前角色未开通盘点权限' });
+        return send(res, 200, Object.assign({ ok: true, rev: db.ledgerRev || 0, srvAt: db.ledgerAt || '', srvBy: db.ledgerBy || '' }, buildInvBaseline()));
       }
       // ===== ㉓导出中心：GET /api/export?ds=..&fmt=..&from=&to=[&preview=1] ㉔快照落盘可重下 =====
       if (req.method === 'GET' && p === '/api/export') {
@@ -6398,6 +6498,13 @@ return send(res, 200, {
         const accW = list.reduce((s, x) => s + (x.avgAccMin == null ? 0 : x.avgAccMin * x.acc), 0), accN = list.reduce((s, x) => s + x.acc, 0);
         return send(res, 200, { ok: true, from: wdstr(F), to: wdstr(T), list,
           team: { persons: list.length, totBox, avgTeamDay: totDays ? Math.round(totBox / totDays) : 0, conc, avgAccMin: accN ? Math.round(accW / accN) : null, qRatio: totBox ? Math.round(list.reduce((s, x) => s + x.fix + x.ret, 0) * 1000 / totBox) : 0 } });
+      }
+      // ㉖v202 零件日流水（零件档案日图数据源）：单零件逐日出入库，服务器全厂口径
+      if (req.method === 'GET' && p === '/api/report/pn-daily') {
+        const pnU = String(url.searchParams.get('pn') || '').trim().toUpperCase();
+        if (!pnU) return send(res, 400, { ok: false, msg: '缺少 pn' });
+        const days = Math.min(90, Math.max(7, parseInt(url.searchParams.get('days') || '30') || 30));
+        return send(res, 200, Object.assign({ ok: true, pn: pnU, win: days }, buildPnDaily(pnU, days))); // win=请求窗口天数（响应体 days 字段=逐日数组，命名防互相覆盖）
       }
       // ===== ㉖v52 分析报表：日/周/月（日=当天快照；周/月=日快照现场聚合；缺日标 missing，支持回填）=====
       if (req.method === 'GET' && p === '/api/report/analytics') {

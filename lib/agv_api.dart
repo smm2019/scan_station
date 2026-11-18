@@ -1451,138 +1451,184 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
     IconData iOf(String st) => st == "有货"
         ? Icons.inventory_2
         : (st == "占用中" ? Icons.local_shipping : Icons.check_circle_outline);
-    return GridView.count(
-        crossAxisCount: 2,
-        childAspectRatio: 1.32,
-        padding: const EdgeInsets.all(10),
-        mainAxisSpacing: 8,
-        crossAxisSpacing: 8,
-        children: all.map((n) {
+    // ㉖v202 横条列表（用户点名：方块卡一屏只放 4 台、大片空壳）：每行一台、一屏 8~10 台，
+    // 左状态色条快扫定位，行内补齐以前只有网页看板才有的信息：站台角色/今出·今回/均清台时长。
+    const roleCn = {"any": "通用", "out": "出库专用", "in": "入库专用", "insp": "检验专用"};
+    return ListView.separated(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 16),
+        itemCount: all.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 6),
+        itemBuilder: (bc, ix) {
+          final n = all[ix];
           final code = "NB02-CK-$n";
           final s = m[code];
           final off = s?["off"] == true; // ㉖⑫ 停用台灰显
           final alias = (s?["alias"] ?? "").toString();
+          final role = roleCn[(s?["role"] ?? "any").toString()] ?? "通用";
           final st = off ? "已停用" : (s?["state"]?.toString() ?? "空闲");
           final c = off ? Colors.blueGrey : cOf(st);
           final tl = AgvApi.stationTimeline(s);
-          // 徽标文案预计算（s 可空，此处统一 ?安全取值）：检验挂单 + 拉下架待搬
+          final tOut = (AgvApi.asNum(s?["todayOut"]) ?? 0).toInt();
+          final tIn = (AgvApi.asNum(s?["todayIn"]) ?? 0).toInt();
+          final _ha = (AgvApi.asNum(s?["holdAvg"]) ?? 0).toInt();
+          final hAvg = _ha > 0 ? _ha : (_holdAvg[code] ?? 0);
           final _inspL = (s?["inspOrders"] as List?) ?? const [];
           final _tfM = s?["tfLedger"] as Map?;
-          final _badgeTxt = [
+          // 逻辑挂单徽标（v198g 语义不变）：物理空闲≠可用——检验工单挂着/拉下架送达待搬都点名
+          final badges = [
             if (_inspL.isNotEmpty)
               "🔎检验${_inspL.map((e) => ((e as Map?)?["code"] ?? "")).take(2).join(" ")}${_inspL.length > 2 ? "等${_inspL.length}单" : ""}",
             if (_tfM != null)
               "⬇️待搬${((_tfM["codes"] as List?) ?? const []).join(" ")}",
-          ].join("　");
+          ];
+          // 状态明细行：有货=货位/货名+到站+预计清台；占用=方向+时间线；空闲=可行动提示
+          final sub = st == "有货"
+              ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""} · 到站 ${AgvApi.fmtT(s?["since"])}${hAvg > 0 ? " · 预计约 ${hAvg} 分钟清台" : ""}"
+              : (st == "占用中"
+                  ? "${s?["dir"] == "in" ? "入库取走中" : "出库在途"}${(s?["via"] ?? "").toString().isNotEmpty ? " ${s?["via"]}" : ""}${tl.isNotEmpty ? " · $tl" : (AgvApi.asNum(s?["putAt"]) ?? 0) == 0 ? " · 进行中" : ""}"
+                  : (off
+                      ? "已停用 · 叫车选台自动排除"
+                      : "可正常叫车/入库${tl.isNotEmpty ? " · $tl" : ""}"));
           return GestureDetector(
-              onTap: () => _stDetail(code), // ㉖⑯ 点卡片弹站台详情（吞吐/占用明细/身份）
+              onTap: () => _stDetail(code), // ㉖⑯ 点横条弹站台详情（吞吐/占用明细/身份编辑）
               child: Container(
-                  padding: const EdgeInsets.all(9),
                   decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(10),
-                      border:
-                          Border.all(color: c.withOpacity(0.6), width: 1.2)),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(children: [
-                          Icon(off ? Icons.block : iOf(st), size: 15, color: c),
-                          const SizedBox(width: 4),
-                          Expanded(
-                              child: Text(
-                                  alias.isEmpty
-                                      ? "CK-$n"
-                                      : "$alias·$n号", // 别名优先
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13.5))),
-                          Text(st,
-                              style: TextStyle(
-                                  color: c,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12.5))
-                        ]),
-                        const SizedBox(height: 3),
-                        Text(
-                            st == "有货"
-                                ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""}"
-                                : (st == "占用中"
-                                    ? "${s?["dir"] == "in" ? "入库取走中" : "出库在途"} ${s?["via"] ?? ""}"
-                                    : "可正常叫车/入库"),
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                                fontSize: 10.5,
-                                height: 1.25,
-                                color: st == "空闲" ? Colors.blueGrey : c)),
-                        // ㉖v198g 逻辑挂单徽标：物理"空闲"≠可用——检验工单还挂着（人要把框搬
-                        // 走前不能派车压台）或拉下架框已送达待搬，都在此点名，两端信息对齐。
-                        if (_badgeTxt.isNotEmpty)
-                          Padding(
-                              padding: const EdgeInsets.only(top: 2),
-                              child: Text(_badgeTxt,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontSize: 10,
-                                      height: 1.2,
-                                      color: Color(0xFFB26A00),
-                                      fontWeight: FontWeight.w600))),
-                        // 时间线：每步发生即点亮（建单→接令→叉出/叉离→放架；有货末尾追加到站）
-                        if (tl.isNotEmpty)
-                          Expanded(
-                              child: Padding(
-                                  padding: const EdgeInsets.only(top: 2),
-                                  child: Text(
-                                      tl +
-                                          (st == "有货"
-                                              ? "·到站 ${AgvApi.fmtT(s!["since"])}${(_holdAvg[code] ?? 0) > 0 ? "\n预计约 ${_holdAvg[code]} 分钟清台（历史均值）" : ""}"
-                                              : (st == "占用中" &&
-                                                      (AgvApi.asNum(s?[
-                                                                  "putAt"]) ??
-                                                              0) ==
-                                                          0
-                                                  ? "·进行中"
-                                                  : "")),
-                                      maxLines: 3,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                          fontSize: 9.5,
-                                          height: 1.35,
-                                          color: st == "有货"
-                                              ? const Color(0xFF90A4AE)
-                                              : c)))),
-                        if (st == "有货" && _canCtl)
-                          Align(
-                              alignment: Alignment.centerRight,
-                              child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () => _clearStation(code),
-                                  child: const Padding(
-                                      padding: EdgeInsets.fromLTRB(6, 2, 2, 2),
-                                      child: Text("清台",
+                      borderRadius: BorderRadius.circular(9),
+                      border: Border.all(color: c.withOpacity(0.35), width: 1),
+                      boxShadow: const [
+                        BoxShadow(
+                            color: Color(0x0A000000),
+                            blurRadius: 3,
+                            offset: Offset(0, 1))
+                      ]),
+                  clipBehavior: Clip.antiAlias,
+                  child: IntrinsicHeight(
+                      child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                        Container(width: 4, color: c), // 左状态色条：空闲绿/占用蓝/有货橙，快扫定位
+                        Expanded(
+                            child: Padding(
+                                padding:
+                                    const EdgeInsets.fromLTRB(9, 6, 6, 6),
+                                child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Row(children: [
+                                        Icon(off ? Icons.block : iOf(st),
+                                            size: 15, color: c),
+                                        const SizedBox(width: 5),
+                                        Text(
+                                            alias.isEmpty
+                                                ? "$n号台"
+                                                : "$alias·$n号",
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14)),
+                                        const SizedBox(width: 5),
+                                        Text(role,
+                                            style: TextStyle(
+                                                fontSize: 9.5,
+                                                fontWeight: FontWeight.w600,
+                                                color: role == "通用"
+                                                    ? Colors.blueGrey
+                                                    : const Color(
+                                                        0xFF1565C0))),
+                                        const Spacer(),
+                                        Text(st,
+                                            style: TextStyle(
+                                                color: c,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 13)),
+                                        if (st == "有货" && _canCtl)
+                                          GestureDetector(
+                                              behavior:
+                                                  HitTestBehavior.opaque,
+                                              onTap: () =>
+                                                  _clearStation(code),
+                                              child: const Padding(
+                                                  padding: EdgeInsets.fromLTRB(
+                                                      10, 2, 4, 2),
+                                                  child: Text("清台",
+                                                      style: TextStyle(
+                                                          fontSize: 12,
+                                                          color: Color(
+                                                              0xFF1565C0),
+                                                          fontWeight:
+                                                              FontWeight
+                                                                  .bold)))),
+                                        if (st == "空闲" &&
+                                            _canCtl &&
+                                            !off)
+                                          GestureDetector(
+                                              behavior:
+                                                  HitTestBehavior.opaque,
+                                              onTap: () =>
+                                                  _markBusy(code),
+                                              child: const Padding(
+                                                  padding: EdgeInsets.fromLTRB(
+                                                      10, 2, 4, 2),
+                                                  child: Text("标记占用",
+                                                      style: TextStyle(
+                                                          fontSize: 11.5,
+                                                          color: Color(
+                                                              0xFFE65100),
+                                                          fontWeight:
+                                                              FontWeight
+                                                                  .bold)))),
+                                      ]),
+                                      const SizedBox(height: 2),
+                                      Text(sub,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
-                                              fontSize: 11.5,
-                                              color: Color(0xFF1565C0),
-                                              fontWeight: FontWeight.bold))))),
-                        if (st == "空闲" && _canCtl) ...[
-                          const Spacer(),
-                          Align(
-                              alignment: Alignment.centerRight,
-                              child: GestureDetector(
-                                  behavior: HitTestBehavior.opaque,
-                                  onTap: () => _markBusy(code),
-                                  child: const Padding(
-                                      padding: EdgeInsets.fromLTRB(6, 2, 2, 2),
-                                      child: Text("标记占用",
-                                          style: TextStyle(
-                                              fontSize: 10.5,
-                                              color: Color(0xFFE65100),
-                                              fontWeight: FontWeight.bold))))),
-                        ],
-                      ])));
-        }).toList());
+                                              fontSize: 11,
+                                              height: 1.25,
+                                              color: st == "空闲" || off
+                                                  ? Colors.blueGrey
+                                                  : c)),
+                                      if (badges.isNotEmpty ||
+                                          tOut + tIn > 0 ||
+                                          hAvg > 0)
+                                        Padding(
+                                            padding:
+                                                const EdgeInsets.only(top: 3),
+                                            child: Wrap(
+                                                spacing: 6,
+                                                runSpacing: 2,
+                                                children: [
+                                                  Text(
+                                                      "今出 $tOut · 今回 $tIn",
+                                                      style: const TextStyle(
+                                                          fontSize: 10,
+                                                          color: Color(
+                                                              0xFF607D8B))),
+                                                  if (hAvg > 0)
+                                                    Text(
+                                                        "均清台 ${hAvg >= 60 ? "${(hAvg / 60).toStringAsFixed(1)}时" : "$hAvg分"}",
+                                                        style: const TextStyle(
+                                                            fontSize: 10,
+                                                            color: Color(
+                                                                0xFFB26A00),
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600)),
+                                                  for (final b in badges)
+                                                    Text(b,
+                                                        style: const TextStyle(
+                                                            fontSize: 10,
+                                                            color: Color(
+                                                                0xFFB26A00),
+                                                            fontWeight:
+                                                                FontWeight
+                                                                    .w600)),
+                                                ])),
+                                    ])
+                                ))
+                            ]))));
+        });
   }
 
   // ---- ㉖⑯ 站台详情弹层（网页看板搬到 PDA：今日吞吐/平均清台/占用明细/身份编辑）----

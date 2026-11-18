@@ -1293,11 +1293,17 @@ class _InvTaskCreatePageState extends State<_InvTaskCreatePage> {
           return;
         }
         // ㉖v94u 快照留痕：拉取失败或本机行数落后服务器 → 当场提醒基准可能缺行
+        // ㉖v202 方案B：基准=服务器权威时本机账本与基准无关，不再喊"本机落后"（合并失败只影响扫码判定）；
+        // 缺件号码如实披露（不入基准，扫到按账外报——宁缺勿假，现场能对上）
         String warn = "";
         try {
           final m = (r["meta"] as Map?) ?? {};
-          if (m["pullOk"] != true) {
-            warn = "\n⚠️与电脑账本合并失败（${m["msg"]}），快照基于本机旧账本";
+          if (m["srvBuilt"] == true) {
+            final np = (m["noPn"] as num?)?.toInt() ?? 0;
+            if (np > 0) warn = "\nℹ️ ${np} 个在架码缺零件号未入账面，扫到将按「账外料」显示（请事后物料号补录）";
+            if (m["pullOk"] != true) warn += "\n⚠️本机账本合并失败（${m["msg"]}）：账面不受影响，但扫码判定可能滞后";
+          } else if (m["pullOk"] != true) {
+            warn = "\n⚠️⏳降级模式：服务器不可达，基准=本机拼账（跨设备可能缺行），恢复网络后建议重建基准";
           } else {
             final st = (m["srvTotal"] as num?)?.toInt() ?? -1, lr = (m["localRows"] as num?)?.toInt() ?? -1;
             if (st >= 0 && lr >= 0 && lr < st) warn = "\n⚠️本机账本 $lr 行 < 服务器 $st 行（v${m["srvRev"]}），快照可能缺框——建议先在各台PDA同步后重建基准";

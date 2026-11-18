@@ -783,7 +783,7 @@ async function ppSearch(){const q=($('#pq')?$('#pq').value:'').trim(),pr=($('#pp
 async function ppOpen(pn){TP.pn=pn;$('#pprof').innerHTML='<div class="card skl" style="height:160px"></div>';
  try{const j=await api('/api/part/profile?pn='+encodeURIComponent(pn));
  if(!j.ok){$('#pprof').innerHTML='<div class="card" style="color:var(--warn)">'+_esc(j.msg||'加载失败')+'</div>';return}
- TP.w=j.watched;const _t=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}).slice(5,16):'';
+ TP.w=j.watched;const _t=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}).slice(5,16):''; // ㉖v202 日流水ppDaily改在下方模板渲染后调用(旧版此处调#ppdaily还不存在, 取不到容器静默=骨架永灰)
  const kpi=(v,l)=>`<div class="card kpi" style="padding:10px"><div style="font-size:19px;font-weight:800">${v}</div><div style="font-size:11px;color:var(--sub)">${l}</div></div>`;
  const bw=(j.boxes||[]).length?`<table><thead><tr><th>货位</th><th>标签</th><th>件数</th><th>最近登记</th><th>链路</th></tr></thead><tbody>${j.boxes.map((b)=>`<tr><td class="mono" style="font-size:11.5px">${_esc(b.loc)}</td><td style="font-size:11px">${b.tags.map((t2)=>`<a href="javascript:void 0" style="color:var(--pri)" title="标签全链路" onclick="traceBox('${_esc(t2)}')">${_esc(t2)}</a>`).join('、')}</td><td>${b.q}</td><td style="color:var(--sub);font-size:11px">${_t(b.last)}</td><td><a href="javascript:void 0" style="font-size:11.5px" title="首标签全链路（含AGV节点）" onclick="traceBox('${_esc(b.tags[0])}')">🔎全链路</a></td></tr>`).join('')}</tbody></table>`:'<div style="color:var(--sub);font-size:12px">在架账本无此零件</div>';
  const dw=(j.demand||[]).length?`<div class="card" style="border-color:var(--warn)"><b style="font-size:12.5px;color:var(--warn)">⚠ 待处理需求（${j.demand.length}单）</b>${j.demand.map((d)=>`<div style="font-size:12px;margin-top:4px">${_esc(d.no)} · ${_esc(d.by)} · ${d.status=='pending'?'待接单':'备料中'} · 还差 ${d.need} 件</div>`).join('')}</div>`:'';
@@ -792,12 +792,79 @@ async function ppOpen(pn){TP.pn=pn;$('#pprof').innerHTML='<div class="card skl" 
  const ot=(j.out||[]).length?`<table><thead><tr><th>时间</th><th>出库单</th><th>标签</th><th>数量</th><th>去向</th><th>关联领料</th><th>操作人</th><th>链路</th></tr></thead><tbody>${j.out.slice(0,80).map((x)=>`<tr><td style="font-size:11px;color:var(--sub)">${_t(x.t)}</td><td class="mono" style="font-size:11.5px">${_esc(x.no)}</td><td class="mono" style="font-size:11.5px">${x.tag?`<a href="javascript:void 0" style="color:var(--pri)" title="标签全链路" onclick="traceBox('${_esc(x.tag)}')">${_esc(x.tag)}</a>`:'—'}</td><td>${x.q}</td><td style="font-size:11.5px">${x.mv?'<span class="tag" style="background:rgba(21,101,192,.12);color:#1565c0;cursor:help" title="移仓单：去向非线边仓（如冷冲件仓/热压单件仓/代发仓），实物转仓而非生产领用——不计今日出库/工作量出库/周转分">🔄移仓</span> ':''}${_esc(x.to)}</td><td style="font-size:11.5px">${_esc(x.req)}</td><td style="font-size:11.5px">${_esc(x.by)}</td><td>${x.tag?`<a href="javascript:void 0" style="font-size:11.5px" title="标签全链路" onclick="traceBox('${_esc(x.tag)}')">🔎</a>`:'—'}</td></tr>`).join('')}</tbody></table>${j.outTotal>80?`<div style="color:var(--sub);font-size:11px;margin-top:4px">共 ${j.outTotal} 行出库记录，显示前80</div>`:''}`:'<div style="color:var(--sub);font-size:12px">窗口内无出库记录</div>'; // ㉖v100 mv=1 移仓标注（保留可见，统计已剔除）
  $('#pprof').innerHTML=`<div class="card"><div class="row" style="align-items:center"><span style="font-size:11px;color:var(--sub)">点任意标签号/🔎 = 该标签入库→账本→AGV→发料→出库出账全链路</span><div><b class="mono" style="font-size:15px">${_esc(j.pn)}</b> <span style="font-size:13px">${_esc(j.name||'')}</span>${(j.projs||[]).length?' '+j.projs.map((c)=>`<span class="tag t-a" style="font-size:11px">${_esc(c)}</span>`).join(' '):''}</div><span class="sp"></span><button class="pill ${TP.w?'q':'g'}" onclick="ppWatch()">${TP.w?'⏸ 取消我的预约':'🔔 预约到料提醒'}</button><button class="pill" onclick="ppOpen('${j.pn}')">⟳ 刷新</button></div> <!-- ㉖v101 标题旁项目tag（项目字典页维护） -->
 <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(110px,1fr));margin:10px 0">${kpi((j.boxes||[]).length,'在架框')}${kpi(j.qty,'在架件数')}${kpi(j.inbTotal||0,'入库流水')}${kpi(j.outTotal||0,'出库记录')}${j.mvTotal?kpi(j.mvTotal,'移仓记录'):''}${kpi((j.demand||[]).length,'待处理需求')}${kpi((j.watchers||[]).length,'预约人数')}</div> <!-- ㉖v100 出库记录=去向线边仓；移仓记录(去向其他仓)单列，仅有移仓时显示 -->
-${dw}${wa}<b style="font-size:13px">在架框明细</b><div style="overflow:auto;margin:6px 0 12px">${bw}</div>
+${dw}${wa}<div id="ppdaily" style="margin:2px 0 12px"><div style="height:150px" class="skl"></div></div><b style="font-size:13px">在架框明细</b><div style="overflow:auto;margin:6px 0 12px">${bw}</div> <!-- ㉖v202 每日出入库图(异步填充)插在KPI与在架明细之间 -->
 <b style="font-size:13px">入库历史（最近60条）</b><div style="overflow:auto;max-height:34vh;margin:6px 0 12px">${ib}</div>
-<b style="font-size:13px">出库历史（最近）</b><div style="overflow:auto;max-height:34vh;margin-top:6px">${ot}</div></div>`;
+<b style="font-size:13px">出库历史（最近）</b><div style="overflow:auto;max-height:34vh;margin-top:6px">${ot}</div></div>`;ppDaily(pn) // ㉖v202 容器已入DOM再拉图(移到此处才拿得到#ppdaily)
 }catch(_){$('#pprof').innerHTML='<div class="card" style="color:var(--warn)">加载失败：服务需重启加载新代码</div>'}}
 async function ppWatch(){try{await api('/api/watchlist',{method:'POST',body:{partNo:TP.pn,on:!TP.w}});T(TP.w?'已取消预约':'已预约：该零件今日新上账时通知你',1);ppOpen(TP.pn)}catch(_){T('操作失败')}}
 async function ppRmW(uid){if(!confirm('代该用户取消此零件的预约？'))return;try{const r=await fetch('/api/watchlist/rm',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+TK},body:JSON.stringify({partNo:TP.pn,userId:uid})});const j=await r.json();T(j.ok?'已代取消':'失败 '+(j.msg||''),j.ok);if(j.ok)ppOpen(TP.pn)}catch(_){T('操作失败')}}
+// ===== ㉖v202 零件档案·每日出入库（服务器全厂口径逐日聚合；双柱纯CSS图零依赖，点某天展开当日单据明细） =====
+// 诚实口径随图明示：入库=上架扫入(按扫描时刻归日,剔一楼登记与作废)；出库=已转MES(按单时刻归日)；
+// 领料已发未转=当前快照角标(PDA补推会让历史某天事后长高, 近48h斜纹标「未定」)。
+let TPD={days:30,open:'',data:null,chart:'bar'}; // ㉖v202 chart=bar柱图/line折线图（用户提议折线看走势；两态都保留，点切换）
+async function ppDaily(pn){const el=$('#ppdaily');if(!el)return;TPD={days:TPD.days||30,open:'',data:null,chart:TPD.chart||'bar'};
+ try{const j=await api('/api/report/pn-daily?pn='+encodeURIComponent(pn)+'&days='+TPD.days);if(!j.ok)throw 0;TPD.data=j;ppDailyRender()}catch(_){if($('#ppdaily'))$('#ppdaily').innerHTML='<div class="card" style="color:var(--sub);font-size:12px;padding:10px">每日出入库加载失败（服务需重启加载新代码）</div>'}}
+function ppDailyRender(){const el=$('#ppdaily');if(!el||!TPD.data)return;const j=TPD.data,D=j.days||[];
+ const mx=Math.max(1,...D.map((x)=>Math.max(x.inQ,x.outQ)));
+ const nowMs=Date.now();
+ const dayHit=(x)=>`onclick="TPD.open=TPD.open==='${x.d}'?'':'${x.d}';ppDailyRender()"`;
+ const bars=D.map((x)=>{const dayMs=new Date(x.d+'T12:00:00').getTime();const fresh=dayMs>=(j.freshFrom||0); // ㉖v202 删死码 rptDayStart?0:0——引用未定义变量运行期ReferenceError被catch吞, 误报"需重启"(语法闸查不出, 真错在渲染层不是数据层)
+  const ih=Math.round(x.inQ/mx*92),oh=Math.round(x.outQ/mx*92);
+  const tip=x.d+' 入 '+(x.inN||x.inB)+'笔/'+x.inB+'框/'+x.inQ+'件 · 出 '+x.outQ+'件'+(fresh?'（近48h·未定）':'');
+  return `<div class="pdcol${TPD.open===x.d?' pdon':''}" title="${_esc(tip)}" ${dayHit(x)} style="flex:1;min-width:14px;display:flex;flex-direction:column;align-items:center;cursor:pointer">
+   <div style="height:100px;display:flex;align-items:flex-end;gap:1.5px;width:100%;justify-content:center">
+    <div style="width:45%;border-radius:2px 2px 0 0;position:relative;overflow:hidden;${ih>0?`height:${Math.max(ih,3)}px;background:linear-gradient(180deg,#515BD4,#2E7D32)`:'height:2px;background:var(--line)'}">${fresh&&ih>0?'<div style="position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,255,255,.45) 3px,rgba(255,255,255,.45) 5px)"></div>':''}</div>
+    <div style="width:45%;border-radius:2px 2px 0 0;position:relative;overflow:hidden;${oh>0?`height:${Math.max(oh,3)}px;background:linear-gradient(180deg,#E07000,#F9A825)`:'height:2px;background:var(--line)'}">${fresh&&oh>0?'<div style="position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,255,255,.45) 3px,rgba(255,255,255,.45) 5px)"></div>':''}</div>
+   </div>
+   <div style="font-size:8.5px;color:var(--sub);margin-top:2px;transform:rotate(-52deg);height:22px;white-space:nowrap">${x.d.slice(5)}</div></div>`}).join('');
+ // ㉖v202 折线态：SVG 双折线+淡填充看走势。日历轴补全（服务器只回有数据的日子，旧版按数组等距画
+ // 把空日压扁=断续活动冒充连续节奏趋势失真，截图实锤 10-24→10-25 相邻实为隔空日）：按窗口 win 补满
+ // 连续自然日、空日落 0 占位；标签抽稀（每天画 90 天窗必叠字），左右留白防末标签裁切。
+ const H=112,PX=16,PB=22,PT=8;
+ const win=Math.max(2,Math.min(90,(j.win||TPD.days||30)));
+ const dmap={};D.forEach((x)=>{dmap[x.d]=x;});
+ const dkey2=(ms)=>new Date(ms+8*36e5).toISOString().slice(0,10);
+ const freshDay=dkey2(j.freshFrom||0);
+ const rightDay=dkey2((j.freshFrom||Date.now())+2*864e5); // 服务器 now≈freshFrom+2天（东八区日）
+ // 左界= min(窗口左缘, 服务器首条日)：服务器窗口=[now-win天,now]，首条可能落在右缘-win那天，
+ // 只画右锚 win 天会切掉左缘有数据的一天（柱图有它、折线没有=两态口径分裂）
+ const leftDay=(()=>{const base=new Date(rightDay+'T12:00:00').getTime()-(win-1)*864e5;const ld=dkey2(base);if(!D.length)return ld;const fd=String(D[0].d||'');return fd<ld?fd:ld;})();
+ const winN=Math.max(2,Math.round((new Date(rightDay+'T12:00:00').getTime()-new Date(leftDay+'T12:00:00').getTime())/864e5)+1);
+ const allDays=[];{const base=new Date(rightDay+'T12:00:00').getTime();for(let i=winN-1;i>=0;i--){const k=dkey2(base-i*864e5);const o=dmap[k];allDays.push({d:k,inQ:o?o.inQ:0,outQ:o?o.outQ:0,inN:o?o.inN:0,inB:o?o.inB:0,has:!!o,fresh:k>=freshDay});}}
+ const step=winN<=31?26:winN<=62?15:11,W=PX*2+(winN-1)*step;
+ const px=(i)=>PX+i*step, py=(v)=>PT+(1-v/mx)*(H-PB-PT);
+ const lineOf=(key,color)=>{const pts=allDays.map((x,i)=>px(i).toFixed(1)+','+py(x[key]||0).toFixed(1)).join(' ');
+  const area=`${PX},${H-PB} ${pts} ${px(winN-1).toFixed(1)},${H-PB}`;
+  return `<polygon points="${area}" fill="${color}" opacity=".07"/><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`};
+ const lblEvery=Math.max(1,Math.ceil(winN/10));
+ const dots=allDays.map((x,i)=>{
+  const tip=x.has?(x.d+' 入 '+(x.inN||x.inB)+'笔/'+x.inB+'框/'+x.inQ+'件 · 出 '+x.outQ+'件'+(x.fresh?'（近48h·未定）':'')):(x.d+' 无出入库');
+  const lbl=(i%lblEvery===0||i===winN-1)?`<text x="${px(i).toFixed(1)}" y="${H-6}" text-anchor="${i===0?'start':(i===winN-1?'end':'middle')}" font-size="8.5" fill="var(--sub)">${x.d.slice(5)}</text>`:'';
+  return `<g ${x.has?dayHit(x):''} style="cursor:${x.has?'pointer':'default'}" opacity="${x.fresh?.5:1}"><title>${_esc(tip)}</title>
+   <rect x="${(px(i)-step/2).toFixed(1)}" y="${PT}" width="${step}" height="${H-PB-PT}" fill="transparent"/>
+   <circle cx="${px(i).toFixed(1)}" cy="${py(x.inQ).toFixed(1)}" r="${x.has?(TPD.open===x.d?4:2.6):1.4}" fill="#2E7D32" ${x.has?'':'opacity=".35"'}/>
+   <circle cx="${px(i).toFixed(1)}" cy="${py(x.outQ).toFixed(1)}" r="${x.has?(TPD.open===x.d?4:2.6):1.4}" fill="#E07000" ${x.has?'':'opacity=".35"'}/>${lbl}</g>`}).join('');
+ // 未定分界：首个 fresh 日的 x 处画竖虚线（含单日场景）
+ let freshSeg='';{const a=allDays.findIndex((x)=>x.fresh);
+  if(a>=0)freshSeg=`<line x1="${px(a).toFixed(1)}" y1="${PT}" x2="${px(a).toFixed(1)}" y2="${H-PB}" stroke="var(--warn)" stroke-width="1" stroke-dasharray="2,3" opacity=".55"/>`;}
+ const chartHtml=!D.length?'<div style="color:var(--sub);font-size:12px;padding:20px 0">窗口内无任何出入库</div>'
+  :TPD.chart==='line'
+  ?`<div style="margin-top:10px;overflow-x:auto"><svg width="${W}" height="${H}" style="display:block">${lineOf('inQ','#2E7D32')}${lineOf('outQ','#E07000')}${freshSeg}${dots}</svg></div>`
+  :`<div style="display:flex;align-items:flex-end;gap:1px;margin-top:10px;overflow-x:auto;padding-bottom:2px">${bars.length?bars:'<div style="color:var(--sub);font-size:12px;padding:20px 0">窗口内无任何出入库</div>'}</div>`;
+ const day=D.find((x)=>x.d===TPD.open);
+ const dtx=day?(()=>{const t2=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}).slice(5,16):'';
+  const it=(day.ins||[]).length?`<table><thead><tr><th>时间</th><th>标签</th><th>件数</th><th>批次</th><th>货位</th><th>操作人</th></tr></thead><tbody>${day.ins.map((x)=>`<tr><td style="font-size:11px;color:var(--sub)">${t2(x.t)}</td><td class="mono" style="font-size:11.5px"><a href="javascript:void 0" style="color:var(--pri)" onclick="traceBox('${_esc(x.code)}')">${_esc(x.code)}</a></td><td>${x.q}</td><td style="font-size:11px">${_esc(x.lot||'')}</td><td class="mono" style="font-size:11.5px">${_esc(x.gl||'')}</td><td style="font-size:11.5px">${_esc(x.op||'')}</td></tr>`).join('')}</tbody></table>`:'<span style="color:var(--sub);font-size:12px">当日无入库笔</span>';
+  const ot=(day.outs||[]).length?`<table><thead><tr><th>时间</th><th>出库单</th><th>标签</th><th>件数</th><th>去向</th><th>操作人</th></tr></thead><tbody>${day.outs.map((x)=>`<tr><td style="font-size:11px;color:var(--sub)">${t2(x.t)}</td><td class="mono" style="font-size:11.5px">${_esc(x.no||'')}</td><td class="mono" style="font-size:11.5px">${_esc(x.bc||'')}</td><td>${x.q}</td><td style="font-size:11.5px">${_esc(x.to||'')}</td><td style="font-size:11.5px">${_esc(x.op||'')}</td></tr>`).join('')}</tbody></table>`:'<span style="color:var(--sub);font-size:12px">当日无出库单（已发未转的货不在这里——见角标）</span>';
+  return `<div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:8px"><b style="font-size:12.5px">${day.d} 当日明细</b> <span style="font-size:11.5px;color:var(--sub)">入 ${day.inN}笔/${day.inB}框/${day.inQ}件 · 出 ${day.outQ}件${day.d&&new Date(day.d+'T12:00:00').getTime()>=(j.freshFrom||0)?' · <b style="color:var(--warn)">近48h未定（他机可能还未推送）</b>':''}</div><div style="overflow:auto;max-height:26vh;margin:6px 0">${it}</div><div style="overflow:auto;max-height:26vh">${ot}</div></div>`})():'';
+ const winBtns=[7,30,90].map((n)=>`<button class="pill ${TPD.days===n?'':'q'}" style="padding:2px 9px;font-size:11.5px" onclick="TPD.days=${n};ppDaily(TP.pn)">${n===7?'近7天':n===30?'近30天':'近90天'}</button>`).join(' ');
+ const freshN=D.filter((x)=>new Date(x.d+'T12:00:00').getTime()>=(j.freshFrom||0)&&(x.inQ||x.outQ)).length;
+ const ck=(k,lb)=>`<button class="pill ${TPD.chart===k?'':'q'}" style="padding:2px 9px;font-size:11.5px" title="${k==='bar'?'单日量对比直观':'连续走势直观（无数据日不跳零）'}" onclick="TPD.chart='${k}';ppDailyRender()">${lb}</button>`;
+ const legend=TPD.chart==='line'?'绿线=入库件 · 橙线=出库件 · 虚线以右=近48h未定 · 点节点看当日单据':'左蓝柱=入库件 · 右橙柱=出库件 · 悬停看笔/框/件 · 点柱看当日单据';
+ el.innerHTML=`<div class="card" style="background:linear-gradient(180deg,rgba(81,91,212,.04),transparent);padding:12px 14px">
+ <div class="row" style="align-items:center;gap:6px"><b style="font-size:13px">📅 每日出入库</b><span style="font-size:11px;color:var(--sub)">${legend}${freshN&&TPD.chart==='bar'?' · <b style="color:var(--warn)">斜纹=近48h未定</b>':''}</span><span class="sp"></span>${ck('bar','▥ 柱图')}${ck('line','〰 折线')}${winBtns}</div>
+ <div class="row" style="gap:10px;margin-top:6px;font-size:12px"><span>窗口合计：<b style="color:#2E7D32">入 ${j.totIn} 件</b></span><span><b style="color:var(--warn)">出 ${j.totOut} 件</b></span>${j.pend&&j.pend.q?`<span title="领料已发但未转MES的货（出库台还没有它们，等转单后才进上面橙柱）——无逐日时刻，只能给当前快照角标">🕓 已发未转 <b>${j.pend.q}</b> 件/${j.pend.c} 码</span>`:''}</div>
+ ${chartHtml}${dtx}
+ <div style="font-size:10.5px;color:var(--sub);margin-top:6px;border-top:1px solid var(--line);padding-top:5px">口径：入库=上架扫入按扫描时刻归日（剔一楼登记与作废，框按托去重）；出库=已转 MES 出库按单时刻归日；领料已发未转无逐日时刻→只作当前角标不编柱（防造假数据）。</div></div>`}
 // ---- ㉖B7 流水在线页（入库/出库实时查询，30秒自动刷新） ----
 let TF={k:'in'},_flowT=null;
 async function pgFlowX(){}
