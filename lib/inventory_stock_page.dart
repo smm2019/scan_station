@@ -2033,6 +2033,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
   // ㉖v202 每日出入库（服务器全厂口径逐日聚合，与网页零件档案同数据源；失败静默不挡档案主体）
   int _ppDays = 30;
   Map? _ppDaily;
+  bool _ppOpen = false; // ㉖v202 每日出入库默认折叠（用户: 别挡下面的框记录），点标题行展开
 
   @override
   void initState() {
@@ -2101,36 +2102,55 @@ class _PartProfilePageState extends State<PartProfilePage> {
     return Card(
         margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
         child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
-                const Text("📅 每日出入库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-                const Spacer(),
-                for (final n in [7, 30, 90])
-                  Padding(
-                      padding: const EdgeInsets.only(left: 4),
-                      child: ChoiceChip(
-                          visualDensity: VisualDensity.compact,
-                          label: Text(n == 7 ? "7天" : "$n", style: const TextStyle(fontSize: 11)),
-                          selected: _ppDays == n,
-                          onSelected: (_) {
-                            setState(() => _ppDays = n);
-                            _loadPnDaily();
-                          })),
-              ]),
-              const SizedBox(height: 2),
-              const Text("蓝柱=入库件 · 橙柱=出库件 · 淡显=近48h未定（他机可能未推送）· 点柱看当日单据",
-                  style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
-              SizedBox(
-                  height: 112,
-                  child: days.isEmpty
-                      ? const Center(child: Text("窗口内无任何出入库", style: TextStyle(fontSize: 12, color: Colors.grey)))
-                      : SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols))),
-              const SizedBox(height: 2),
-              Text("窗口合计：入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件（无逐日时刻，不计入橙柱）" : ""}",
-                  style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF37474F))),
-              const Text("口径：入库=上架扫入按扫描时刻归日（剔一楼登记与作废）；出库=已转MES按单时刻归日；全厂数据",
-                  style: TextStyle(fontSize: 9.5, color: Colors.blueGrey)),
+              // ㉖v202 标题行整行可点折叠（默认收起，用户: 别挡下面的框记录）。收起态仍显示窗口合计
+              // 摘要——关键数不展开也能看；图体/窗口切换/口径说明只在展开时渲染，卡片高度 ~230→~44
+              GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => setState(() => _ppOpen = !_ppOpen),
+                  child: Row(children: [
+                    const Text("📅 每日出入库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 8),
+                    if (!_ppOpen)
+                      Flexible(
+                          child: Text(
+                              "入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件" : ""}",
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF37474F)))),
+                    const Spacer(),
+                    Icon(_ppOpen ? Icons.expand_less : Icons.expand_more, size: 20, color: Colors.blueGrey),
+                  ])),
+              if (_ppOpen) ...[
+                const SizedBox(height: 4),
+                Row(children: [
+                  const Spacer(),
+                  for (final n in [7, 30, 90])
+                    Padding(
+                        padding: const EdgeInsets.only(left: 4),
+                        child: ChoiceChip(
+                            visualDensity: VisualDensity.compact,
+                            label: Text(n == 7 ? "7天" : "$n", style: const TextStyle(fontSize: 11)),
+                            selected: _ppDays == n,
+                            onSelected: (_) {
+                              setState(() => _ppDays = n);
+                              _loadPnDaily();
+                            })),
+                ]),
+                const SizedBox(height: 2),
+                const Text("蓝柱=入库件 · 橙柱=出库件 · 淡显=近48h未定（他机可能未推送）· 点柱看当日单据",
+                    style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+                SizedBox(
+                    height: 112,
+                    child: days.isEmpty
+                        ? const Center(child: Text("窗口内无任何出入库", style: TextStyle(fontSize: 12, color: Colors.grey)))
+                        : SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols))),
+                const SizedBox(height: 2),
+                Text("窗口合计：入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件（无逐日时刻，不计入橙柱）" : ""}",
+                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF37474F))),
+                const Text("口径：入库=上架扫入按扫描时刻归日（剔一楼登记与作废）；出库=已转MES按单时刻归日；全厂数据",
+                    style: TextStyle(fontSize: 9.5, color: Colors.blueGrey)),
+              ]
             ])));
   }
 
