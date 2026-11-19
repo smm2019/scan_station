@@ -8,7 +8,7 @@ let fail = 0, total = 0;
 const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '❌'} ${n}${i !== undefined ? '  [' + i + ']' : ''}`); };
 (async () => {
   const TDIR = path.join(__dirname, '_tdata_qagv202');
-  const PORT = Number(process.env.QA_PORT || (9800 + Math.floor(Math.random() * 40)));
+  const PORT = Number(process.env.QA_PORT || (9850 + Math.floor(Math.random() * 40)));
   fs.rmSync(TDIR, { recursive: true, force: true }); fs.mkdirSync(TDIR, { recursive: true });
   const salt = crypto.randomBytes(16).toString('hex');
   const mkU = (id, un, nm, role) => ({ id, username: un, name: nm, role, enabled: true, createdAt: new Date().toISOString(), mustChangePw: false, salt, passHash: crypto.scryptSync('Qa#202', salt, 32).toString('hex') });
