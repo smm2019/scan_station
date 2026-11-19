@@ -2716,8 +2716,19 @@ function labelBlockReason(st, purpose, opts) { // purpose: in(采集入库)|out(
     if (st.everOut) { if (opts && opts.ret) return ''; return '该标签历史上架并已出库（' + (st.everOut.at ? new Date(st.everOut.at).toLocaleDateString('zh-CN') : '历史') + '），标签不可回收复用，禁止重复录入'; } // ㉖v118 退库模式放行原码回扫
   }
   if (purpose === 'out') {
-    if (st.inOutbound.length) return '该标签已在出库单 ' + st.inOutbound.slice(0, 3).join('、') + '，禁止重复出库';
-    if (st.inIssued.length) return '该标签已发料到领料单 ' + st.inIssued.slice(0, 3).join('、') + '，禁止重复发料';
+    // ㉖v202c 退料回流框豁免历史出库单防呆（N26K100080 生产事故：11-16转MES出库→11-18退料重扫回库
+    // →11-19再开单扫发料, 被上一轮历史出库单 DT20261116161506 拦"已在出库单·禁止重复出库", 发不出去）。
+    // inOutbound 本意=标签防复用(同标签号跨出库单=回收复用造假), 但退料回流的框【合法地】同时出现在
+    // "历史出库单+新单"。判据=账本当前在架(st.inLedger非空): 框已物理退回且在架→历史出库记录已闭环,
+    // 再出库合法(回流几次都一样, 账本在架那一刻它与新框无差别)。账本不在架(出库途中还没回来)继续拦。
+    // 真正"当前重复发料"由下方 inIssued 闸 + scan端"已扫过"双保险兜死(消账后账本行消失, 二次扫命中
+    // inIssued或来源闸), 本豁免只放开"退料回流后再出库", 不放宽任何重复上限。
+    if (st.inOutbound.length && !st.inLedger.length) return '该标签已在出库单 ' + st.inOutbound.slice(0, 3).join('、') + '，禁止重复出库';
+    // ㉖v202c 同②：历史领料发料记录(LL2026111615381828)对退料回流框同样不该设卡。退料重扫回库后
+    // 该框仍留在旧领料单 issued[] 里(inIssued 非空), 但账本已重新在架=上一轮发料已实物闭环(退回)。
+    // 对称判据账本不在架才拦: 当前在途已发未回的框(账本消失)仍死在这道闸→同框二次扫别的单/未回库
+    // 重复发全部拦死(防双发双转MES)。只放开"退料回流后再出库"这一格。
+    if (st.inIssued.length && !st.inLedger.length) return '该标签已发料到领料单 ' + st.inIssued.slice(0, 3).join('、') + '，禁止重复发料';
     // ㉖⑦ 检验判退货(waitReturn)的框：允许走正常出库通道出账；其余检验状态仍拦截
     const blk = (st.inInspect || []).filter((q) => q.state !== 'waitReturn');
     if (blk.length) return '该框正在检验流程中，暂不可操作';
@@ -3783,6 +3794,29 @@ function queueBoardOf(nowReq) {
     .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
   const myIdx = nowReq ? active.findIndex((x) => x.id === nowReq.id) : -1;
   const agvActive = (db.agvQueue || []).filter((q) => !['完成', '取消', '失败'].includes(q.state)).length;
+  // ㉖v202 备料排队看板·AGV 异常上卡：叫车任务被挡(无空闲台/巷道节流/指定台占用)或下发失败, 是"备料
+  // 迟迟不动"的真因——常不是仓管没接单, 而是 AGV 车队没车接。blockRsn/blockSince(schedBlockMark 维护
+  // 的被挡起点)算被挡时长; 失败项 err/updAt 算失败时长。按领料单 reqId 归并(一单多框取卡最久那条)。
+  const _agvIssue = {}; // reqId -> {kind:'block'|'fail', rsn, min}
+  for (const q of db.agvQueue || []) {
+    const rid = String(q.reqId || '');
+    if (!rid) continue;
+    let _is = null;
+    if (q.state === '失败') { const _f = Number(q.updAt) || Number(q.at) || 0; _is = { kind: 'fail', rsn: String(q.err || 'AGV 下发失败').slice(0, 40), min: _f ? min(Date.now() - _f) : 0 }; }
+    else if (!['完成', '取消'].includes(q.state) && q.blockRsn) { const _f = Number(q.blockSince) || Number(q.at) || 0; _is = { kind: 'block', rsn: String(q.blockRsn), min: _f ? min(Date.now() - _f) : 0 }; }
+    if (!_is) continue;
+    const _p = _agvIssue[rid];
+    if (!_p || _is.min > _p.min) _agvIssue[rid] = _is;
+  }
+  // 头部：全仓库活跃叫车里被挡数 + 最长被挡及原因（独立于当前看哪几张单, 反映车队整体拥堵）
+  let agvBlocked = 0, agvBlockedMaxMin = 0, agvWorstRsn = '';
+  for (const q of db.agvQueue || []) {
+    if (['完成', '取消', '失败'].includes(q.state) || !q.blockRsn) continue;
+    agvBlocked++;
+    const _f = Number(q.blockSince) || Number(q.at) || 0;
+    const _bm = _f ? min(Date.now() - _f) : 0;
+    if (_bm > agvBlockedMaxMin) { agvBlockedMaxMin = _bm; agvWorstRsn = String(q.blockRsn); }
+  }
   // 实测平均备料分钟：已备齐/签收且记了接单时刻的近期单（readyAt 数字毫秒、acceptedAt ISO 串，统一转 ms）
   const msOf = (v) => (typeof v === 'number' ? v : v ? Date.parse(v) : 0);
   const done = (db.requisitions || []).filter((x) => msOf(x.acceptedAt) && (msOf(x.readyAt) || msOf(x.doneAt)) && ['ready', 'done'].includes(x.status)).slice(-20);
@@ -3794,12 +3828,14 @@ function queueBoardOf(nowReq) {
     waitMin: min(Date.now() - Date.parse(x.createdAt)),
     rush: !!x.rush, mine: nowReq ? x.id === nowReq.id : false, pos: i + 1,
     needDate: x.needDate || '',
+    agvIssue: _agvIssue[x.id] || null, // ㉖v202 本单叫车卡点（被挡/失败+时长），仓管看板据此知"卡在哪不是没接"
   }));
   const ahead = items.slice(0, Math.max(0, myIdx));
   // 前方需处理单里仓管会逐个消化；正在备料=已接单的靠前项
   const servingNow = items.filter((x) => x.status === 'accepted');
   return {
     rank: myIdx >= 0 ? myIdx + 1 : null, total: active.length, agvActive,
+    agvBlocked, agvBlockedMaxMin, agvWorstRsn, // ㉖v202 车队整体拥堵：被挡叫车数+最长被挡时长+最堵原因
     aheadCount: ahead.length, behind: items.slice(myIdx >= 0 ? myIdx + 1 : items.length),
     ahead, servingNow, items,
     // 预计等待=前方单逐个消化：待接单的按均时全算，备料中的只算剩余（均时-已备分钟）
@@ -5396,7 +5432,12 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (t.ck === 'out') { const ep = String(t.ep || '').toUpperCase(); if (ep) _outN[ep] = (_outN[ep] || 0) + 1; }
           else if (t.ck === 'in') { const sp = String(t.sp || '').toUpperCase(); if (sp) _inN[sp] = (_inN[sp] || 0) + 1; }
         }
-        const list = Object.values(db.rcsStations || {}).sort((a, b) => a.station.localeCompare(b.station)).map((s) => { const m = stnMetaOf(s.station); const k = String(s.station).toUpperCase(); const _h = (db.rcsHoldStat || {})[k]; return { ...s, alias: m.alias || '', role: ['any', 'out', 'in', 'insp'].includes(m.role) ? m.role : 'any', off: m.off === true, inspOrders: inspAct[k] || [], tfLedger: tfdAct[k] || null, hasTfd: !!(tfdAct[k] && tfdAct[k].hasTfd), todayOut: _outN[k] || 0, todayIn: _inN[k] || 0, holdAvg: _h && _h.n ? Math.round(_h.sum / _h.n) : 0 }; }); // ㉖⑫ 附站台身份（PDA 站台页/叫车/检验选台按此显示与过滤）
+        // ㉖v202b 固定12台骨架（照 stBoard 同款）：旧版 Object.values(db.rcsStations) 在全部台空闲时
+        // rcsStations 是空表（该表只挂有动态状态的台）→ list=空数组 → PDA 每行查不到数据，
+        // 角色塌默认"通用"、今出·今回塌0（均清台走顶层 holdAvg 反而有值=截图三症状同根因；
+        // 旧方块UI不显示role所以多年没暴露）。骨架化后无论动静，12台恒有行、身份/吞吐恒真。
+        const stMap = db.rcsStations || {};
+        const list = AGV_STNS.map((k) => { const s = stMap[k] || {}; const m = stnMetaOf(k); const _h = (db.rcsHoldStat || {})[k]; return { station: k, state: s.state || '空闲', label: s.label || '', goods: s.goods || '', dir: s.dir || '', via: s.via || '', pickAt: s.pickAt || 0, startAt: s.startAt || 0, buildAt: s.buildAt || 0, codes: s.codes || [], since: s.since || '', ts: s.ts || 0, manual: !!s.manual, alias: m.alias || '', role: ['any', 'out', 'in', 'insp'].includes(m.role) ? m.role : 'any', off: m.off === true, inspOrders: inspAct[k] || [], tfLedger: tfdAct[k] || null, hasTfd: !!(tfdAct[k] && tfdAct[k].hasTfd), todayOut: _outN[k] || 0, todayIn: _inN[k] || 0, holdAvg: _h && _h.n ? Math.round(_h.sum / _h.n) : 0 }; }); // ㉖⑫ 附站台身份（PDA 站台页/叫车/检验选台按此显示与过滤）
         const aliases = {}; for (const c of AGV_STNS) { const a = stnAlias(c); if (a) aliases[c] = a; }
         const holdAvg = {}; for (const [k, v] of Object.entries(db.rcsHoldStat || {})) holdAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
         return send(res, 200, { ok: true, at: db.rcsAt || '', on: !!(db.rcsConfig && db.rcsConfig.host), run: (db.rcsRun || []).length, stations: list, queue: (db.agvQueue || []).filter((q) => !['完成', '取消'].includes(q.state)).map((q) => Object.assign({}, q, { stage: agvStage(q) })), recent: (db.agvQueue || []).filter((q) => ['完成', '取消'].includes(q.state)).sort((a, b) => (b.updAt || 0) - (a.updAt || 0)).slice(0, 60).map((q) => Object.assign({}, q, { stage: agvStage(q) })), mode: db.agvDispatchMode || 'dry', holdAvg, aliases, agingMin: P().agingMin, cfgRev: db.cfgRev || 0 }); // ㉖ recent=完成/取消终态（留2小时；失败项仍在 queue 活跃表带原因展示），队列控制台"最近任务"卡片数据源；㉖v61 agingMin透传前端同口径排

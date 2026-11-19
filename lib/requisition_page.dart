@@ -4818,6 +4818,9 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
     final rank = (q["rank"] as num?)?.toInt();
     final total = (q["total"] as num?)?.toInt() ?? 0;
     final agv = (q["agvActive"] as num?)?.toInt() ?? 0;
+    final agvBlocked = (q["agvBlocked"] as num?)?.toInt() ?? 0; // ㉖v202 车队被挡任务数
+    final agvBlockedMaxMin = (q["agvBlockedMaxMin"] as num?)?.toInt() ?? 0; // 最长被挡分钟
+    final agvWorstRsn = (q["agvWorstRsn"] ?? "").toString(); // 最堵原因
     final eta = (q["etaMin"] as num?)?.toInt();
     final serving = List<Map>.from(q["servingNow"] ?? []);
     final isMine = rank != null;
@@ -4878,6 +4881,17 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
             child: Text("🤖 仓库在跑 $agv 个 AGV 搬运任务",
                 style: const TextStyle(fontSize: 12, color: Colors.grey)),
           ),
+          // ㉖v202 车队被挡告警：叫车排着但没车接(无空闲台/巷道节流等)→备料被动卡住, 与"仓管没接单"
+          // 是两码事, 单列出来让仓管一眼分清"该我动手"还是"等车队腾车"。仅确有被挡时显示。
+          if (agvBlocked > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                  "⚠️ $agvBlocked 个搬运任务被挡"
+                  "${agvWorstRsn.isNotEmpty ? "（最长 ${_dur(agvBlockedMaxMin)}·$agvWorstRsn）" : "（${_dur(agvBlockedMaxMin)}）"}",
+                  style: const TextStyle(
+                      fontSize: 12, color: Color(0xFFC62828), fontWeight: FontWeight.w600)),
+            ),
         ],
       ),
     );
@@ -4992,11 +5006,38 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
                           color: Color(0xFF1565C0),
                           fontWeight: FontWeight.bold))),
           ]),
-          subtitle: Text(
-            serving
-                ? "🔧 ${x["acceptedBy"]} 备料中 · 已 ${_dur(x["acceptedMin"])}"
-                : "🕐 等待接单 ${_dur(x["waitMin"])}",
-            style: const TextStyle(fontSize: 13),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                serving
+                    ? "🔧 ${x["acceptedBy"]} 备料中 · 已 ${_dur(x["acceptedMin"])}"
+                    : "🕐 等待接单 ${_dur(x["waitMin"])}",
+                style: const TextStyle(fontSize: 13),
+              ),
+              // ㉖v202 本单叫车卡点：这单派了 AGV 但车被挡(无空闲台等)/下发失败 → 仓管据此知"卡住是
+              // 车队没腾车, 不是我方问题", 免误催/知找谁。仅本单确有异常叫车时显示。
+              if (x["agvIssue"] is Map)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Builder(builder: (_) {
+                    final ai = x["agvIssue"] as Map;
+                    final rsn = (ai["rsn"] ?? "").toString();
+                    final mm = (ai["min"] as num?)?.toInt() ?? 0;
+                    final isFail = ai["kind"] == "fail";
+                    return Text(
+                        isFail
+                            ? "🚧 叫车下发失败${rsn.isNotEmpty ? "·$rsn" : ""} · ${_dur(mm)}前"
+                            : "🚧 叫车被挡${rsn.isNotEmpty ? "·$rsn" : ""} · 已 ${_dur(mm)}",
+                        style: TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            color: isFail
+                                ? const Color(0xFFC62828)
+                                : const Color(0xFFEF6C00)));
+                  }),
+                ),
+            ],
           ),
           trailing: Text(
               serving
