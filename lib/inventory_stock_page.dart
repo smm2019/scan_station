@@ -2067,37 +2067,68 @@ class _PartProfilePageState extends State<PartProfilePage> {
     final totIn = (j["totIn"] as num?)?.toInt() ?? 0;
     final totOut = (j["totOut"] as num?)?.toInt() ?? 0;
     final pendQ = (j["pend"] is Map ? ((j["pend"] as Map)["q"] as num?)?.toInt() ?? 0 : 0);
-    // 预构建柱列（扁平 for，避免深层嵌套闭包括号错位）
+    // ㉖v202 日历轴补全（与网页 ppDailyRender 同法，PDA 截图实锤 11-14/16/18 空日被压扁、间距失真）：
+    // 服务器只回有出入库的日子，旧版按条目等距画柱→断续活动看着像连续。空日补占位列后，隔 3 天
+    // 没动就是 3 列空档。右界=数据层 freshFrom+2天(≈服务器当日)，左界=min(窗口左缘, 首条日)防裁。
+    final dmap = <String, Map<String, dynamic>>{};
+    for (final x in days) { dmap[(x["d"] ?? "").toString()] = x; }
+    final winReq = (j["win"] as num?)?.toInt() ?? _ppDays;
+    final D864 = 86400000;
+    String dk(int ms) {
+      final d = DateTime.fromMillisecondsSinceEpoch(ms);
+      final m = d.month.toString().padLeft(2, "0"), dd = d.day.toString().padLeft(2, "0");
+      return "${d.year}-$m-$dd";
+    }
+    final rightK = dk((freshFrom > 0 ? freshFrom : DateTime.now().millisecondsSinceEpoch) + 2 * D864);
+    final rightMs = DateTime.parse("${rightK}T12:00:00").millisecondsSinceEpoch;
+    var leftK = dk(rightMs - (winReq - 1) * D864);
+    if (days.isNotEmpty && (days.first["d"] ?? "").toString().compareTo(leftK) < 0) { leftK = (days.first["d"] ?? "").toString(); }
+    final cnt = (DateTime.parse("${rightK}T12:00:00").millisecondsSinceEpoch - DateTime.parse("${leftK}T12:00:00").millisecondsSinceEpoch) ~/ D864 + 1;
+    final allDays = <Map<String, dynamic>>[];
+    for (int i = cnt - 1; i >= 0; i--) {
+      final k = dk(rightMs - i * D864);
+      final o = dmap[k];
+      final m = <String, dynamic>{"d": k, "inQ": (o?["inQ"] as num?) ?? 0, "outQ": (o?["outQ"] as num?) ?? 0, "has": o != null};
+      if (o != null) { m["inN"] = o["inN"]; m["inB"] = o["inB"]; m["ins"] = o["ins"]; m["outs"] = o["outs"]; } // 弹层明细字段随行保留
+      allDays.add(m);
+    }
+    // 预构建柱列（扁平 for，避免深层嵌套闭包括号错位）；列等宽=可用宽/天数，窗口再大也不横向滚
     final cols = <Widget>[];
-    for (final x in days) {
-      final iq = (x["inQ"] as num?)?.toDouble() ?? 0;
-      final oq = (x["outQ"] as num?)?.toDouble() ?? 0;
-      final dayMs = DateTime.tryParse("${x["d"]}T12:00:00")?.millisecondsSinceEpoch ?? 0;
+    for (final x in allDays) {
+      final iq = (x["inQ"] as num).toDouble();
+      final oq = (x["outQ"] as num).toDouble();
+      final dayMs = DateTime.parse("${x["d"]}T12:00:00").millisecondsSinceEpoch;
       final isFresh = freshFrom > 0 && dayMs >= freshFrom;
-      Widget bar(double q, Color c) => GestureDetector(
-          onTap: () => _pnDaySheet(x, isFresh),
+      Widget bar(double q, Color c) => Expanded(
           child: Opacity(
               opacity: isFresh ? 0.45 : 1,
               child: Container(
-                  width: 10,
-                  margin: const EdgeInsets.only(left: 1.5),
+                  margin: const EdgeInsets.symmetric(horizontal: 0.8),
                   decoration: BoxDecoration(
                       color: q > 0 ? c : const Color(0xFFE3E8F0),
                       borderRadius: const BorderRadius.vertical(top: Radius.circular(2))),
                   height: q > 0 ? (q / mx * 84).clamp(4.0, 84.0) : 2)));
-      cols.add(Column(mainAxisSize: MainAxisSize.min, children: [
-        SizedBox(
-            height: 88,
-            child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-              bar(iq, const Color(0xFF2E7D32)),
-              bar(oq, const Color(0xFFE65100)),
-            ])),
-        SizedBox(
-            width: 22,
-            child: RotatedBox(
-                quarterTurns: 3,
-                child: Text((x["d"] ?? "").toString().length >= 5 ? (x["d"] ?? "").toString().substring(5) : (x["d"] ?? "").toString(), textAlign: TextAlign.left, style: const TextStyle(fontSize: 8, color: Colors.blueGrey)))),
-      ]));
+      final lblEvery = cnt > 15 ? (cnt / 9).ceil() : 1;
+      final idx = allDays.indexOf(x);
+      cols.add(Expanded(
+          child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _pnDaySheet({"d": x["d"], "inQ": x["inQ"], "outQ": x["outQ"], "has": x["has"]}, isFresh),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                SizedBox(
+                    height: 88,
+                    child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                      bar(iq, const Color(0xFF2E7D32)),
+                      bar(oq, const Color(0xFFE65100)),
+                    ])),
+                SizedBox(
+                    height: 22,
+                    child: idx % lblEvery == 0 || idx == cnt - 1
+                        ? RotatedBox(
+                            quarterTurns: 3,
+                            child: Text((x["d"] ?? "").toString().substring(5), textAlign: TextAlign.left, style: const TextStyle(fontSize: 8, color: Colors.blueGrey)))
+                        : const SizedBox.shrink(),
+                )]))));
     }
     return Card(
         margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
@@ -2138,13 +2169,14 @@ class _PartProfilePageState extends State<PartProfilePage> {
                             })),
                 ]),
                 const SizedBox(height: 2),
-                const Text("蓝柱=入库件 · 橙柱=出库件 · 淡显=近48h未定（他机可能未推送）· 点柱看当日单据",
+                const Text("蓝柱=入库件 · 橙柱=出库件 · 淡显=近48h未定（他机可能未推送）· 点整列看当日单据",
                     style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
                 SizedBox(
                     height: 112,
                     child: days.isEmpty
                         ? const Center(child: Text("窗口内无任何出入库", style: TextStyle(fontSize: 12, color: Colors.grey)))
-                        : SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols))),
+                        // ㉖v202 等宽撑满(旧版固定列宽挤在左侧、右边大片空白; 且 Expanded 不可放横向滚动内)
+                        : Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols)),
                 const SizedBox(height: 2),
                 Text("窗口合计：入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件（无逐日时刻，不计入橙柱）" : ""}",
                     style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF37474F))),
