@@ -2988,6 +2988,8 @@ const PARAMS = {
   // ㉖v108 领料时段管控（用户需求：自定义领料时间+开关，时段外下单拦截并提示系统维护中）
   reqHoursOn:     { grp: '领料闸门', name: '领料时段管控', unit: '开关', min: 0, max: 1, d: 0, tip: '1=启用领料时段闸门：时段外所有角色 POST 下单被服务器拒绝（提示"系统维护中"），已存在的单接单/发料/签收不受影响。0=全天可下单（默认，行为与旧版一致）。时段在「领料可用时段」配置' },
   reqHours:       { grp: '领料闸门', str: 1, name: '领料可用时段', unit: '文本', min: 0, max: 0, d: '07:00-18:00', tip: 'HH:MM-HH:MM，可逗号分隔多段（如 07:00-11:30,13:00-17:30）；起含、止不含；结束早于开始=跨天窗口（如 22:00-06:00）；留空或格式错误=闸门自动放行（防配错把全员锁死），修改后立即生效' },
+  // ㉖v208 领料并发校验（两人同备一张单的防串改闸门；默认软模式，等新版PDA都认409后再开硬拦）
+  reqConcOn:      { grp: '领料闸门', name: '领料并发校验', unit: '开关', min: 0, max: 1, d: 0, tip: '1=硬拦：每次领料动作服务器给单据盖版本号rev+操作人戳lastAct，PDA提交带baseRev=打开页面时的版本，比对不一致=有人刚改过→退回409（不落库，附最新单），PDA弹红条点名最后操作人并刷新。⚠️需新版APK——旧版把409当普通失败。0=软记录（默认）：照常执行，但把"⚡某某在HH:mm对这张单做过某操作"写进单据履历，新旧版全兼容。两端PDA都升级后在设置页开1' },
   // ㉖v137 补料建议（领料员建单提效：按出库实况日均消耗预估"还能撑几天"，告急件给建议框数）
   reqSuggestOn:    { grp: '领料闸门', name: '补料建议开关', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v137 PDA 建单页「🧠 补料建议」数据源总开关。0=接口返回空清单（PDA 显示未启用）。1=启用：按近「消耗统计窗口」天出库实发件数算每零件日均消耗，对比在架+在途余量，撑不过「目标覆盖天数」的进告急清单并给建议框数（纯只读预估，不下单不拦截）' },
   reqSuggestDays:  { grp: '领料闸门', name: '消耗统计窗口', unit: '天', min: 3, max: 60, d: 14, tip: '㉖v137 日均消耗=近 N 天出库实发件数÷N。窗口短灵敏但易受单批大单扰动，窗口长平稳但滞后新机型切换；默认14天（两周节拍）。出库流水 90 天归档，超窗口自动截断' },
@@ -8622,6 +8624,17 @@ return send(res, 200, {
           if (!r) return send(res, 404, { ok: false, msg: '领料单不存在' });
           const act = mAct[2];
           const b = await readBody(req);
+          // ㉖v208 乐观并发闸门：客户端带 baseRev=打开这张单时的版本号，与当前 rev 不一致=有人先动过。
+          // 硬模式(reqConcOn=1)退回409+最新单、本条不落库；软模式(默认)照常执行但把冲突写进履历留痕。
+          // 不带 baseRev=旧版客户端或纯通知类动作，直接放行（行为与旧版逐字一致，不误伤）。
+          const _rev0 = r.rev || 0;
+          if (b && b.baseRev != null && b.baseRev !== '' && Number(b.baseRev) !== _rev0) {
+            const la = r.lastAct || {};
+            const laT = la.at ? String(la.at).slice(11, 16) : '';
+            const cf = `${la.name || la.by || '他人'}在${laT ? ' ' + laT + ' ' : ''}对这张单做过「${la.act || '操作'}」`;
+            if (P().reqConcOn) return send(res, 409, { ok: false, code: 'stale', msg: `单据已被修改（${cf}），本条未保存，请核对后重提`, req: reqView(r) });
+            r.history.push({ time: new Date().toISOString(), by: '系统', text: `⚡并发提醒：${u.name}提交「${act}」时，${cf}（软模式放行·单rev=${_rev0}·请求baseRev=${b.baseRev}）` });
+          }
           const hpush = (text) => { r.history.push({ time: new Date().toISOString(), by: u.name, text }); };
           // issued 统一为 [{c:标签, q:件数}]，兼容旧数据纯字符串（按0件计）
           const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : Object.assign({ c: String(x.c || ''), q: Number(x.q) || 0 }, x.l ? { l: String(x.l) } : {}, x.b ? { b: String(x.b) } : {}, x.f ? { f: String(x.f) } : {}, x.pid ? { pid: String(x.pid) } : {}, x.n ? { n: String(x.n) } : {}, x.e ? { e: 1, by: x.by || '', why: x.why || '' } : {})); // ㉖v92c 保留 l：旧版丢字段致出库流水原货位空白；㉖v94q 保留 b/f/pid/n：撤扫复挂要还原批次与托号，否则账本批次被清空→FIFO排序退化成按货位、同托归并失效
@@ -9062,6 +9075,9 @@ return send(res, 200, {
             if (r.acceptedBy) db.users.filter(x => x.role === 'warehouse' && x.enabled).forEach(x =>
               notify(x.id, 'req_cancel', `${u.name} 取消了领料单 ${r.no}`, r.id));
           }
+          // ㉖v208 乐观并发：每个成功动作统一在落库前盖新版本+操作人戳（reqView 透传给两端，刷新即见谁在动这张单）
+          r.rev = _rev0 + 1;
+          r.lastAct = { by: u.id, name: u.name || u.id, at: new Date().toISOString(), act };
           save();
           return send(res, 200, { ok: true, req: reqView(r) });
         }
