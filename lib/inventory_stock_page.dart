@@ -1821,7 +1821,9 @@ Future<_PPData> loadPartProfile(String partNo) async {
   }
   // 服务器采集流水：补全别台设备采集的入库框（B：全厂口径）
   try {
-    final sl = await AuthApi.scanlogGet().timeout(const Duration(seconds: 8));
+    // ㉖v212 带 pn：服务器按零件号过滤（排在 limit 截断之前）。本页端上本就只要 pn==key 的行，
+    // 旧写法拉 5000 条全库回端筛——全库流水 4438 已逼近上限，越界后时刻早的老框沉到截断线以下整段漏掉
+    final sl = await AuthApi.scanlogGet(pn: key).timeout(const Duration(seconds: 8));
     if (sl["ok"] == true) {
       d.serverOk = true;
       for (final s in List<Map>.from(sl["items"] ?? [])) {

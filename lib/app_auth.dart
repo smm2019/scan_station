@@ -492,12 +492,14 @@ class AuthApi {
   // 零件档案：拉服务器全厂流水/出库单（B）+ 单框AGV链路（A补充）
   /// ㉖v211 code=按标签号精确过滤（服务器过滤在 limit 截断之前）：全链路兜底路径追老框用。
   /// 全库流水已 4438 条 > limit 2000，不传 code 时老框采集节点整段隐身。
-  static Future<Map> scanlogGet({int limit = 5000, String? code}) async => _req(
-      "GET",
-      code == null || code.isEmpty
-          ? "/api/scanlog?limit=$limit"
-          : "/api/scanlog?limit=$limit&c=${Uri.encodeComponent(code)}",
-      token: await AuthStore.token());
+  /// ㉖v212 pn=按零件号精确过滤：零件档案页"补全别台设备采集的框"用——档案页本来就只要本件流水，
+  /// 旧写法拉 5000 条全库回端上筛，全库 4438 逼近上限；越界那刻起老框（流水时刻早、排倒序尾部）整段漏掉。
+  static Future<Map> scanlogGet({int limit = 5000, String? code, String? pn}) async {
+    final qs = <String>["limit=$limit"];
+    if (pn != null && pn.isNotEmpty) qs.add("pn=${Uri.encodeComponent(pn)}");
+    if (code != null && code.isNotEmpty) qs.add("c=${Uri.encodeComponent(code)}");
+    return _req("GET", "/api/scanlog?${qs.join("&")}", token: await AuthStore.token());
+  }
   /// ㉖v210 pn=按零件号精确过滤（服务器过滤在 500 条上限之前）：零件档案页拼"累计出库"专用。
   /// 不传 pn=最新 500 单（旧行为，列表页用）；档案页必须传，否则老单被截→累计出库少报、账外框虚报。
   /// ㉖v211 code=按框码精确过滤（同样过滤先于截断）：全链路兜底路径按标签追出库用。
