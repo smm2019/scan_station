@@ -30,6 +30,7 @@ import 'package:archive/archive.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart'; // ⑭系统通知
 import 'package:flutter_tts/flutter_tts.dart'; // ⑭系统TTS
+import 'pick_route.dart'; // ㉖v217 地面排取货路线（独立库文件=可 dart run 脱 App 单测）
 
 part 'main.g.dart';
 part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传

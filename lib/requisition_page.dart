@@ -2209,6 +2209,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   // _staleWarn=刚被他人改过（409后为真），头部红条点名最后操作人直至本弹层下一次成功操作。
   int _rev = 0;
   bool _staleWarn = false;
+  // ㉖v217 地面排取货路线：默认关=零件行渲染与扫满切行与旧版逐字一致；
+  // 开启后面板按排列未扫地面框，点击框=切发料目标行，扫满自动切行改按路线排序。
+  bool _pickOn = false;
+  bool _pickOpen = true;
   static const Map<String, String> _actCn = {
     'accept': '接单', 'reject': '拒单', 'scan': '扫码发料', 'unscan': '撤扫',
     'transfer': '转单', 'skip': '跳过行', 'loc': '设转入货位', 'confirm': '签收',
@@ -3069,6 +3073,21 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       _refocusScan();
       return;
     }
+    // ㉖v217 取货路线开启：目标行自动跟随标签所属路线行——扫哪框记哪行（免手工点行，且防
+    // "该箱零件号与所选行不符"红窗）；标签不在路线清单（AGV到站框/手工扫别码）→ 保持当前目标不误切
+    if (_pickOn) {
+      String? owner;
+      for (final r in buildPickRoute(items).rows) {
+        for (final b in r.items) {
+          if (b.code == code.toUpperCase()) { owner = b.partNo; break; }
+        }
+        if (owner != null) break;
+      }
+      if (owner != null && owner != _issuePart) {
+        final nt = items.firstWhere((e) => e["partNo"] == owner, orElse: () => const {});
+        if (nt.isNotEmpty) { target = nt; _issuePart = owner; } // 紧随其后的 setState(_busy) 会带界面刷新
+      }
+    }
     setState(() => _busy = true);
     String? scanErr;
     bool emEligible = false; // MES取不到数才允许应急；零件号不符等真实冲突仍硬拦
@@ -3241,15 +3260,165 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     if (fromLoc.isNotEmpty)
       ledgerRemoveAndPush([code.toUpperCase()]); //㉖v59 方案B：逐码发料→单码拣下（同托兄弟码各自扫各自消，不再整框连坐）
     if (tGot >= tNeed) {
-      final next = items2.firstWhere(
-          (e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0),
-          orElse: () => const {});
-      if (!next.isEmpty) setState(() => _issuePart = next["partNo"].toString());
+      // ㉖v217 路线开启=自动切目标跟随排路线（本排还剩框→留本排零件；否则跳路线下一排的零件）；
+      // 路线已无剩余地面框（如全是 AGV 行）→ 回退旧行序，行为不悬空
+      final nx2 = _pickOn ? _pickRouteNextPart(items2) : null;
+      if (nx2 != null) {
+        setState(() => _issuePart = nx2);
+      } else {
+        final next = items2.firstWhere(
+            (e) => _issuedQtyOf(e) < ((e["qty"] as num?)?.toDouble() ?? 0),
+            orElse: () => const {});
+        if (!next.isEmpty) setState(() => _issuePart = next["partNo"].toString());
+      }
     }
     _refocusScan();
   }
 
-  /// MES 不可用时的应急人工登记窗：核对件数 + 填原因（留审计痕迹），返回 {qty, why}，取消返回 null
+  /// ㉖v217 取货路线顺序的下一个待发零件行：按排路线（区→排→位）找第一框所属且未发齐的行；
+  /// 路线空（全是AGV/已扫完）返 null，调用方回退旧行序
+  String? _pickRouteNextPart(List<Map> items) {
+    for (final r in buildPickRoute(items).rows) {
+      for (final b in r.items) {
+        final row = items.firstWhere((e) => e["partNo"] == b.partNo, orElse: () => const {});
+        if (row.isEmpty) continue;
+        if (_issuedQtyOf(row) < ((row["qty"] as num?)?.toDouble() ?? 0)) return b.partNo;
+      }
+    }
+    return null;
+  }
+
+  /// ㉖v217 地面排取货路线面板：备料中+仓管才出；默认关，开启后按排集中列未扫地面框，
+  /// 点击框=切发料目标行+聚焦扫码框（复用现有点零件行同一机制，校验/MES/FIFO 零改动）
+  List<Widget> _pickSection(List<Map> items, String st, bool isWh) {
+    if (st != 'accepted' || !isWh) return const [];
+    final route = buildPickRoute(items);
+    if (route.isEmpty && !_pickOn) return const []; // 无地面待扫框的单不打扰（开过又扫完仍显示，防"消失悬空"）
+    final w = <Widget>[
+      InkWell(
+          onTap: route.isEmpty
+              ? null
+              : () => setState(() {
+                    _pickOn = !_pickOn;
+                    _pickOpen = true;
+                  }),
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(top: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              decoration: BoxDecoration(
+                  color: _pickOn ? const Color(0xFFEDF7ED) : const Color(0xFFF1F3F8),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                      color: _pickOn ? const Color(0xFF81C784) : const Color(0xFFD5DBE8))),
+              child: Row(children: [
+                Icon(Icons.route_outlined,
+                    size: 15,
+                    color: _pickOn ? const Color(0xFF2E7D32) : Colors.blueGrey),
+                const SizedBox(width: 6),
+                Expanded(
+                    child: Text(
+                        route.isEmpty
+                            ? "🗺 本单地面框已扫完"
+                            : "🗺 按排取货路线（${route.rows.length}排 ${route.totalBoxes}框${route.skippedAgv > 0 ? "｜${route.skippedAgv}框走AGV见队列条" : ""}）",
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _pickOn ? const Color(0xFF2E7D32) : Colors.blueGrey))),
+                if (route.isEmpty)
+                  const SizedBox.shrink()
+                else if (_pickOn)
+                  InkWell(
+                      onTap: () => setState(() => _pickOpen = !_pickOpen),
+                      child: Icon(_pickOpen ? Icons.expand_less : Icons.expand_more,
+                          size: 18, color: const Color(0xFF2E7D32)))
+                else
+                  Text("点击开启",
+                      style: TextStyle(fontSize: 10.5, color: Colors.grey)),
+              ]))),
+    ];
+    if (!_pickOn || !_pickOpen || route.isEmpty) return w;
+    for (final r in route.rows) {
+      final hasCur = r.items.any((x) => x.partNo == _issuePart);
+      w.add(Container(
+          margin: const EdgeInsets.only(top: 5),
+          padding: const EdgeInsets.fromLTRB(8, 5, 8, 6),
+          decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                  color: hasCur ? const Color(0xFF43A047) : const Color(0xFFE3E8F0),
+                  width: hasCur ? 1.6 : 1)),
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(children: [
+                  Text("📍 $r.key",
+                      style: const TextStyle(
+                          fontSize: 12.5, fontWeight: FontWeight.w800, fontFamily: "monospace")),
+                  const SizedBox(width: 8),
+                  Text("${r.boxCount}框 · ${_fmtInvNum(r.qtySum)}件 · ${r.parts.length}零件",
+                      style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+                  if (hasCur)
+                    Container(
+                        margin: const EdgeInsets.only(left: 6),
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                        decoration: BoxDecoration(
+                            color: const Color(0xFFE8F5E9),
+                            borderRadius: BorderRadius.circular(4)),
+                        child: const Text("当前排",
+                            style: TextStyle(
+                                fontSize: 9.5,
+                                color: Color(0xFF2E7D32),
+                                fontWeight: FontWeight.w700))),
+                ]),
+                for (final it in r.items)
+                  InkWell(
+                      onTap: () {
+                        setState(() => _issuePart = it.partNo);
+                        _refocusScan();
+                        widget.toast("目标已切 ${it.partNo} ${it.itemName}，扫 $it.code",
+                            err: false);
+                      },
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 2),
+                          child: Row(children: [
+                            SizedBox(
+                                width: 40,
+                                child: Text("位${it.slot > 0 ? it.slot.toString().padLeft(2, '0') : '--'}",
+                                    style: const TextStyle(
+                                        fontSize: 11,
+                                        fontFamily: "monospace",
+                                        color: Colors.blueGrey))),
+                            Expanded(
+                                child: Text(
+                                    "${it.partNo} ${it.itemName} · ${_fmtInvNum(it.qty)}件",
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(fontSize: 11.5))),
+                            Text(it.code,
+                                style: TextStyle(
+                                    fontSize: 10.5,
+                                    fontFamily: "monospace",
+                                    color: it.partNo == _issuePart
+                                        ? const Color(0xFF1565C0)
+                                        : Colors.grey.shade600,
+                                    fontWeight: it.partNo == _issuePart
+                                        ? FontWeight.w700
+                                        : FontWeight.normal)),
+                            if (it.partNo == _issuePart)
+                              const Icon(Icons.touch_app_outlined,
+                                  size: 14, color: Color(0xFF1565C0)),
+                          ]))),
+              ])));
+    }
+    w.add(Padding(
+        padding: const EdgeInsets.only(top: 4, left: 2),
+        child: Text("点框=切发料目标（扫哪框记哪行）· 位号顺排走 · 货架/在途框走AGV不在此列",
+            style: TextStyle(fontSize: 9.5, color: Colors.grey))));
+    return w;
+  }
   Future<Map<String, dynamic>?> _emergencyIssue(
       String code, String fromLoc) async {
     final qtyCtrl = TextEditingController();
@@ -4192,6 +4361,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                                 : Colors.grey)),
                     const Icon(Icons.chevron_right, size: 18, color: Color(0xFF1A237E)),
                   ])))),
+          // ㉖v217 地面排取货路线（仅备料中+有地面框才出；默认关，开启后按排集中列未扫地面框）
+          ..._pickSection(items, st, isWh),
           if ((_r["remark"]?.toString().isNotEmpty ?? false))
             Text("备注：${_r["remark"]}",
                 style: const TextStyle(fontSize: 12, color: Colors.grey)),
