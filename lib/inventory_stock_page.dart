@@ -1724,7 +1724,7 @@ Future<_PPData> loadPartProfile(String partNo) async {
   } catch (_) {}
   // 服务器出库单先入表，本机出库单覆盖（本机更权威）：别台设备转单的框也能拿到出库链路
   try {
-    final ob = await AuthApi.outboundGet().timeout(const Duration(seconds: 8));
+    final ob = await AuthApi.outboundGet(pn: key).timeout(const Duration(seconds: 8)); // ㉖v210 带零件号：过滤在服务器500条上限之前，老单不再被截
     if (ob["ok"] == true) {
       d.serverOk = true;
       for (final o in List<Map>.from(ob["items"] ?? [])) {
@@ -2120,7 +2120,9 @@ class _PartProfilePageState extends State<PartProfilePage> {
       cols.add(Expanded(
           child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onTap: () => _pnDaySheet({"d": x["d"], "inQ": x["inQ"], "outQ": x["outQ"], "has": x["has"]}, isFresh),
+              // ㉖v210 传整行 x（含 inN/inB/ins/outs）：旧版只摘 d/inQ/outQ/has 四字段，
+              // 弹层拿不到笔数与明细数组 → "入0笔/0框/760件"且列表全打"当日无"（11-20 截图实锤）
+              onTap: () => _pnDaySheet(x, isFresh),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 SizedBox(
                     height: 88,

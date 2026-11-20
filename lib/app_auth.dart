@@ -492,8 +492,14 @@ class AuthApi {
   // 零件档案：拉服务器全厂流水/出库单（B）+ 单框AGV链路（A补充）
   static Future<Map> scanlogGet({int limit = 5000}) async =>
       _req("GET", "/api/scanlog?limit=$limit", token: await AuthStore.token());
-  static Future<Map> outboundGet() async =>
-      _req("GET", "/api/outbound", token: await AuthStore.token());
+  /// ㉖v210 pn=按零件号精确过滤（服务器过滤在 500 条上限之前）：零件档案页拼"累计出库"专用。
+  /// 不传 pn=最新 500 单（旧行为，列表页用）；档案页必须传，否则老单被截→累计出库少报、账外框虚报。
+  static Future<Map> outboundGet({String? pn}) async => _req(
+      "GET",
+      pn == null || pn.isEmpty
+          ? "/api/outbound"
+          : "/api/outbound?pn=${Uri.encodeComponent(pn)}",
+      token: await AuthStore.token());
   static Future<Map> agvTaskOf(String code) async =>
       _req("GET", "/api/agv/taskOf?c=${Uri.encodeComponent(code)}",
           token: await AuthStore.token());

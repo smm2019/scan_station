@@ -4654,6 +4654,12 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       if (fl) arr = arr.filter(x => String(x.linkReqNo || '').toUpperCase() === fl);
       const fq = (url.searchParams.get('q') || '').trim().toUpperCase();
       if (fq) arr = arr.filter(x => String(x.orderNo || '').toUpperCase().includes(fq) || String(x.linkReqNo || '').toUpperCase().includes(fq) || String(x.toLoc || '').toUpperCase().includes(fq) || String(x.operator || '').toUpperCase().includes(fq) || (x.items || []).some((i) => String(i.code || '').toUpperCase().includes(fq) || String(i.name || '').toUpperCase().includes(fq) || String(i.barcode || '').toUpperCase().includes(fq))); // ㉖B7 关键字过滤
+      // ㉖v210 按零件号精确过滤（零件档案页拼"累计出库"用）：必须排在下面 slice(0,500) 之前——
+      // 11-20 实锤：全库 1771 单只下发最新 500 单，6608068396 涉及 16 单仅 5 单落在前 500 内，
+      // 档案页累计出库 2620（真值 9326、少报 72%），被截掉的 6706 件老单因"无出库记录+不在账本"
+      // 全部误判成账外框（虚报 31 框）。单零件单数远低于 500，过滤后截断对档案页不再有盲区。
+      const fpn = (url.searchParams.get('pn') || '').trim().toUpperCase();
+      if (fpn) arr = arr.filter(x => (x.items || []).some((i) => String(i.code || '').toUpperCase() === fpn));
       // ㉖v100 每单现算 mv（不落库——参数 outWhKeys 一改即生效）：1=移仓单（去向非线边仓），PDA台账/网页列表据此标注
       return send(res, 200, { ok: true, at: db.outboundAt, total: db.outboundCount, count: arr.length, items: arr.slice(0, 500).map((x) => Object.assign({}, x, { mv: isMoveOrder(x) ? 1 : 0 })) });
     }
