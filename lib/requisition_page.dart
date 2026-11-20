@@ -2204,6 +2204,17 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   bool _checkSap = false; // 转MES时是否开启SAP库存校验
   final Map<String, Map<String, dynamic>> _boxData = {}; // 标签 -> 转单所需MES数据
   Map<String, dynamic>? _lastBoxData; // 本次扫码抓到的MES数据
+  // ㉖v208 乐观并发三件套（防两人同备一单互相蒙眼盖单）：
+  // _rev=打开弹层时服务器给的单据版本号，每个动作带 baseRev=此值，成功/冲突刷新后同步；
+  // _staleWarn=刚被他人改过（409后为真），头部红条点名最后操作人直至本弹层下一次成功操作。
+  int _rev = 0;
+  bool _staleWarn = false;
+  static const Map<String, String> _actCn = {
+    'accept': '接单', 'reject': '拒单', 'scan': '扫码发料', 'unscan': '撤扫',
+    'transfer': '转单', 'skip': '跳过行', 'loc': '设转入货位', 'confirm': '签收',
+    'cancel': '取消单', 'reassign': '转派', 'agv': '叫车登记', 'rush': '急料标记',
+    'urge': '催单', 'delitem': '删行', 'ready': '标备齐', 'back': '退回', 'close': '关单'
+  }; // ㉖v208 lastAct.act 动作码→中文名（红条点名用）
   Map<String, String> _agvStat = {}; // "起点|站台" → 排队/在途/已到站（哈工库讯RCS实时状态）
   Map<String, String> _liveStn = {}; // ㉖v98 标签→队列项实时台号：调度分配后覆盖快照"已叫"占位（旧版chip台号停在打开弹层时的快照，分配真台号后不更新，须重开弹层才对）
   // ㉖v91 统一状态：优先用服务端权威 stage 归并成粗粒度3态（排队/在途/已到站），无 stage 回退 state
@@ -2527,6 +2538,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   void initState() {
     super.initState();
     _r = Map.from(widget.rq);
+    _rev = (_r["rev"] as num?)?.toInt() ?? 0; // ㉖v208 记住打开时的版本（旧服务器无字段=0，行为同旧版）
     final tl = _r["toLoc"];
     if (tl is Map)
       _to = tl.map((k, v) => MapEntry(k.toString(), v?.toString() ?? ""));
@@ -2558,15 +2570,38 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   Future<void> _act(String action, [Map? body]) async {
     if (_busy) return;
     setState(() => _busy = true);
-    final res = await AuthApi.reqAction(_r["id"].toString(), action, body);
+    // ㉖v208 乐观并发：动作统一带上记住的版本号 baseRev，服务器比对一致才执行（旧服务器忽略该字段，零影响）
+    final res = await AuthApi.reqAction(
+        _r["id"].toString(), action, {...?body, "baseRev": _rev});
     if (!mounted) return;
     setState(() => _busy = false);
     if (res["ok"] == true) {
-      setState(() => _r = Map.from(res["req"]));
+      setState(() {
+        _r = Map.from(res["req"]);
+        _rev = (_r["rev"] as num?)?.toInt() ?? _rev; // 记住新版本，下个动作为基准
+        _staleWarn = false; // 本弹层已成功操作=已见最新，红条撤下
+      });
       widget.toast("操作成功：${_r["statusText"]}", err: false);
+    } else if (res["_status"] == 409 && res["code"] == "stale") {
+      // ㉖v208 硬拦模式（reqConcOn=1）：他人先改过本单，本条未落库——刷新最新+头部红条点名
+      setState(() {
+        if (res["req"] is Map) _r = Map.from(res["req"] as Map);
+        _rev = (_r["rev"] as num?)?.toInt() ?? _rev;
+        _staleWarn = true;
+      });
+      widget.toast("⚡${res["msg"] ?? "单据已被他人修改"}——本条未生效，请核对后重新操作");
     } else {
       widget.toast((res["msg"] ?? "操作失败").toString());
     }
+  }
+
+  /// ㉖v208 红条文案：把服务器回带的 lastAct（谁/何时/哪个动作码）翻成中文点名句
+  String _staleWhoText() {
+    final la = _r["lastAct"];
+    final who = la is Map
+        ? "${la["name"] ?? la["by"] ?? "他人"} · ${_actCn[la["act"]?.toString() ?? ""] ?? "操作"} · ${reqTimeLocal(la["at"])}"
+        : "他人刚刚操作过";
+    return "⚡这张单刚被 $who 改过，下方已是最新，请核对后再操作";
   }
 
   /// ㉖v98 关闭订单：已扫未转的框全部退回货架（服务器复用撤扫回滚+返架联动），未处理行自动跳过，单转"已关闭"
@@ -2620,11 +2655,22 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               toast: widget.toast));
       if (stn == null || !mounted) return;
       final res = await AuthApi.reqAction(_r["id"].toString(), "agv",
-          {"partNo": partNo, "barcode": code, "station": stn});
+          {"partNo": partNo, "barcode": code, "station": stn, "baseRev": _rev}); // ㉖v208 带版本：他人刚改过→409不盖单
       if (!mounted) return;
       if (res["ok"] == true)
-        setState(() => _r = Map.from(res["req"]));
-      else
+        setState(() {
+          _r = Map.from(res["req"]);
+          _rev = (_r["rev"] as num?)?.toInt() ?? _rev;
+        });
+      else if (res["_status"] == 409 && res["code"] == "stale") {
+        // ㉖v208 他人并发修改：登记未生效——刷新+红条点名，核对后重新叫车
+        setState(() {
+          if (res["req"] is Map) _r = Map.from(res["req"] as Map);
+          _rev = (_r["rev"] as num?)?.toInt() ?? _rev;
+          _staleWarn = true;
+        });
+        widget.toast("⚡${res["msg"]}——叫车登记未生效，请核对后重新叫车");
+      } else
         widget.toast("已叫车，但登记失败：${res["msg"]}"); // 不影响AGV任务本身
       return;
     }
@@ -2644,7 +2690,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       if (r["ok"] == true && r["req"] is Map) hit = Map.from(r["req"] as Map);
       if (!mounted) return;
       final h = hit;
-      if (h != null) setState(() => _r = Map.from(h));
+      if (h != null) setState(() {
+        _r = Map.from(h);
+        _rev = (_r["rev"] as num?)?.toInt() ?? _rev; // ㉖v208 手动重同步=见到最新，版本基准随之更新
+      });
       widget.toast(pr["ok"] == true
           ? "账本已重新同步（${pr["total"] ?? "?"} 行），建议已刷新"
           : "同步失败：${pr["msg"] ?? "网络异常"}", err: pr["ok"] != true);
@@ -3052,6 +3101,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       if (em != null) "emergency": true,
       if (em != null) "why": em["why"],
       if (overOk) "overOk": 1,
+      "baseRev": _rev, // ㉖v208 带版本：他人刚改过→409不盖单（下方409分支刷新+弹窗点名）
     });
     var res = await doScan();
     if (!mounted) return;
@@ -3082,6 +3132,27 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       }
     }
     setState(() => _busy = false);
+    // ㉖v208 他人并发修改（硬拦409）：本框未发——刷新到最新+弹窗点名（连扫节奏下 toast 会被淹没），焦点回扫码框
+    if (res["_status"] == 409 && res["code"] == "stale") {
+      setState(() {
+        if (res["req"] is Map) _r = Map.from(res["req"] as Map);
+        _rev = (_r["rev"] as num?)?.toInt() ?? _rev;
+        _staleWarn = true;
+      });
+      if (mounted)
+        await showDialog<void>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+                  icon: const Icon(Icons.people_alt_outlined, color: Color(0xFFE65100), size: 36),
+                  title: const Text("单据刚被他人修改"),
+                  content: Text("${res["msg"] ?? "本单已被他人变更"}\n\n$code 未发料。已自动刷新本单最新状态，请核对后重新扫码。"),
+                  actions: [
+                    FilledButton(onPressed: () => Navigator.pop(ctx), child: const Text("知道了"))
+                  ],
+                ));
+      _refocusScan();
+      return;
+    }
     if (res["ok"] != true) {
       final _msg = (res["msg"] ?? "发料失败").toString();
       // ㉖v92c 扫重/扫错/行锁定这类冲突必须弹窗确认——toast 会被连续扫码节奏淹没（10/24 复盘：扫错码无感知）
@@ -3102,6 +3173,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     }
     setState(() {
       _r = Map.from(res["req"]);
+      _rev = (_r["rev"] as num?)?.toInt() ?? _rev; // ㉖v208 版本随单同步（服务端盖的新版）
       _boxData[code] = _lastBoxData ?? {}; // 缓存该箱 MES 数据供转单组报文（应急时为空，转单再补查）
     });
     final items2 = List<Map>.from(_r["items"] ?? []);
@@ -3310,8 +3382,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                                   setSt(() => unscanMsg = "退回第 ${i + 1}/${un.length} 框 $c0 …");
                                   final ur = await AuthApi.reqAction(
                                       _r["id"].toString(), "unscan",
-                                      {"partNo": partNo, "barcode": c0}, 30);
+                                      {"partNo": partNo, "barcode": c0, "baseRev": _rev}, 30); // ㉖v208 带版本
                                   if (!dctx.mounted) return;
+                                  if (ur["req"] is Map) _rev = ((ur["req"] as Map)["rev"] as num?)?.toInt() ?? _rev; // ㉖v208 成败都同步版本（409也带最新单→重试不被同一冲突再拦）
                                   if (ur["ok"] != true) {
                                     setSt(() {
                                       unscanning = false;
@@ -3373,9 +3446,12 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       setState(() => _busy = true);
       try {
         final res = await AuthApi.reqAction(_r["id"].toString(), "transfer",
-            {"partNo": partNo, "codes": codes}); // ㉖v103 实传框集合：服务器按此记账，竞态加回的框自动回滚
+            {"partNo": partNo, "codes": codes, "baseRev": _rev}); // ㉖v103 实传框集合：服务器按此记账，竞态加回的框自动回滚；㉖v208 带版本号（他人刚改过→409不落库，防蒙眼盖单）
+        if (res["req"] is Map) _rev = ((res["req"] as Map)["rev"] as num?)?.toInt() ?? _rev; // ㉖v208 成败都同步版本
         if (res["ok"] != true)
-          throw Exception("服务器回写失败：${res["msg"]}");
+          throw Exception(res["_status"] == 409 && res["code"] == "stale"
+              ? "并发冲突：${res["msg"]}（本行回写未生效，已刷新本单，请重试转单，MES侧勿重复转）"
+              : "服务器回写失败：${res["msg"]}");
         final fromLocs = <String, String>{};
         final bars = <Map<String, dynamic>>[];
         for (final x in List.from(item["issued"] ?? [])) {
@@ -3598,9 +3674,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
           return {"c": c, "at": d != null && atTarget(d), "loc": mesLocDesc(c)};
         }).toList();
         final res = await AuthApi.reqAction(_r["id"].toString(), "transfer",
-            {"partNo": partNo, "codes": List.from(item["issued"] ?? []), if (rc.isNotEmpty) "recon": rc, if (rc.isNotEmpty) "reconEv": reconEv});
+            {"partNo": partNo, "codes": List.from(item["issued"] ?? []), if (rc.isNotEmpty) "recon": rc, if (rc.isNotEmpty) "reconEv": reconEv, "baseRev": _rev}); // ㉖v208 带版本
+        if (res["req"] is Map) _rev = ((res["req"] as Map)["rev"] as num?)?.toInt() ?? _rev; // ㉖v208 409也带最新单→重开/重试不被同一冲突再拦
         if (res["ok"] != true)
-          throw Exception("MES已转单，但服务器回写失败：${res["msg"]}（请重开该单重试，MES侧勿重复转）");
+          throw Exception("MES已转单，但服务器回写${res["_status"] == 409 ? "遇并发冲突" : "失败"}：${res["msg"]}（${res["_status"] == 409 ? "本单已刷新为最新，" : ""}请重开该单重试，MES侧勿重复转）");
         try {
           final fromLocs = <String, String>{};
           for (final x in List.from(item["issued"] ?? [])) {
@@ -3775,15 +3852,26 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         "LOC_CODE": d["LOC_CODE"]?.toString() ?? "",
         "LOC_NAME": d["LOC_NAME"]?.toString() ?? "",
       };
-      final res = await AuthApi.reqSetLoc(_r["id"].toString(), to);
+      final res = await AuthApi.reqSetLoc(_r["id"].toString(), to, baseRev: _rev); // ㉖v208 带版本
       if (res["ok"] != true) {
-        widget.toast("货位设置失败：${res["msg"]}");
+        if (res["_status"] == 409 && res["code"] == "stale") {
+          // ㉖v208 他人并发修改：刷新+红条点名，货位未设置
+          if (!mounted) return;
+          setState(() {
+            if (res["req"] is Map) _r = Map.from(res["req"] as Map);
+            _rev = (_r["rev"] as num?)?.toInt() ?? _rev;
+            _staleWarn = true;
+          });
+          widget.toast("⚡${res["msg"]}（货位未设置，请核对后重试）");
+        } else
+          widget.toast("货位设置失败：${res["msg"]}");
         return;
       }
       if (!mounted) return; // ㉖v98b reqSetLoc 为 await，期间弹层可能已关
       setState(() {
         _to = to;
         _r = Map.from(res["req"]);
+        _rev = (_r["rev"] as num?)?.toInt() ?? _rev;
       });
       widget.toast("转入货位已设置：${to["LOC_NAME"]}", err: false);
       _refocusScan(); // 修复：货位设好后光标交给发料框，扫码枪可直接连续发料
@@ -3992,6 +4080,28 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                     style: TextStyle(
                         fontSize: 12, color: widget.statusColor(st)))),
           ]),
+          // ㉖v208 并发冲突红条：刚被他人改过（409）→ 常驻点名"谁在何时做了什么"，
+          // 下方内容已自动刷新为最新；本弹层下一次成功操作后自动撤下（=我见过的最新事实）
+          if (_staleWarn)
+            Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFFDECEA),
+                    border: Border.all(color: const Color(0xFFE57373)),
+                    borderRadius: BorderRadius.circular(8)),
+                child: Row(children: [
+                  const Icon(Icons.people_alt_outlined,
+                      size: 16, color: Color(0xFFC62828)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                      child: Text(_staleWhoText(),
+                          style: const TextStyle(
+                              fontSize: 12,
+                              color: Color(0xFFB71C1C),
+                              fontWeight: FontWeight.w600))),
+                ])),
           _buildWizard(items, st),
           // ㉖v96 整单常驻AGV队列条（采集页同款样式）：旧版每个零件行重复一条文字链，多行单刷屏（10/25 用户）
           InkWell(
@@ -4387,8 +4497,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                                       : (res["msg"] ?? "催单失败").toString(),
                                   err: res["ok"] != true);
                               if (res["ok"] == true && res["req"] is Map)
-                                setState(
-                                    () => _r = Map.from(res["req"] as Map));
+                                setState(() {
+                                  _r = Map.from(res["req"] as Map);
+                                  _rev = (_r["rev"] as num?)?.toInt() ?? _rev; // ㉖v208 版本基准同步
+                                });
                             },
                       icon: const Icon(Icons.alarm, size: 16),
                       label: Text(st == 'accepted' ? "催备料" : "催接单"))),

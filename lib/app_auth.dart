@@ -324,7 +324,8 @@ class AuthApi {
           token: await AuthStore.token(),
           timeoutSec: timeoutSec);
   // 设置转入货位（loc）；行级转单回写(transfer)/跳过(skip) 直接走 reqAction
-  static Future<Map> reqSetLoc(String id, Map to) async =>
+  // ㉖v208 baseRev：乐观并发版本号，服务器比对不一致时退回409（防两人同备一单互相盖单）
+  static Future<Map> reqSetLoc(String id, Map to, {int? baseRev}) async =>
       reqAction(id, "loc", {
         "locCode": to["LOC_CODE"],
         "locName": to["LOC_NAME"],
@@ -332,6 +333,7 @@ class AuthApi {
         "warehouseName": to["WAREHOUSE_NAME"],
         "districtCode": to["DISTRICT_CODE"],
         "districtName": to["DISTRICT_NAME"],
+        if (baseRev != null) "baseRev": baseRev,
       });
   static Future<Map> notifications() async =>
       _req("GET", "/api/notifications", token: await AuthStore.token());

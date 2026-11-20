@@ -9076,8 +9076,11 @@ return send(res, 200, {
               notify(x.id, 'req_cancel', `${u.name} 取消了领料单 ${r.no}`, r.id));
           }
           // ㉖v208 乐观并发：每个成功动作统一在落库前盖新版本+操作人戳（reqView 透传给两端，刷新即见谁在动这张单）
-          r.rev = _rev0 + 1;
-          r.lastAct = { by: u.id, name: u.name || u.id, at: new Date().toISOString(), act };
+          // urge 例外：催单只发通知不动单据实质，盖版会把他人刚打开的页面全数顶回409（噪音>价值）
+          if (act !== 'urge') {
+            r.rev = _rev0 + 1;
+            r.lastAct = { by: u.id, name: u.name || u.id, at: new Date().toISOString(), act };
+          }
           save();
           return send(res, 200, { ok: true, req: reqView(r) });
         }

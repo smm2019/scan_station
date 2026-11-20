@@ -23,6 +23,16 @@ const mkUser = (id, name, role) => { const salt = crypto.randomBytes(16).toStrin
   let srv;
   try {
     fs.rmSync(TDIR, { recursive: true, force: true }); fs.mkdirSync(TDIR, { recursive: true });
+    // 防呆（v208 复跑被坑实录）：上一轮实例未死透占着端口时，新实例绑不上端口，请求全打到
+    // "库目录已删"的僵尸实例上=无响应卡死（本次超时的真实根因）。启动前先探测，占用即快速失败。
+    // 判定：有响应=忙；1.2s 无响应(abort/timeout)=僵尸占端口=忙；连接被拒=端口空闲放行。
+    const probe = await Promise.race([
+      fetch(BASE + '/api/health', { signal: AbortSignal.timeout(1200) })
+        .then(() => 'busy')
+        .catch((e) => ((e && (e.name === 'AbortError' || e.name === 'TimeoutError')) ? 'busy' : 'free')),
+      sleep(1800).then(() => 'free')
+    ]);
+    if (probe === 'busy') throw new Error('端口 ' + PORT + ' 被残留实例占用（上一轮测试未死透）——请先结束该 node/server.js 进程，或用 HS_PORT=其他端口 重跑');
     const db0 = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'db.json'), 'utf8'));
     const U1 = mkUser('u_hs_ca', '并发仓A', 'warehouse'), U2 = mkUser('u_hs_cb', '并发仓B', 'warehouse'), UA = mkUser('u_hs_adm', '并发管理', 'admin');
     db0.users.push(U1, U2, UA);
@@ -32,7 +42,14 @@ const mkUser = (id, name, role) => { const salt = crypto.randomBytes(16).toStrin
     db0.requisitions = [{ id: RID, no: 'LL208TEST0001', by: 'u_outsider', byName: '测试物料员', items: [{ partNo: 'T208PART01', itemName: '并发测试件', qty: 10, issued: [] }], status: 'pending', remark: '', createdAt: new Date().toISOString(), history: [] }];
     fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
     srv = cp.spawn(process.execPath, ['server.js'], { cwd: __dirname, env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] });
-    let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
+    // 防孤儿（v208 复跑被坑实录·根因）：外层 runner 被杀时子实例会存活占端口，坑死下一轮。
+    // 任何退出路径（正常/异常/被外部 SIGTERM/总时限）都按进程树强杀。
+    const killTree = () => { try { if (srv && srv.exitCode === null) cp.execSync(`taskkill /pid ${srv.pid} /T /F`, { stdio: 'ignore', windowsHide: true }); } catch (_) {} };
+    const suicide = setTimeout(() => { console.log('❌ 总时限 120s 到，强制收网'); killTree(); process.exit(1); }, 120000);
+    process.on('exit', () => { clearTimeout(suicide); killTree(); });
+    process.on('SIGTERM', () => process.exit(1));
+    process.on('SIGINT', () => process.exit(1));
+    let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health', { signal: AbortSignal.timeout(600) })).ok; } catch (_) {} }
     C('护栏 实例就绪', up); if (!up) throw new Error('实例未起');
     const tkA = (await post('/api/login', null, { username: '并发仓A', password: PW, dev: 'CA', kind: 'pda' })).json.token;
     const tkB = (await post('/api/login', null, { username: '并发仓B', password: PW, dev: 'CB', kind: 'pda' })).json.token;
