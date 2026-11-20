@@ -2061,6 +2061,7 @@ function dupFlowAlert(snap) {
 // 增量永远发现不了 → 必须全库扫一遍才会报出来。与粗码兜底同一范式，共用 5 分钟节拍。
 function dupSweep() {
   try {
+    dupFlowAutoAdjudicate(); // ㉖v206 先裁决后告警：账本有行的双活流水自动收敛，告警只剩真需人工的组
     // 重置必须放在 sweep 里而不是 dupFlowAlert 内部：dupFlowAlert 开头有
     // `if (!P().dupFlowAlertOn) return`，万一现场把该告警开关关了，重置就永远执行不到，
     // 那 16 个真冲突会被旧噪音标记压住最长 7 天（开关关多久静默多久）。
@@ -2068,6 +2069,51 @@ function dupSweep() {
     const before = Object.keys(db.dupFlowAlert || {}).length;
     dupFlowAlert(null);
     if (Object.keys(db.dupFlowAlert || {}).length !== before) save(); // 本轮新增点名才落盘，空转不写
+  } catch (_) { }
+}
+// ㉖v206 重复有效流水【自动裁决】（用户批准：告警刷屏分析后拍板）
+// 背景：框挪位/地面转架后再扫 = 合法业务（v166 实证无一例毫秒级双写），但旧未作废流水
+// 按设计永远保留人工裁决 → 现场从不处理 → 双活对累积、告警逐日刷屏。
+// 关键洞察：账本有行的组，【账本现格位就是系统早已裁定的答案】——指向其它格位的旧流水
+// 定义上就是过期证据，不需要人再裁决；账本无行的（框位置本身存疑）才真正需要人工。
+// 规则（只作废"账本入账时刻之前"的行 = 旧事实；t≥入账时刻的新行是离线在途/账本后推送，
+// 永不自动碰）：keeper=指向账本现格的行中最者新（无则全体最者新），其余 t<入账时刻 盖作废。
+// 作废用既有 cx/cxA/cxB 字段 → PDA 周期回灌被压回规则防复活；人工可在 PDA 恢复。
+function dupFlowAutoAdjudicate() {
+  try {
+    const sl = db.scanlog || {};
+    const idx = new Map();
+    for (const s of Object.values(sl)) {
+      if (s.cx) continue;
+      const cc = String(s.code || '').trim().toUpperCase(); if (!cc) continue;
+      let a = idx.get(cc); if (!a) { a = []; idx.set(cc, a); }
+      a.push(s);
+    }
+    const led = {};
+    for (const x of db.ledger || []) { const c = String(x.c || '').trim().toUpperCase(); if (c) led[c] = x; }
+    const now = Date.now();
+    const done = []; // 本轮裁决明细（一条 ops 汇总，防逐码刷屏）
+    for (const [cc, arr] of idx) {
+      if (arr.length < 2) continue;
+      const lr = led[cc]; if (!lr) continue; // 账本无行=框位置存疑，维持人工裁决
+      const recT = Number(lr.t) || Number(lr.rec) || 0; if (!recT) continue; // 无时刻锚点不裁
+      const curLoc = String(lr.l || '').trim().toUpperCase();
+      const locOf = (s) => String((Number(s.wt) === 0 ? (s.st || '') : (s.gl || ''))).trim().toUpperCase();
+      const pointing = curLoc && !/-CK-/.test(curLoc) ? arr.filter((s) => locOf(s) === curLoc) : [];
+      const pool = pointing.length ? pointing : arr;
+      let keeper = pool[0];
+      for (const s of pool) if ((Number(s.t) || 0) > (Number(keeper.t) || 0)) keeper = s;
+      for (const s of arr) {
+        if (s === keeper) continue;
+        if ((Number(s.t) || 0) >= recT) continue; // 账本入账时刻后的行=在途/账本后事实，不碰
+        s.cx = true; s.cxA = now; s.cxB = '系统自动取代（账本现格 ' + (curLoc || '?') + '，本行为入账前旧证据）';
+        done.push(cc);
+      }
+    }
+    if (!done.length) return;
+    save();
+    try { pushOps(null, '流水自动裁决', done.slice(0, 12).join('/') + (done.length > 12 ? ' 等' + done.length + '码' : ''), '账本有行组自动作废入账前旧流水 ' + done.length + ' 条（keeper=指向账本现格最新行；离线在途/账本后新行不碰，误伤可 PDA 恢复）'); } catch (_) { }
+    console.log('[dup-flow-adjudicate] 自动裁决 ' + done.length + ' 码作废旧流水');
   } catch (_) { }
 }
 setTimeout(dupSweep, 12000).unref(); // 比粗码(10s)晚 2 秒：错开启动回调，避免同一 tick 叠两个全库扫
