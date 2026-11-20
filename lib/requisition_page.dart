@@ -2232,9 +2232,24 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     return s0 == "排队" ? "排队" : s0 == "到站" ? "已到站" : s0 == "完成" ? "完成" : s0 == "失败" ? "失败" : s0 == "取消" ? "取消" : "在途";
   }
   Timer? _agvTimer;
+  // ㉖v209 AGV 区局部刷新：间隔由服务器参数 kPdaAgvRefSec 驱动（自排链定时器，心跳同步新值后下一轮自动采用）；
+  // 拉到新状态只 bump _agvTick 重绘 AGV 监听区（队列条+行内🚗芯片），不再整页 setState 卡顿；数据没变连重绘都省。
+  final ValueNotifier<int> _agvTick = ValueNotifier<int>(0);
+  bool _agvLoading = false; // 防慢网卡死叠加重入
+  String _queueSig = "\u0000init"; // ㉖v209 队列状态摘要串，脏检查用（init=首屏必算一次，不用""防与"零项"空串误判相等）
 
   /// 拉RCS任务表，把已叫AGV的框标出实时配送状态（AGV账号未配置则静默跳过）
   Future<void> _loadAgvStat() async {
+    if (_agvLoading) return; // ㉖v209 上一轮没回来不叠第二笔（8秒节奏下慢网防请求雪崩）
+    _agvLoading = true;
+    try {
+      await _loadAgvStatInner();
+    } finally {
+      _agvLoading = false;
+    }
+  }
+
+  Future<void> _loadAgvStatInner() async {
     final st = _r["status"].toString();
     final hasCalled = List<Map>.from(_r["items"] ?? [])
         .any((i) => (i["agvCalled"] as List?)?.isNotEmpty == true);
@@ -2269,10 +2284,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
           : "异常";
     }
     if (!mounted) return;
-    setState(() {
-      _agvStat = m;
-    });
-    await _loadQueue();
+    // ㉖v209 不整页 setState：本轮 RCS 新鲜表交给 _loadQueue 统一脏检查，变了才局部重绘 AGV 区
+    await _loadQueue(m);
   }
 
   /// ㉖v96 队列条计数：按 agvCoarse 粗粒度态统计（与采集页 _qSeg 同语义）
@@ -2288,14 +2301,15 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
   /// 拉本单AGV排队队列状态摘要
   List<Map> _queueItems = [];
   String _queueMode = "dry"; // 服务器真实调度模式：dry演算 / live真实下发
-  Future<void> _loadQueue() async {
+  Future<void> _loadQueue([Map<String, String>? rcsM]) async {
     final r = await AuthApi.rcsStations();
     if (!mounted || r["ok"] != true) return;
     final mine = List<Map>.from(r["queue"] ?? [])
         .where((q) => q["reqId"] == _r["id"])
         .toList();
     // 活跃队列项注入配送状态：chip key为"起点|站台"，未分配站台时登记在"起点|已叫"下
-    final m2 = Map<String, String>.from(_agvStat);
+    // ㉖v209 rcsM=本轮RCS新鲜表（定时链传入，保持旧语义：以RCS表为底叠加队列注入）；直调=沿用上轮（同旧版）
+    final m2 = Map<String, String>.from(rcsM ?? _agvStat);
     final ls = <String, String>{}; // ㉖v98 标签→实时台号（调度分配后覆盖快照"已叫"，无需重开弹层）
     for (final q in mine) {
       final s0 = q["state"]?.toString() ?? "";
@@ -2309,12 +2323,33 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       if (stn.isNotEmpty) m2["$from|$stn"] = txt;
       if (!m2.containsKey("$from|已叫")) m2["$from|已叫"] = txt;
     }
-    setState(() {
-      _queueItems = mine;
-      _agvStat = m2;
-      _liveStn = {..._liveStn, ...ls}; // 台号只进不出：出队后 chip 仍显示最后已知台号
-      _queueMode = r["mode"]?.toString() ?? "dry";
-    });
+    // ㉖v209 脏检查：把本轮结果算成"界面可见摘要"与现值比对，没变就一个像素都不重绘。
+    // 比对口径=队列摘要串 + 配送状态表 + 实时台号增量 + 调度模式（全部是界面真正消费的内容）。
+    final newLive = {..._liveStn, ...ls}; // 台号只进不出：出队后 chip 仍显示最后已知台号
+    final qSig = mine
+        .map((q) =>
+            "${q["id"] ?? ""}|${q["state"] ?? ""}|${q["stage"] ?? ""}|${q["station"] ?? ""}|${q["rush"] == true ? 1 : 0}")
+        .join(";"); // ㉖v209 stage 必入摘要：agvCoarse 优先按 stage 归并，漏比会出现"变了但不重绘"
+    final newMode = r["mode"]?.toString() ?? "dry";
+    final changed = qSig != _queueSig ||
+        newMode != _queueMode ||
+        !_sameStrMap(m2, _agvStat) ||
+        !_sameStrMap(newLive, _liveStn);
+    _queueItems = mine;
+    _queueSig = qSig;
+    _agvStat = m2;
+    _liveStn = newLive;
+    _queueMode = newMode;
+    if (changed && mounted) _agvTick.value++; // 只重绘 AGV 监听区，不整页 setState
+  }
+
+  /// ㉖v209 字符串表比对（局部刷新脏检查用；量小，逐键比即可）
+  static bool _sameStrMap(Map<String, String> a, Map<String, String> b) {
+    if (a.length != b.length) return false;
+    for (final e in a.entries) {
+      if (b[e.key] != e.value) return false;
+    }
+    return true;
   }
 
   /// 队列管理面板：按项状态糅合 RCS 任务同款操作——排队=置顶/取消，失败=取消（重叫即再入队），
@@ -2553,8 +2588,18 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       });
     }
     WidgetsBinding.instance.addPostFrameCallback((_) => _loadAgvStat());
-    _agvTimer =
-        Timer.periodic(const Duration(seconds: 20), (_) => _loadAgvStat());
+    _scheduleAgvTick(); // ㉖v209 间隔=kPdaAgvRefSec（服务器参数，默认8秒），每轮重读，运维改值经心跳同步后自动生效
+  }
+
+  /// ㉖v209 AGV 自排链定时器：不用 Timer.periodic 固定周期——每轮跑完按当前 kPdaAgvRefSec 重排下一次，
+  /// 心跳把服务器改的新间隔同步进来后，下一轮即用新节奏；配合 _loadAgvStat 重入锁防慢网叠拉。
+  void _scheduleAgvTick() {
+    _agvTimer?.cancel();
+    if (!mounted) return;
+    _agvTimer = Timer(Duration(seconds: kPdaAgvRefSec), () async {
+      await _loadAgvStat();
+      _scheduleAgvTick();
+    });
   }
 
   @override
@@ -2564,6 +2609,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     _locCtrl.dispose();
     _locFocus.dispose();
     _agvTimer?.cancel();
+    _agvTick.dispose(); // ㉖v209 释放局部刷新信号
     super.dispose();
   }
 
@@ -2582,6 +2628,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
         _staleWarn = false; // 本弹层已成功操作=已见最新，红条撤下
       });
       widget.toast("操作成功：${_r["statusText"]}", err: false);
+      // ㉖v209 提交后即时拉一次：接单/叫车等动作正改变AGV显示内容，等下一轮定时(默认8秒)太慢；
+      // 不 await 不拖操作回执，重入锁自动合并并发轮
+      unawaited(_loadAgvStat());
     } else if (res["_status"] == 409 && res["code"] == "stale") {
       // ㉖v208 硬拦模式（reqConcOn=1）：他人先改过本单，本条未落库——刷新最新+头部红条点名
       setState(() {
@@ -2657,12 +2706,13 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       final res = await AuthApi.reqAction(_r["id"].toString(), "agv",
           {"partNo": partNo, "barcode": code, "station": stn, "baseRev": _rev}); // ㉖v208 带版本：他人刚改过→409不盖单
       if (!mounted) return;
-      if (res["ok"] == true)
+      if (res["ok"] == true) {
         setState(() {
           _r = Map.from(res["req"]);
           _rev = (_r["rev"] as num?)?.toInt() ?? _rev;
         });
-      else if (res["_status"] == 409 && res["code"] == "stale") {
+        unawaited(_loadAgvStat()); // ㉖v209 叫车后即时拉：新入队框马上进队列条/芯片，不等定时轮
+      } else if (res["_status"] == 409 && res["code"] == "stale") {
         // ㉖v208 他人并发修改：登记未生效——刷新+红条点名，核对后重新叫车
         setState(() {
           if (res["req"] is Map) _r = Map.from(res["req"] as Map);
@@ -2901,7 +2951,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                       fontWeight: FontWeight.w700))),
         // ㉖v96 行内队列条删除：多零件行时每行重复显示同一条统计（10/25 用户"太重复"），改整单顶部常驻一条
         const SizedBox(height: 4),
-        Wrap(spacing: 6, runSpacing: 4, children: [
+        // ㉖v209 AGV 芯片局部刷新：只在 _agvTick（AGV数据真变化）时重绘本 Wrap，整页其他重绘不牵动它
+        ValueListenableBuilder<int>(
+            valueListenable: _agvTick,
+            builder: (bc2, _, __) => Wrap(spacing: 6, runSpacing: 4, children: [
           for (final b in flat)
             Builder(builder: (bc) {
               final code = b["c"]?.toString() ?? "";
@@ -2965,7 +3018,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                 ),
               );
             }),
-        ]),
+        ])),
         if (noInfo > 0)
           Padding(
             padding: const EdgeInsets.only(top: 4),
@@ -3176,6 +3229,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
       _rev = (_r["rev"] as num?)?.toInt() ?? _rev; // ㉖v208 版本随单同步（服务端盖的新版）
       _boxData[code] = _lastBoxData ?? {}; // 缓存该箱 MES 数据供转单组报文（应急时为空，转单再补查）
     });
+    unawaited(_loadAgvStat()); // ㉖v209 扫掉到站框后即时拉：队列条计数同步更新，不等定时轮
     final items2 = List<Map>.from(_r["items"] ?? []);
     final nowT = items2.firstWhere((e) => e["partNo"] == _issuePart,
         orElse: () => const {});
@@ -4104,7 +4158,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                 ])),
           _buildWizard(items, st),
           // ㉖v96 整单常驻AGV队列条（采集页同款样式）：旧版每个零件行重复一条文字链，多行单刷屏（10/25 用户）
-          InkWell(
+          // ㉖v209 队列条局部刷新：只在 _agvTick（AGV数据真变化）时重绘本条，单据其他部分不跟着重绘
+          ValueListenableBuilder<int>(
+              valueListenable: _agvTick,
+              builder: (qb, _, __) => InkWell(
               onTap: _showQueueSheet,
               borderRadius: BorderRadius.circular(8),
               child: Container(
@@ -4134,7 +4191,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                                 ? Colors.green.shade700
                                 : Colors.grey)),
                     const Icon(Icons.chevron_right, size: 18, color: Color(0xFF1A237E)),
-                  ]))),
+                  ])))),
           if ((_r["remark"]?.toString().isNotEmpty ?? false))
             Text("备注：${_r["remark"]}",
                 style: const TextStyle(fontSize: 12, color: Colors.grey)),

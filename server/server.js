@@ -2917,6 +2917,7 @@ const PARAMS = {
   pollSec:        { grp: '调度节奏', name: 'RCS轮询间隔', unit: '秒', min: 1, max: 300, d: 20, tip: '站台/车辆/任务刷新频率，越小越实时但越吃RCS负载（1秒=近实时，注意RCS侧压力）' },
   carYawOfs:      { grp: '调度节奏', name: '地图车头偏移', unit: '度', min: 0, max: 270, d: 180, tip: '㉖v191 两端地图车头对齐RCS官方图：RCS图标=上报航向再转180°（现场11-15实锤两端与RCS反向；轨迹验证上报yaw=物理车头，AGV06直行15样本偏差仅1.1°）。默认180与RCS一致；若现场核对实车发现反了改0（画真实航向）；90/270=厂商图标横装时校正' },
   uiRefreshSec:   { grp: '界面刷新', name: '指挥舱页面刷新', unit: '秒', min: 1, max: 600, d: 30, tip: '网页指挥舱各页(车辆/交管/队列/看板等)自动拉取间隔；数据新鲜度受RCS轮询节律限制，设小于轮询间隔时以轮询为准' },
+  pdaAgvRefSec:   { grp: '界面刷新', name: 'PDA领料AGV刷新', unit: '秒', min: 3, max: 300, d: 8, tip: '㉖v209 PDA 领料单详情里【本单AGV任务】条与行内 🚗 状态芯片的自动拉取间隔。旧版固定 20 秒，现场反馈"车都到站了屏幕还写在途"→ 降到 8 秒。下限 3 秒防手滑把 RCS/服务器打出压力（每轮=2次RCS任务表+1次队列查询）；上限 300 秒用于现场网络差时降载。设备随登录/心跳（约5分钟内）同步本值，之后打开或重开领料单按其刷新；需新版 APK（旧版固定 20 秒，忽略本参数）' },
   assignMin:      { grp: '调度节奏', name: '指定单超时放开', unit: '分钟', min: 1, max: 240, d: 30, tip: '指定仓管员下单后，超时未接单自动放开给全员' },
   urgeMin:        { grp: '通知治理', name: '催单最小间隔', unit: '分钟', min: 1, max: 120, d: 10, tip: '同一张领料单两次催单的最小间隔，防轰炸' },
   pushMin:        { grp: '通知治理', name: '急料到站催扫', unit: '分钟', min: 1, max: 60, d: 5, tip: '急料框到站台超此时长未扫码→广播全体仓管' },
@@ -4776,7 +4777,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
 
       // 心跳/取当前身份+功能开关（App 前台恢复与定时轮询调用；停用即时生效靠它）
       if (req.method === 'GET' && p === '/api/me') {
-        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, outWhKeys: String(P().outWhKeys || '线边仓'), serverTime: new Date().toISOString() }); // ㉖v100 出库去向关键词下发：PDA 直调提交后按去向提示"出库单/移仓单"
+        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, outWhKeys: String(P().outWhKeys || '线边仓'), pdaAgvRefSec: P().pdaAgvRefSec, serverTime: new Date().toISOString() }); // ㉖v100 出库去向关键词下发：PDA 直调提交后按去向提示"出库单/移仓单"；㉖v209 PDA领料AGV刷新秒数下发
       }
 
       // ㉖v59 个人中心：我的登录设备/会话（本人可见可踢，不含 admin 拉黑等管理动作）

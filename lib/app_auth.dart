@@ -10,6 +10,10 @@ int kClockOffsetMs = 0;
 /// 直调/转单去向含任一关键词=出库，全不含=移仓（不计出库统计）。仅用于提示文案，判定权威在服务器。
 String kOutWhKeys = "线边仓";
 
+/// ㉖v209 领料详情页 AGV 自动刷新秒数（服务器参数 pdaAgvRefSec 心跳下发，默认 8）：
+/// 旧版固定 20 秒太慢（车到站屏幕还写"在途"）。服务器参数校验 3~300，此处再夹一次防脏值/离线旧值。
+int kPdaAgvRefSec = 8;
+
 /// 去向是否移仓（与服务器 isMoveOrder 同判据；空去向按出库）
 bool isMoveToLoc(String to) {
   final keys = kOutWhKeys
@@ -888,6 +892,10 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     if (r["outWhKeys"] is String &&
         (r["outWhKeys"] as String).trim().isNotEmpty)
       kOutWhKeys = (r["outWhKeys"] as String).trim();
+    // ㉖v209 领料AGV刷新秒数（服务器参数 pdaAgvRefSec 下发）：夹 3~300 防脏值；旧服务器无字段=保留上次值
+    if (r["pdaAgvRefSec"] is num)
+      kPdaAgvRefSec =
+          (r["pdaAgvRefSec"] as num).toInt().clamp(3, 300);
     Auth.user = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
     Auth.features = Map<String, bool>.from(r["features"] ?? {});
     AuthStore.markVerified();
