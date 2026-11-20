@@ -7665,7 +7665,11 @@ return send(res, 200, {
         const b = await readBody(req);
         const rec = (db.counts || []).find((x) => x.id === String(b.id || ''));
         if (!rec) return send(res, 400, { ok: false, msg: '盘点工单不存在' });
-        if (rec.state !== 'scanned') return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']不可归位（需先扫码核对）' });
+        // ㉖v204 mismatch 放行归位（11-19 现场实锤 N26K080287：到台判不符→只能取消→框物理
+        // 压台无处去，被迫作废采集流水消位再"新入库"叫车回家，账本 mv 被洗成假入库）。不符
+        // 的正当处置=人工确认实物后【归位回原格】（diff 留档可溯），取消只留给人工搬走的场景。
+        if (!['scanned', 'mismatch'].includes(rec.state)) return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']不可归位（需先扫码核对，或不符单人工裁决后归位）' });
+        if (rec.state === 'mismatch' && !rec.station) return send(res, 400, { ok: false, msg: '不符单无站台记录，无法下发归位——请人工把框归位原格后点取消收口' });
         if (countBusyLegs() >= (Number(P().countConc) || 0)) return send(res, 200, { ok: false, msg: '盘点双腿并发已达上限（' + P().countConc + '），请稍后再归位' });
         const item = await countEnqueue(rec, 'back', u, rec.station, rec.from, 'PDG-' + rec.code);
         if (item.state === '失败') return send(res, 400, { ok: false, msg: '归位任务下发失败：' + item.err });
@@ -9769,7 +9773,10 @@ function countQueueRollback(q) {
   if (!q.countId) return;
   const rec = (db.counts || []).find((x) => x.id === q.countId); if (!rec) return;
   if (q.type === 'count' && ['pending', 'toStation'].includes(rec.state)) { if (rec.state === 'toStation') rec.taskNo = ''; rec.state = 'pending'; rec.outQueued = 0; }
-  else if (q.type === 'countback' && ['scanned', 'returning'].includes(rec.state)) { if (rec.state === 'returning') rec.taskNo2 = ''; rec.state = 'scanned'; rec.backQueued = 0; }
+  else if (q.type === 'countback' && ['scanned', 'returning', 'mismatch'].includes(rec.state)) { // ㉖v204 mismatch 单也会上归位腿：判死须回 mismatch（有 diff 时）而非 scanned，保处置线索
+    if (rec.state === 'returning') rec.taskNo2 = '';
+    rec.state = rec.diff ? 'mismatch' : 'scanned'; rec.backQueued = 0;
+  }
 }
 // 盲区候选框：NB02 高位货架框、整框最近一次动过 ≥countStaleDays 天、无活跃盘点、无出库/检验在途
 function countCandidates() {
@@ -9804,7 +9811,7 @@ async function updateCounts(nowMs) {
       // pending 且未入队：㉖v141 默认人工拉取发车（countAutoDeploy=0 不自动下发，防"自动预下架"与夜间空发）；开关1=旧自动行为（并发有空位才补入队）
       if (q.state === 'pending' && !q.outQueued && P().countAutoDeploy && countBusyLegs() < conc) { const it = await countEnqueue(q, 'out', { name: q.by }, q.from, '', 'PD-' + q.code); if (it.state === '已下发') { q.taskNo = it.wmsTask || ''; q.station = it.station || q.station; q.state = 'toStation'; q.at = nowMs; } else q.outQueued = 1; dirty = true; }
       else if (q.state === 'pending' && q.outQueued) { const it = _qi('count'); if (it) { q.state = 'toStation'; q.taskNo = it.wmsTask || ''; q.station = it.station || q.station; q.at = nowMs; q.outQueued = 0; dirty = true; } }
-      else if (q.state === 'scanned' && q.backQueued) { const it = _qi('countback'); if (it) { q.state = 'returning'; q.taskNo2 = it.wmsTask || ''; q.retAt = nowMs; q.backQueued = 0; dirty = true; } }
+      else if ((q.state === 'scanned' || q.state === 'mismatch') && q.backQueued) { const it = _qi('countback'); if (it) { q.state = 'returning'; q.taskNo2 = it.wmsTask || ''; q.retAt = nowMs; q.backQueued = 0; dirty = true; } } // ㉖v204 mismatch 归位并入同一流转
       if (q.state === 'toStation') {
         const s = stn[q.station];
         if (s && s.state === '有货' && (s.codes || []).map((c) => String(c).toUpperCase()).includes(String(q.code).toUpperCase())) {

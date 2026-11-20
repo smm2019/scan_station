@@ -1474,7 +1474,7 @@ class _InvScanPageState extends State<_InvScanPage> {
                 Widget? btn;
                 if (st == 'pending') btn = _agvMiniBtn('发车', () { _agvAct('发车', (i) => AuthApi.countDeploy(id: i), id); });
                 if (st == 'atStation') btn = _agvMiniBtn('核对', () { _agvCheckOne(q); });
-                if (st == 'scanned') btn = _agvMiniBtn('归位', () { _agvAct('归位', (i) => AuthApi.countReturn(i), id); });
+                if (st == 'scanned' || st == 'mismatch') btn = _agvMiniBtn('归位', () { _agvAct('归位', (i) => AuthApi.countReturn(i), id); });
                 return Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                   child: Row(
@@ -2029,6 +2029,11 @@ class _InvScanPageState extends State<_InvScanPage> {
             // 兄弟标签行：随同托主标签一起归位，但本标签件数未单独验证 → 仍列未盘到请复核
             missN++;
             rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? "", "st": "miss", "r": "同托标签已随主标签归位，本标签件数未单独验证，请复核"});
+            continue;
+          }
+          // ㉖v204 不符单经人工归位后闭环（done/returning 仍带 diff）：计入盘到，不再误判盘亏
+          if ((st == "done" || st == "returning") && df != null) {
+            if (isMain) agvOkN++;
             continue;
           }
           if (st == "mismatch" || (st == "scanned" && df != null)) {
@@ -2666,7 +2671,7 @@ class _ShelfCountPageState extends State<ShelfCountPage> {
             : "标签相符、数量核对通过",
         col: (wrong || diff["kind"] == "qty") ? const Color(0xFFC62828) : const Color(0xFF2E7D32));
     }
-    if (st == "mismatch") add("⚠ 不符·待人工处置", null, sub: "确认实物位置后点「取消」结束本单", col: const Color(0xFFC62828));
+    if (st == "mismatch") add("⚠ 不符·待人工处置", null, sub: "确认实物后可点「归位」回原格；人工已搬走的点「取消」收口", col: const Color(0xFFC62828));
     for (final e in backT) add("🔙 归位调度", null, sub: e.toString());
     if (tn(q["retAt"]).isNotEmpty) add("📤 归位任务发车", q["retAt"], sub: "回原格 ${q["from"]}（钉死原格，不 AUTO 改派）", col: const Color(0xFFE65100));
     if (st == "done") add("✅ 归位到位·闭环", q["doneAt"], sub: "框已回到 ${q["from"]}", col: const Color(0xFF2E7D32));
@@ -2763,7 +2768,7 @@ class _ShelfCountPageState extends State<ShelfCountPage> {
     final st = q["state"]?.toString() ?? "";
     final col = _stColor[st] ?? Colors.grey;
     final canScan = st == "atStation" || st == "stuck"; // 到台/超时待扫=可核对
-    final canRet = st == "scanned"; // 已核对=可归位
+    final canRet = st == "scanned" || (st == "mismatch" && (q["station"] ?? "").toString().isNotEmpty); // 已核对=可归位；㉖v204 不符单已到台可人工裁决后归位
     return Card(margin: const EdgeInsets.symmetric(vertical: 5), child: ListTile(
       isThreeLine: true,
       onTap: () => _showTimeline(q), // 整卡点击=看时间线（右下图标提示）
