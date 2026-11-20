@@ -5794,7 +5794,8 @@ return send(res, 200, {
       }
       if (req.method === 'GET' && p === '/api/agv/schedstats') { // ㉖v142 L0 调度观测：节流计数聚合 + 车辆健康分 + 排队分位数
         const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '14') || 14));
-        return send(res, 200, { ok: true, days, block: schedBlockAgg(days), cars: schedCarHealth(), queue: buildFunnel(days).queue });
+        const _f = buildFunnel(days);
+        return send(res, 200, { ok: true, days, block: schedBlockAgg(days), cars: schedCarHealth(), queue: _f.queue, heat: _f.heat }); // ㉖v216 heat 提升顶层：queue=qPct 是分位数对象无子字段位，heat 随 .queue 转发会被丢（真跑首测 heat=0 逮到）
       }
       // 按标签反查AGV搬运链路（采集详情用）：队列项+任务沉淀 起终点/车号/节点时间
       if (req.method === 'GET' && p === '/api/agv/taskOf') {
@@ -11152,18 +11153,34 @@ function schedCarHealth() { // 车辆健康分：近7天 carEvents 按车聚合�
   const since = Date.now() - 7 * 86400000;
   const ev = (db.carEvents || []).filter((e) => (e.ts || 0) >= since);
   const cars = {};
-  const touch = (id) => (cars[id] = cars[id] || { id, comm: 0, lowBat: 0, err: 0, jam: 0, estop: 0, score: 100 });
+  const touch = (id) => (cars[id] = cars[id] || { id, comm: 0, commSys: 0, lowBat: 0, err: 0, jam: 0, estop: 0, score: 100 });
+  // ㉖v216 系统级通讯断开豁免（现场告知：下班集中关机 → RCS 同时看到全车队掉线）：
+  // 实锤数据形态=近7天64次断开，AGV05/06/07/08 的【小时分布逐时完全一致】（7时×3、8时×3、19时×4、21时×2…），
+  // 四车同一小时集体断开只可能是车队级事件（集中开关机/RCS 或网络瞬时），不是单车故障；
+  // 旧口径把这些全扣单车分 → 四台健康分全红 34~49，点名功能等于废掉。
+  // 判据：同一小时（东八区）内 ≥3 台车各至少 1 次断开 = 该小时该车断开记 commSys（计数可见、不扣分）；
+  //      不足 3 台的单车独自断开照旧计入 comm 扣分——真单车通讯问题的点名能力不丢。
+  const hrKey = (ms) => Math.floor(ms / 3600000);
+  const commHr = {}; // 小时 -> Set(车号)
+  for (const e of ev) {
+    const who = String(e.who || '');
+    if (!/^AGV\d+/.test(who)) continue;
+    if (/通讯断开|网络连接/.test(String(e.msg || ''))) {
+      const k = hrKey(e.ts || 0); (commHr[k] = commHr[k] || new Set()).add(who.slice(0, 6));
+    }
+  }
+  const sysHrs = new Set(Object.keys(commHr).filter((k) => commHr[k].size >= 3));
   for (const e of ev) {
     const who = String(e.who || ''), msg = String(e.msg || '');
     if (!/^AGV\d+/.test(who)) continue; // 只统计车（排除 WMAS 等）
     const c = touch(who);
-    if (/通讯断开|网络连接/.test(msg)) c.comm++;
+    if (/通讯断开|网络连接/.test(msg)) { if (sysHrs.has(String(hrKey(e.ts || 0)))) c.commSys++; else c.comm++; }
     else if (/低电量|电量/.test(msg)) c.lowBat++;
     else if (/急停/.test(e.kind) || /急停/.test(msg)) c.estop++;
     else if (e.kind === '堵点') c.jam++;
     else if (/错误:|告警/.test(msg) && e.kind === '告警') c.err++;
   }
-  for (const c of Object.values(cars)) { // 扣分权重：通讯/急停最伤可用性，堵点次之，低电与一般错误再次
+  for (const c of Object.values(cars)) { // 扣分权重：通讯/急停最伤可用性，堵点次之，低电与一般错误再次（commSys 不扣分）
     c.score = Math.max(0, 100 - c.comm * 3 - c.estop * 5 - c.jam * 2 - c.lowBat * 1.5 - c.err * 1);
     c.score = Math.round(c.score);
   }
@@ -11198,7 +11215,7 @@ function buildFunnel(days) {
         || (fromLoc && stn ? findTask(fromLoc, stn, sentAt - 60000, Math.max(dispAt, sentAt) + 6 * 3600000) : null); // ②兜底：起终点+时间窗
       const s = { call: 0, queue: 0, dispatch: 0, pick: 0, arrive: 0, hold: 0, total: 0, _q: false };
       if (acceptT) s.call = (calledAt - acceptT) / 60000;
-      if (dispAt && sentAt) { s.queue = (dispAt - sentAt) / 60000; s._q = true; } // ㉖v142 _q 标记=真实下发过（含秒发0值），与"无时间戳缺失"区分
+      if (dispAt && sentAt) { s.queue = (dispAt - sentAt) / 60000; s._q = true; s._ts = sentAt; } // ㉖v142 _q 标记=真实下发过（含秒发0值），与"无时间戳缺失"区分；㉖v216 _ts=下发时刻（小时热力分桶）
       if (tk) {
         if (tk.ex) s.dispatch = (tk.ex - (dispAt || sentAt)) / 60000;
         if (tk.pick && tk.ex) s.pick = (tk.pick - tk.ex) / 60000;
@@ -11215,7 +11232,21 @@ function buildFunnel(days) {
   const qv = samples.filter((s) => s._q && s.queue >= 0).map((s) => s.queue).sort((a, b) => a - b); // ㉖v142 含秒发0值；负值=时钟回拨脏数据剔除防拉低下分位
   const r1 = (x) => Math.round(x * 10) / 10;
   const qPct = qv.length ? { avg: r1(qv.reduce((x, y) => x + y, 0) / qv.length), n: qv.length, p50: r1(quantile(qv, 0.5)), p90: r1(quantile(qv, 0.9)), p99: r1(quantile(qv, 0.99)) } : { avg: 0, n: 0, p50: 0, p90: 0, p99: 0 };
-  return { call: stat('call'), queue: qPct, dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total') };
+  // ㉖v216 热力（补 L0 承诺"漏斗+按小时热力"）：周几×小时 排队等待 p50/p90/样本数。
+  // 目的=拥堵的客观定义落到时段：哪个班次/钟点常态堵一眼可见，为 L1 站台分配/错峰派车提供依据。
+  const hb = {}; // "dow-hr" -> [queue...]
+  for (const s of samples) {
+    if (!s._q || s.queue < 0 || !s._ts) continue;
+    const d = new Date(s._ts + 8 * 3600000); // 东八区
+    const k = ((d.getUTCDay() + 6) % 7) + '-' + d.getUTCHours(); // 周一=0
+    (hb[k] = hb[k] || []).push(s.queue);
+  }
+  const heat = Object.entries(hb).map(([k, arr]) => {
+    arr.sort((a, b) => a - b);
+    const [dow, hr] = k.split('-').map(Number);
+    return { dow, hr, n: arr.length, p50: r1(quantile(arr, 0.5)), p90: r1(quantile(arr, 0.9)) };
+  });
+  return { call: stat('call'), queue: qPct, dispatch: stat('dispatch'), pick: stat('pick'), arrive: stat('arrive'), hold: stat('hold'), total: stat('total'), heat };
 }
 
 process.on('uncaughtException', (e) => { try { logErr('uncaughtException', e); if (P().asyncSave) save(); else flushSave(); } catch (_) {} console.error('[FATAL] 未捕获异常：', e); }); // ㉖ 崩溃前留痕（不退出：调度循环中断比报错更糟）；㉖v56 改 flushSave 同步落盘防合并窗口丢数据；㉖v111 异步模式改走 save() 排队——在途写收尾后自动带最新快照，禁同步写与异步写并发 rename
