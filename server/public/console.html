@@ -802,6 +802,10 @@ async function ppRmW(uid){if(!confirm('代该用户取消此零件的预约？')
 // 诚实口径随图明示：入库=上架扫入(按扫描时刻归日,剔一楼登记与作废)；出库=已转MES(按单时刻归日)；
 // 领料已发未转=当前快照角标(PDA补推会让历史某天事后长高, 近48h斜纹标「未定」)。
 let TPD={days:30,open:'',data:null,chart:'bar'}; // ㉖v202 chart=bar柱图/line折线图（用户提议折线看走势；两态都保留，点切换）
+// ㉖v213 窗口尺寸变化→折线 SVG 按新容器宽重排（柱图 flex 自适应无需干预，统一防抖重绘无害）；
+// 不重排的话：拉伸/缩小窗口后，v213 算好的"撑满宽"变成过期值，大片空白又回来或溢出横向滚动
+let _tpdRs=0;
+window.addEventListener('resize',()=>{clearTimeout(_tpdRs);_tpdRs=setTimeout(()=>{if(TPD.data&&$('#ppdaily'))ppDailyRender()},150)});
 async function ppDaily(pn){const el=$('#ppdaily');if(!el)return;TPD={days:TPD.days||30,open:'',data:null,chart:TPD.chart||'bar'};
  try{const j=await api('/api/report/pn-daily?pn='+encodeURIComponent(pn)+'&days='+TPD.days);if(!j.ok)throw 0;TPD.data=j;ppDailyRender()}catch(_){if($('#ppdaily'))$('#ppdaily').innerHTML='<div class="card" style="color:var(--sub);font-size:12px;padding:10px">每日出入库加载失败（服务需重启加载新代码）</div>'}}
 function ppDailyRender(){const el=$('#ppdaily');if(!el||!TPD.data)return;const j=TPD.data,D=j.days||[];
@@ -831,7 +835,14 @@ function ppDailyRender(){const el=$('#ppdaily');if(!el||!TPD.data)return;const j
  const leftDay=(()=>{const base=new Date(rightDay+'T12:00:00').getTime()-(win-1)*864e5;const ld=dkey2(base);if(!D.length)return ld;const fd=String(D[0].d||'');return fd<ld?fd:ld;})();
  const winN=Math.max(2,Math.round((new Date(rightDay+'T12:00:00').getTime()-new Date(leftDay+'T12:00:00').getTime())/864e5)+1);
  const allDays=[];{const base=new Date(rightDay+'T12:00:00').getTime();for(let i=winN-1;i>=0;i--){const k=dkey2(base-i*864e5);const o=dmap[k];allDays.push({d:k,inQ:o?o.inQ:0,outQ:o?o.outQ:0,inN:o?o.inN:0,inB:o?o.inB:0,has:!!o,fresh:k>=freshDay});}}
- const step=winN<=31?26:winN<=62?15:11,W=PX*2+(winN-1)*step;
+ const step0=winN<=31?26:winN<=62?15:11;
+ // ㉖v213 折线图宽度自适应（用户截图实锤：近7天折线只占卡片左侧约1/5，右侧大片空白）：
+ // 旧版 step 固定档位→近7天 SVG 总宽仅 188px，容器上千像素。柱图靠 flex:1 天然撑满，折线漏了。
+ // 改按容器实际可用宽度均分日距：宽容器拉满不留白；窄容器以 step0 可读为下限，宁可横向滚动。
+ // 28=卡片内边距（inline padding:12px 14px）；el 取不到宽度（隐藏/未挂载）回退固定档位。
+ const _boxW=(el.clientWidth||0)-28;
+ const step=_boxW>200?Math.max(step0,Math.floor((_boxW-PX*2)/Math.max(1,winN-1))):step0;
+ const W=PX*2+(winN-1)*step;
  const px=(i)=>PX+i*step, py=(v)=>PT+(1-v/mx)*(H-PB-PT);
  const lineOf=(key,color)=>{const pts=allDays.map((x,i)=>px(i).toFixed(1)+','+py(x[key]||0).toFixed(1)).join(' ');
   const area=`${PX},${H-PB} ${pts} ${px(winN-1).toFixed(1)},${H-PB}`;
