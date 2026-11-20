@@ -7534,24 +7534,53 @@ return send(res, 200, {
         const reqCodes = [...new Set((Array.isArray(b.codes) ? b.codes : []).map((x) => String(x || '').trim().toUpperCase()).filter(Boolean))].slice(0, 200);
         const pickBatch = String(b.pickBatch || '').trim().slice(0, 60);
         db.counts = db.counts || [];
+        // ㉖v203 整托多标签（用户实锤 11-20：N26K080287 工单只认主标签，同托双标签扫兄弟码
+        //   N26K080278 判 wrongBox → 只能取消，整托白盘一轮）。AGV 物理上整托叉取，工单必须
+        //   与托盘同粒度：codes 带 sibs 全标签，count/scan 接受任意兄弟码；同托多标签被分别
+        //   发起时合并为一张单（AGV 一趟本就同取同归，qty/sibs 取并集），杜绝一托两单互撞。
+        const boxSibsOf = (code) => { // 账本兄弟码（pid 托号优先，与 boxKeyOf 同源）
+          const anchor = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code);
+          if (!anchor) return [code];
+          const bk = boxKeyOf(anchor);
+          return [...new Set((db.ledger || []).filter((x) => boxKeyOf(x) === bk && String(x.c || '')).map((x) => String(x.c).toUpperCase()))];
+        };
         const out = []; // 逐框结果：成功进 list，失败带原因回传（现场要看得见为什么没发出去）
         const okList = [];
+        const mergedOut = []; // 同托合并计数（回执合并去重）
         for (const code of reqCodes) {
-          const active = (db.counts || []).find((q) => String(q.code).toUpperCase() === code && !['done', 'canceled'].includes(q.state));
-          if (active) { out.push({ code, ok: false, msg: '已有盘点工单在途[' + active.state + ']，勿重复发起' }); continue; }
+          const sibs = boxSibsOf(code);
+          const active = (db.counts || []).find((q) => !['done', 'canceled'].includes(q.state) && (String(q.code).toUpperCase() === code || (q.sibs || []).some((sc) => String(sc).toUpperCase() === code)));
+          if (active) {
+            // 整托一单：AGV 一次叉走整托，同托任一标签发起都归到同一张工单
+            if (reqCodes.length && active.pickBatch === pickBatch && pickBatch) {
+              const covered = active.sibs.some((sc) => String(sc).toUpperCase() === code);
+              if (covered) {
+                // 首单已含该标签（发起时整托兄弟码一起带上）→ 幂等成功，不报"失败"迷惑现场
+                out.push({ code, ok: true, id: active.id, src: 'covered', msg: '该标签已在同托工单 ' + active.code + ' 内（整托一单，无需重复发起）' });
+                continue;
+              }
+              // 首单没带上该标签（如本标签是首单发起后才入账）→ 合并进原单：sibs 并集 + qty 补差
+              const addQ = (db.ledger || []).filter((x) => String(x.c || '').toUpperCase() === code).reduce((s, x) => s + (Number(x.q) || 0), 0);
+              active.sibs.push(code); active.qty = Math.round(((Number(active.qty) || 0) + addQ) * 100) / 100; active.updAt = Date.now();
+              if (!mergedOut.includes(active.id)) mergedOut.push(active.id);
+              out.push({ code, ok: true, id: active.id, src: 'merged', msg: '并入同托工单 ' + active.code + '（整托一单，账面合计 ' + active.qty + ' 件）' });
+              continue;
+            }
+            out.push({ code, ok: false, msg: '该标签已在同托工单 ' + active.code + '（' + active.state + '）内——整托一单，请到该工单跟进，勿重复发起' }); continue;
+          }
           if (countFrozen(code)) { out.push({ code, ok: false, msg: '框已冻结（搬运/检验中），不能发起盘点' }); continue; }
           const cand = cands.find((c) => c.code === code || (c.codes || []).includes(code));
           let mk = null;
-          if (cand) mk = { from: cand.loc, part: cand.part, nm: cand.nm, f: cand.f, qty: cand.q, ageDays: cand.ageDays, src: 'pick+blind' };
+          if (cand) mk = { from: cand.loc, part: cand.part, nm: cand.nm, f: cand.f, qty: cand.q, ageDays: cand.ageDays, src: 'pick+blind', sibs: (cand.codes && cand.codes.length ? [...cand.codes] : [code]) }; // 候选聚合按 boxKeyOf，codes=整托全标签
           else {
             const rows = ledgerView().filter((x) => String(x.c || '').toUpperCase() === code);
             if (!rows.length) { out.push({ code, ok: false, msg: '账本无此框（已出库或查无），无法搬运盘点' }); continue; }
             const l0 = String(rows[0].l || '').toUpperCase();
             if (!/^NB02-/.test(l0) || /-CK-/.test(l0)) { out.push({ code, ok: false, msg: '非高位货架框（位置 ' + (l0 || '?') + '），地面/来料/台站请走人工或点名盘直扫' }); continue; }
             const t0 = Math.max(...rows.map((x) => Number(x.t) || 0));
-            mk = { from: l0, part: String(rows[0].p || ''), nm: String(rows[0].n || ''), f: String(rows[0].f || ''), qty: rows.reduce((s, x) => s + (Number(x.q) || 0), 0), ageDays: Math.floor((Date.now() - t0) / 864e5), src: 'pick' };
+            mk = { from: l0, part: String(rows[0].p || ''), nm: String(rows[0].n || ''), f: String(rows[0].f || ''), qty: rows.reduce((s, x) => s + (Number(x.q) || 0), 0), ageDays: Math.floor((Date.now() - t0) / 864e5), src: 'pick', sibs: boxSibsOf(code) }; // 候选缺失兜底路径同样带兄弟码
           }
-          const rec = { id: newId('cnt'), sid: '', code, from: mk.from, part: mk.part, nm: mk.nm, f: mk.f, qty: mk.qty, ageDays: mk.ageDays, state: 'pending', station: '', uid: u.id, by: u.name, at: Date.now(), updAt: Date.now(), taskNo: '', taskNo2: '', outQueued: 0, backQueued: 0, diff: null, src: mk.src, pickBatch };
+          const rec = { id: newId('cnt'), sid: '', code, from: mk.from, part: mk.part, nm: mk.nm, f: mk.f, qty: mk.qty, ageDays: mk.ageDays, state: 'pending', station: '', uid: u.id, by: u.name, at: Date.now(), updAt: Date.now(), taskNo: '', taskNo2: '', outQueued: 0, backQueued: 0, diff: null, src: mk.src, sibs: (mk.sibs && mk.sibs.length ? mk.sibs : [code]).filter((v, i2, a2) => a2.indexOf(v) === i2), pickBatch };
           okList.push(rec);
         }
         let picked = [], cTotal = cands.length;
@@ -7568,7 +7597,7 @@ return send(res, 200, {
         const pickedCodes = new Set(reqCodes); // 本批已点名框：随机模式若同请求混给则排除，防一框两单
         for (const c of picked) {
           if (pickedCodes.has(c.code)) continue;
-          const rec = { id: newId('cnt'), sid, code: c.code, from: c.loc, part: c.part, nm: c.nm, f: c.f, qty: c.q, ageDays: c.ageDays, state: 'pending', station: '', uid: u.id, by: u.name, at: Date.now(), updAt: Date.now(), taskNo: '', taskNo2: '', outQueued: 0, backQueued: 0, diff: null };
+          const rec = { id: newId('cnt'), sid, code: c.code, from: c.loc, part: c.part, nm: c.nm, f: c.f, qty: c.q, ageDays: c.ageDays, state: 'pending', station: '', uid: u.id, by: u.name, at: Date.now(), updAt: Date.now(), taskNo: '', taskNo2: '', outQueued: 0, backQueued: 0, diff: null, sibs: (c.codes && c.codes.length ? [...c.codes] : [c.code]) }; // ㉖v203 随机抽盘路径同样带整托兄弟码（同托扫任一标签都对）
           db.counts.push(rec); recs.push(rec);
         }
         for (const rec of okList) { rec.sid = pickBatch || sid; db.counts.push(rec); recs.push(rec); out.push({ code: rec.code, ok: true, id: rec.id, src: rec.src }); }
@@ -7601,20 +7630,35 @@ return send(res, 200, {
         if (!rec) return send(res, 400, { ok: false, msg: '盘点工单不存在' });
         if (!['atStation', 'stuck'].includes(rec.state)) return send(res, 400, { ok: false, msg: '当前状态[' + rec.state + ']不可核对（需框已到站台）' });
         const code = String(b.barcode || '').trim().toUpperCase();
-        if (!code) return send(res, 400, { ok: false, msg: '缺少 barcode' });
-        if (code !== String(rec.code).toUpperCase()) { // 串位实锤：站台上的框不是本单该到的框
+        if (!code) return send(res, 400, { msg: '缺少 barcode', ok: false });
+        // ㉖v203 整托多标签：工单 sibs=同托全部标签（AGV 物理整托叉取）。扫任意兄弟码=本托
+        // 到场，正常核对并留痕 scannedLabel；只有兄弟集外的码才是真·外托串位。旧单无 sibs
+        // 字段时实时按 boxKeyOf 回退查账本（升级窗口兼容）。
+        const _sibs = (Array.isArray(rec.sibs) && rec.sibs.length ? rec.sibs : null) || (() => {
+          const anchor = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === String(rec.code).toUpperCase());
+          if (!anchor) return [String(rec.code).toUpperCase()];
+          const bk = boxKeyOf(anchor);
+          return [...new Set((db.ledger || []).filter((x) => boxKeyOf(x) === bk && String(x.c || '')).map((x) => String(x.c).toUpperCase()))];
+        })();
+        const _sibHit = _sibs.map((s) => String(s).toUpperCase()).includes(code);
+        if (!_sibHit) { // 串位实锤：站台上的框整托都不属于本单
           const other = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code);
           rec.state = 'mismatch'; rec.diff = { kind: 'wrongBox', scanned: code, expect: rec.code, scannedLoc: other ? String(other.l || '') : '', at: Date.now(), by: u.name };
           rec.updAt = Date.now(); save(); pushOps(u, '盘点不符', code, '期望 ' + rec.code + '(' + rec.from + ')，实扫 ' + code + (other ? '（账本在 ' + other.l + '）' : '（账本查无）'));
           return send(res, 200, { ok: true, rec, match: false, msg: '核对不符：站台上的框是 ' + code + (other ? '（账本位置 ' + other.l + '），非本单框 ' + rec.code : '（账本查无此框）') + '——请人工确认实物位置，处理后点取消结束本单' });
         }
-        // 码对：件数由 PDA 端 MES 反查后随请求传入（服务器不直连 MES，与采集录入同款口径）；未传=仅核标签
-        const mesQ = b.mesQty === undefined || b.mesQty === null || b.mesQty === '' ? null : Number(b.mesQty);
-        const qtyOk = mesQ === null ? null : (mesQ === rec.qty);
+        // 码对（含兄弟标签）：件数由 PDA 端 MES 反查后随请求传入（服务器不直连 MES，与采集录入同款口径）；未传=仅核标签
+        // ㉖v203 数量比对改按【扫到标签自己的账本页数】：rec.qty 是全托合计（双标签托 100+100=200），
+        // 扫任一标签 MES 只会回该标签的 100 —— 旧口径比全托合计，整托双标签必报假"数量不符"。
+        const _scannedBookQ = Math.round((db.ledger || []).filter((x) => String(x.c || '').toUpperCase() === code).reduce((s, x) => s + (Number(x.q) || 0), 0) * 100) / 100;
+        const mesQ = b.mesQty === undefined || b.mesQty === null || b.mesQty === '' || Number(b.mesQty) < 0 ? null : Number(b.mesQty);
+        const _cmpQ = _scannedBookQ > 0 ? _scannedBookQ : rec.qty; // 扫到码已消账查不到→回退整托合计
+        const qtyOk = mesQ === null ? null : (mesQ === _cmpQ);
         rec.state = 'scanned'; rec.scanAt = Date.now(); rec.updAt = Date.now(); rec.notified = false;
-        rec.diff = qtyOk === false ? { kind: 'qty', expect: rec.qty, actual: mesQ, at: Date.now(), by: u.name } : null;
-        save(); pushOps(u, '盘点核对', code, rec.from + (qtyOk === null ? '（未传MES实数，仅核标签）' : qtyOk ? ' 数量相符' : ' 数量不符：账' + rec.qty + '/实' + mesQ));
-        return send(res, 200, { ok: true, rec, match: true, qtyOk, mesQ, msg: qtyOk === null ? '标签相符；未传 MES 实数，按标签相符处理' : qtyOk ? '核对相符（' + rec.qty + '件），请点归位回 ' + rec.from : '标签相符但数量不符：账 ' + rec.qty + ' / 实 ' + mesQ + '，请先走修正再归位' });
+        rec.scannedLabel = code !== String(rec.code).toUpperCase() ? code : ''; // 整托非主标签核对应留痕
+        rec.diff = qtyOk === false ? { kind: 'qty', expect: _cmpQ, actual: mesQ, label: code, at: Date.now(), by: u.name } : null;
+        save(); pushOps(u, '盘点核对', code, rec.from + (code !== String(rec.code).toUpperCase() ? '（整托标签 ' + code + '，本单主标签 ' + rec.code + '）' : '') + (qtyOk === null ? '（未传MES实数，仅核标签）' : qtyOk ? ' 数量相符' : ' 数量不符：账' + _cmpQ + '/实' + mesQ));
+        return send(res, 200, { ok: true, rec, match: true, qtyOk, mesQ, msg: qtyOk === null ? ('标签相符' + (rec.scannedLabel ? '（整托多标签，扫的是 ' + code + '）' : '') + '；未传 MES 实数，按标签相符处理') : qtyOk ? '核对相符（本标签账面 ' + _cmpQ + ' 件），请点归位回 ' + rec.from : '标签相符但数量不符：账 ' + _cmpQ + ' / 实 ' + mesQ + '，请先走修正再归位' });
       }
       if (req.method === 'POST' && p === '/api/count/return') { // 归位：下发 countback 钉死原格位
         if (!isWhC) return send(res, 403, { ok: false, msg: '仅仓管员/管理员可执行归位' });
@@ -10899,7 +10943,8 @@ async function carAlarmWatch(tk, nowMs) {
     }
   }
 }
-// ===== ㉖v142 L0 调度观测地基：节流计数器 / 车辆健康分 / 等待分位数辅助 =====
+
+// ===== ㉖v142 L0 调度观测地基：节流计数器 / 车辆健康分 / 等待分位数辅助 =====
 // 设计要点（正确性优先，逐条对应实测隐患）：
 // ① 节流计数用【真实时长】而非轮次累计——生产 pollSec=3 秒（非默认20），按轮次会把被挡时长放大6~20倍；
 //    改为拦截时打 blockSince 起点，放行/终态时按 (now-blockSince) 累计真实秒数入桶，同一起点不重复计。

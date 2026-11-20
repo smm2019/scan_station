@@ -1348,6 +1348,7 @@ class _InvScanPageState extends State<_InvScanPage> {
   // ㉖v193 AGV 货架盘点作业页整合：进度与操作不再跳"盲区抽盘"看板，全部留在本页工作台。
   //   _agvQ=本任务已发起工单（应扫码→最新一单）；8 秒轮询刷新；扫码提交联动 countScan 一次扫码双闭环。
   final Map<String, Map> _agvQ = {};
+  final Map<String, String> _agvSib = {}; // ㉖v203 整托兄弟标签→主标签索引：扫任一兄弟标签都能命中本任务工单
   bool _agvOpen = false; // 工作台进度带展开态
   Timer? _agvTimer;
   int _lastMesQty = -1; // ㉖v193 本次扫码 MES 反查件数（-1=未知，防旧版 -1 传给服务器致"未传"误判数量不符——countScan 语义：不传=仅核标签）
@@ -1376,6 +1377,7 @@ class _InvScanPageState extends State<_InvScanPage> {
       final cr = await AuthApi.countList(all: true);
       if (!mounted) return;
       final nxt = <String, Map>{};
+      final sib = <String, String>{}; // ㉖v203 整托兄弟标签 → 工单主标签（扫任一标签都认得本任务工单）
       for (final q in ((cr["list"] as List?) ?? const [])) {
         final m = q as Map;
         if ((m["pickBatch"] ?? "").toString() != widget.task.batchId) continue;
@@ -1383,7 +1385,13 @@ class _InvScanPageState extends State<_InvScanPage> {
         final prev = nxt[cd];
         if (prev == null || (num.tryParse('${m["at"]}') ?? 0) > (num.tryParse('${prev["at"]}') ?? 0)) nxt[cd] = m;
       }
-      setState(() { _agvQ..clear()..addAll(nxt); });
+      for (final e in nxt.entries) {
+        for (final s in ((e.value["sibs"] as List?) ?? const [])) {
+          final sc = s.toString().trim().toUpperCase();
+          if (sc.isNotEmpty && sc != e.key) sib.putIfAbsent(sc, () => e.key);
+        }
+      }
+      setState(() { _agvQ..clear()..addAll(nxt); _agvSib..clear()..addAll(sib); });
     } catch (_) {}
   }
 
@@ -1391,7 +1399,10 @@ class _InvScanPageState extends State<_InvScanPage> {
   /// （mesQty=本次 MES 反查件数；反查失败按"仅核标签"口径不传）。不符红条提示不弹窗——
   /// 本地记录已入账、工单不符由 mismatch 徽标与结束回流承接，弹窗只会被无脑划走反失严肃。
   Future<void> _agvAutoScan(String code) async {
-    final q = _agvQ[code.trim().toUpperCase()];
+    final ck = code.trim().toUpperCase();
+    // ㉖v203 整托多标签：扫到的若是兄弟标签，经索引命中同托工单；countScan 仍传扫到的码
+    // （服务端按整托兄弟集放行并留痕 scannedLabel），本地入账与 AGV 核对同用该码，口径一致。
+    final q = _agvQ[ck] ?? (ck.isEmpty ? null : _agvQ[_agvSib[ck] ?? ""]);
     if (q == null || (q["state"] ?? "").toString() != 'atStation') return;
     try {
       final r = await AuthApi.countScan(q["id"].toString(), code.trim(), mesQty: _lastMesQty);
@@ -1459,6 +1470,7 @@ class _InvScanPageState extends State<_InvScanPage> {
                 final st = (q["state"] ?? "").toString();
                 final b = _agvBadge(q);
                 final id = q["id"].toString();
+                final _sibN = ((q["sibs"] as List?) ?? const []).length; // ㉖v203 整托多标签：扫任一标签均可核对
                 Widget? btn;
                 if (st == 'pending') btn = _agvMiniBtn('发车', () { _agvAct('发车', (i) => AuthApi.countDeploy(id: i), id); });
                 if (st == 'atStation') btn = _agvMiniBtn('核对', () { _agvCheckOne(q); });
@@ -1468,7 +1480,7 @@ class _InvScanPageState extends State<_InvScanPage> {
                   child: Row(
                     children: [
                       SizedBox(width: 116, child: Text('${q["code"]}', style: const TextStyle(fontSize: 12, fontFamily: "monospace"))),
-                      Expanded(child: Text(b.$1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11.5, color: b.$2, fontWeight: FontWeight.w600))),
+                      Expanded(child: Text(_sibN > 1 ? "${b.$1} · 整托${_sibN}标签(扫任一)" : b.$1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11.5, color: b.$2, fontWeight: FontWeight.w600))),
                       btn ?? const SizedBox.shrink(),
                       IconButton(tooltip: "取消工单", visualDensity: VisualDensity.compact, iconSize: 16, onPressed: () => _agvCancelOne(q), icon: const Icon(Icons.close, color: Colors.grey)),
                     ],
@@ -1995,14 +2007,30 @@ class _InvScanPageState extends State<_InvScanPage> {
           if (prev == null || (num.tryParse('${m["at"]}') ?? 0) > (num.tryParse('${prev["at"]}') ?? 0)) agvBy[cd] = m; // 同码多单取最新
         }
       } catch (_) {}
+      // ㉖v203 整托多标签索引：兄弟标签 → 工单主标签（AGV 按托建单，应扫清单按标签列行）
+      final agvSib = <String, String>{};
+      for (final e in agvBy.entries) {
+        for (final s in ((e.value["sibs"] as List?) ?? const [])) {
+          final sc = s.toString().trim().toUpperCase();
+          if (sc.isNotEmpty && sc != e.key) agvSib.putIfAbsent(sc, () => e.key);
+        }
+      }
       final rows = <Map<String, String>>[];
       for (final c in task.invPickCodes.map((e) => e.trim().toUpperCase()).toSet()) {
         if (got.contains(c)) continue;
-        final q = agvBy[c];
+        final q = agvBy[c] ?? agvBy[agvSib[c] ?? ""];
         if (q != null) {
           final st = (q["state"] ?? "").toString();
           final df = q["diff"] is Map ? q["diff"] as Map : null;
-          if ((st == "done" || st == "returning") && df == null) { agvOkN++; continue; } // AGV 通道核对相符（归位中/已归位）=已盘到
+          final isMain = c == (q["code"] ?? "").toString().trim().toUpperCase();
+          // 核对相符=已盘到：仅主标签行计入，防一次核对把整托兄弟行全销掉、掩盖兄弟标签件数差异
+          if ((st == "done" || st == "returning") && df == null) {
+            if (isMain) { agvOkN++; continue; }
+            // 兄弟标签行：随同托主标签一起归位，但本标签件数未单独验证 → 仍列未盘到请复核
+            missN++;
+            rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? "", "st": "miss", "r": "同托标签已随主标签归位，本标签件数未单独验证，请复核"});
+            continue;
+          }
           if (st == "mismatch" || (st == "scanned" && df != null)) {
             agvBadN++;
             rows.add({"c": c, "p": pnOf[c] ?? "", "l": locOf[c] ?? "", "st": "agvDiff",
@@ -2746,7 +2774,7 @@ class _ShelfCountPageState extends State<ShelfCountPage> {
         const Icon(Icons.timeline, size: 17, color: Color(0xFF515BD4)),
       ]),
       subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text("原格 ${q["from"]}${q["station"] != null && q["station"].toString().isNotEmpty ? " → ${q["station"]}" : ""} · 账面 ${q["qty"]}件 · 滞留${q["ageDays"]}天", style: const TextStyle(fontSize: 12)),
+        Text("原格 ${q["from"]}${q["station"] != null && q["station"].toString().isNotEmpty ? " → ${q["station"]}" : ""} · 账面 ${q["qty"]}件 · 滞留${q["ageDays"]}天${((q["sibs"] as List?) ?? const []).length > 1 ? " · 整托${((q["sibs"] as List?) ?? const []).length}标签(扫任一)" : ""}", style: const TextStyle(fontSize: 12)),
         Row(children: [
           Text(_stText[st] ?? st, style: TextStyle(fontSize: 12, color: col, fontWeight: FontWeight.w600)),
           // ㉖v141 人工拉取发车：待发车工单点「🚚 发车」才下发下架腿（默认模式下系统不自动预下架）
