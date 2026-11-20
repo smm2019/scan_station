@@ -56,7 +56,7 @@ let fail = 0, total = 0;
 const chk = (n, g, w) => { total++; const ok = JSON.stringify(g) === JSON.stringify(w); if (!ok) fail++; console.log(`${ok ? 'PASS' : 'FAIL!'} [${n}] got=${String(JSON.stringify(g)).slice(0, 150)} want=${String(JSON.stringify(w)).slice(0, 150)}`); };
 const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS' : 'FAIL!'} [${n}]${c ? '' : ' ←' + (why || '')}`); };
 (async () => {
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   const log = []; srv.stdout.on('data', (b) => log.push(String(b))); srv.stderr.on('data', (b) => log.push(String(b)));
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
   if (!up) { console.log('FAIL! 服务未就绪'); srv.kill(); process.exit(1); }
@@ -91,7 +91,7 @@ const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS'
       const T2 = path.join(__dirname, 'data_e2e_req3_v137_off');
       fs.rmSync(T2, { recursive: true, force: true }); fs.cpSync(TDIR, T2, { recursive: true });
       const dd = JSON.parse(fs.readFileSync(path.join(T2, 'db.json'), 'utf8')); dd.params.reqSuggestOn = 0; fs.writeFileSync(path.join(T2, 'db.json'), JSON.stringify(dd));
-      const srv2 = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: '8403', HOST: '127.0.0.1', DATA_DIR: T2 }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const srv2 = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: '8403', HOST: '127.0.0.1', DATA_DIR: T2 }, stdio: ['ignore', 'pipe', 'pipe'] });
       let up2 = false; for (let i = 0; i < 40 && !up2; i++) { await sleep(250); try { up2 = (await fetch('http://127.0.0.1:8403/api/health')).ok; } catch (_) {} }
       const tk2 = (await (await fetch('http://127.0.0.1:8403/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'v137_mt', password: 'E2e#V37!mt' }) })).json()).token;
       const j2 = (await (await fetch('http://127.0.0.1:8403/api/requisitions/suggest', { headers: { Authorization: 'Bearer ' + tk2 } })).json());

@@ -33,7 +33,7 @@ const declOf = (marker) => { const i = H.indexOf(marker); if (i < 0) throw new E
   const VT = 'TESTTOK_agvnav';
   { const _d = JSON.parse(fs.readFileSync(path.join(TMP, 'db.json'), 'utf8')); const _a = (_d.users || []).find((x) => x.role === 'admin' && x.enabled !== false); if (!_a) { console.log('FATAL: 无启用 admin'); process.exit(2); } _d.sessions = _d.sessions || {}; _d.sessions[VT] = { userId: _a.id, dev: 'TEST-NAV', lastSeen: Date.now() }; fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(_d)); }
   let inst = null, up = false;
-  try { inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] }) } catch (e) { console.log('  [跳过服务端实例] spawn 失败：' + e.code + '（沙箱不允许起子进程；前端沙箱验证照常进行）') }
+  try { inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] }) } catch (e) { console.log('  [跳过服务端实例] spawn 失败：' + e.code + '（沙箱不允许起子进程；前端沙箱验证照常进行）') }
   if (inst) { inst.on('error', (e) => { console.log('  [跳过服务端实例] ' + e.code) }) }
   if (inst) { for (let i = 0; i < 45; i++) { await new Promise((r) => setTimeout(r, 1000)); try { const h = await rq('/api/health'); if (h.ok) { up = true; break } } catch (_) { } } }
   if (!inst || !up) { console.log('  N1 服务端实例项跳过（' + (inst ? '未就绪' : '无法起子进程') + '）——改由离线读日快照验证 prob 字段'); }

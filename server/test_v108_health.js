@@ -35,7 +35,7 @@ fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(db));
 console.log('[准备] 隔离目录就绪，admin=' + admin.name + '，会话已注入');
 
 // ---- 2. 起服务器 ----
-const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
 let srvLog = '';
 child.stdout.on('data', (d) => { srvLog += d; }); child.stderr.on('data', (d) => { srvLog += d; });
 const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };

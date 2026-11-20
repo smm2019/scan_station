@@ -54,7 +54,7 @@ const flowsOf = async (tk, code) => ((await get("/api/scanlog?limit=30000", tk))
 const ledOf = async (tk, code) => ((await get("/api/ledger?c=" + code, tk)).json.items || []).filter((x) => U(x.c) === code);
 
 (async () => {
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, "server.js")], { env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", DATA_DIR: TDIR }, stdio: ["ignore", "pipe", "pipe"] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, "server.js")], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: "127.0.0.1", DATA_DIR: TDIR }, stdio: ["ignore", "pipe", "pipe"] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + "/api/health")).ok; } catch (_) {} }
   if (!up) { console.log("FAIL! 隔离实例未就绪"); srv.kill(); process.exit(1); }
   console.log("隔离实例就绪 (PORT " + PORT + ") —— 多PDA并发实测（每用例独立区排）");

@@ -65,7 +65,7 @@ async function startInstance(opts = {}) {
   //   selftest/effect 用例须在无生产库时自行 SKIP（见各文件顶部判断），CI 里与其余依赖库测试同类。
   let log = '';
   const t0 = Date.now(); // 就绪检测基线：用于识别"应答来自残留旧实例"而非本次新进程
-  const child = cp.spawn(process.execPath, [path.join(HERE, 'server.js')], { cwd: HERE, env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: tdir }, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+  const child = cp.spawn(process.execPath, [path.join(HERE, 'server.js')], { cwd: HERE, env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: tdir }, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
   const cap = (d) => { log += d; if (log.length > 4e6) log = log.slice(-2e6); };
   child.stdout.on('data', cap); child.stderr.on('data', cap);
   const base = 'http://127.0.0.1:' + port;

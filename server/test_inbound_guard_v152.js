@@ -77,7 +77,7 @@ const lostN = (d) => (d.notifications || []).filter((x) => /入库丢单/.test(S
   d0.params = Object.assign({}, d0.params, { lostCallAlertM: 15, coarseAlertOn: 1, coarseAlertAgeMin: 5, dupFlowAlertOn: 1 });
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(d0));
 
-  const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
   try {
     let up = false;
     for (let i = 0; i < 45; i++) { await sleep(1000); try { const h = await rqP(PORT, '/api/health'); if (h && h.ok) { up = true; break } } catch (_) { } }
@@ -170,7 +170,7 @@ const lostN = (d) => (d.notifications || []).filter((x) => /入库丢单/.test(S
     // ===== L5 去重持久：另起实例带同 DATA_DIR 再跑启动巡检，不得重复告警（主实例不杀，供断言读取）=====
     { const before = lostN(getDb()).length;
       T('L5a 基线：启动轮已有丢单告警', before >= 1, true);
-      const inst2 = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT + 1) }), stdio: ['ignore', 'pipe', 'pipe'] });
+      const inst2 = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT + 1) }), stdio: ['ignore', 'pipe', 'pipe'] });
       // 二轮启动巡检在其启动后 ~8s；若主实例 30 分钟定时器恰在此间轮转，因映射已写入同样静默——两种时序期望一致
       T('L5b 去重映射持久（二轮巡检不重复告警）', await waitDb((d) => lostN(d).length > before, 40).then((grew) => !grew), true);
       try { inst2.kill('SIGKILL'); } catch (_) { } }

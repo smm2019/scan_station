@@ -54,7 +54,7 @@ const getj = async (p2, tk) => { const r = await fetch(BASE + p2, { headers: tk 
 const skelRow = (c, l, extra) => Object.assign({ c, l, t: T1, f: '塑料筐', pid: PID, mv: '人工', src: LOC05, b: '2026-10-22', p: '8894086418', n: '骨架对照件', q: 1000 }, extra || {});
 
 (async () => {
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
   if (!up) { console.log('❌ 实例未就绪'); srv.kill(); process.exit(1); }
   let out = ''; srv.stdout.on('data', (d) => { out += d; }); srv.stderr.on('data', (d) => { out += d; });

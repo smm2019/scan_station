@@ -26,7 +26,7 @@ try { for (const d of fs.readdirSync(__dirname)) if (/^_crash/.test(d)) fs.rmSyn
 
 function spawn(port, tdir, fresh) {
   if (fresh) { fs.rmSync(tdir, { recursive: true, force: true }); fs.mkdirSync(tdir, { recursive: true }); } // 仅冷启动清库；重启必须用原库
-  const child = cp.spawn(process.execPath, [SERVER], { cwd: __dirname, env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: tdir }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = cp.spawn(process.execPath, [SERVER], { cwd: __dirname, env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: tdir }, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = ''; child.stdout.on('data', (d) => log += d); child.stderr.on('data', (d) => log += d);
   return { child, getLog: () => log };
 }

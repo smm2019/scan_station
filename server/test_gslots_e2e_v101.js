@@ -13,7 +13,7 @@ async function req(method, p, { body, tok } = {}) {
   return { status: r.status, j };
 }
 function waitReady(tok) { const t0 = Date.now(); return new Promise((res, rej) => { const iv = setInterval(async () => { try { const s = await req('GET', '/api/health', { tok }); if (s.status) { clearInterval(iv); res(); } } catch (_) { if (Date.now() - t0 > 30000) { clearInterval(iv); rej(new Error('启动超时')); } } }, 400); }); }
-function startSrv() { const sv = cp.spawn('node', [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] }); let out = ''; sv.stdout.on('data', (b) => { out += b; }); sv.stderr.on('data', (b) => { out += b; }); sv.__out = () => out; return sv; }
+function startSrv() { const sv = cp.spawn('node', [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] }); let out = ''; sv.stdout.on('data', (b) => { out += b; }); sv.stderr.on('data', (b) => { out += b; }); sv.__out = () => out; return sv; }
 (async () => {
   fs.rmSync(TDIR, { recursive: true, force: true }); fs.mkdirSync(TDIR, { recursive: true });
   const d = JSON.parse(fs.readFileSync(path.join(__dirname, 'data/db.json'), 'utf8'));

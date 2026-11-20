@@ -56,7 +56,7 @@ const mkRk = (code, state, id) => ({ id, code, fromLoc: 'NB02-CK-10', stationMan
   d0.agvQueue.push(mkRk(C_RKQ, '排队', 'cq_v157a'), mkRk(C_RKS, '已下发', 'cq_v157b'), mkRk(C_FIN, '完成', 'cq_v157c'), mkRk(C_RKQ2, '排队', 'cq_v157d'));
   d0.params = Object.assign({}, d0.params, { strictFifo: 0 }); // FIFO 关：焦点=返架闸，排除批次白名单干扰
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(d0));
-  const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: 'ignore' });
+  const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: 'ignore' });
   try {
     let up = false;
     for (let i = 0; i < 40; i++) { await sleep(500); try { const h = await new Promise((rs, rj) => { http.get({ host: '127.0.0.1', port: PORT, path: '/api/health', timeout: 3000 }, res => { let s = ''; res.on('data', d => s += d); res.on('end', () => rs(s)); }).on('error', rj); }); if (String(h).indexOf('ok') >= 0) { up = true; break; } } catch (_) { } }

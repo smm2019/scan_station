@@ -28,7 +28,7 @@ const gh = async () => { try { return await (await fetch(BASE + "/api/health")).
   if (fs.existsSync(sk)) fs.copyFileSync(sk, path.join(TDIR, "data", "secret.key"));
   const localFile = path.join(TDIR, "server.js");
 
-  const srv = cp.spawn(process.execPath, [localFile], { env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", DATA_DIR: path.join(TDIR, "data") }, stdio: ["ignore", "pipe", "pipe"] });
+  const srv = cp.spawn(process.execPath, [localFile], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: "127.0.0.1", DATA_DIR: path.join(TDIR, "data") }, stdio: ["ignore", "pipe", "pipe"] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + "/api/health")).ok; } catch (_) {} }
   try {
     if (!up) throw new Error("实例未就绪，后续断言无意义");
@@ -59,7 +59,7 @@ const gh = async () => { try { return await (await fetch(BASE + "/api/health")).
     srv.kill(); await sleep(600);
     // 还原副本后重启：应回到 false（证明不是单向棘轮、不会一旦报警就永久红）
     fs.copyFileSync(path.join(__dirname, "server.js"), localFile);
-    const srv2 = cp.spawn(process.execPath, [localFile], { env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", DATA_DIR: path.join(TDIR, "data") }, stdio: ["ignore", "pipe", "pipe"] });
+    const srv2 = cp.spawn(process.execPath, [localFile], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: "127.0.0.1", DATA_DIR: path.join(TDIR, "data") }, stdio: ["ignore", "pipe", "pipe"] });
     let up2 = false; for (let i = 0; i < 40 && !up2; i++) { await sleep(250); try { up2 = (await fetch(BASE + "/api/health")).ok; } catch (_) {} }
     if (!up2) throw new Error("重启未就绪");
     const c1 = await gh();

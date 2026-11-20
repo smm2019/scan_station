@@ -1652,7 +1652,8 @@ class _PPBox {
       outMove = "",
       outFrom = "",
       outLink = "";
-  String agvChain = ""; // 领料出库时服务器AGV节点链路（A补充）
+  String agvChain = ""; // 领料出库时服务器AGV节点链路（A补充）；㉖v205 仅含真AGV节点（叫车~到站）才填
+  String bizChain = ""; // ㉖v205 纯人工出库只有转MES/签收时的业务链路（此前混标"AGV链路"误导，用户实锤）
   Map? insp; // v55 检验历史 {v,at}（null=未检）
   String inspBusy = ""; // v55 进行中检验工单状态（非空=检验中）
   // ㉖v107 逐框四态（诚实身份，消除"当前库存400/在库4框"同屏矛盾）：
@@ -1976,21 +1977,27 @@ Future<_PPData> loadPartProfile(String partNo) async {
         }
 
         const steps = [
-          ["call", "叫车"],
-          ["enqueue", "入队"],
-          ["dispatch", "下发"],
-          ["exe", "接令"],
-          ["pick", "叉出"],
-          ["arrive", "到站"],
-          ["transfer", "转MES"],
-          ["confirm", "签收"]
+          ["call", "叫车", true],
+          ["enqueue", "入队", true],
+          ["dispatch", "下发", true],
+          ["exe", "接令", true],
+          ["pick", "叉出", true],
+          ["arrive", "到站", true],
+          ["transfer", "转MES", false],
+          ["confirm", "签收", false] // ㉖v205 节点表加"真AGV动作"标记：转MES/签收只是业务节点，人工搬运出库也有
         ];
-        final parts = <String>[];
+        final parts = <String>[], biz = <String>[];
+        var hasAgv = false;
         for (final e in steps) {
           final s = fm(ch[e[0]]);
-          if (s.isNotEmpty) parts.add("${e[1]}$s");
+          if (s.isEmpty) continue;
+          if (e[2] == true) { hasAgv = true; parts.add("${e[1]}$s"); }
+          else biz.add("${e[1]}$s");
         }
-        if (parts.isNotEmpty) b.agvChain = parts.join(" → ");
+        // ㉖v205 口径对齐网页版（用户实锤：人工搬运框被标"AGV链路"）：有任真AGV节点才挂
+        // "AGV链路"（含随行的业务节点尾巴）；纯人工出库只有转MES/签收 → 标"业务链路"。
+        if (hasAgv) b.agvChain = [...parts, ...biz].join(" → ");
+        else if (biz.isNotEmpty) b.bizChain = biz.join(" → ");
       } catch (_) {}
     }));
   }
@@ -2447,7 +2454,10 @@ class _PartProfilePageState extends State<PartProfilePage> {
               _stepLine(Icons.logout, const Color(0xFFE65100), isMoveToLoc(b.outTo) ? "移仓" : "出库", // ㉖v100 去向非线边仓=移仓（与服务器同判据，不计出库口径）
                   "${_t(b.outTime)}  ·  ${b.outFrom.isNotEmpty ? b.outFrom : "?"} → ${b.outTo}  ·  ${b.outMove.isEmpty ? "" : "${b.outMove}搬运 · "}${b.outOrder}${b.outLink.isNotEmpty ? "（领料单 ${b.outLink}）" : ""}  ·  ${b.outOperator}"),
             if (b.agvChain.isNotEmpty)
-              _stepLine(Icons.route, Colors.indigo, "AGV链路", b.agvChain),
+              _stepLine(Icons.route, Colors.indigo, "AGV链路", b.agvChain)
+            else if (b.bizChain.isNotEmpty)
+              // ㉖v205 人工搬运出库：只有转MES/签收业务节点，如实标"业务链路"（灰，与网页版口径对齐）
+              _stepLine(Icons.link, const Color(0xFF78909C), "业务链路", b.bizChain),
             if (canInsp)
               Padding(
                   padding: const EdgeInsets.only(top: 4),
@@ -3417,12 +3427,14 @@ class _TracePageState extends State<TracePage> {
     "out": Icons.logout, "queue": Icons.hourglass_bottom, "trace": Icons.explore,
     "station": Icons.flag, "agv": Icons.forklift, "shelf": Icons.inventory_2,
     "recv": Icons.warehouse_outlined, "tin": Icons.arrow_upward, // ㉖v130 两楼流转：一楼来料登记 / 二楼转入
+    "hist": Icons.history, // ㉖v205 被覆盖旧采集灰节点
   };
   static const _kCol = <String, Color>{
     "scan": Color(0xFF2E7D32), "scanx": Color(0xFF9E9E9E), "req": Color(0xFF3949AB),
     "out": Color(0xFFE65100), "queue": Color(0xFFE65100), "trace": Color(0xFF6A1B9A),
     "station": Color(0xFF00897B), "agv": Color(0xFFEF6C00), "shelf": Color(0xFF00897B),
     "recv": Color(0xFF00695C), "tin": Color(0xFF00897B), // ㉖v130 来料登记(深青) / 二楼转入(青)
+    "hist": Color(0xFF9E9E9E), // ㉖v205 覆盖历史(灰)
   };
   static const _seedName = <String, String>{
     "task": "AGV任务", "order": "单据", "box": "框码", "part": "零件号", "unknown": "未知",

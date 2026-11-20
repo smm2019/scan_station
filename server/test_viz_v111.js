@@ -22,7 +22,7 @@ const rq = (p, tok) => new Promise((resolve, reject) => { http.get({ host: '127.
   if (fs.existsSync(path.join(__dirname, 'data', 'secret.key'))) fs.copyFileSync(path.join(__dirname, 'data', 'secret.key'), path.join(TMP, 'secret.key'));
   const VT = 'TESTTOK_viz'; // 注入会话：/api/containers 需登录态，无 token 会被 401 拦截致 weather 缺失
   { const _d = JSON.parse(fs.readFileSync(path.join(TMP, 'db.json'), 'utf8')); const _a = (_d.users || []).find((x) => x.role === 'admin' && x.enabled !== false); if (!_a) { console.log('FATAL: 无启用 admin'); process.exit(2); } _d.sessions = _d.sessions || {}; _d.sessions[VT] = { userId: _a.id, dev: 'TEST-VIZ', lastSeen: Date.now() }; fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(_d)); }
-  const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false;
   for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 1000)); try { const h = await rq('/api/health'); if (h.ok) { up = true; break; } } catch (_) {} }
   T('H0 隔离服务器就绪', up, true);

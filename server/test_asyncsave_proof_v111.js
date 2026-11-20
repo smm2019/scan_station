@@ -92,7 +92,7 @@ function T(n, a, b) { total++; const ok = JSON.stringify(a) === JSON.stringify(b
     r.on('error', reject); r.on('timeout', () => { r.destroy(); reject(new Error('超时')); });
     if (data) r.write(data); r.end();
   });
-  function start(dir, port) { const c = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: dir, PORT: String(port) }), stdio: ['ignore', 'ignore', 'pipe'] }); let log = ''; c.stderr.on('data', (dd) => { log += dd; }); return { c, log: () => log }; }
+  function start(dir, port) { const c = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: dir, PORT: String(port) }), stdio: ['ignore', 'ignore', 'pipe'] }); let log = ''; c.stderr.on('data', (dd) => { log += dd; }); return { c, log: () => log }; }
   async function waitUp(port) { for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 1000)); try { const h = await rq(port, 'GET', '/api/health', null, 5000); if (h.ok) return true; } catch (_) {} } return false; }
   async function killAndWait(c) { try { c.kill('SIGKILL'); } catch (_) {} await new Promise((r) => { c.on('exit', r); setTimeout(r, 8000); }); }
 

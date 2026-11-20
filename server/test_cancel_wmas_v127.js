@@ -71,7 +71,7 @@ const TDIR = path.join(__dirname, 'data_e2e_cc_v127'); const TDIR2 = path.join(_
 (async () => {
   fakeWmas.listen(WPORT, '127.0.0.1');
   mkDb(TDIR, true);
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
   if (!up) { console.log('FAIL! 主实例未就绪'); srv.kill(); fakeWmas.close(); process.exit(1); }
   console.log('主实例+假WMAS已就绪 —— v127 盘点取消撤单联动证明');
@@ -118,7 +118,7 @@ const TDIR = path.join(__dirname, 'data_e2e_cc_v127'); const TDIR2 = path.join(_
     chk('S7 已取消再取消 400', [s7.json.ok === false, /终态/.test(String(s7.json.msg))], [true, true]);
     // ===== S8 无 WMAS 配置但已下发 → 引导人工撤 =====
     mkDb(TDIR2, false);
-    const srv2 = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT2), HOST: '127.0.0.1', DATA_DIR: TDIR2 }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const srv2 = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT2), HOST: '127.0.0.1', DATA_DIR: TDIR2 }, stdio: ['ignore', 'pipe', 'pipe'] });
     let up2 = false; for (let i = 0; i < 40 && !up2; i++) { await sleep(250); try { up2 = (await fetch(BASE2 + '/api/health')).ok; } catch (_) {} }
     if (!up2) { console.log('FAIL! 第二实例未就绪'); srv2.kill(); }
     else {

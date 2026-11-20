@@ -38,7 +38,7 @@ const OWN_ORDER = "DT20261110082224";
 const SIB_ORDERS = ["DT20261110081451", "DT20261110081834"];
 
 (async () => {
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, "server.js")], { env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", DATA_DIR: TDIR }, stdio: ["ignore", "pipe", "pipe"] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, "server.js")], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: "127.0.0.1", DATA_DIR: TDIR }, stdio: ["ignore", "pipe", "pipe"] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + "/api/health")).ok; } catch (_) {} }
   if (!up) { console.log("❌ 实例未就绪"); srv.kill(); process.exit(1); }
   try {

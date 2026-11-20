@@ -39,7 +39,7 @@ async function main() {
   db0.ledger.push({ c: 'NTEST0004', l: 'NB02-B-06-02', p: 'P4', q: 40, t: t0 + 3600000 });
   fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
   const PORT = 8171;
-  const proc = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: Object.assign({}, process.env, { PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const proc = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] });
   await sleep(1500);
   const api = async (u, p, opt) => { const r = await fetch('http://127.0.0.1:' + PORT + u, Object.assign({ headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (opt && opt.tk || '') } }, opt || {})); return r.json(); };
   const lg = await api('/api/login', null, { method: 'POST', body: JSON.stringify({ username: 'u_wh', password: 'pw123' }) });

@@ -81,7 +81,7 @@ function readHealth(port) { return rq(port, 'GET', '/api/admin/healthscore', nul
 (async () => {
   // ===== 基线：asyncSave=0（截图现场模式） =====
   prep({ asyncSave: 0 });
-  let inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: '18130' }), stdio: ['ignore', 'pipe', 'pipe'] });
+  let inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: '18130' }), stdio: ['ignore', 'pipe', 'pipe'] });
   let log0 = ''; inst.stderr.on('data', (d) => { log0 += d; }); inst.stdout.on('data', (d) => { log0 += d; });
   let up = false;
   for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 1000)); try { const h = await rq(18130, 'GET', '/api/health', null, 5000); if (h.j.ok) { up = true; break; } } catch (_) {} }
@@ -98,7 +98,7 @@ function readHealth(port) { return rq(port, 'GET', '/api/admin/healthscore', nul
 
   // ===== 对照：asyncSave=1（同一副本、同一压测脚本） =====
   { const d = JSON.parse(fs.readFileSync(path.join(TMP, 'db.json'), 'utf8')); d.params.asyncSave = 1; const admin = (d.users || []).find((x) => x.role === 'admin'); d.sessions.RT = { userId: admin.id, dev: 'TEST-REPLAY', lastSeen: Date.now() }; fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(d)); }
-  inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: '18131' }), stdio: ['ignore', 'pipe', 'pipe'] });
+  inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: '18131' }), stdio: ['ignore', 'pipe', 'pipe'] });
   let log1 = ''; inst.stderr.on('data', (d) => { log1 += d; }); inst.stdout.on('data', (d) => { log1 += d; });
   up = false;
   for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 1000)); try { const h = await rq(18131, 'GET', '/api/health', null, 5000); if (h.j.ok) { up = true; break; } } catch (_) {} }

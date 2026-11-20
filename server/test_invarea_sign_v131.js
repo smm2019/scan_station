@@ -38,7 +38,7 @@ db0.users.push({ id: 'u_vm', username: 'v131_mat', name: 'V131线边', role: 'ma
 db0.requisitions = db0.requisitions || [];
 db0.requisitions.push({ id: 'rq_v131', no: 'LLV131TEST0001', by: 'u_vm', byName: 'V131线边', status: 'ready', createdAt: new Date().toISOString(), items: [{ partNo: '6608453824', itemName: '证明件', qty: 100, issued: [{ c: 'N26V131001', q: 100 }] }], history: [] });
 fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
-const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { cwd: __dirname, env: Object.assign({}, process.env, { PORT: String(PORT), HOST, DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] });
+const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { cwd: __dirname, env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', PORT: String(PORT), HOST, DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] });
 let LOG = ''; srv.stdout.on('data', (d) => { LOG += d }); srv.stderr.on('data', (d) => { LOG += d });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;

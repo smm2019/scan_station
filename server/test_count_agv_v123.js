@@ -36,7 +36,7 @@ function baseDb() {
 function writeDb(db) { fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db)); }
 function startServer() {
   return new Promise((res) => {
-    const p = cp.spawn('node', ['server.js'], { cwd: __dirname, env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = cp.spawn('node', ['server.js'], { cwd: __dirname, env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
     let buf = ''; p.stdout.on('data', (d) => { buf += d; }); p.stderr.on('data', (d) => { buf += d; });
     p.__log = () => buf; setTimeout(() => res(p), 2200);
   });

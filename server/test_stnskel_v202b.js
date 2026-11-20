@@ -19,7 +19,7 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
   // 起服+等就绪；端口被占自动顺延（最多 30 个），返回 {p,s}
   const spawnUp = async (dir, start) => {
     for (let p = start; p < start + 30; p++) {
-      const s = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(p), HOST: '127.0.0.1', DATA_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const s = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(p), HOST: '127.0.0.1', DATA_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
       let ok = false;
       for (let i = 0; i < 24 && !ok; i++) { await sleep(250); try { ok = (await fetch('http://127.0.0.1:' + p + '/api/health')).ok; } catch (_) {} }
       if (ok) return { p, s };

@@ -53,7 +53,7 @@ const req = (method, p, tok, body, timeoutMs = 15000) => new Promise((resolve, r
   db.mitemDict['6609990002'] = { mc: 'TESTAMCMC', src: 'test', at: Date.now() };
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(db));
 
-  const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
   let srvLog = '';
   child.stdout.on('data', (d) => { srvLog += d; }); child.stderr.on('data', (d) => { srvLog += d; });
   const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };
@@ -100,7 +100,7 @@ const req = (method, p, tok, body, timeoutMs = 15000) => new Promise((resolve, r
   // ===== V6 幂等（重启进程再跑自愈=0 新纠正） =====
   child.kill('SIGKILL');
   await new Promise((r) => setTimeout(r, 800));
-  const child2 = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT + 1) }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child2 = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT + 1) }), stdio: ['ignore', 'pipe', 'pipe'] });
   let srvLog2 = '';
   child2.stdout.on('data', (dd) => { srvLog2 += dd; }); child2.stderr.on('data', (dd) => { srvLog2 += dd; });
   const cleanup2 = () => { try { child2.kill('SIGKILL'); } catch (_) {} };

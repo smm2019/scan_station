@@ -34,7 +34,7 @@ const chk = (n, g, w) => { total++; const ok = JSON.stringify(g) === JSON.string
 const chkT = (n, c) => { total++; if (!c) fail++; console.log(`${c ? 'PASS' : 'FAIL!'} [${n}]`); };
 async function get(p2, tk) { const r = await fetch(BASE + p2, { headers: tk ? { Authorization: 'Bearer ' + tk } : {} }); return { status: r.status, json: await r.json().catch(() => ({})) }; }
 (async () => {
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { const r = await fetch(BASE + '/api/health'); up = r.ok; } catch (_) {} }
   if (!up) { console.log('FAIL! 服务未就绪'); srv.kill(); process.exit(1); }
   console.log('隔离实例已就绪 (PORT ' + PORT + ') —— v125b 人员效率+地图修复证明');
@@ -67,7 +67,7 @@ async function get(p2, tk) { const r = await fetch(BASE + p2, { headers: tk ? { 
     db2.outbound = {}; db2.requisitions = []; db2.ledgerFixes = [];
     fs.writeFileSync(path.join(TDIR2, 'db.json'), JSON.stringify(db2));
     fs.copyFileSync(path.join(SRC, 'secret.key'), path.join(TDIR2, 'secret.key'));
-    const srv2 = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT2), HOST: '127.0.0.1', DATA_DIR: TDIR2 }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const srv2 = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT2), HOST: '127.0.0.1', DATA_DIR: TDIR2 }, stdio: ['ignore', 'pipe', 'pipe'] });
     let up2 = false; for (let i = 0; i < 40 && !up2; i++) { await sleep(250); try { const r = await fetch(BASE2 + '/api/health'); up2 = r.ok; } catch (_) {} }
     chkT('A6a 第二实例就绪', up2);
     const lg2 = (await (await fetch(BASE2 + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'pp_wh', password: 'E2e#Pp!125b' }) })).json()).token;

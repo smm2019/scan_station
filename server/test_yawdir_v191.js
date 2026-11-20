@@ -21,7 +21,7 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
     const salt = crypto.randomBytes(16).toString('hex');
     db0.users.push({ id: 'u_yw', username: 'yw_u', name: '车头测试仓', role: 'warehouse', enabled: true, createdAt: Date.now(), mustChangePw: false, salt, passHash: crypto.scryptSync('Yw#191', salt, 32).toString('hex') });
     fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0)); }
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch('http://127.0.0.1:' + PORT + '/api/health')).ok; } catch (_) {} }
   try {
     C('护栏 实例启动', up, '');

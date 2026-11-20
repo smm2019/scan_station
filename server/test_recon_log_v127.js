@@ -37,7 +37,7 @@ function mkOrder(db, oid, no, pn, issuedCodes, qty) {
   mkOrder(db0, 'rq_C', 'LLRCC1', 'PNRCC', ['RCC0000001', 'RCC0000002', 'RCC0000003'], 30);
   mkOrder(db0, 'rq_O', 'LLRCO1', 'PNRCO', ['RCO0000001'], 10);
   fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
   if (!up) { console.log('FAIL! 服务未就绪'); srv.kill(); process.exit(1); }
   console.log('隔离实例已就绪 (PORT ' + PORT + ') —— v127 对账入账留痕分级证明');

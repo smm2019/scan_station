@@ -33,7 +33,7 @@ const post = (p, body, tok) => new Promise((resolve, reject) => { const data = J
   }
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(db));
 
-  const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false;
   for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 1000)); try { const h = await rq('/api/health'); if (h.j && h.j.ok) { up = true; break; } } catch (_) {} }
   T('H0 隔离服务器就绪', up, true);

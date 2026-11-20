@@ -56,7 +56,7 @@ const mkRow = (c, l, pid) => ({ c, l, f: '框', t: Date.now() - 3600000, p: '660
   d0.carEvents = (d0.carEvents || []).filter((e) => String(e.kind || '') !== '幽灵出库');
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(d0));
 
-  const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const inst = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
   try {
     let up = false;
     for (let i = 0; i < 45; i++) { await sleep(1000); try { const h = await rq('/api/health', ''); if (h && h.ok) { up = true; break } } catch (_) { } }

@@ -38,7 +38,7 @@ async function get(p2, tk) { const r = await fetch(BASE + p2, { headers: tk ? { 
 // 模拟 PDA 流水推送（items 带 cx/cxAt，与 scanPushNow 同构）
 const push = (tk, list) => post('/api/scanlog/sync', tk, { items: list.map((e) => Object.assign({ code: e.k.split('|')[0], wt: 1, gl: 'NB03-B-13-01', batch: 'B261107', t: Number(e.k.split('|')[2]), pn: '66CXPX0001', q: 10, nm: 'CX取证件', op: 'CX仓管' }, e)) });
 (async () => {
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { const r = await fetch(BASE + '/api/health'); up = r.ok; } catch (_) {} }
   if (!up) { console.log('FAIL! 服务未就绪'); srv.kill(); process.exit(1); }
   console.log('隔离实例已就绪 (PORT ' + PORT + ') —— v122 作废双向同步+格数覆盖证明');

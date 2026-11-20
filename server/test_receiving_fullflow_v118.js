@@ -72,7 +72,7 @@ async function inv(wh) {
 }
 
 (async () => {
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let _srvLog = ''; srv.stdout.on('data', (d) => { _srvLog += String(d); }); // ㉖v119b 急货提醒断言改按服务器日志实锤：通知接口受夜间静默窗(22-6点进nightBuf)影响，时间依赖断言曾致剧本 47/48 假失败
   let up = false;
   for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { const r = await fetch(BASE + '/api/health'); up = r.ok; } catch (_) {} }

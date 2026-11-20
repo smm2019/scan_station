@@ -39,7 +39,7 @@ async function runWith(extra, port) {
   fs.rmSync(TDIR, { recursive: true, force: true }); fs.mkdirSync(TDIR, { recursive: true });
   fs.copyFileSync(path.join(SRC, 'secret.key'), path.join(TDIR, 'secret.key'));
   fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(buildDb(extra)));
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(port), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch('http://127.0.0.1:' + port + '/api/health')).ok; } catch (_) {} }
   if (!up) { srv.kill('SIGKILL'); throw new Error('实例未就绪 ' + port); }
   const tk = (await (await fetch('http://127.0.0.1:' + port + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'v138_mt', password: 'E2e#V38!mt' }) })).json()).token;

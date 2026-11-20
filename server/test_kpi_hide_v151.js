@@ -166,7 +166,7 @@ const rq = (p, tok, body) => new Promise((resolve, reject) => {
   delete d0.prefs[adm.id].kpiH;
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(d0));
 
-  const inst = spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const inst = spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
   try {
     let up = false;
     for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 1000)); try { const h0 = await rq('/api/health', ''); if (h0 && (h0.ok || h0.j)) { up = true; break } } catch (_) { } }

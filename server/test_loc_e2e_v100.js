@@ -35,7 +35,7 @@ async function post(p, token, body) {
 
 (async () => {
   // —— 起隔离服务 ——
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   const srvLog = [];
   srv.stdout.on('data', (b) => { const s = b.toString(); srvLog.push(s); const q = /\[flow-loc\]|\[ledger\]|\[seenIn\]/.test(s); if (q) console.log('  服务日志> ' + s.trim()); });
   srv.stderr.on('data', (b) => { const s = b.toString(); srvLog.push(s); });

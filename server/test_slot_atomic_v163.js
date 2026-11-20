@@ -65,7 +65,7 @@ const Z1COLS = 6;
     // 否则分配器扫不到它 → "跳过已占格"会变假通过。
     d0.ledger.push({ c: 'N9S000001', l: slot(Z1, 1), f: '筐', t: Date.now() - 600000, p: P1, n: 'V163测试件', q: 200, b: '2026-11-12', by: '胡明锵' });
     fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(d0));
-    const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: 'ignore' });
+    const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: 'ignore' });
     let up = false;
     for (let i = 0; i < 50; i++) { await sleep(400); try { const h = await new Promise((rs, rj) => { http.get({ host: '127.0.0.1', port: PORT, path: '/api/health', timeout: 3000 }, res => { let s = ''; res.on('data', d => s += d); res.on('end', () => rs(s)); }).on('error', rj); }); if (String(h).indexOf('ok') >= 0) { up = true; break; } } catch (_) { } }
     T('H0 隔离实例就绪', up, '样本排 ' + [Z1, Z2, ZOFF, Z3].join(' '));

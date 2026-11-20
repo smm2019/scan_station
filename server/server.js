@@ -1547,11 +1547,46 @@ function buildExport(ds, fRaw) {
     return mk('库存汇总', ['零件号', '物料名称', '所属项目', '在架框数', '在架数量', '占用货位数', '货位分布(TOP5)', '最近入库', '最近出库'], ['S', 'S', 'S', 'N', 'N', 'N', 'S', 'S', 'S'], rows, '货位账本按框聚合（动向取自主库窗口，含归档勾选不影响本表）'); }
   if (ds === 'D3') { const _sl = _arch ? Object.assign(archLoad('scanlog'), db.scanlog || {}) : (db.scanlog || {}); const rows = Object.values(_sl).filter((s) => (s.t || 0) >= (from || 0) && (s.t || 0) <= to).sort((a, b) => (b.t || 0) - (a.t || 0)).map((s) => [expTs(s.t), s.code, s.pn || '', mitemOf(s.code, s.pn), s.nm || '', s.q || 0, printLot(s.mk, s.lot), (s.wt === 0 ? s.st : s.gl) || '', s.ct || '', s.pid || '', s.op || '', s.cx ? '已作废' : '', s.rm || '']); return mk('入库流水', ['时间', '标签号', '零件号', '物料号', '物料名', '数量', '批次', '初始货位', '容器类型', '托号', '操作人', '状态', '备注'], ['S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '采集流水（全厂合并；批次=MES标签打印日期；物料号=MES MITEM_CODE）'); }
   if (ds === 'D4') { const _ob = _arch ? Object.assign(archLoad('outbound'), db.outbound || {}) : (db.outbound || {}); const rows = []; for (const o of Object.values(_ob)) { const t = Number(o.createdAt) || 0; if ((from && t < from) || t > to) continue; const _mv = isMoveOrder(o) ? '移仓' : '出库'; for (const i of (o.items || [])) rows.push([o.orderNo, expTs(t), _mv, i.code || '', projOf(i.code).join(';'), mitemOf(i.barcode || '', i.code), i.name || '', i.qty || 0, i.barcode || '', i.fromLoc || '', o.toLoc || '', i.move || '', o.linkReqNo || '', opNameOf(o.operator)]); } rows.sort((a, b) => String(b[0]).localeCompare(String(a[0]))); return mk('出库流水', ['出库单号', '时间', '单据类型', '零件号', '所属项目', '物料号', '物料名', '数量', '标签号', '原货位', '转入去向', '搬运方式', '关联领料单', '操作人'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S', 'S', 'S'], rows, '出库单（全厂合并，领料转单+直调；物料号=MES MITEM_CODE；单据类型=移仓即去向非线边仓的仓间转移，不计出库统计口径；所属项目=项目字典多值分号连接）'); }
-  if (ds === 'D5') { const reqOfTask = {}; for (const q of db.agvQueue || []) { const tn = String(q.taskNo || ''); if (tn && q.reqNo && !reqOfTask[tn]) reqOfTask[tn] = q.reqNo; } // 关联单=按RCS任务号配对（完成项队列留存可回溯）
-    const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失', expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', reqOfTask[no] || '', '', '']); // ㉖v98c 末两列=标签号/物料号：完成行=RCS沉淀无标签信息留空，在途行有码
+  if (ds === 'D5') { // ㉖v205 完成行三列回填（用户实锤导出关联单/标签号/物料号全空）
+    // 隐藏根因①：旧版关联单配对用 q.taskNo——该字段实为容器号（q.wmsTask 才是 WMAS 任务号），
+    //   与 RCS 沉淀任务号永不同源 → 关联单恒空。修正配对源。
+    // 隐藏根因②：RCS 沉淀（db.agvTasks）只有任务号/车/时刻/起终点，天生无框信息 →
+    //   建"任务号→框/单/零件"索引：①db.taskOwner（本次起 dispatchOne 下发成功即登记，全腿通用）
+    //   ②领料单 agvCalled[].task（出库腿历史，实测 1123/1123 覆盖）③检验/盘点工单 taskNo/taskNo2
+    //   ④入库腿账本反推（mv=AGV 行 src=起点台 且 l=终点格，fin 与入账物理时刻 t 的 lag ∈
+    //   [-1min, 8h] 最近者一对一消费——离线补传 rec 可滞后十几天，必须用 t 不能用 rec）。
+    //   全配不到仍留空：宁缺毋滥，错标签比空列更伤导出可信度（早期历史任务无留痕属正常）。
+    const reqOfTask = {}, ownerOf = {};
+    const _set = (tn, o) => { tn = String(tn || '').toUpperCase(); if (!tn) return; const p = ownerOf[tn] || (ownerOf[tn] = {}); for (const k in o) if (o[k] && !p[k]) p[k] = o[k]; };
+    for (const [tn, v] of Object.entries(db.taskOwner || {})) _set(tn, { c: v.c, r: v.r, p: v.p });
+    for (const r of db.requisitions || []) for (const it of r.items || []) for (const e of (it.agvCalled || [])) {
+      if (e && e.task) _set(e.task, { c: String(e.c || '').toUpperCase(), r: r.no || '', p: it.partNo || '' });
+    }
+    for (const q of db.agvQueue || []) { if (q.wmsTask && q.reqNo && !reqOfTask[String(q.wmsTask).toUpperCase()]) reqOfTask[String(q.wmsTask).toUpperCase()] = q.reqNo; }
+    for (const rec of db.inspects || []) { _set(rec.taskNo, { c: String(rec.code || '').toUpperCase(), p: rec.part || '' }); _set(rec.taskNo2, { c: String(rec.code || '').toUpperCase(), p: rec.part || '' }); }
+    for (const rec of db.counts || []) { _set(rec.taskNo, { c: String(rec.code || '').toUpperCase(), r: rec.pickBatch || '', p: rec.part || '' }); _set(rec.taskNo2, { c: String(rec.code || '').toUpperCase(), r: rec.pickBatch || '', p: rec.part || '' }); }
+    const _inIdx = {}; // 入库反推索引：终点格|起点台 → mv=AGV 候选行（带消费标记）
+    for (const x of db.ledger || []) {
+      if (String(x.mv || '').toUpperCase() !== 'AGV' || !/-CK-/.test(String(x.src || '').toUpperCase())) continue;
+      const k = String(x.l || '').toUpperCase() + '|' + String(x.src || '').toUpperCase();
+      (_inIdx[k] = _inIdx[k] || []).push({ c: String(x.c || '').toUpperCase(), p: x.p || '', t: Number(x.t) || 0, used: 0 });
+    }
+    const _inferIn = (t) => { // 最近 lag 一对一消费；窗口与 agvTaskForCode 同源并放宽离线容差
+      const arr = _inIdx[String(t.ep || '').toUpperCase() + '|' + String(t.sp || '').toUpperCase()]; if (!arr) return null;
+      let best = null, bl = Infinity;
+      for (const r of arr) { if (r.used || !r.t) continue; const lag = (t.fin || 0) - r.t; if (lag < -60000 || lag > 8 * 3600e3) continue; if (Math.abs(lag) < bl) { bl = Math.abs(lag); best = r; } }
+      if (best) best.used = 1;
+      return best;
+    };
+    const rows = Object.entries(db.agvTasks || {}).filter(([, t]) => (t.fin || 0) >= (from || 0) && (t.fin || 0) <= to).sort((a, b) => (b[1].fin || 0) - (a[1].fin || 0)).map(([no, t]) => {
+      const ow = ownerOf[String(no).toUpperCase()] || {};
+      let code = ow.c || '', pn = ow.p || '';
+      if (!code && t.ck === 'in') { const inf = _inferIn(t); if (inf) { code = inf.c; pn = pn || inf.p; } } // 入库腿：索引均无留痕时账本反推
+      return [no, t.ck === 'out' ? '出库' : t.ck === 'in' ? '入库' : '其他', t.sp || '', t.ep || '', t.car ? ('AGV' + String(t.car).padStart(2, '0')) : '车号缺失', expTs(t.ex), expTs(t.pick), expTs(t.fin), t.dur || 0, '完成', ow.r || reqOfTask[no] || '', code, code ? mitemOf(code, pn) : ''];
+    });
     // ㉕B10 未完成在途并入同表（状态=排队/下发中/已下发/到站/失败），补"状态/关联单"两列
     for (const q of db.agvQueue || []) { if (['完成', '取消'].includes(q.state)) continue; const at = Number(q.at) || 0; if ((from && at < from) || at > to) continue; rows.push([q.wmsTask || q.taskNo || '未生成', q.type === 'transfer' ? '移库' : q.type === 'inbound' ? '入库' : q.type === 'insp' ? '检验下架' : q.type === 'inspback' ? '检验归位' : '出库', q.fromLoc || q.from || '', q.station || q.to || '', '', '', expTs(q.sentAt || 0) || '', expTs(q.dockAt || 0) || '', Math.round((Date.now() - at) / 1000), q.state, q.reqNo || '', String(q.code || '').toUpperCase(), mitemOf(q.code || '', '')]); } // ㉖ 检验任务入队后方向列完整映射
-    return mk('AGV任务', ['任务号', '方向', '起点', '终点', '车辆', '接令', '叉出', '到站', '时长秒', '状态', '关联单', '标签号', '物料号'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S'], rows, 'RCS任务沉淀（近30天六节点；完成行=历史沉淀无标签信息）+未完成在途队列（时长秒=已耗时；在途行含标签号/物料号）'); }
+    return mk('AGV任务', ['任务号', '方向', '起点', '终点', '车辆', '接令', '叉出', '到站', '时长秒', '状态', '关联单', '标签号', '物料号'], ['S', 'S', 'S', 'S', 'S', 'S', 'S', 'S', 'N', 'S', 'S', 'S', 'S'], rows, 'RCS 任务沉淀（近30天六节点）+在途队列。关联单/标签号/物料号回填源：下发登记索引（本次升级起全腿通用）+ 领料叫车留痕 agvCalled + 检验/盘点工单号 + 入库腿账本反推（mv=AGV 台→格时序最近一对一）；配不到留空=宁缺毋滥，早期历史任务无留痕属正常。'); }
   if (ds === 'D6') { // ㉕B11 补持续时长/是否恢复：同车事件流内配对（告警→该车其后首条恢复；无配对=至今未恢复）
     // ㉖v199e 只导出车辆/交管类事件（用户实锤：D6"AGV异常事件"混入 FIFO违反/超发确认/幽灵出库/出库台账/改位冲突 等业务留痕，
     // 因 buildEvents() 是"事件流水"全量统一流——网页"异常与复盘"页有意全显（脉冲图含 fifo/conflict 行），但 D6 名叫"AGV异常事件"就该只装车辆）。
@@ -5068,6 +5103,20 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         // ㉖v199e "本次新流入键"必须在合并前取（Object.assign 后全部键都已存在，判据恒假——首版实测踩中）
         const _newKeys = new Set(Object.keys(snap).filter((k) => !db.scanlog || !db.scanlog[k]));
         const _cxKept = []; const _sl = db.scanlog = db.scanlog || {}; { for (const [k, v] of Object.entries(snap)) { const old = _sl[k]; if (!old) continue; const srvOp = Number(old.cxA) || 0, cliOp = Number(v.cxAt) || 0; if (cliOp > 0) { if (srvOp > cliOp) { if (!!old.cx !== !!v.cx) _cxKept.push([k, !!old.cx]); v.cx = !!old.cx; v.cxB = old.cxB; v.cxA = srvOp; } else { v.cxB = u.name; v.cxA = cliOp; } } else if (srvOp > (Number(v.t) || 0)) { if (!!old.cx !== !!v.cx) _cxKept.push([k, !!old.cx]); v.cx = !!old.cx; v.cxB = old.cxB; v.cxA = srvOp; } } }
+        // ㉖v205 覆盖留痕（用户实锤 N26J210016：同键重扫旧内容蒸发，事后无从核对改了什么）：
+        //   真覆盖（同键 t/q/gl/st/wt/cx 任一变化）才把旧行摘要存进新行 hist（cap 3）——正常周期
+        //   回灌同内容不产 hist（防噪声）；必须写在 Object.assign 之前：assign 后 _sl[k] 就是新行
+        //   引用本身，取不到旧行（首版插在 assign 后 old===v 恒真，hist 永不产生——自查踩中）。
+        { const _sl0 = db.scanlog || {};
+          for (const [k, v] of Object.entries(snap)) {
+            const old = _sl0[k];
+            if (!old || old === v) continue;
+            const _same = Number(old.t) === Number(v.t) && Number(old.q) === Number(v.q) && String(old.gl || '') === String(v.gl || '') && !!old.cx === !!v.cx && String(old.st || '') === String(v.st || '') && Number(old.wt) === Number(v.wt);
+            if (_same) continue;
+            const h = (Array.isArray(v.hist) ? v.hist : (Array.isArray(old.hist) ? old.hist.slice() : [])).filter(Boolean);
+            h.unshift({ t: Number(old.t) || 0, q: Number(old.q) || 0, gl: String(old.gl || ''), st: String(old.st || ''), wt: Number(old.wt) || 0, cx: !!old.cx, op: String(old.op || '') });
+            v.hist = h.slice(0, 3);
+          } }
         db.scanlog = Object.assign(_sl, snap); // 增量合并：只覆盖本次推送的键，别台设备的流水保留
         // v85b gl粗码实时对齐（v84防降级超集）：推送gl非完整格位时——①库里已是完整格位→保留库内值（防旧缓存打回）
         // ②库内也没有但账本同码有完整格位（网页补录过）→ 直接升级，PDA再推粗码也不会让⚠未登记复现
@@ -5916,6 +5965,16 @@ return send(res, 200, {
           push(_t, st.cx ? 'scanx' : _isRecv ? 'recv' : _isTin ? 'tin' : 'scan',
             (st.cx ? '❌ 已撤销采集 ' : _isRecv ? '🏭 来料登记（一楼·来料区） ' : _isTin ? '⬆ 二楼转入（来料区→货架） ' : '📥 采集入库 ') + String(st.code || ''),
             (st.pn ? '零件 ' + st.pn + ' · ' : '') + '数量 ' + (Number(st.q) || 0) + (_loc ? ' · ' + _loc : ''), st.op || '');
+          // ㉖v205 覆盖历史灰节点（用户实锤：同键重扫旧内容蒸发、事后无从核对改了什么）：
+          //   把该流水被覆盖掉的旧行摘要还原成灰色事件（新→旧倒序转正序展示），查问题一眼可见"上次是什么"。
+          if (Array.isArray(st.hist) && st.hist.length) {
+            for (const h of st.hist.slice().reverse()) {
+              if (!h || !(Number(h.t) > 0)) continue;
+              const _hl = h.wt === 0 ? String(h.st || '') : String(h.gl || '');
+              push(Number(h.t), 'hist', '♻ 曾被采集（已被覆盖） ' + String(st.code || ''),
+                (_hl ? '位置 ' + _hl + ' · ' : '') + '数量 ' + (Number(h.q) || 0) + (h.cx ? ' · 该次后被作废' : ''), h.op || '');
+            }
+          }
         }
         // — ㉖v99 ②b 流水已归档框的 seenIn 兜底：无采集流水记录但历史录入索引有 → 补"📝 入账登记"事件
         // （出库后链路只剩出库半条的根因：流水90天归档后入库信息消失；seenIn 富字段带数量/批次/托号=终身出生证明）
@@ -10383,7 +10442,10 @@ async function wmasLocOf(code) {
   }
   return (_wmasLoc || {})[String(code).toUpperCase()] || null;
 }
-async function _wmasDispatchOnce(q, tk, ov) { const from = (ov && ov.from) || q.fromLoc; const to = (ov && ov.to) || q.station; let pallet = (ov && ov.pallet) || q.palletType; if (!String(pallet || '').trim() && q.code) pallet = palletTypeOf(q.code); // ㉖v52 账本空类型兜底：从采集流水取容器类型
+async function _wmasDispatchOnce(q, tk, ov) {
+  // ㉖v205 兜底硬拒（第二道）：任何路径绕过上方降级直调本函数，一律不建任务
+  if (process.env.SELFTEST_NO_LIVE === '1') return { ok: false, msg: '测试保险丝：SELFTEST_NO_LIVE=1 禁止建 WMAS 任务' };
+ const from = (ov && ov.from) || q.fromLoc; const to = (ov && ov.to) || q.station; let pallet = (ov && ov.pallet) || q.palletType; if (!String(pallet || '').trim() && q.code) pallet = palletTypeOf(q.code); // ㉖v52 账本空类型兜底：从采集流水取容器类型
   const ref = (ov && ov.ref !== undefined) ? ov.ref : (q.reqNo || "");
   // 容器自动选号：优先挑"近30分钟无在途任务"的号；挑不到就复用（与人工叫车同款行为——WMAS不强校验容器号唯一，复用不影响叉货）
   const cr = await wmasHttp('GET', '/api/logistics/container/list?pageNum=1&pageSize=1000', tk);
@@ -10585,6 +10647,14 @@ function trPush(q, msg) {
   q.trace.push(msg);
 }
 async function dispatchOne(q, nowMs, runT, assigned, live) {
+  // ㉖v205 测试保险丝（11-20 幽灵任务实锤 AGV-20261120-0024：测试夹具复制生产 db 继承了
+  // agvDispatchMode=live + 真 WMAS 账号，测试里的动作经派生队列真建了 WMAS 搬运任务，
+  // 现场凭空多出无人认领的幽灵单）。本进程带 SELFTEST_NO_LIVE=1 时无条件降级为演算：
+  // 生产实例永不设该变量，行为零变化；合成 WMAS 类测试（v161/v162）不注入该变量，照常真发。
+  if (live && process.env.SELFTEST_NO_LIVE === '1') {
+    live = false;
+    (q.trace = q.trace || []).push('测试保险丝：SELFTEST_NO_LIVE=1，live 强制降级为演算（不建 WMAS 任务）');
+  }
   // ㉖v79c 二次防重（与 rcsPoll 防重入锁互补）：已进入下发/在途/到站/完成态的项绝不重复建任务
   if (['下发中', '已下发', '到站', '完成'].includes(q.state)) return true;
   // ㉖v161 让位守卫（收口【全部】下发入口：轮询/一键叫车/检验/盘点/退回联动，含未来新增路径）：
@@ -10667,6 +10737,15 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
   try { r = await wmasDispatchOne(q, tk, Object.keys(_ov).length ? _ov : undefined); } catch (e) { r = { ok: false, msg: '下发异常：' + e.message }; }
   if (r && r.ok) { stnBook[stn] = { until: nowMs + stnEtaMs(q.fromLoc, stn), by: q.code }; q.trace.push('预约站台窗至 ' + new Date(stnBook[stn].until).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5) + '（行程+缓冲+平均清台×' + P().stnWinPct + '%）'); } // ㉖v56 C 时间窗预约（含指定台：检验归位同腿撞台是实测痛点，一并预约）
   q.state = r.ok ? '已下发' : '失败'; q.taskNo = r.container || ''; q.wmsTask = r.taskNo || ''; q.err = r.ok ? '' : r.msg;
+  // ㉖v205 任务号→框/单登记（全腿通用咽喉，导出 D5 完成行回填权威源）：RCS 沉淀只有任务号与
+  // 起终点，队列 2h 即出队——不在此刻登记，日后导出这三列永远空（用户实锤）。零件号按码查账本
+  // 顺手带上（反查物料号用）。幂等小表 cap 1.2万，超限裁最旧留 1 万。
+  if (r.ok && q.wmsTask) {
+    let _pn = '';
+    if (q.code) { const _lr0 = (db.ledger || []).find(x => String(x.c || '').toUpperCase() === String(q.code).toUpperCase()); _pn = _lr0 ? String(_lr0.p || '') : ''; }
+    (db.taskOwner = db.taskOwner || {})[String(q.wmsTask).toUpperCase()] = { c: String(q.code || '').toUpperCase(), r: q.reqNo || '', p: _pn, at: nowMs };
+    const _ks = Object.keys(db.taskOwner); if (_ks.length > 12000) { _ks.sort((a, b) => (db.taskOwner[a].at || 0) - (db.taskOwner[b].at || 0)); for (const k of _ks.slice(0, _ks.length - 10000)) delete db.taskOwner[k]; }
+  }
   q.trace.push(r.ok ? 'WMAS建任务' + (r.taskNo || '') + '下发成功' : 'WMAS下发失败：' + String(r.msg || '').slice(0, 60)); // ㉖v94j 修字段名笔误：旧版 r.wmsTask 恒 undefined，trace 里任务号丢失
   if (q.trace.length > 8) q.trace = q.trace.slice(-8);
   console.log(`[agv-q] ${q.state} 框 ${q.code} ${q.fromLoc} → ${stn}${r.ok ? ' 容器' + r.container : ' ' + r.msg}`);

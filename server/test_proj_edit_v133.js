@@ -29,7 +29,7 @@ async function req(p, tk, opt) { const r = await fetch(BASE + p, { method: (opt 
 let PASS = 0, FAIL = 0;
 function chk(t, a, b, note) { const ok = JSON.stringify(a) === JSON.stringify(b); ok ? PASS++ : FAIL++; console.log(`  ${ok ? '✅' : '❌'} ${t}` + (ok ? '' : `\n     期望=${JSON.stringify(b)} 实际=${JSON.stringify(a)}${note ? ' ' + note : ''}`)); }
 (async () => {
-  const srv = cp.spawn(process.execPath, ['server.js'], { cwd: __dirname, env: Object.assign({}, process.env, { PORT, HOST: '127.0.0.1', DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, ['server.js'], { cwd: __dirname, env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', PORT, HOST: '127.0.0.1', DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] });
   let log = ''; srv.stdout.on('data', (d) => log += d); srv.stderr.on('data', (d) => log += d);
   await sleep(2600);
   const lg = await req('/api/login', null, { method: 'POST', body: { username: 'v133_wh', password: 'E2e#V3!wh' } });

@@ -50,7 +50,7 @@ if (db0.wmasConfig) db0.wmasConfig.host = '192.0.2.1:8081';
 db0.params = db0.params || {}; db0.params.reqHoursOn = 0; // 关时段闸防建单被拦
 fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(db0));
 
-const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
 let srvLog = '';
 child.stdout.on('data', (d) => { srvLog += d; }); child.stderr.on('data', (d) => { srvLog += d; });
 const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };

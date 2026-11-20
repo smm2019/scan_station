@@ -140,7 +140,7 @@ const make = new Function('db', 'Date', code + '\nreturn {schedBlockMark,schedBl
   fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
   const PORT = 8372, BASE = 'http://127.0.0.1:' + PORT;
   const uncaught = [];
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   srv.stderr.on('d', (b) => { const s = String(b); if (/uncaught|Error|异常/.test(s)) uncaught.push(s); });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const req = async (p, opt, tk) => { const r = await fetch(BASE + p, { headers: tk ? { Authorization: 'Bearer ' + tk } : {}, ...(opt || {}) }); return await r.json(); };

@@ -749,7 +749,7 @@ function trMeta(d) {
 }
 function trTimeline(d) {
   if (!d.events || !d.events.length) return '<div style="color:var(--sub);font-size:12.5px;padding:20px 0">未找到与该标识关联的任何事件记录。</div>';
-  const KC = { scan: 't-d', scanx: 't-x', shelf: 't-a', req: 't-p', out: 't-p', queue: 't-x', trace: 't-x', agv: 't-a', station: 't-d', recv: 't-r', tin: 't-a' };
+  const KC = { scan: 't-d', scanx: 't-x', shelf: 't-a', req: 't-p', out: 't-p', queue: 't-x', trace: 't-x', agv: 't-a', station: 't-d', recv: 't-r', tin: 't-a', hist: 't-x' }; // ㉖v205 hist=被覆盖旧采集灰节点
   const rows = d.events.map((e, i) => {
     const dt = new Date(e.t || 0).toLocaleString('zh-CN', { hour12: false });
     const last = i === d.events.length - 1;

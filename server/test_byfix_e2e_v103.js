@@ -30,7 +30,7 @@ let fail = 0, total = 0;
 const chk = (n, got, want) => { total++; const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fail++; console.log(`${ok ? 'PASS' : 'FAIL!'} [${n}] got=${JSON.stringify(got)} want=${JSON.stringify(want)}`); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function post(p, tk, body) { const r = await fetch(BASE + p, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(tk ? { Authorization: 'Bearer ' + tk } : {}) }, body: JSON.stringify(body) }); return { status: r.status, json: await r.json().catch(() => ({})) }; }
-function startSrv() { const sv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] }); const log = []; sv.stdout.on('data', (b) => log.push(b.toString())); sv.stderr.on('data', (b) => log.push(b.toString())); sv.__log = () => log.join(''); return sv; }
+function startSrv() { const sv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] }); const log = []; sv.stdout.on('data', (b) => log.push(b.toString())); sv.stderr.on('data', (b) => log.push(b.toString())); sv.__log = () => log.join(''); return sv; }
 async function waitUp() { for (let i = 0; i < 40; i++) { await sleep(250); try { const r = await fetch(BASE + '/api/health'); if (r.ok) return true; } catch (_) {} } return false; }
 const load = () => JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
 (async () => {

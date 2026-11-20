@@ -51,7 +51,7 @@ const req = (method, p, tok, body, timeoutMs = 15000) => new Promise((resolve, r
   const realOutSample = { c: 'TESTSTMP02' }, llSample = { c: 'TESTSTMP03' };
   fs.writeFileSync(path.join(TMP, 'db.json'), JSON.stringify(db));
 
-  const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [SRV], { env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', DATA_DIR: TMP, PORT: String(PORT) }), stdio: ['ignore', 'pipe', 'pipe'] });
   let srvLog = '';
   child.stdout.on('data', (d) => { srvLog += d; }); child.stderr.on('data', (d) => { srvLog += d; });
   const cleanup = () => { try { child.kill('SIGKILL'); } catch (_) {} };
