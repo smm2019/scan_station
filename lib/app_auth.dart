@@ -490,16 +490,25 @@ class AuthApi {
   static Future<Map> agvAuthYield() async =>
       _req("GET", "/api/agv/auth-yield", token: await AuthStore.token());
   // 零件档案：拉服务器全厂流水/出库单（B）+ 单框AGV链路（A补充）
-  static Future<Map> scanlogGet({int limit = 5000}) async =>
-      _req("GET", "/api/scanlog?limit=$limit", token: await AuthStore.token());
+  /// ㉖v211 code=按标签号精确过滤（服务器过滤在 limit 截断之前）：全链路兜底路径追老框用。
+  /// 全库流水已 4438 条 > limit 2000，不传 code 时老框采集节点整段隐身。
+  static Future<Map> scanlogGet({int limit = 5000, String? code}) async => _req(
+      "GET",
+      code == null || code.isEmpty
+          ? "/api/scanlog?limit=$limit"
+          : "/api/scanlog?limit=$limit&c=${Uri.encodeComponent(code)}",
+      token: await AuthStore.token());
   /// ㉖v210 pn=按零件号精确过滤（服务器过滤在 500 条上限之前）：零件档案页拼"累计出库"专用。
   /// 不传 pn=最新 500 单（旧行为，列表页用）；档案页必须传，否则老单被截→累计出库少报、账外框虚报。
-  static Future<Map> outboundGet({String? pn}) async => _req(
-      "GET",
-      pn == null || pn.isEmpty
-          ? "/api/outbound"
-          : "/api/outbound?pn=${Uri.encodeComponent(pn)}",
-      token: await AuthStore.token());
+  /// ㉖v211 code=按框码精确过滤（同样过滤先于截断）：全链路兜底路径按标签追出库用。
+  static Future<Map> outboundGet({String? pn, String? code}) async {
+    final qs = <String>[
+      if (pn != null && pn.isNotEmpty) "pn=${Uri.encodeComponent(pn)}",
+      if (code != null && code.isNotEmpty) "c=${Uri.encodeComponent(code)}",
+    ];
+    return _req("GET", qs.isEmpty ? "/api/outbound" : "/api/outbound?${qs.join("&")}",
+        token: await AuthStore.token());
+  }
   static Future<Map> agvTaskOf(String code) async =>
       _req("GET", "/api/agv/taskOf?c=${Uri.encodeComponent(code)}",
           token: await AuthStore.token());

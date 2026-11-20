@@ -4660,6 +4660,11 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       // 全部误判成账外框（虚报 31 框）。单零件单数远低于 500，过滤后截断对档案页不再有盲区。
       const fpn = (url.searchParams.get('pn') || '').trim().toUpperCase();
       if (fpn) arr = arr.filter(x => (x.items || []).some((i) => String(i.code || '').toUpperCase() === fpn));
+      // ㉖v211 按框码精确过滤（全链路兜底路径按标签追出库用）：同样必须排在 slice(0,500) 之前。
+      // 实锤样本 N26H030146（10-23 出库）其出库单在时间倒序排第 1770 位，兜底路径按旧写法永远追不到。
+      // barcode 可能是"一托多码"分号串，拆开逐个比对，防整串相等漏配。
+      const fcode = (url.searchParams.get('c') || '').trim().toUpperCase();
+      if (fcode) arr = arr.filter(x => (x.items || []).some((i) => String(i.barcode || '').toUpperCase().split(/[;；]/).map((s) => s.trim()).includes(fcode)));
       // ㉖v100 每单现算 mv（不落库——参数 outWhKeys 一改即生效）：1=移仓单（去向非线边仓），PDA台账/网页列表据此标注
       return send(res, 200, { ok: true, at: db.outboundAt, total: db.outboundCount, count: arr.length, items: arr.slice(0, 500).map((x) => Object.assign({}, x, { mv: isMoveOrder(x) ? 1 : 0 })) });
     }

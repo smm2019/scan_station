@@ -2640,8 +2640,10 @@ class _PartProfilePageState extends State<PartProfilePage> {
     }
 
     final rs = await Future.wait([
-      AuthApi.scanlogGet(limit: 2000).catchError((_) => <String, dynamic>{}),
-      AuthApi.outboundGet().catchError((_) => <String, dynamic>{}),
+      // ㉖v211 兜底路径按标签精确过滤：全库流水 4438>limit、出库单 1771>500（N26H030146 出库单
+      // 倒序排 1770），旧写法无过滤全量拉回再端上筛——老框的采集/出库节点整段隐身
+      AuthApi.scanlogGet(limit: 2000, code: code).catchError((_) => <String, dynamic>{}),
+      AuthApi.outboundGet(code: code).catchError((_) => <String, dynamic>{}),
       AuthApi.inspectList().catchError((_) => <String, dynamic>{}),
       AuthApi.agvTaskOf(code).catchError((_) => <String, dynamic>{}),
     ]);
