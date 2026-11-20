@@ -1346,7 +1346,17 @@ async function ctMap(){
  const {rows,zoneSt,zoneL,total,used,miscN,miscB}=ctSlotStats();CTN._zoneSt=zoneL; // ㉖v111 天气墙占用率按巷道字母细分
  const zf=CTN.zf||'';const hunt=!!TM.ctmE;const cmode=CTN.cmode||'age'; // v89 配色口径：age=滞留热力 / occ=占用红青 / car=车型彩虹（㉖v111）
  const _cmNext={age:'occ',occ:'car',car:'age'},_cmLab={occ:'🎨 占用(红/青)',car:'🎨 车型(彩虹)',age:'🎨 滞留(绿/橙/红)'};
- $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<button class="pill" style="padding:3px 10px;font-size:11.5px;margin-left:6px" title="三档配色轮转：滞留热力(绿/橙/红) → 占用总览(红占青空) → 车型彩虹(按项目/车型上色，混居墙一眼可辨)" onclick="CTN.cmode='${_cmNext[cmode]}';ctMap()">${_cmLab[cmode]}</button><button class="pill" style="padding:3px 10px;font-size:11.5px;margin-left:6px" title="红牌作战：滞留≥14天框清单，一键复制发群" onclick="ctRedCard()">🟥 红牌清单</button><span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':(cmode==='occ'?'■红 被占用 ■青 空货位 ｜ 货架/排=横条带，带间=AGV巷道':cmode==='car'?'■格色=车型（EX11蓝/EX1H绿/E281紫/V446K橙/EF2H青/其他灰）▢灰虚线 空位 ｜ 同架多色=车型混居墙':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+(按批次) ▢灰虚线 空位 ｜ 货架/排=横条带，带间=AGV巷道')}</span></div>`;
+ // ㉖v215 车型筛选：色图此前只能按车型"着色"不能"筛选"（用户实拍：EX11 占哪几格要一格格找）。
+ // 芯片条=按当前在库框聚合出的车型（带框数），点芯片→非该车型占格淡出（保留空间轮廓不拆地图）、
+ // 再点取消；与区过滤(zf)/搜索(q)/寻宝(hunt)正交叠加。车型判定与彩虹着色同源 ctCarOf，永不分叉。
+ const carF=CTN.carF||'';
+ const carCnt={};Object.values(rows).forEach(R=>{const cs=R.cells||{};for(const c in cs)(cs[c].boxes||[]).forEach(b=>{const k=ctCarOf(b);carCnt[k]=(carCnt[k]||0)+1})});
+ if(carF&&!carCnt[carF])carCnt[carF]=0; // 筛选中但该车型已清空：芯片保留可点灭，防筛选卡死
+ const carChips=(()=>{const ks=Object.keys(carCnt).sort((a,b)=>carCnt[b]-carCnt[a]||(a<b?-1:1));if(ks.length<2&&!carF)return '';
+  return '<span style="margin-left:10px;font-size:11px">🚗 '+ks.map(k=>{const col=CT_CARC[k]||'#90a4ae';const on=carF===k;
+   return `<span class="tag" style="cursor:pointer;margin:0 2px;border:1px solid ${col};${on?`background:${col};color:#fff;font-weight:700`:'color:var(--ink)'}" title="只看 ${k} 车型（${carCnt[k]}框）${on?'，再点取消':'，未入库车型不出芯片'}" onclick="ctCar('${_esc(k)}')">${on?'✓ ':''}${k} ${carCnt[k]}</span>`}).join(' ')+'</span>'})();
+ const carHit=(bs)=>!carF||!!(bs||[]).some(b=>ctCarOf(b)===carF);
+ $('#ctbar').innerHTML=`<div class="row" style="margin:2px 0 8px;align-items:center">${Object.entries(zoneSt).sort((a,b)=>a[0]<b[0]?-1:1).map(([z,s])=>`<span class="tag" style="cursor:pointer;background:${zf===z?'var(--pri)':zf?'rgba(81,91,212,.06)':'rgba(81,91,212,.12)'};color:${zf===z?'#fff':'var(--pri)'}" title="占用 ${s.u}/${s.t} 格，点击${zf===z?'取消过滤':'只看该区'}" onclick="ctZone('${z}')">${z} 占用${Math.round(s.u/s.t*100)}%</span>`).join('')}<span style="font-size:11.5px;color:var(--sub)">格位共 ${total} · 已用 ${used} · <b style="color:var(--ok)">空 ${total-used}</b>${q?' · 🔍命中格高亮':''}${miscN?` · ⚠️ ${miscB} 框货位格式异常(${miscN}位)`:''}</span>${hunt?`<button class="pill g" style="padding:3px 10px;font-size:12px" title="再点一次退出寻宝" onclick="ctFilter('free')">🟩 寻宝中：空格已高亮（${total-used} 个）· 点击退出</button>`:''}<button class="pill" style="padding:3px 10px;font-size:11.5px;margin-left:6px" title="三档配色轮转：滞留热力(绿/橙/红) → 占用总览(红占青空) → 车型彩虹(按项目/车型上色，混居墙一眼可辨)" onclick="CTN.cmode='${_cmNext[cmode]}';ctMap()">${_cmLab[cmode]}</button><button class="pill" style="padding:3px 10px;font-size:11.5px;margin-left:6px" title="红牌作战：滞留≥14天框清单，一键复制发群" onclick="ctRedCard()">🟥 红牌清单</button>${carChips}<span style="flex:1"></span><span style="font-size:11px;color:var(--sub)">${hunt?'■ 空格(实心青·点击看编号并可复制) ▢ 框位已淡出':(cmode==='occ'?'■红 被占用 ■青 空货位 ｜ 货架/排=横条带，带间=AGV巷道':cmode==='car'?'■格色=车型（EX11蓝/EX1H绿/E281紫/V446K橙/EF2H青/其他灰）▢灰虚线 空位 ｜ 同架多色=车型混居墙':'■绿 新鲜 ■橙 满3天 ■红 滞留7天+(按批次) ▢灰虚线 空位 ｜ 货架/排=横条带，带间=AGV巷道')}${carF?' 🚗已筛 '+_esc(carF)+'·其余占格淡出':''}</span></div>`;
  // 单格渲染（两区共用）：空格/占格、寻宝高亮、搜索命中
  const renderCells=(R,maxHi)=>{
    let s='';
@@ -1360,13 +1370,14 @@ async function ctMap(){
      const bs=hit.boxes,worst=cmode==='occ'?'x':(bs.some(b=>b._h>=168)?'r':(bs.some(b=>b._h>=72)?'o':'g'));
      const mk=rowHit||locHit;
      const tip=_esc(full+'｜'+bs.length+'框 '+bs.reduce((a,b)=>a+b.lc,0)+'标签｜'+bs.map(b=>(ctCarOf(b)+' ')+(b.p||b._fl)+'×'+b.q+' '+ctAgeTxt(b._h).replace(/<[^>]+>/g,'')).join('；').slice(0,140));
+     const dim=carF&&!carHit(bs); // ☖v215 非筛选车型的占格淡出（保留空间轮廓）
      if(cmode==='car'){ // ㉖v111 车型彩虹：主导车型色；同格多车型=左色块占比拼接（混居一眼可辨）
        const cnt={};bs.forEach(b=>{const k=ctCarOf(b);cnt[k]=(cnt[k]||0)+1});
        const arr=Object.entries(cnt).sort((a,b)=>b[1]-a[1]);
        const grad=arr.length>1?('linear-gradient(90deg,'+arr.map(([k,v],i)=>`${CT_CARC[k]||'#90a4ae'} ${Math.round((i===0?0:arr.slice(0,i).reduce((s,x)=>s+x[1],0))/bs.length*100)}%,${CT_CARC[k]||'#90a4ae'} ${Math.round(arr.slice(0,i+1).reduce((s,x)=>s+x[1],0)/bs.length*100)}%`).join(',')+')'):CT_CARC[arr[0][0]]||'#90a4ae';
-       s+=`<span class="ctg${mk?' cth':''}" style="background:${grad};${mk?'':'opacity:'+(hunt?'.22':'.9')+';'}" title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;continue;
+       s+=`<span class="ctg${mk?' cth':''}" style="background:${grad};${mk?'':'opacity:'+(dim?'.12':(hunt?'.22':'.9'))+';'}" title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;continue;
      }
-     s+=`<span class="ctg ctg-${worst}${mk?' cth':''}${(hunt&&!mk)?' dimc':''}" ${mk?'':'style="opacity:'+(hunt?'.22':'.85')+'"'} title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;
+     s+=`<span class="ctg ctg-${worst}${mk?' cth':''}${(hunt&&!mk)?' dimc':''}" ${mk?'':'style="opacity:'+(dim?'.12':(hunt?'.22':'.85'))+'"'} title="${tip}" onclick="ctCell('${_esc(full)}')">${bs.length>1?bs.length:(bs[0].lc>1?'×':'')}</span>`;
    }
    return s;
  };
@@ -1385,13 +1396,14 @@ async function ctMap(){
    if(!hit)return '<span class="mxc mxc-e" title="'+_esc(full)+' · 空货位（点击复制编号）" onclick="ctFreeSlot(\''+_esc(full)+'\')"></span>';
    const bs=hit.boxes,cls=cmode==='occ'?'mxc-x':(bs.some(b=>b._h>=168)?'mxc-r':(bs.some(b=>b._h>=72)?'mxc-o':'mxc-g'));
    const tip=full+'｜'+bs.length+'框 '+bs.map(b=>(cmode==='car'?(ctCarOf(b)+' '):'')+((b.p||b._fl)||'')+'×'+b.q).join('、').slice(0,110);
+   const dim=carF&&!carHit(bs); // ☖v215 矩阵版同源判定
    if(cmode==='car'){ // ㉖v111 车型彩虹（矩阵版）：主导车型色；同格多车型=横向色块占比拼接
      const cnt={};bs.forEach(b=>{const k=ctCarOf(b);cnt[k]=(cnt[k]||0)+1});
      const arr=Object.entries(cnt).sort((a,b)=>b[1]-a[1]);
      const grad=arr.length>1?('linear-gradient(90deg,'+arr.map(([k,v],i)=>`${CT_CARC[k]||'#90a4ae'} ${Math.round(arr.slice(0,i).reduce((s,x)=>s+x[1],0)/bs.length*100)}%,${CT_CARC[k]||'#90a4ae'} ${Math.round(arr.slice(0,i+1).reduce((s,x)=>s+x[1],0)/bs.length*100)}%`).join(',')+')'):(CT_CARC[arr[0][0]]||'#90a4ae');
-     return '<span class="mxc" style="background:'+grad+'" title="'+_esc(tip)+'" onclick="ctCell(\''+_esc(full)+'\')"></span>';
+     return '<span class="mxc" style="background:'+grad+(dim?';opacity:.12':'')+'" title="'+_esc(tip)+'" onclick="ctCell(\''+_esc(full)+'\')"></span>';
    }
-   return '<span class="mxc '+cls+'" title="'+_esc(tip)+'" onclick="ctCell(\''+_esc(full)+'\')"></span>';
+   return '<span class="mxc '+cls+'"'+(dim?' style="opacity:.12"':'')+' title="'+_esc(tip)+'" onclick="ctCell(\''+_esc(full)+'\')"></span>';
  };
  const occBar=(pct)=>'<div style="height:4px;background:#eef1f8;border-radius:2px;margin:2px 0 4px;overflow:hidden"><div style="height:4px;width:'+pct+'%;background:'+(pct>=90?'#e53935':pct>=70?'#fb8c00':'#26a69a')+'"></div></div>';
  let mx='';
@@ -1468,6 +1480,7 @@ async function ctMap(){
  $('#ctmap').innerHTML=h||'<div style="color:var(--sub);padding:20px">账本为空——地图无格可画</div>';
 }
 function ctZone(z){CTN.zf=(CTN.zf===z)?'':z;ctMap()}
+function ctCar(k){CTN.carF=(CTN.carF===k)?'':k;ctMap()} // ☖v215 车型筛选：点芯片只看该车型，再点取消；与区过滤/搜索/寻宝正交叠
 // ===== ㉖v111 红牌作战（目视化行动层）：滞留≥14天的框清单，看到即处置，一键复制发群 =====
 function ctRedCard(minD){
  minD=minD||14;
