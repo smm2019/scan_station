@@ -17,16 +17,26 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
   fs.rmSync(TDIR, { recursive: true, force: true }); fs.mkdirSync(TDIR, { recursive: true });
   fs.rmSync(TDIR2, { recursive: true, force: true });
   // 起服+等就绪；端口被占自动顺延（最多 30 个），返回 {p,s}
+  // ㉖v219 两处治本（"CI 仅 T7 FAIL"真跑定位，非缺库——夹具全自造）：
+  //  ① 实例身份校验：health 通了 ≠"是我们刚起的那个"。历史泄漏的僵尸实例(前次运行没被树杀干净)占着端口，
+  //    新实例绑不上→health 命中的是僵尸旧数据→只读 CK-04 的 T7 挂、T1~T6 读不变断言侥幸绿。
+  //    改：health 就绪后必须核 code.startedAt ≥ 本轮拉起时刻，早于本轮=僵尸→跳过该端口不用它。
+  //  ② 进程树强杀：agent_host 宿主下 child.kill('SIGKILL') 只杀壳、真 server 孙进程存活→跑一次泄漏一个
+  //    僵尸、跨运行累积=本次病根。改 taskkill /T /F 连树端掉，杜绝再造僵尸。
+  //  ③ 随机基准端口：按 PID 取 10000~29999 段，避开生产 8099 与固定段历史僵尸，跨运行基本不撞残留。
+  const BASE = 10000 + ((process.pid * 7) % 20000);
+  const killTree = (proc) => { try { if (!proc) return; if (process.platform === 'win32') cp.spawnSync('taskkill', ['/PID', String(proc.pid), '/T', '/F'], { timeout: 8000, windowsHide: true }); else proc.kill('SIGKILL'); } catch (_) {} };
   const spawnUp = async (dir, start) => {
     for (let p = start; p < start + 30; p++) {
+      const myStart = Date.now() - 2000; // 容 2s 时钟/启动抖动
       const s = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(p), HOST: '127.0.0.1', DATA_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
-      let ok = false;
-      for (let i = 0; i < 24 && !ok; i++) { await sleep(250); try { ok = (await fetch('http://127.0.0.1:' + p + '/api/health')).ok; } catch (_) {} }
-      if (ok) return { p, s };
-      try { s.kill('SIGKILL'); } catch (_) {}
+      let ok = false, mine = false;
+      for (let i = 0; i < 24 && !ok; i++) { await sleep(250); try { const hj = await (await fetch('http://127.0.0.1:' + p + '/api/health')).json(); ok = !!hj; if (hj && hj.code && hj.code.startedAt && Date.parse(hj.code.startedAt) >= myStart) mine = true; } catch (_) {} }
+      if (ok && mine) return { p, s };
+      killTree(s); // 僵尸占口或非本轮实例：杀掉本轮这个（绑不上端口的）再试下一口，绝不用僵尸数据
       await sleep(300);
     }
-    throw new Error('连续 30 个端口无实例可起（环境异常）');
+    throw new Error('连续 30 个端口无【本轮】实例可起（端口全被僵尸占，请清理残留 server.js 进程）');
   };
   const salt = crypto.randomBytes(16).toString('hex');
   const now = Date.now(), D = 864e5;
@@ -47,7 +57,7 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
   fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(d0));
   let srv = null, srv2 = null;
   try {
-    const r1 = await spawnUp(TDIR, 9700); srv = r1.s; const PORT = r1.p;
+    const r1 = await spawnUp(TDIR, BASE); srv = r1.s; const PORT = r1.p; // ㉖v219 随机基准口（原固定 9700 会被历史僵尸劫持）
     let out = ''; srv.stdout.on('data', (d) => { out += d; }); srv.stderr.on('data', (d) => { out += d; });
     const tk = (await (await fetch('http://127.0.0.1:' + PORT + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'st_u', password: 'St#202' }) })).json()).token;
     C('护栏 启动+登录（端口 ' + PORT + '）', !!tk, '');
@@ -64,8 +74,7 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
     d2.rcsStations['NB02-CK-04'] = { state: '有货', label: '6608460402', codes: ['BXH1'], since: '2026-11-19 09:00' };
     fs.mkdirSync(TDIR2, { recursive: true });
     fs.writeFileSync(path.join(TDIR2, 'db.json'), JSON.stringify(d2));
-    try { srv.kill('SIGKILL'); } catch (_) {}
-    srv = null; await sleep(400);
+    killTree(srv); srv = null; await sleep(400); // ㉖v219 树杀：SIGKILL 只杀壳会泄漏占口僵尸
     const r2 = await spawnUp(TDIR2, PORT + 1); srv2 = r2.s;
     const tk2 = (await (await fetch('http://127.0.0.1:' + r2.p + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'st_u', password: 'St#202' }) })).json()).token;
     const j2 = await (await fetch('http://127.0.0.1:' + r2.p + '/api/rcs/stations', { headers: { Authorization: 'Bearer ' + tk2 } })).json();
@@ -73,8 +82,7 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
     C('T7 ★★★ 有动态数据的台字段不丢(有货/label/codes透出, 骨架不吃真值·独立目录防覆盖竞态)', b4.state === '有货' && b4.label === '6608460402' && (b4.codes || []).includes('BXH1'), JSON.stringify({ s: b4.state, l: b4.label }));
     C('★ 无未捕获异常', !/Unhandled|TypeError: |ReferenceError/.test(out + ''), '');
   } catch (e) { total++; fail++; console.log('❌ 异常：' + e.message); } finally {
-    try { if (srv) srv.kill('SIGKILL'); } catch (_) {}
-    try { if (srv2) srv2.kill('SIGKILL'); } catch (_) {}
+    killTree(srv); killTree(srv2); // ㉖v219 全部树杀：旧 SIGKILL 只杀 agent_host 壳、真 server 存活=跨运行僵尸根源
     await sleep(300);
     try { fs.rmSync(TDIR, { recursive: true, force: true }); } catch (_) {}
     try { fs.rmSync(TDIR2, { recursive: true, force: true }); } catch (_) {}
