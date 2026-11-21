@@ -1700,9 +1700,30 @@ async function loadDev(){try{const j=await api('/api/admin/devices');if(!j.ok){$
 async function adDev(dev,act){if(act=='block'&&!confirm('拉黑设备 '+dev+'？该设备将立即被踢下线且无法再登录。'))return;if(act=='kick'&&!confirm('踢下线设备 '+dev+' 的全部会话？'))return;
  try{const j=await api('/api/admin/devices',{method:'POST',body:{dev,act}});T(j.ok?'✅ 已'+({trust:'切换信任',block:'拉黑',unblock:'解除拉黑',kick:'踢下线',del:'删除'}[act]||'操作'):'❌ '+(j.msg||'失败'),j.ok?1:0);loadDev()}catch(_){T('操作失败')}}
 async function pgAdmin(){if(U.role!='admin'){$('#main').innerHTML='<div class="card" style="color:var(--sub)">仅管理员可见</div>';return}
- $('#main').innerHTML=`<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));margin-bottom:12px"><button class="pill" id="a_ops">📜 活动流</button><button class="pill" id="a_errlog">📟 设备异常</button><button class="pill" id="a_syserr">🧯 系统错误</button><button class="pill" id="a_users">👥 用户管理</button><button class="pill" id="a_perm">🔑 权限矩阵</button><button class="pill" id="a_health">💚 系统健康</button><button class="pill" id="a_params">🎛 参数配置</button><button class="pill" id="a_pub">📦 发布台</button><button class="pill" id="a_dev">📱 设备</button></div><div id="abody">加载中…</div>`;
- ['ops','errlog','syserr','users','perm','health','params','pub','dev'].forEach(k=>{$('#a_'+k).onclick=()=>adTab(k)});adTab('ops')}
-async function adTab(t){['ops','errlog','syserr','users','perm','health','params','pub','dev'].forEach(k=>{const b=$('#a_'+k);if(b)b.className='pill'+(k==t?'':' q')});const B=$('#abody');
+ $('#main').innerHTML=`<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr));margin-bottom:12px"><button class="pill" id="a_ops">📜 活动流</button><button class="pill" id="a_errlog">📟 设备异常</button><button class="pill" id="a_syserr">🧯 系统错误</button><button class="pill" id="a_users">👥 用户管理</button><button class="pill" id="a_perm">🔑 权限矩阵</button><button class="pill" id="a_health">💚 系统健康</button><button class="pill" id="a_params">🎛 参数配置</button><button class="pill" id="a_pub">📦 发布台</button><button class="pill" id="a_dev">📱 设备</button><button class="pill" id="a_agvw">🔐 WMAS 凭证</button></div><div id="abody">加载中…</div>`;
+ ['ops','errlog','syserr','users','perm','health','params','pub','dev','agvw'].forEach(k=>{$('#a_'+k).onclick=()=>adTab(k)});adTab('ops')}
+async function agvPanel(){const B=$('#abody');if(!B)return;let s,y;try{s=await api('/api/sysstatus');y=await api('/api/agv/auth-yield')}catch(_){B.innerHTML='<div class="card" style="color:var(--warn)">WMAS 状态加载失败（服务需重启加载新版）</div>';return}
+ window._agvRev=s.cfgRev||0;const w=s.wmas||{};
+ B.innerHTML=`<div class="card"><b style="font-size:13px">🔐 WMAS 凭证（AGV 下发通道）</b> <span style="font-size:12px;color:var(--sub)">保存即清废票/清冷却/解除让位并立即重登回测；账号密码只写不读（与 PDA 同边界）</span>
+ <div style="margin:8px 0;font-size:12px">状态：<b style="color:${w.ok?'var(--ok)':(w.login&&w.down)?'var(--bad)':'var(--warn)'}">${w.ok?'在线，可下发任务':!w.cfg?'未配置':(w.login&&w.down)?'账号能登录，但业务通道(mom-logistics)探活失败——看门狗已告警':'未配置 / 登录失败或凭据失效'}</b>${w.lastSec>=0?' · 上次探活 '+w.lastSec+' 秒前':''} ${(y&&y.on)?'　<b style="color:var(--warn)">⏸ 让位中（'+_esc(y.by||'')+' 操作）剩 '+y.leftMin+' 分钟，叫车/撤销暂停</b>':''}</div>
+ <div class="row" style="align-items:center;gap:6px;flex-wrap:wrap"><input id="wgH" placeholder="WMAS 主机地址（已自动带出，改错会断通道）" style="width:250px;padding:5px 8px" value="${_esc(w.host||'')}"><input id="wgA" placeholder="账号（必填，不回填已存）" style="width:150px;padding:5px 8px"><input id="wgP" type="password" placeholder="密码（必填，服务器不回显）" style="width:170px;padding:5px 8px" autocomplete="new-password"><button class="pill g" id="wgS" style="padding:4px 12px">💾 保存并重登</button><button class="pill" id="wgL" style="padding:4px 12px" title="让位期内服务器不自动登录，把账号让给你去 WMAS 办事；时长=运营参数「退出登录让位时长」默认15分">🔌 退出登录让位</button><button class="pill q" id="wgR" style="padding:4px 12px">▶ 恢复自动登录</button></div>
+ <div id="wgSt" style="margin-top:6px;font-size:12px;color:var(--sub)"></div>
+ <div style="font-size:11px;color:var(--sub);margin-top:6px;border-top:1px solid var(--line);padding-top:6px">凭证失效（有其他用户登录该账号）标准处置：去 WMAS 处理账号 → 回来点「恢复自动登录」或直接重新保存本配置，即刻恢复。改动记入活动流留痕（密码不落留痕）。带配置乐观锁：他人在 PDA 改过后保存会被提示刷新，不会静默互盖。</div></div>`;
+ const st=(m,c)=>{const x=$('#wgSt');if(x)x.innerHTML='<span style="color:'+(c||'var(--ink)')+'">'+m+'</span>'};
+ const _wait=async(ms)=>{await new Promise((r)=>setTimeout(r,ms))};
+ $('#wgS').onclick=async()=>{const host=$('#wgH').value.trim(),account=$('#wgA').value.trim(),pwd=$('#wgP').value;
+  if(!host||!account||!pwd){st('❌ 主机/账号/密码三项都必填（服务器整条覆盖保存，留空会破坏配置）','var(--bad)');return}
+  $('#wgS').disabled=true;st('保存中…');
+  try{const j=await api('/api/agv/wmas-config',{method:'POST',body:{host,account,pwd,baseRev:window._agvRev}});
+   if(j.ok){st('✅ '+(j.msg||'已保存')+'，正在回测通道…','var(--ok)');await _wait(1200);agvPanel()}
+   else if(j.code==='conflict'){st('❌ '+(j.msg||'')+'（他人已改配置，本条未保存——刷新页面重填后重试）','var(--bad)')}
+   else st('❌ '+(j.msg||'保存失败'),'var(--bad)')}catch(e){st('❌ 保存失败：'+e,'var(--bad)')}
+  const b=$('#wgS');if(b)b.disabled=false};
+ $('#wgL').onclick=async()=>{if(!confirm('确认退出 WMAS/AGV 自动登录并让位？\n让位期内 AGV 叫车/撤销不可用（时长=运营参数，默认15分钟，到期自动恢复）。'))return;
+  try{const j=await api('/api/agv/auth-logout',{method:'POST',body:{}});st((j.ok?'✅ ':'❌ ')+(j.msg||''),j.ok?'var(--ok)':'var(--bad)');await _wait(800);agvPanel()}catch(e){st('❌ '+e,'var(--bad)')}};
+ $('#wgR').onclick=async()=>{try{const j=await api('/api/agv/auth-resume',{method:'POST',body:{}});st((j.ok?'✅ ':'❌ ')+(j.msg||''),j.ok?'var(--ok)':'var(--bad)');await _wait(1200);agvPanel()}catch(e){st('❌ '+e,'var(--bad)')}};}
+async function adTab(t){['ops','errlog','syserr','users','perm','health','params','pub','dev','agvw'].forEach(k=>{const b=$('#a_'+k);if(b)b.className='pill'+(k==t?'':' q')});const B=$('#abody');
+ if(t=='agvw'){agvPanel();return}
  if(t=='ops'){B.innerHTML='加载中…';try{const j=await api('/api/admin/ops?limit=200');window._ops=j.list;
   B.innerHTML=`<div class="card"><div class="row"><span style="font-size:12.5px;color:var(--sub)">共 ${j.total} 条留痕 · 显示最近 200 条</span><select id="of" onchange="adFlt()"><option value="">全部操作人</option>${(j.persons||[]).map(p=>`<option>${p}</option>`).join('')}</select><button class="pill" onclick="adDl9()">⬇ 导出D9</button><button class="pill" title="重算昨日留痕摘要与存档比对：手改/删任一行即不符" onclick="opsIntegrity()">🔗 断链校验</button><span id="igv" style="font-size:11.5px"></span></div><div id="otb" style="overflow:auto;max-height:60vh"></div></div>`;adFlt()}catch(_){B.innerHTML='<div class="card" style="color:var(--warn)">加载失败：服务需重启加载新代码</div>'}}
  else if(t=='errlog'){B.innerHTML='加载中…';try{const dv=$('#elf')?$('#elf').value:'';const j=await api('/api/admin/errlog?limit=200'+(dv?'&dev='+encodeURIComponent(dv):''));window._elogs=j.list||[];

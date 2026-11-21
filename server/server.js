@@ -7585,7 +7585,7 @@ return send(res, 200, {
         // ㉖v93d 灯语义=「能不能下发」而非「能不能登录」：登录通道正常但 mom-logistics 业务通道掉线
         // （10/24 复盘：登录成功却建不了任务/查不到容器）时，看门狗 wmasDownAt 在场 → 灯必须红，不能绿着骗人
         const wmDown = !!db.wmasDownAt;
-        return send(res, 200, { ok: true, rcs: { cfg: rcsCfg, ok: rcsCfg && rcsAge >= 0 && rcsAge < 120, lastSec: rcsAge, host: rcsCfg ? String(db.rcsConfig.host || "") : "" }, wmas: { cfg: !!(db.wmasConfig && db.wmasConfig.host), ok: wmOk && !wmDown, login: wmOk, down: wmDown, lastSec: wmAge } });
+        return send(res, 200, { ok: true, cfgRev: db.cfgRev || 0, rcs: { cfg: rcsCfg, ok: rcsCfg && rcsAge >= 0 && rcsAge < 120, lastSec: rcsAge, host: rcsCfg ? String(db.rcsConfig.host || "") : "" }, wmas: { cfg: !!(db.wmasConfig && db.wmasConfig.host), host: !!(db.wmasConfig && db.wmasConfig.host) ? String(db.wmasConfig.host || '').replace(/^https?:\/\//, '') : '', ok: wmOk && !wmDown, login: wmOk, down: wmDown, lastSec: wmAge } }); // ㉖v224 cfgRev=网页 WMAS 凭证面板的乐观锁基线（cfgGuard 对不带 baseRev 直接放行=静默互盖，面板必须带）；v224b wmas.host=脱协议头主机名仅供面板带出，账号/密码仍不回显零泄露
       }
       // ---- ㉖① 标签全局查重：采集入库/出库/AGV 前预检（任何批次命中即拦）----
       if (req.method === 'GET' && p === '/api/label/check') {
