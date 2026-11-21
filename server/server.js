@@ -772,6 +772,7 @@ function dictFfdCleanV158() {
     }
     db.dictFfdCleanedV158 = 1; if (n) save();
     if (n) console.log('[dict-ffd-v158] 已清理字典乱码键 ' + n + ' 条（同族干净键值相同，零信息损失）');
+    try { selfHealCount('dictFfdCleanV158', n) } catch (_hc) {}
   } catch (e) { console.log('[dict-ffd-v158] 失败：', e.message); }
 }
 // projDict：{码:{nm,at}} 项目清单（≤200 上限，小规模不剪枝）；projMap：{PN:[码,…]} 归属（单PN≤20码）
@@ -5825,6 +5826,11 @@ return send(res, 200, {
         const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '7') || 7));
         return send(res, 200, { ok: true, days, stages: buildFunnel(days) });
       }
+      if (req.method === 'GET' && p === '/api/admin/opsaudit') { // ㉖v210 运营转速表：账实相符率+缺料销案时效+自愈补丁触发（管理页健康分区块用）
+        if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可见' });
+        const _ad = Number(url.searchParams.get('days')) || 30;
+        return send(res, 200, { ok: true, acc: stockAccAudit(_ad), shortage: shortageAgeAudit(Math.max(_ad, 90)), selfHeal: selfHealWeekly(_ad) });
+      }
       if (req.method === 'GET' && p === '/api/agv/schedstats') { // ㉖v142 L0 调度观测：节流计数聚合 + 车辆健康分 + 排队分位数
         const days = Math.min(30, Math.max(1, parseInt(url.searchParams.get('days') || '14') || 14));
         const _f = buildFunnel(days);
@@ -9669,6 +9675,7 @@ function seenInBackfill() { // ㉖ 首次升级：现存账本+采集流水的�
     for (const x of db.ledger || []) { const c = String(x.c || '').toUpperCase(); if (c && !db.seenIn[c]) { db.seenIn[c] = { by: x.by || '', t: Number(x.t) || Date.now(), l: x.l, p: x.p || '', q: Number(x.q) || 0, lot: String(x.b || ''), pid: String(x.pid || '') }; n++; } } // ㉖v99 富字段
     for (const st of Object.values(db.scanlog || {})) { const c = String(st.code || '').toUpperCase(); if (c && !db.seenIn[c]) { db.seenIn[c] = { by: st.op || '', t: Number(st.t) || Date.now(), l: (st.wt === 0 ? st.st : st.gl) || '', p: st.pn || '', q: Number(st.q) || 0, lot: String(st.lot || ''), pid: String(st.pid || '') }; n++; } } // ㉖v99 富字段；修 wt 三元写反（AGV模式初始位=站台st，非地面gl）
     db.seenInBackfilled = 1; if (n) console.log('[seenIn] 历史标签回填 ' + n + ' 个');
+    try { selfHealCount('seenInBackfill', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖v100 补丁迁移：老回填三元写反（wt===0取gl/wt===1取st）→ 条目 l 或空（AGV框gl空）或反向病非空错值
@@ -9700,6 +9707,7 @@ function seenInPatchV100() {
     }
     db.seenInPatchedV100 = 1; save();
     if (n) console.log('[seenIn] v100 补丁纠正/补齐 ' + n + ' 字段');
+    try { selfHealCount('seenInPatchV100', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖v108 存量自愈：出库同步端点旧版不分成出库/移仓，把移仓单（去向冷冲件仓等）也盖了 seenOut"已出库"戳——
@@ -9718,6 +9726,7 @@ function seenOutMoveFixV108() {
     }
     db.seenOutMoveFixedV108 = 1;
     if (n) { save(); console.log('[seenOut] v108 自愈：清理移仓误盖的"已出库"戳 ' + n + ' 个标签'); }
+    try { selfHealCount('seenOutMoveFixV108', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖v109 存量自愈：历史出库单里"物料号冒充零件号"的明细（PDA 直调 PartCode 缺失按物料编码记账，
@@ -9742,6 +9751,7 @@ function outboundMitemFixV109() {
     for (const k of Object.keys(db.itemDict || {})) { if (_mitemShape(k) || String((db.itemDict[k] || {}).mc || '') === k) { delete db.itemDict[k]; dn++; } }
     db.outboundMitemFixedV109 = 1;
     if (n || dn) { db.outboundAt = new Date().toISOString(); save(); console.log('[outbound-fix] v109 存量自愈：纠正物料号冒充零件号明细 ' + n + ' 行，清除字典假键 ' + dn + ' 个'); }
+    try { selfHealCount('outboundMitemFixV109', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖v101 存量迁移：采集流水 op 字段字节错位乱码（10/29 现场：工作量报表"宋明明/◆◆明明/宋◆◆◆明"裂成三行）。
@@ -9767,6 +9777,7 @@ function opFixV101() {
     }
     db.opFixedV101 = 1; save();
     if (n) console.log('[op-fix] v101 迁移修复采集流水操作人乱码 ' + n + ' 条');
+    try { selfHealCount('opFixV101', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖v101 存量清理：旧版 App 格数页每次保存全量提交 A~D×18=72 条（多为值=默认12的无意义覆盖，实测 69 条冗余+3 条真实覆盖）。
@@ -9780,6 +9791,7 @@ function gsCleanV101() {
     for (const [k, v] of Object.entries(gs)) { if (Number(v) === defC) { delete gs[k]; n++; } }
     db.gscCleanedV101 = 1; save();
     if (n) console.log('[gnd-slots] v101 清理冗余格数覆盖（=默认' + defC + '） ' + n + ' 条');
+    try { selfHealCount('gsCleanV101', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖v103 存量对账：账本行件数 ≠ 该标签最新有效扫码件数 → 按扫码值纠正（11/3 现场 N26J230463 账本 300/实测 220，
@@ -9804,6 +9816,7 @@ function ledgerQtyFixV103() {
     if (n) { db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = '数量对账'; }
     save();
     if (n) console.log('[ledger-qty] v103 按最新有效扫码纠正账本件数 ' + n + ' 行：' + detail.join(' ; ') + (n > detail.length ? ' …' : ''));
+    try { selfHealCount('ledgerQtyFixV103', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖v103 存量修复：账本"登记人"被推送人洗掉（11/4 用户实锤 N26J270462：刘向轩扫入上架，链路显示"登记 胡明锵"）。
@@ -9828,6 +9841,7 @@ function ledgerByFixV103() {
     if (n) { db.ledgerRev = (db.ledgerRev || 0) + 1; db.ledgerAt = new Date().toISOString(); db.ledgerBy = '登记人修复'; }
     save();
     if (n) console.log('[ledger-by] v103 按出生登记恢复被洗掉的登记人 ' + n + ' 行：' + detail.slice(0, 8).join(' ; ') + (n > 8 ? ' …' : ''));
+    try { selfHealCount('ledgerByFixV103', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖v103 存量修正：撤扫竞态误记账（11/3 现场 LL2026110308231354 行 8889330048：取消勾选撤扫期间用户重扫，
@@ -9866,6 +9880,7 @@ function reqRaceFixV103() {
     db.reqRaceFixedV103 = 1;
     if (n) { db.requisitionsAt = new Date().toISOString(); save(); }
     if (n) console.log('[req-race] v103 修正撤扫竞态误记账 ' + n + ' 行：' + detail.join(' ; ') + (n > detail.length ? ' …' : ''));
+    try { selfHealCount('reqRaceFixV103', n) } catch (_hc) {}
   } catch (_) {}
 }
 // ㉖④ 检验工单状态机推进：toStation→atStation（站台快照出现本框标签）；returning→done（归位后该框回到原货位=账本命中）；waitReturn→returned（该框经出库通道出账）
@@ -10811,9 +10826,9 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
   // ㉖ 检验下架项指定台判据换检验口径（出库判据排除检验·入库专用台，会把指定到 insp 台的任务永远卡排队）
   const mfree = q.type === 'insp' ? inspStationFree(q.stationManual, nowMs, q.inspId) : agvStationFree(q.stationManual, nowMs, runT, assigned);
   if (q.stationManual && mfree) { stn = q.stationManual; trPush(q, '指定台 ' + stn + ' 可用，按指定执行'); }
-  if (!stn && q.manualOnly) { q.blockRsn = '指定台占用'; q.blockKey = '指定台'; schedBlockMark(q, nowMs); trPush(q, '起终点固定任务：指定台 ' + (q.stationManual || '?') + ' 当前不可用，排队等待（不自动改派）'); return false; }
+  if (!stn && q.manualOnly) { if (q.blockRsn && q.blockRsn !== '指定台占用' && !(q.blockSeq || []).includes(q.blockRsn)) (q.blockSeq = q.blockSeq || []).push(q.blockRsn); q.blockRsn = '指定台占用'; q.blockKey = '指定台'; schedBlockMark(q, nowMs); trPush(q, '起终点固定任务：指定台 ' + (q.stationManual || '?') + ' 当前不可用，排队等待（不自动改派）'); return false; }
   const _capB = P().aisleCap; const _abB = _capB > 0 ? aisleBusy() : null; // B 巷道并发节流：源巷道在途达上限→本轮不放行（指定台任务豁免，人工意图优先）
-  if (_abB && !q.stationManual && /^NB02-/.test(String(q.fromLoc || '')) && (_abB[String(q.fromLoc).slice(0, 9)] || 0) >= _capB) { q.blockRsn = '巷道并发'; q.blockKey = String(q.fromLoc).slice(0, 9).toUpperCase(); schedBlockMark(q, nowMs); trPush(q, '通道节流：源巷道 ' + String(q.fromLoc).slice(0, 9) + ' 在途 ' + _abB[String(q.fromLoc).slice(0, 9)] + ' ≥上限' + _capB + '，本轮不放行'); return false; }
+  if (_abB && !q.stationManual && /^NB02-/.test(String(q.fromLoc || '')) && (_abB[String(q.fromLoc).slice(0, 9)] || 0) >= _capB) { if (q.blockRsn && q.blockRsn !== '巷道并发' && !(q.blockSeq || []).includes(q.blockRsn)) (q.blockSeq = q.blockSeq || []).push(q.blockRsn); q.blockRsn = '巷道并发'; q.blockKey = String(q.fromLoc).slice(0, 9).toUpperCase(); schedBlockMark(q, nowMs); trPush(q, '通道节流：源巷道 ' + String(q.fromLoc).slice(0, 9) + ' 在途 ' + _abB[String(q.fromLoc).slice(0, 9)] + ' ≥上限' + _capB + '，本轮不放行'); return false; }
   if (!stn) {
     const skip = [];
     const free = AGV_STNS.filter((x) => { const ok = agvStationFree(x, nowMs, runT, assigned); if (ok && !q.stationManual) { const w = stnHoldUntil(x, nowMs); if (w > nowMs) { if (skip.length < 4) skip.push(x + '(时间窗预约中)'); return false; } } if (!ok && skip.length < 4) skip.push(x + '(' + stnWhy(x, nowMs, runT, assigned) + ')'); return ok; });
@@ -10823,7 +10838,7 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
       stn = best || free[0];
       trPush(q, '选台 ' + stn + (bestD < Infinity ? '（' + free.length + '空闲台中路网最近 ' + Math.round(bestD) + 'm）' : '（空闲台首个）'));
       if (skip.length) trPush(q, '已排除 ' + skip.join('、'));
-    } else { q.blockRsn = '无空闲台'; q.blockKey = '站台'; schedBlockMark(q, nowMs); trPush(q, '暂无可用台：' + (skip.join('、') || '全部站台占用/停用') + '，等待下轮'); }
+    } else { if (q.blockRsn && q.blockRsn !== '无空闲台' && !(q.blockSeq || []).includes(q.blockRsn)) (q.blockSeq = q.blockSeq || []).push(q.blockRsn); q.blockRsn = '无空闲台'; q.blockKey = '站台'; schedBlockMark(q, nowMs); trPush(q, '暂无可用台：' + (skip.join('、') || '全部站台占用/停用') + '，等待下轮'); }
   }
   if (!stn) return false;
   if (q.blockSince) schedBlockClose(q, nowMs); // ㉖v142 本轮放行=被挡段结束，累计真实时长入桶
@@ -11170,6 +11185,49 @@ async function carAlarmWatch(tk, nowMs) {
   }
 }
 
+// ===== ㉖v210 运营转速表：自愈补丁触发计数 + 账实相符率 + 缺料销案时效（纯聚合只读） =====
+// 自愈补丁每次真正修复 n 条即计数落库（按日×补丁名），高频触发=主流程薄弱点点名，供健康页展示。
+function selfHealCount(name, n) { try {
+  n = Number(n) || 0; if (!n) return;
+  const k = snapDay(new Date()); const S = (db.selfHealStats = db.selfHealStats || []);
+  let b = S.find((x) => x.d === k); if (!b) { b = { d: k, c: {} }; S.push(b); }
+  b.c[name] = (b.c[name] || 0) + n; if (S.length > 120) S.splice(0, S.length - 120);
+} catch (_) {} }
+// 账实相符率：近 days 天盘点批次聚合。件数口径=1-Σ|real-book|/Σbook（零件级；账外 out 与双基准矛盾 warn 如实列报不改口径）
+function stockAccAudit(days) { try {
+  const since = Date.now() - (days || 30) * 864e5;
+  const bs = Object.values(db.inventories || {}).filter((r) => (Number(r.at) || 0) >= since);
+  let book = 0, adiff = 0, boxN = 0, boxDiff = 0, outQ = 0, warnN = 0; const list = [];
+  for (const r of bs) { let bSum = 0, dSum = 0, oq = 0, wn = 0, dn = 0;
+    for (const p of (r.parts || [])) { const bk = Number(p.book) || 0, rl = Number(p.real) || 0; bSum += bk; dSum += Math.abs(rl - bk); oq += Number(p.out) || 0; if (p.warn === 7) wn++; }
+    for (const l of (r.locs || [])) { boxN++; if (Math.abs((Number(l.real) || 0) - (Number(l.book) || 0)) > 1e-6) boxDiff++; }
+    dn = (r.parts || []).filter((p) => Math.abs((Number(p.real) || 0) - (Number(p.book) || 0)) > 1e-6).length;
+    book += bSum; adiff += dSum; outQ += oq; warnN += wn;
+    list.push({ batchId: r.batchId, at: Number(r.at) || 0, by: String(r.by || ''), blind: !!r.blind, bookQ: bSum, diffQ: dSum, diffParts: dn, outQ: oq, warnN: wn, acc: bSum > 0 ? Math.round((1 - dSum / bSum) * 1000) / 10 : null }); }
+  const boxAcc = boxN > 0 ? Math.round((1 - boxDiff / boxN) * 1000) / 10 : null;
+  return { days, batches: bs.length, qtyAcc: book > 0 ? Math.round((1 - adiff / book) * 1000) / 10 : null, boxAcc, diffQty: adiff, bookQty: book, outQty: outQ, warnRows: warnN, list: list.sort((a, b) => b.at - a.at).slice(0, 20) };
+} catch (_) { return { days: days || 30, batches: 0, qtyAcc: null, boxAcc: null, list: [] } } }
+// 缺料销案时效：近 days 天 resolved 的 firstAt→doneAt 分位数；ETA 履约=doneAt-eta（正=晚于承诺）；在办=未销案
+function shortageAgeAudit(days) { try {
+  const since = Date.now() - (days || 90) * 864e5;
+  const S = db.shortages || []; const done = [], open = [];
+  for (const s of S) { if (s.status === 'resolved') { const fa = Number(s.firstAt) || 0, da = Number(s.doneAt) || 0; if (da && da >= since) done.push({ h: (da - fa) / 36e5, etaGap: s.eta ? (da - Number(s.eta)) / 36e5 : null, auto: s.doneBy === '系统' }); }
+    else if (Number(s.firstAt) || 0) open.push(s); }
+  const q = (a, p) => { if (!a.length) return null; const x = a.slice().sort((m, n) => m - n); return Math.round(x[Math.min(x.length - 1, Math.floor((x.length - 1) * p))] * 10) / 10; };
+  const hs = done.map((d) => d.h), gaps = done.filter((d) => d.etaGap !== null).map((d) => d.etaGap);
+  const nowMs = Date.now();
+  return { days, resolved: done.length, p50H: q(hs, 0.5), p90H: q(hs, 0.9), autoPct: done.length ? Math.round(done.filter((d) => d.auto).length / done.length * 100) : null,
+    etaN: gaps.length, etaLateP50H: q(gaps, 0.5), etaBadPct: gaps.length ? Math.round(gaps.filter((g) => Math.abs(g) > 24).length / gaps.length * 100) : null,
+    openN: open.length, openOver7d: open.filter((s) => nowMs - (Number(s.firstAt) || 0) > 7 * 864e5).length };
+} catch (_) { return { days: days || 90, resolved: 0, openN: (db.shortages || []).length } } }
+// 自愈统计周汇总（供健康页）：近 n 天各补丁累计修复条数 + 触发天数
+function selfHealWeekly(days) { try {
+  const cut = Date.now() - (days || 30) * 864e5; const agg = {};
+  for (const b of (db.selfHealStats || [])) { const t = Date.parse(b.d.slice(0, 4) + '-' + b.d.slice(4, 6) + '-' + b.d.slice(6, 8) + 'T12:00:00'); if (!(t >= cut)) continue;
+    for (const [k, v] of Object.entries(b.c || {})) { const a = (agg[k] = agg[k] || { n: 0, days: 0 }); a.n += v; a.days++; } }
+  return Object.entries(agg).map(([k, v]) => ({ name: k, n: v.n, days: v.days })).sort((a, b) => b.n - a.n);
+} catch (_) { return [] } }
+
 // ===== ㉖v142 L0 调度观测地基：节流计数器 / 车辆健康分 / 等待分位数辅助 =====
 // 设计要点（正确性优先，逐条对应实测隐患）：
 // ① 节流计数用【真实时长】而非轮次累计——生产 pollSec=3 秒（非默认20），按轮次会把被挡时长放大6~20倍；
@@ -11185,7 +11243,7 @@ function schedBlockClose(q, nowMs) { // 放行/终态：结算被挡段真实时
   if (!q.blockSince) return;
   const durS = Math.max(0, Math.round((nowMs - q.blockSince) / 1000));
   q.blockSince = 0;
-  const rsn = String(q.blockRsn || '其他'); q.blockRsn = '';
+  const rsn = String(q.blockRsn || '其他'); q.blockRsn = ''; const _sq = Array.from(new Set((q.blockSeq || []).concat(rsn))); q.blockSeq = [];
   const key = String(q.blockKey || (q.fromLoc ? String(q.fromLoc).slice(0, 9).toUpperCase() : '站台'));
   if (durS <= 0) return; // 同轮放行=0秒，不计（防 dry 演算/瞬时抖动灌桶）
   db.schedBlock = db.schedBlock || [];
@@ -11193,7 +11251,7 @@ function schedBlockClose(q, nowMs) { // 放行/终态：结算被挡段真实时
   const hr = Math.floor(nowMs / 3600000) * 3600000; // 按小时对齐入桶
   let b = db.schedBlock.find((x) => x.hr === hr && x.key === key && x.rsn === rsn);
   if (!b) { b = { hr, key, rsn, n: 0, sec: 0, max: 0 }; db.schedBlock.push(b); }
-  b.n++; b.sec += durS; if (durS > b.max) b.max = durS;
+  b.n++; b.sec += durS; if (durS > b.max) b.max = durS; if (_sq.length > 1) { b.mn = (b.mn || 0) + 1; const _ck = _sq.slice().sort().join('+'); (b.combos = b.combos || {})[_ck] = (b.combos[_ck] || 0) + 1; }
 }
 function schedBlockPrune(nowMs) { // 保留近 N 天，滚动清理（默认30天，与漏斗窗口对齐）
   const keep = (nowMs || Date.now()) - 30 * 86400000;
@@ -11209,7 +11267,8 @@ function schedBlockAgg(days) { // 聚合输出：按原因汇总 + 按巷道明�
     if (/^NB02-/.test(x.key)) { byAisle[x.key] = byAisle[x.key] || { n: 0, sec: 0, max: 0 }; byAisle[x.key].n += x.n; byAisle[x.key].sec += x.sec; if (x.max > byAisle[x.key].max) byAisle[x.key].max = x.max; }
   }
   const fmt = (o) => Object.entries(o).map(([k, v]) => ({ k, n: v.n, avgMin: Math.round(v.sec / Math.max(1, v.n) / 6) / 10, totMin: Math.round(v.sec / 60), maxMin: Math.round(v.max / 6) / 10 })).sort((a, b) => b.totMin - a.totMin);
-  return { days: days || 14, byRsn: fmt(byRsn), byAisle: fmt(byAisle) };
+  const _co = { n: 0, sec: 0, combos: {} }; for (const x of rows) { if (x.mn) { _co.n += x.mn; _co.sec += Math.round(x.sec / Math.max(1, x.n) * x.mn / 60); for (const [ck, cv] of Object.entries(x.combos || {})) _co.combos[ck] = (_co.combos[ck] || 0) + cv; } } const _top = Object.entries(_co.combos).sort((a, b2) => b2[1] - a[1]).slice(0, 3).map((e) => ({ combo: e[0], n: e[1] }));
+  return { days: days || 14, byRsn: fmt(byRsn), byAisle: fmt(byAisle), coexist: { n: _co.n, totMin: _co.sec, top: _top } };
 }
 function schedCarHealth() { // 车辆健康分：近7天 carEvents 按车聚合，扣分制+原始计数并列
   const since = Date.now() - 7 * 86400000;
@@ -11333,4 +11392,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} try { lostCallSweep(); } catch (_) {} try { dictFfdCleanV158(); } catch (_) {} /* ㉖v158 字典乱码键清理：放 8 秒链内=当日备份(backupDb)必已落盘，清理前原件在备份里可回滚 */ }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目；㉖v152 启动跑一轮丢单巡检（去重映射持久库内，重启不重复轰炸）
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); try { selfHealCount('outboundLedgerFix', n) } catch (_hc) {} if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} try { lostCallSweep(); } catch (_) {} try { dictFfdCleanV158(); } catch (_) {} /* ㉖v158 字典乱码键清理：放 8 秒链内=当日备份(backupDb)必已落盘，清理前原件在备份里可回滚 */ }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目；㉖v152 启动跑一轮丢单巡检（去重映射持久库内，重启不重复轰炸）
