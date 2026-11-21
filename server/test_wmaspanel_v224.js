@@ -28,6 +28,9 @@ const get2 = async (p2, tk) => { const r = await fetch(BASE + p2, { headers: tk 
       users: [{ id: 'u_wm224', username: 'wm_u', name: '凭证测试管理', role: 'admin', enabled: true, createdAt: new Date().toISOString(), mustChangePw: false, salt, passHash: crypto.scryptSync(PW, salt, 32).toString('hex') }],
       sessions: {}, devices: {}, ops: [], notifications: [],
       requisitions: [], outbound: {}, ledger: [], scanlog: {}, agvQueue: [], agvTasks: {}, carEvents: [], inspects: [],
+      // ㉖v224b 夹具必须带 features（首版漏此字段→loadDb d.features[role] 崩、实例未起；
+      // 面板走 wmas-config/auth-logout 均要 canFeature(agv_control)，admin 全开）
+      features: { material: {}, warehouse: { agv_control: true }, inspector: {}, admin: { agv_control: true, insp_assist: true } },
       // 假主机指向 127.0.0.1:1（秒断拒连，防测试挂在真实网络超时上）；带 http:// 前缀验脱敏
       wmasConfig: { host: 'http://127.0.0.1:1', account: 'secret_acc_224', pwd: 'secret_pwd_224' },
       rcsConfig: null, rcsStations: {},

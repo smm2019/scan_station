@@ -298,6 +298,9 @@ function loadDb() {
   if (!fs.existsSync(DB_FILE)) { const d = defaultDb(); saveDb(d); console.log('[init] 已创建初始账号 admin / admin123（首次登录需改密）'); return d; }
   const d = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
   // 合并新增功能键：旧数据文件缺的键按默认值补齐（已有键保留管理员改过的值）
+  // ㉖v224b features 整键缺失加固（v224 测试夹具漏 features 实锤：d.features[role] 裸引用直接崩，
+  // 手改/损坏的库文件同样触发=启动即死；缺什么补什么，不另起炉灶）
+  d.features = d.features || {};
   let merged = false;
   for (const role of ROLES) {
     d.features[role] = d.features[role] || {};
