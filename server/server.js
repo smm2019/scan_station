@@ -2171,12 +2171,36 @@ function invariantSweep() {
         if (outAt > (lastIn.get(c) || 0)) ghost.push({ c, l: x.l, outNo: String(so.no || '') });
       }
     }
+    // ===== 不变量④：领料单 issued 框归宿（拣下后蒸发成幽灵在途的兜底哨兵）=====
+    // 每框拣下(scan)即从权威账本摘除；合法归宿只有两条：转MES(seenOut/出库台账) 或 退回在架(账本复挂)。
+    // 单已终结(或该行已跳过) 且 该行未转MES 却仍挂 issued 且 三处(账本/seenOut/出库台账)全无
+    // = 货被拣下却账上凭空蒸发、实物可能悬空。㉖v209 已修"取消不回滚"，本条兜住 skip 残留+历史遗留+未来漏配回滚。
+    const lost = [];
+    {
+      const ledCodes = new Set(ledgerView().map((x) => up(x.c)));
+      const SO = db.seenOut || {};
+      const obCodes = new Set();
+      for (const o of Object.values(db.outbound || {})) for (const it of (o.items || [])) String(it.barcode || '').toUpperCase().split(/[;；]/).forEach((x) => { x = x.trim(); if (x) obCodes.add(x); });
+      for (const r of db.requisitions || []) {
+        const ended = ['done', 'closed', 'cancelled', 'rejected'].includes(r.status);
+        for (const it of r.items || []) {
+          if (it.transferred) continue;            // 转MES行：框已在 seenOut/台账，天然有归宿
+          if (!ended && !it.skipped) continue;      // 活跃且未跳过行 = 拣下待转的合法在途，不判
+          for (const e of (it.issued || [])) {
+            const c = up(typeof e === 'string' ? e : (e && e.c)); if (!c) continue;
+            if (ledCodes.has(c) || SO[c] || obCodes.has(c)) continue; // 任一归宿命中即非幽灵
+            lost.push({ c, no: String(r.no || ''), pn: String(it.partNo || '') });
+          }
+        }
+      }
+    }
     // 快照（供健康页/PDA 展示"最近一次自检结果"，也让"哨兵在岗"本身可观测）
-    db.lastInvariantCheck = { at: Date.now(), locClash: locClash.length, ghost: ghost.length };
+    db.lastInvariantCheck = { at: Date.now(), locClash: locClash.length, ghost: ghost.length, lost: lost.length };
 
     const freshLoc = locClash.filter((h) => isFresh('loc:' + h.l));
     const freshGhost = ghost.filter((h) => isFresh('ghost:' + h.c));
-    if (!freshLoc.length && !freshGhost.length) { if (locClash.length || ghost.length) save(); return; } // 老问题不重复吵，但快照仍落盘
+    const freshLost = lost.filter((h) => isFresh('lost:' + h.c));
+    if (!freshLoc.length && !freshGhost.length && !freshLost.length) { if (locClash.length || ghost.length || lost.length) save(); return; } // 老问题不重复吵，但快照仍落盘
 
     const _who = (db.users || []).filter((x) => x.enabled && (x.role === 'warehouse' || x.role === 'admin'));
     if (freshLoc.length) {
@@ -2190,6 +2214,12 @@ function invariantSweep() {
       try { pushOps(null, '账实自检-幽灵框', freshGhost.slice(0, 10).map((h) => h.c).join('/'), freshGhost.length + ' 框 MES 已出库但本地账本仍在架（出库未消账，库存虚高）：' + lst); } catch (_) { }
       freshGhost.slice(0, 5).forEach((h) => { _who.forEach((x) => { try { notify(x.id, 'ghost_out', '👻 账实自检：' + h.c + '（' + h.l + '）MES 已出库但本地账本仍显示在架' + (h.outNo ? '（出库单 ' + h.outNo + '）' : '') + '——出库没消本地账，货架/来料区库存会虚高。请核对是否发错货，确认后到库存页消掉该行或重新登记', '', { solo: true }); } catch (_) { } }); });
       console.log(`[invariant] 幽灵框 ${freshGhost.length} 个: ${lst}`);
+    }
+    if (freshLost.length) {
+      const lst = freshLost.slice(0, 6).map((h) => h.c + '(' + h.no + ')').join('、');
+      try { pushOps(null, '账实自检-在途蒸发', freshLost.slice(0, 10).map((h) => h.c).join('/'), freshLost.length + ' 框已从领料单拣下但账本/出库记录全无（拣下后蒸发，实物可能悬空）：' + lst); } catch (_) { }
+      freshLost.slice(0, 5).forEach((h) => { _who.forEach((x) => { try { notify(x.id, 'ghost_out', '👻 账实自检：' + h.c + '（领料单 ' + h.no + (h.pn ? ' · ' + h.pn : '') + '）已从单据拣下但货架账本、出库记录里都查不到——发料被拣下却账面凭空消失，实物可能在台面/途中悬空。请核对该框实物位置：若已发出请补走出库转单，若已退回请用「位置登记」补账上架', '', { solo: true }); } catch (_) { } }); });
+      console.log(`[invariant] 在途蒸发 ${freshLost.length} 个: ${lst}`);
     }
     save();
   } catch (e) { console.log('[invariant] 失败：', e.message); logErr('invariantSweep', e); }
@@ -9097,8 +9127,17 @@ return send(res, 200, {
             if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可取消` });
             // 已有行真实转过MES：纸面取消会造成库存与MES不一致，禁止整单取消（剩余行走转单或跳过收尾）
             if (r.items.some(i => i.transferred)) return send(res, 400, { ok: false, msg: '已有行转MES出库，不能整单取消；请对剩余行转单或跳过收尾' });
+            // ㉖v209 取消须回滚"已扫未转"的框（复核实锤的地基漏洞：scan 成功即从权威账本 splice，
+            // 旧版取消只清 AGV 队列、对这些框零处理 → 账本无行(已摘)+MES无账(未转)+seenOut无记(仅转单才写)
+            // 三处无主=幽灵在途框，且下单人 pending/accepted 即可取消、不需 admin）。复用关单同一份
+            // unscanRollbackOne（其第一步即从 issued 移除该码+账本复挂+清墓碑+AGV返架联动），
+            // 与关单不同点：取消不自动跳过剩余行——取消语义就是"这单作废、已扫的退回货架、未扫的自然不发"。
+            let cback = 0;
+            for (const it of r.items || []) {
+              for (const e of normIssuedG(it)) { await unscanRollbackOne(r, it, String(e.c).toUpperCase(), u, hpush); cback++; }
+            }
             r.status = 'cancelled';
-            hpush(`取消${b.reason ? '：' + b.reason : ''}`);
+            hpush(`取消${b.reason ? '：' + b.reason : ''}${cback ? `（${cback} 框已退回货架）` : ''}`);
             // 联动：该单未下发的AGV排队项一并取消；已下发的只能去RCS取消任务
             let qn = 0, qd = 0;
             for (const q of db.agvQueue || []) {

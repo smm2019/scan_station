@@ -1694,7 +1694,10 @@ Future<void> ledgerRemoveAndPush(Iterable<String> codes) async {
       await ledgerMarkDeleted(gone); // 记墓碑：服务器合并时同步删除，别台PDA可拉取感知
     scheduleLedgerPush(seconds: 8);
   } catch (e) {
-    debugPrint("[ledger] 拣下失败：$e");
+    // ㉖v209 从静默 debugPrint 升级为异常上报：本机删除/墓碑失败=该框服务器账本仍显示在架，
+    // 但发料已记 issued（服务器 inIssued 闸会拦他单发它），若不排查就成"账面在架、实际已拣"的
+    // 幽灵在架框。走 LocalLog 上报通道，服务器 errlog 页可见（带设备/时刻，可定位哪台、哪批码）。
+    LocalLog.err('领料拣下摘账本失败(本批码数=${codes.length})，服务器账本可能残留该框', e);
   }
 }
 
