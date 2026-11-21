@@ -3434,6 +3434,7 @@ class _TracePageState extends State<TracePage> {
     "station": Icons.flag, "agv": Icons.forklift, "shelf": Icons.inventory_2,
     "recv": Icons.warehouse_outlined, "tin": Icons.arrow_upward, // ㉖v130 两楼流转：一楼来料登记 / 二楼转入
     "hist": Icons.history, // ㉖v205 被覆盖旧采集灰节点
+    "insp": Icons.find_in_page, // ㉖v222 检验下架/收口（两端统一：服务端 trace 补检验汇聚后 PDA 可见）
   };
   static const _kCol = <String, Color>{
     "scan": Color(0xFF2E7D32), "scanx": Color(0xFF9E9E9E), "req": Color(0xFF3949AB),
@@ -3441,6 +3442,7 @@ class _TracePageState extends State<TracePage> {
     "station": Color(0xFF00897B), "agv": Color(0xFFEF6C00), "shelf": Color(0xFF00897B),
     "recv": Color(0xFF00695C), "tin": Color(0xFF00897B), // ㉖v130 来料登记(深青) / 二楼转入(青)
     "hist": Color(0xFF9E9E9E), // ㉖v205 覆盖历史(灰)
+    "insp": Color(0xFF515BD4), // ㉖v222 检验(蓝紫，与网页旧版同族)
   };
   static const _seedName = <String, String>{
     "task": "AGV任务", "order": "单据", "box": "框码", "part": "零件号", "unknown": "未知",

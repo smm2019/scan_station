@@ -6087,6 +6087,26 @@ return send(res, 200, {
           }
           push(o.createdAt, 'out', '📤 出库 ' + no, its.map((i) => String(i.barcode || i.code || '') + '×' + (Number(i.qty) || 0)).join('、') + (o.toLoc ? ' → ' + o.toLoc : ''), opNameOf(o.operator));
         }
+        // — ㉖v222 ④b 检验工单（用户实拍两端分叉实锤：网页老 traceBox 自拉 inspect/list 有检验段、
+        // PDA 走本端点零检验节点。工单主体+收口/闭环各成事件；兄弟码随 CODES 天然覆盖）
+        {
+          const _ist = { waitOut: '待协助下架', toStation: '下架途中', atStation: '站台待检', waitBack: '待协助归位', returning: '归位途中', waitReturn: '待退货出账', returned: '退货已出账', stuck: '超时待核', cancel: '已取消' };
+          for (const im of (db.inspects || [])) {
+            const _c = codeOf(im.code);
+            if (!(CODES.has(_c) || _c === Q || (partExpand && codeOf(im.part) === Q))) continue;
+            const _rm = /人工移走收口/.test(String(im.note || ''));
+            const _stTx = im.state === 'done' ? (_rm ? '人工移走收口' : '已归位') : (_ist[im.state] || String(im.state || ''));
+            const _tt = 'JC-' + _c + (im.id ? ' · ' + String(im.id).slice(-6) : '');
+            push(im.at, 'insp', '🔎 检验下架 ' + _c,
+              (im.by || '') + ' · ' + (im.from || '') + '⇄' + (im.station || '') + ' · ' + _stTx
+              + (im.note2 ? ' · 检验：' + String(im.note2).slice(0, 40) : ''), im.by || '');
+            const _to2 = (String(im.note || '').match(/人工移走收口→(\S+?)（/) || [])[1] || '';
+            if (im.doneAt && im.state === 'returned') push(im.doneAt, 'insp', '📤 退货出账闭环（框不回货架） ' + _c, (im.station || '') + ' 已出账', _tt);
+            else if (im.doneAt && _rm) push(im.doneAt, 'insp', '📦 人已移走收口 → ' + (_to2 || '?') + '（账本随单改位·站台已释放） ' + _c, '原 ' + (im.from || '') + ' 已腾空', _tt);
+            else if (im.doneAt && im.state === 'done') push(im.doneAt, 'insp', '🔙 检验归位到位 ' + _c, '落回 ' + (im.from || ''), _tt);
+            else if (im.doneAt && im.state === 'cancel') push(im.doneAt, 'insp', '🚫 检验单取消 ' + _c, String(im.err || '').slice(0, 60), _tt);
+          }
+        }
         // — ⑤ AGV 调度状态 + 决策留痕 trace
         for (const x of qItems) {
           push(x.at, 'queue', '🚦 进入调度队列', '框 ' + String(x.code || '') + (x.fromLoc ? ' · ' + x.fromLoc : '') + (x.station ? ' → ' + x.station : '') + ' · 状态 ' + String(x.state || ''), x.by || '');
