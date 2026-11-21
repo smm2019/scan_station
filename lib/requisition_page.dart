@@ -3339,7 +3339,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               ]))),
     ];
     if (!_pickOn || !_pickOpen || route.isEmpty) return w;
+    var _stop = 0; // ㉖v217b 站点序号：仓管视角"先去哪站去哪站"，比裸排号更可执行
     for (final r in route.rows) {
+      _stop++;
       final hasCur = r.items.any((x) => x.partNo == _issuePart);
       w.add(Container(
           margin: const EdgeInsets.only(top: 5),
@@ -3353,16 +3355,24 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
           child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // ㉖v217b 两处修：①旧版 "$r.key" 是插值错误→标题整个渲染成 Instance of 'PickRow'.key
+                //（用户实拍：根本看不出去哪排取货）；②计数+徽章挤在一行右侧被裁 → 计数进 Expanded
+                // 弹性截断，站点大号加粗打头一眼可读（K区01排这种现场叫法）
                 Row(children: [
-                  Text("📍 $r.key",
+                  Text("📍 第$_stop站 ${r.zone}区${r.row}排",
                       style: const TextStyle(
-                          fontSize: 12.5, fontWeight: FontWeight.w800, fontFamily: "monospace")),
-                  const SizedBox(width: 8),
-                  Text("${r.boxCount}框 · ${_fmtInvNum(r.qtySum)}件 · ${r.parts.length}零件",
-                      style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF1A237E))),
+                  const SizedBox(width: 6),
+                  Expanded(
+                      child: Text(
+                          "${r.boxCount}框·${_fmtInvNum(r.qtySum)}件·${r.parts.length}种零件",
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey))),
                   if (hasCur)
                     Container(
-                        margin: const EdgeInsets.only(left: 6),
+                        margin: const EdgeInsets.only(left: 4),
                         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                         decoration: BoxDecoration(
                             color: const Color(0xFFE8F5E9),
@@ -3397,16 +3407,18 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                                     "${it.partNo} ${it.itemName} · ${_fmtInvNum(it.qty)}件",
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(fontSize: 11.5))),
-                            Text(it.code,
-                                style: TextStyle(
-                                    fontSize: 10.5,
-                                    fontFamily: "monospace",
-                                    color: it.partNo == _issuePart
-                                        ? const Color(0xFF1565C0)
-                                        : Colors.grey.shade600,
-                                    fontWeight: it.partNo == _issuePart
-                                        ? FontWeight.w700
-                                        : FontWeight.normal)),
+                            Flexible(
+                                child: Text(it.code,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                        fontSize: 10.5,
+                                        fontFamily: "monospace",
+                                        color: it.partNo == _issuePart
+                                            ? const Color(0xFF1565C0)
+                                            : Colors.grey.shade600,
+                                        fontWeight: it.partNo == _issuePart
+                                            ? FontWeight.w700
+                                            : FontWeight.normal))),
                             if (it.partNo == _issuePart)
                               const Icon(Icons.touch_app_outlined,
                                   size: 14, color: Color(0xFF1565C0)),
