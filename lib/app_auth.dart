@@ -357,6 +357,11 @@ class AuthApi {
       _req("POST", "/api/notifications/readgroup",
           body: {"types": types}, token: await AuthStore.token());
 
+  /// ㉖v232 消息详情：点开单条即已读（服务端按 id 只动本人消息）
+  static Future<Map> notificationsReadOne(String id) async =>
+      _req("POST", "/api/notifications/read",
+          body: {"id": id}, token: await AuthStore.token());
+
   /// ㉖v50 消息中枢"清未读"按钮：本人全部通知标记已读
   static Future<Map> notificationsReadAll() async =>
       _req("POST", "/api/notifications/readall",

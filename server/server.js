@@ -8797,6 +8797,16 @@ return send(res, 200, {
           if (n) save();
           return send(res, 200, { ok: true, marked: n });
         }
+        // ㉖v232 消息详情：点开单条即已读（Web 消息中心详情视图用；只动本人消息，查无=ok:false 静默）
+        if (req.method === 'POST' && p === '/api/notifications/read') {
+          const b = await readBody(req);
+          const id = String((b && b.id) || '').trim();
+          if (!id) return send(res, 400, { ok: false, msg: '缺 id' });
+          let hit = false;
+          for (const x of db.notifications) { if (x.to === u.id && String(x.id) === id) { if (!x.read) { x.read = true; } hit = true; break; } }
+          if (hit) save();
+          return send(res, 200, { ok: hit, marked: hit ? 1 : 0 });
+        }
 
         // 状态动作：/:id/accept|reject|scan|unscan|transfer|skip|loc|confirm|cancel|reassign|agv|rush
         const mAct = p.match(/^\/api\/requisitions\/([\w-]+)\/(accept|reject|scan|unscan|transfer|skip|loc|confirm|cancel|reassign|agv|rush|urge|delitem|ready|back|close)$/); // ㉖v94m 断链修复：v82加unscan分支时漏改本白名单→PDA转单窗取消勾选的"撤扫"请求从未进过处理代码
