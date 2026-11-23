@@ -339,6 +339,11 @@ function loadDb() {
   // 一个框任何时刻只留一条有效流水，件数不再虚高。绝不动账本行（改走 /api/scanlog/cancel 会连带整框消账、把在架实物抹掉）。
   // 中途放弃/MES 失败/格式闸拒收 → 凭证到期作废失败自动清除，旧流水原样保留，不会出现"新旧两条都没了"。
   if (typeof d.supersede !== 'object' || d.supersede === null || Array.isArray(d.supersede)) { d.supersede = {}; added = true; }
+  // ㉖v231 AGV 精确归档（用户 11-23 实锤：同 AGV 站台模式两框链路一半节点蒸发，且要求"哪台车拉的和标签一一对应"）：
+  //   队列项完成 2 小时出队 → ①决策链 trace（指定台/预约窗/下发）+进入队列+到达站台节点蒸发；
+  //   ②agvTaskForCode 失去 wmsTask 精确锚点，退回"同站台+时间窗"猜任务 → 抓到邻框任务就把邻框车号显示过来。
+  //   修法=出队瞬间把 {code,wmsTask,car,决策trace,到站时刻} 精确快照存此（键=wmsTask），30天/5000条滚动。
+  if (!Array.isArray(d.agvArch)) { d.agvArch = []; added = true; }
   // ㉖v61 出库流水乱码自愈：PDA/WMAS 推送编码丢失产生的 U+FFFD 与控制字符——name 按标签反查流水/账本/字典回填干净名，查不到则剥替换符；move 归一 AGV/人工
   {
     const _bad = /[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
@@ -3812,6 +3817,22 @@ function agvTaskForCode(codeRaw) {
   let epWant = '';
   if (wantCk === 'in') { const led1 = (db.ledger || []).find((x) => String(x.c || '').toUpperCase() === code); if (led1 && String(led1.mv || '') === 'AGV') epWant = String(led1.l || '').toUpperCase(); }
   if (q && q.wmsTask && db.agvTasks && db.agvTasks[q.wmsTask]) { const _t0 = db.agvTasks[q.wmsTask]; if (!epWant || String(_t0.ep || '').toUpperCase() === epWant) task = { ..._t0, no: q.wmsTask }; else task = null; } // ㉖v94k wmsTask串单防御：入库带终点校验
+  // ㉖v231 队列项已出队（或项在但 wmsTask 未沉淀）→ 精确归档按框码反查任务号，再从 agvTasks 底仓现取车号：
+  //   车号与框=任务号唯一关联精确对应，绝不退回下方"同站台+时间窗"（v117 实锤该回退抓到邻框任务=错车显示）；
+  //   终点校验同款：入库 epWant 不符=宁缺毋滥（错配比缺节点更伤信任）。同框多条归档取完成最新一条。
+  if (!task && !q) {
+    const _ac = (db.agvArch || []).filter((a) => String(a.code || '').toUpperCase() === code && String(a.wmsTask || '').toUpperCase());
+    if (_ac.length) {
+      _ac.sort((a, b) => (b.finAt || 0) - (a.finAt || 0));
+      for (const a of _ac) {
+        const _wt = String(a.wmsTask).toUpperCase();
+        const _t2 = (db.agvTasks || {})[_wt];
+        if (!_t2) continue;
+        if (epWant && String(_t2.ep || '').toUpperCase() !== epWant) continue;
+        task = { ..._t2, no: _wt }; break;
+      }
+    }
+  }
   // ㉖v117 已下发未沉淀（在途）：盖章号直查 RCS 在途表——精确匹配必须先于窗口回退。
   //   旧版此场景落到"同站台最近完成"，抓到邻框已归档任务（11-06 13:51 现场 N26K060123：真单0048在途
   //   13:50接令/14:00叉出，详情却显示邻框0041"已完成 接令13:33"，出现 入队13:43→接令13:33 时序倒挂）
@@ -6229,6 +6250,17 @@ return send(res, 200, {
           for (const tr of x.trace || []) push(x.updAt || x.at, 'trace', '🧭 ' + String(tr), '', '');
           if (x.state === '到站' || x.state === '完成') push(x.updAt || x.at, 'station', '🏁 到达站台 ' + String(x.station || ''), '框 ' + String(x.code || ''), '');
         }
+        // — ㉖v231 队列项出队后从精确归档重建 进入队列/决策trace/到达站台 节点（活跃项已在上面的，按框去重跳过）：
+        //   旧版完成2小时出队即蒸发这三类节点（用户 11-23 实锤同模式两框链路一半缺失），归档按框码命中 CODES 重建
+        { const _qShown = new Set(qItems.map((x) => codeOf(x.code))); let _an = 0;
+          for (const a of (db.agvArch || []).slice().reverse()) {
+            const _c = codeOf(a.code);
+            if (!(_c === Q || CODES.has(_c)) || _qShown.has(_c)) continue;
+            if (_an++ >= 60) break;
+            push(a.at, 'queue', '🚦 进入调度队列', '框 ' + String(a.code || '') + (a.fromLoc ? ' · ' + a.fromLoc : '') + (a.station ? ' → ' + a.station : '') + ' · 状态 ' + String(a.state || ''), a.by || '');
+            for (const tr of a.trace || []) push(a.finAt || a.at, 'trace', '🧭 ' + String(tr), '', '');
+            if (a.state === '完成') push(a.finAt || a.at, 'station', '🏁 到达站台 ' + String(a.station || ''), '框 ' + String(a.code || ''), '');
+          } }
         // — ㉖v116 按框码反查搬运任务，任务号并入 TASKS（旧版⑥⑦只认队列带出的任务号：
         //   队列项完成2小时即出队，按框/零件查历史 → AGV 节点必缺，11-06 核查 N26K050133 trace 仅2事件零AGV）。
         //   与 taskOf 共用 agvTaskForCode——同一套锚点/终点/窗口判据，两端永不分叉；错配防护同源。
@@ -11064,6 +11096,26 @@ async function agvDispatch(nowMs, runT) {
     if (['完成', '取消'].includes(q.state)) return age < P().queueKeepMin * 60 * 1000; // ㉖ 终态项保留可调
     return true;
   });
+  // ㉖v231 出队即归档精确快照：本轮被丢弃的终态项，把 框↔任务号↔决策trace 固化（车号不存快照，
+  //   反查时从 agvTasks[wmsTask].car 现取 RCS 权威值，避免沉淀延迟存到空车号）。一次出队只发生一次
+  //   （丢弃后不再进 agvQueue，下轮 queue 已无此项），仍按 wmsTask 去重双保险。
+  { const _kept = new Set(db.agvQueue);
+    const _arch = (db.agvArch = db.agvArch || []);
+    const _have = new Set(_arch.map((a) => String(a.wmsTask || '') + '|' + String(a.code || '')));
+    for (const q of queue) {
+      if (_kept.has(q)) continue;
+      if (!['完成', '取消', '失败'].includes(q.state)) continue; // 只归档真正出队的终态项
+      const _cd = String(q.code || '').toUpperCase(); if (!_cd) continue;
+      const _wt = String(q.wmsTask || q.taskNo || '');
+      if (_have.has(_wt + '|' + _cd)) continue;
+      _arch.push({ code: _cd, wmsTask: _wt, state: q.state, station: String(q.station || q.stationManual || ''), fromLoc: String(q.fromLoc || ''), type: q.type || '', by: String(q.by || ''), reqId: String(q.reqId || ''), at: Number(q.at) || 0, finAt: Number(q.updAt) || Number(q.at) || 0, trace: (q.trace || []).slice(-8) });
+    }
+    // 滚动：按完成时刻留 30 天且封顶 6000 条（与 agvTasks 底仓窗口对齐，AGV 节点最长可追 30 天）
+    const _cut = nowMs - 30 * 86400000;
+    if (_arch.some((a) => (a.finAt || 0) < _cut) || _arch.length > 6000) {
+      const _fit = _arch.filter((a) => (a.finAt || 0) >= _cut).sort((a, b) => (a.finAt || 0) - (b.finAt || 0));
+      db.agvArch = _fit.length > 6000 ? _fit.slice(_fit.length - 6000) : _fit;
+    } }
   const waiting = db.agvQueue.filter((q) => q.state === '排队' && q.type !== 'transfer'); // ㉖v196 transfer 排队项不进双腿调度器（它无 fromLoc/station，会被 dispatchOne 误捡坏掉），改由下方独立补发
   // ㉖v196 移库/返架排队补发：独立于双腿调度（双腿无排队项时也要跑，故在 waiting 空return 之前）。
   // 全局在途<transferConc 且 起/终巷道占 aisleCap 名额 → 按 at 先后匀速下发；闸门满项保持排队下轮再补
