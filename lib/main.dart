@@ -3099,11 +3099,35 @@ class _MainPageState extends State<MainPage>
         for (final c in codes)
           if ((_pnMap[c] ?? "").isNotEmpty) _pnMap[c]!
       };
+      // ㉖v233 落位豁免收紧（用户 11-23 实锤 210 版：拆框弹层生效、两框托号已清，但重采又叠回
+      //   同一格并静默成功——v225"同件=同框"豁免把已拆框放行成合框，拆了等于没拆）。
+      //   新判据=账本框键语义：同件豁免仅当存在【共同非空托号】（codes 内托号全非空且同一个）
+      //   才成立——有托号身份才允许合框；已拆出（托号空）或未登记托号的独立框，同件也不放行。
+      //   不用声明队列 _kLedgerSplit 做判据：push 成功即清队列，拆后再扫一次判据就消失（时序洞）。
+      final _pidMap = <String, String>{};
+      for (final c in codes) {
+        String pidv =
+            (await _isar.recordExtras.filter().goodsCodeEqualTo(c).findAll())
+                    .map((e) => e.palletId.trim().toUpperCase())
+                    .firstWhere((s) => s.isNotEmpty, orElse: () => "") ??
+                "";
+        if (pidv.isEmpty) {
+          pidv =
+              (await _isar.labelInfos.filter().goodsCodeEqualTo(c).findFirst())
+                      ?.palletId
+                      .trim()
+                      .toUpperCase() ??
+                  "";
+        }
+        _pidMap[c] = pidv;
+      }
+      final _pids = _pidMap.values.where((s) => s.isNotEmpty).toSet();
+      final _samePid = _pids.length == 1 && _pids.length == _pidMap.length;
       List<ShelfPlacement> _calcForeign(List<ShelfPlacement> _prior) => _prior
               .where((p) => !codes.contains(p.goodsCode.toUpperCase()))
               .where((p) {
             final _fpn = _pnMap[p.goodsCode.toUpperCase()] ?? "";
-            return _fpn.isEmpty || !_selfPns.contains(_fpn); // 同零件号=同框，放行
+            return _fpn.isEmpty || !_selfPns.contains(_fpn) || !_samePid;
           }).toList();
       var foreign = _calcForeign(prior);
       if (foreign.isNotEmpty) {
@@ -3118,8 +3142,8 @@ class _MainPageState extends State<MainPage>
       if (foreign.isNotEmpty) {
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content:
-                  Text("$loc 已登记给 ${foreign.first.goodsCode}，本筐未入账本，请核对货位"),
+              content: Text(
+                  "$loc 已有框 ${foreign.first.goodsCode}，本筐未入账本——非同托不可合放一格（已拆出的框须单独一个空格），请点「选位」另选空格"),
               backgroundColor: Colors.orange));
         return;
       }
@@ -7224,7 +7248,8 @@ class _HubThreadPage extends StatelessWidget {
                                       fontSize: 11, color: Colors.grey))),
                           trailing: const Icon(Icons.chevron_right,
                               size: 20, color: Color(0xFF515BD4)),
-                          onTap: () => _openDetail(context, m), // ㉖v232 先进详情(全文+关联单据)，页内"前往处理"再跳功能
+                          onTap: () => _openDetail(
+                              context, m), // ㉖v232 先进详情(全文+关联单据)，页内"前往处理"再跳功能
                         )),
                 ]),
     );

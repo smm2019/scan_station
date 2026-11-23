@@ -54,11 +54,13 @@ T('R2 主链零实时读取', leaks.length === 0, leaks.length ? leaks.join(' | 
 const reg = region.join('\n');
 T('R3a 落库 workType 用快照', /workType: wt0,/.test(reg));
 T('R3b 落库台站按快照模式', /stationNo: wt0 == 0 \? st0 : null,/.test(reg));
-T('R3c 落库地面/来料按快照', /groundLocation: wt0 == 1 \? gl0 : \(wt0 == 2 \? recvSlotAuto : null\)/.test(reg));
+// ㉖v233 格式容错：v232 的 dart format 全量 reflow 把三元/参数列表拆成多行，旧单行正则失配=
+//   假阳性 4 FAIL（产品逻辑逐项人工核实在位）。本门禁锁的是【语义】不是【排版】，一律改跨行容错。
+T('R3c 落库地面/来料按快照', /groundLocation: wt0 == 1\s*\? gl0\s*: \(wt0 == 2 \? recvSlotAuto : null\)/.test(reg));
 T('R3d 落库容器用快照', /containerType: ct0,/.test(reg));
 T('R4a 校验2-AGV认快照台站', /if \(wt0 == 0\) \{\s*\n?\s*locationValid = st0 != null;/.test(reg) || (reg.indexOf('wt0 == 0') >= 0 && reg.indexOf('st0 != null') >= 0));
 T('R4b 第二道站台闸用快照', /if \(wt0 == 0 && st0 == null\) \{/.test(reg));
-T('R5 查重带快照 ret/wt', /_globalDupCheck\(code, recv: wt0 == 2, ret: ret0 && wt0 != 2(?:, \w+: [^)]+)?\)/.test(reg)); // ㉖v198d 漂移修正：该调用追加了 reShelf: rs0 && wt0==0（重新上架豁免），锁 recv/ret 仍走快照变量 wt0/ret0 的本意不变；容忍尾部新增命名参数，防将来合法扩展再撞CI（v154同款教训）
+T('R5 查重带快照 ret/wt', /_globalDupCheck\(\s*code,\s*recv: wt0 == 2,\s*ret: ret0 && wt0 != 2(?:,\s*\w+: [^)]+)?\)/.test(reg)); // ㉖v198d 漂移修正：该调用追加了 reShelf: rs0 && wt0==0（重新上架豁免），锁 recv/ret 仍走快照变量 wt0/ret0 的本意不变；容忍尾部新增命名参数，防将来合法扩展再撞CI（v154同款教训）；v233 容换行
 T('R6 站台占用查询用快照', /\.stationNoEqualTo\(st0\)/.test(reg));
 T('R7 叫车站台取自快照', /final autoCallSt =\s*\n?\s*wt0 == 0 \? \(st0 \?\? ""\) : "";/.test(reg));
 
@@ -67,7 +69,8 @@ const fi = lines.findIndex(l => l.indexOf('Future<void> _ledgerRegisterOnSave(St
 let fe = -1;
 for (let i = fi + 1; i < lines.length; i++) if (lines[i] === '  }') { fe = i; break; }
 T('R8a 登记函数定位', fi > 0 && fe > fi, 'L' + (fi + 1) + '-' + (fe + 1));
-T('R8b 快照参数必填', /required int wtSnap, required bool palletSnap/.test(lines[fi + 1]), '漏传即编译错，杜绝将来静默漂移');
+// ㉖v233 跨行容错（同上：签名被 format 拆多行）
+T('R8b 快照参数必填', /required int wtSnap,[\s\S]{0,120}?required bool palletSnap/.test(lines.slice(fi, fi + 10).join('\n')), '漏传即编译错，杜绝将来静默漂移');
 const fbody = lines.slice(fi + 3, fe).join('\n');
 const fleaks = [];
 {
@@ -83,7 +86,8 @@ const fleaks = [];
 T('R9 登记函数体零实时读取', fleaks.length === 0, fleaks.length ? fleaks.join(' | ') : '叫车/账本落库只认快照');
 // 调用点传齐快照实参
 const callRegion = lines.slice(0, fi).join('\n');
-T('R10 调用点传齐实参', /wtSnap: wt0, palletSnap: pallet0, ctSnap: ct0,/.test(callRegion));
+// ㉖v233 跨行容错（调用点参数被 format 逐行拆开）：锁【三个快照实参都在】的语义，不锁排版
+T('R10 调用点传齐实参', /wtSnap: wt0,/.test(callRegion) && /palletSnap: pallet0,/.test(callRegion) && /ctSnap: ct0,/.test(callRegion));
 
 // ---- 界面清理行为不回归：保存成功后仍清空真实字段 ----
 const cleanup = region.join('\n');
