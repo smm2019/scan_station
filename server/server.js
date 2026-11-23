@@ -2592,9 +2592,10 @@ function nb04AssignFree(code, by) {
 // 覆盖表（缺省 gndCols 参数），停用排（gndRowOff）不再分新格。
 // "该格是否仍可放本框"沿用互斥闸口径：格内空、或格内仅同标签/同零件（一框双码）→ 可放；
 // 否则跳过。所以整托多码共用一格的既有场景不受影响（整托沿用输入框格位，不经本函数）。
-function nb03AssignFree(code, zone, partNo, by) {
+function nb03AssignFree(code, zone, partNo, by, codePid) { // ㉖v234 增 codePid=本码托号（调用点取 body.pid 或账本旧行 pid）
   pruneReserve();
   const codeU = String(code || '').toUpperCase(), partNoU = String(partNo || '').toUpperCase();
+  const codePidU = String(codePid || '').trim().toUpperCase();
   const zm = String(zone || '').trim().toUpperCase().match(/^([A-H])-?(\d{1,2})$/); // 接受 "C12" 与 "C-12"
   if (!zm) return { loc: '', msg: '地面区排格式不符（应形如 C12）' };
   const prefix = 'NB03-' + zm[1] + '-' + zm[2].padStart(2, '0');
@@ -2606,7 +2607,14 @@ function nb03AssignFree(code, zone, partNo, by) {
   const blocked = (l) => (db.ledger || []).some((x) => {
     if (String(x.l || '').toUpperCase() !== l) return false;
     if (String(x.c || '').toUpperCase() === codeU) return false;                     // 同标签自身（重扫/未推送批次）不算占用
-    if (partNoU && String(x.p || '').toUpperCase() === partNoU) return false;        // 一框双码：同零件=同框（与互斥闸同口径）
+    // ㉖v234 同件豁免收紧（11-23 现场：拆框后重采又被自动分回叠格——原"同零件=同框"把拆出的
+    //   框焊回旧账，v225 洞的服务端镜像）：同件仅当与格内他框存在【共同非空托号】（真·一框
+    //   双码：两码账本 pid 同为该托号）才算同框不算占用；托号任一缺失一律保守视为占用——
+    //   宁可分到新格，绝不两框挤一格（v163 注释同款哲学）。
+    if (partNoU && String(x.p || '').toUpperCase() === partNoU) {
+      const _xp = String(x.pid || '').trim().toUpperCase();
+      if (codePidU && _xp && _xp === codePidU) return false; // 共同托号=同框双码，可共格
+    }
     return true;
   });
   const R = db.locReserve = db.locReserve || {};
@@ -5493,9 +5501,26 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (!_zm) return send(res, 200, { ok: false, msg: '地面区排格式不符（应形如 C12）' });
           const _pfx = 'NB03-' + _zm[1] + '-' + _zm[2].padStart(2, '0');
           const _il3 = (db.ledger || []).find(x => String(x.c || '').toUpperCase() === code);
-          // 本框已上账且现位就在这一排 → 回现位（重扫/补传不跳格、不再占新格）
-          if (_il3 && String(_il3.l || '').toUpperCase().startsWith(_pfx + '-')) return send(res, 200, { ok: true, loc: String(_il3.l || '').toUpperCase(), kept: true });
-          const _r3 = nb03AssignFree(code, _zm[1] + _zm[2], partNo, u.name);
+          // 本框已上账且现位就在这一排 → 原则上回现位（重扫/补传不跳格、不再占新格）。
+          // ㉖v234 叠格旧账例外（11-23 现场 N26J220042/47：v225 拆框后重采被幂等回现位焊回同一格）：
+          //   现格内存在同零件、但与本码【无共同非空托号】的他框 → 那是没拆干净的旧账，跳过回现位、
+          //   往下强制分新格。真·一框双码（两码账本 pid 同为该托号）不受影响，照常幂等回现位。
+          if (_il3 && String(_il3.l || '').toUpperCase().startsWith(_pfx + '-')) {
+            const _curL = String(_il3.l || '').toUpperCase();
+            const _myP = String(_il3.pid || '').trim().toUpperCase();
+            // 本码在该格有同托号伙伴=本格合法住户（真·一框双码）→ 一律幂等回现位；
+            // 格内的拆框违例者由违例者自己让位，不得把合法住户一起踢走（端到端①实锤误伤）
+            const _legit = _myP && (db.ledger || []).some((x) => String(x.l || '').toUpperCase() === _curL && String(x.c || '').toUpperCase() !== code && String(x.pid || '').trim().toUpperCase() === _myP);
+            const _stacked = _legit ? false : partNo && (db.ledger || []).some((x) => {
+              if (String(x.l || '').toUpperCase() !== _curL) return false;
+              if (String(x.c || '').toUpperCase() === code) return false;
+              if (String(x.p || '').toUpperCase() !== partNo) return false; // 只认同件（跨零件同格本就被互斥闸禁）
+              const _xp = String(x.pid || '').trim().toUpperCase();
+              return !(_myP && _xp && _xp === _myP); // 无共同非空托号=拆框旧账叠格
+            });
+            if (!_stacked) return send(res, 200, { ok: true, loc: _curL, kept: true });
+          }
+          const _r3 = nb03AssignFree(code, _zm[1] + _zm[2], partNo, u.name, String((b && b.pid) || (_il3 && _il3.pid) || ''));
           if (!_r3.loc) return send(res, 200, { ok: false, msg: _r3.msg || '地面该排不可分配' });
           save();
           return send(res, 200, { ok: true, loc: _r3.loc, kept: !!_r3.kept });
