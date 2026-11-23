@@ -4027,11 +4027,71 @@ function queueBoardOf(nowReq) {
   const _redMin = Number(P().agvBlockRedMin) || 15;
   const _light = agvBlocked === 0 ? 'green' : (agvBlockedMaxMin >= _redMin ? 'red' : 'yellow');
   const _worst = _bd[0] || null;
+  // ㉖v238 车队根因块（用户 11-23："无空闲台"是果不是因；现场实锤 AGV05~08 通讯断开 4 台同倒，
+  //   看板只报"无空闲台"仓管干等不知查车）。纯读 carAlarms（升序 append，kind: alarm/recover/
+  //   ack/escalate/redflag/flap），零调度器触碰：
+  //   ①同车 alarm→下一条 recover 配对闭合=故障定格时长；未恢复=now−at 实时增长；ack(认领)
+  //     不闭段、只标"有人处理中"；②10 分钟外同车再次告警=新故障段（旧段按新告警时刻定格）；
+  //   ③10 分钟内同车重复告警=抖动合并（AGV5 停5分→好→1分再停=显示"抖动×2 · 累计6分"，不刷屏）；
+  //   ④活跃=未恢复 或 告警≤4h；最近恢复=闭段且恢复≤60min（灰显追溯不吵）；
+  //   ⑤hint 一句话根因：car_fault=有车故障且挡着活(找车)/car_idle=有车故障但没挡活(车队监控
+  //     即可)/all_busy=车都健康还在等(活多车少不是故障)/ok=没被挡。
+  const carPool = { act: [], rec: [], nAct: 0, blockedByCar: 0, hint: 'ok' };
+  {
+    const CAR_WIN = 4 * 3600e3, REC_WIN = 60 * 60e3, FLAP_MS = 10 * 60000;
+    const _al = (db.carAlarms || []).filter((a) => (a.at || 0) >= _nowMs - CAR_WIN - REC_WIN && /^AGV/i.test(String(a.name || '')));
+    const _byName = {};
+    for (const a of _al) { (_byName[a.name] = _byName[a.name] || []).push(a); }
+    for (const name of Object.keys(_byName)) {
+      const evts = _byName[name].sort((a, b) => (a.at || 0) - (b.at || 0));
+      let cur = null; const segs = []; let acked = false;
+      for (const a of evts) {
+        if (a.kind === 'flap') continue; // flap 行只是抖动标记，不参与配对
+        if (!cur) { if (a.kind === 'alarm') cur = { rsn: String(a.msg || '').replace(/^🚨\s*\S+\s*车辆告警[:：]?/, '').slice(0, 46), at: a.at }; continue; }
+        if (a.kind === 'recover') { segs.push([cur.at, a.at, cur.rsn]); cur = null; acked = false; continue; }
+        if (a.kind === 'alarm') {
+          if (a.at - cur.at <= FLAP_MS) continue; // 短间隔重复=抖动，不另起段
+          segs.push([cur.at, a.at, cur.rsn]); // 新故障段：旧段按新告警时刻定格
+          cur = { rsn: String(a.msg || '').replace(/^🚨\s*\S+\s*车辆告警[:：]?/, '').slice(0, 46), at: a.at };
+          acked = false; continue;
+        }
+        if (a.kind === 'ack') { acked = true; continue; }
+      }
+      if (cur) segs.push([cur.at, null, cur.rsn]); // 尾部未闭合=活跃
+      if (!segs.length) continue;
+      const _last = segs[segs.length - 1];
+      const open = _last[1] === null;
+      const _mins = (s) => Math.round(((s[1] || _nowMs) - s[0]) / 60000);
+      const hhmm = (ms) => new Date(ms).toLocaleTimeString('zh-CN', { hour12: false }).slice(0, 5);
+      // 抖动：同车 ≥2 段 且 上段结束到新段开始 ≤10 分钟（修好又坏的典型形态）
+      const _prevSeg = segs.length >= 2 ? segs[segs.length - 2] : null;
+      const flap = !!_prevSeg && ((_last[0] - (_prevSeg[1] || _prevSeg[0])) <= FLAP_MS);
+      const item = {
+        car: name, rsn: _last[2], open, acked: open && acked, flap,
+        min: _mins(_last), since: hhmm(_last[0]),
+        segN: segs.length, totMin: segs.reduce((s, x) => s + _mins(x), 0),
+        recAt: _last[1] ? hhmm(_last[1]) : '',
+      };
+      if (open && (_nowMs - _last[0]) <= CAR_WIN) carPool.act.push(item);
+      else if (!open && (_nowMs - _last[1]) <= REC_WIN) carPool.rec.push(item);
+    }
+    carPool.act.sort((a, b) => b.min - a.min);
+    carPool.rec.sort((a, b) => b.min - a.min);
+    carPool.nAct = carPool.act.length;
+    carPool.rec = carPool.rec.slice(0, 4);
+    // 故障车挡着活：有车故障期间存在"无空闲台/指定台占用"被挡项 → 保守联动计数
+    // （v1 不做逐车精确归因——schedBlock 只有小时桶无逐段起止，边界如实）
+    if (carPool.nAct) {
+      for (const b of _bd) { if (b.rsn === '无空闲台' || b.rsn === '指定台占用') carPool.blockedByCar++; }
+    }
+    carPool.hint = carPool.nAct ? (carPool.blockedByCar > 0 ? 'car_fault' : 'car_idle') : (agvBlocked > 0 ? 'all_busy' : 'ok');
+  }
   const agvBoard = {
     light: _light, redMin: _redMin,
     detail: _bd.slice(0, 40), byRsn: _byRsn, trend: _trend, trendDeltaMin: _delta, trendDir: _dir,
     worst: _worst ? { code: _worst.code, dest: _worst.dest, rsn: _worst.rsn, min: _worst.min, by: _worst.by } : null,
     redFlag: _light === 'red' && _worst ? { code: _worst.code, dest: _worst.dest, rsn: _worst.rsn, min: _worst.min, reqNo: _worst.reqNo } : null,
+    carPool, // ㉖v238 车队根因：活跃故障(红,实时增长)/最近恢复(灰,定格)/挡活联动/一句话根因 hint
   };
   return {
     rank: myIdx >= 0 ? myIdx + 1 : null, total: active.length, agvActive,

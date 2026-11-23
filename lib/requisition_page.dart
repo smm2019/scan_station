@@ -5766,7 +5766,7 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
   bool _loading = true;
   String _err = "";
   bool _expandAll = false; // ㉖v52 长队列默认折叠（前3+我的附近），点头部芯片展开
-  bool _showBlockDetail = false; // ㉖v237 安灯卡被挡明细默认折叠，点"看哪些被挡▾"展开逐单清单
+  bool _boardOpen = false; // ㉖v238 安灯卡默认只看主行一句话，点整行展开详情（热区大，戴手套好点）
 
   @override
   void initState() {
@@ -5956,8 +5956,13 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
     );
   }
 
-  // ㉖v237 安灯被挡卡：①信号灯(绿黄红) ②原因分布 ③被挡明细(可展开逐单) ④近6小时趋势柱+好转判定 ⑤红牌点名最久框。
-  //   数据来自 q["agvBoard"]（服务端 queueBoardOf 纯读取增强，旧端无此字段时降级为旧单行文案）。
+  // ㉖v238 安灯被挡卡·定稿"一句话 + 一次点开"（用户：简单易懂、布局合理、人性化）：
+  //   主行=信号灯+一句话（含车队根因，2秒读完该不该管），整行可点开；点开=四小块：
+  //   卡点(一行文本)、车队实况(红=故障中实时增长/灰=刚修好定格不吵/有人处理中)、
+  //   等车清单(一行一框)、近6h趋势(带人话说明)。
+  //   死规矩：一台车一行、红前灰后、主行只留"最长X分"一个数字、车故障但没挡活不进主行、
+  //   无故障时安抚性显示"车都在忙"（区分"活多车少"与"车队出事"，免仓管白查设备）。
+  //   数据= q["agvBoard"]（服务端纯读取 alarm→recover 配对，旧端无字段降级旧单行不崩）。
   Widget _andonCard(Map q, int blocked, int maxMin, String worstRsn) {
     final ab = (q["agvBoard"] as Map?) ?? const {};
     final light = (ab["light"] ?? "").toString();
@@ -5966,23 +5971,38 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
     final trend = List<Map>.from(ab["trend"] ?? []);
     final dir = (ab["trendDir"] ?? "").toString();
     final delta = (ab["trendDeltaMin"] as num?)?.toInt() ?? 0;
-    final redFlag = ab["redFlag"];
+    final cp = (ab["carPool"] as Map?) ?? const {};
+    final act = List<Map>.from(cp["act"] ?? []);
+    final rec = List<Map>.from(cp["rec"] ?? []);
+    final hint = (cp["hint"] ?? "ok").toString();
     final lc = light == 'red'
         ? const Color(0xFFC62828)
         : light == 'yellow'
             ? const Color(0xFFEF6C00)
             : const Color(0xFF2E7D32);
-    final lt = light == 'red'
-        ? '🔴 需介入'
+    // —— 主行一句话：状态 + 挡了多少 + 为什么（车队根因进主行是"该不该去查车"的决策关键）——
+    final lead = light == 'red'
+        ? '🔴'
         : light == 'yellow'
-            ? '🟡 排队中'
-            : '🟢 顺畅';
+            ? '🟡'
+            : '🟢';
+    final why = act.isNotEmpty
+        ? (hint == 'car_fault'
+            ? '${act.length} 台车出故障（${act[0]["car"]} ${act[0]["rsn"]} ${_dur((act[0]["min"] as num?)?.toInt() ?? 0)}）'
+            : '${act.length} 台车故障但没挡着活')
+        : (blocked > 0 ? '车都在忙' : '');
+    final mainLine = '$lead $blocked 单等车 · 最长 ${_dur(maxMin)}'
+        '${why.isNotEmpty ? " · $why" : ""}';
     final maxT = trend
         .map((t) => (t["min"] as num?)?.toInt() ?? 0)
         .fold<int>(1, (a, b) => a > b ? a : b);
+    // 卡点一行文本（保留"为什么挡"的分类，压成一行不占版面）
+    final whyOne = byRsn.map((r) {
+      final mm = (r["maxMin"] as num?)?.toInt() ?? 0;
+      return '${r["rsn"]}×${(r["n"] as num?)?.toInt() ?? 0}${mm > 0 ? "(最久${_dur(mm)})" : ""}';
+    }).join('  ·  ');
     return Container(
       margin: const EdgeInsets.only(top: 6),
-      padding: const EdgeInsets.all(9),
       decoration: BoxDecoration(
         color: lc.withOpacity(0.07),
         borderRadius: BorderRadius.circular(8),
@@ -5991,110 +6011,130 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            Text('$lt ',
-                style: TextStyle(
-                    fontSize: 13, fontWeight: FontWeight.w800, color: lc)),
-            Expanded(
-                child: Text(
-                    '$blocked 个搬运任务被挡 · 最长 ${_dur(maxMin)}${worstRsn.isNotEmpty ? "（$worstRsn）" : ""}',
-                    style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w600,
-                        color: lc))),
-          ]),
-          // ②原因分布（可点原因→看该类清单）
-          if (byRsn.isNotEmpty)
+          // 主行整行可点=展开/收起（热区大，车间戴手套也好点）
+          InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => setState(() => _boardOpen = !_boardOpen),
+              child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  child: Row(children: [
+                    Expanded(
+                        child: Text(mainLine,
+                            style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w700,
+                                color: lc,
+                                height: 1.3))),
+                    Icon(_boardOpen ? Icons.expand_less : Icons.expand_more,
+                        size: 18, color: lc),
+                  ]))),
+          if (_boardOpen)
             Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Wrap(
-                  spacing: 5,
-                  runSpacing: 4,
-                  children: byRsn.map((r) {
-                    final n = (r["n"] as num?)?.toInt() ?? 0;
-                    final mm = (r["maxMin"] as num?)?.toInt() ?? 0;
-                    final lbl =
-                        '${r["rsn"]} ×$n' + (mm > 0 ? ' · 最久 ${_dur(mm)}' : '');
-                    return Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 7, vertical: 2),
-                        decoration: BoxDecoration(
-                            color: lc.withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(5)),
-                        child: Text(lbl,
+                padding: const EdgeInsets.fromLTRB(10, 0, 10, 9),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // —— 块① 卡点：一行文本说清"为什么挡"（区分等车/通道堵/指定台占用）——
+                      if (whyOne.isNotEmpty)
+                        Padding(
+                            padding: const EdgeInsets.only(bottom: 5),
+                            child: Text('🧩 卡点：$whyOne',
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.blueGrey,
+                                    height: 1.3))),
+                      // —— 块② 车队实况（只在有故障时出现；红=故障中，灰=刚修好）——
+                      if (act.isNotEmpty || rec.isNotEmpty) ...[
+                        const Text('🚗 车队',
                             style: TextStyle(
                                 fontSize: 11,
-                                color: lc,
-                                fontWeight: FontWeight.w600)));
-                  }).toList()),
-            ),
-          // ④近6小时趋势柱 + 好转/恶化箭头
-          if (trend.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                const Text('近6h ',
-                    style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
-                ...trend.map((t) {
-                  final m = (t["min"] as num?)?.toInt() ?? 0;
-                  final h = maxT > 0 ? (m / maxT * 20) : 0.0;
-                  return Padding(
-                      padding: const EdgeInsets.only(right: 3),
-                      child: Tooltip(
-                          message: '${(t["hr"] ?? "")} 被挡 ${m} 分钟',
-                          child: Container(
-                              width: 9,
-                              height: (h < 2 ? 2 : h).toDouble(),
-                              color: lc.withOpacity(0.5))));
-                }),
-                const SizedBox(width: 6),
-                Text(
-                    dir == 'improving'
-                        ? '↓ 好转 ${delta.abs()}分'
-                        : dir == 'worsening'
-                            ? '↑ 恶化 $delta分'
-                            : '→ 持平',
-                    style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: dir == 'improving'
-                            ? const Color(0xFF2E7D32)
-                            : dir == 'worsening'
-                                ? const Color(0xFFC62828)
-                                : Colors.blueGrey)),
-              ]),
-            ),
-          // ⑤红牌点名最久那框（需介入时明确给"卡哪、谁叫的、挡多久"）
-          if (redFlag is Map && (redFlag["code"] ?? "").toString().isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 5),
-              child: Text(
-                  '🚩 最久：${redFlag["code"]} → ${redFlag["dest"] ?? "待分配"}（${redFlag["rsn"]}，${_dur((redFlag["min"] as num?)?.toInt() ?? 0)}）',
-                  style: const TextStyle(
-                      fontSize: 11.5,
-                      color: Color(0xFFB71C1C),
-                      fontWeight: FontWeight.w600)),
-            ),
-          // ③"看哪些被挡"展开逐单清单（含无领料单号的返架/检验/采集叫车）
-          InkWell(
-              onTap: () => setState(() => _showBlockDetail = !_showBlockDetail),
-              child: Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                      _showBlockDetail
-                          ? '收起被挡明细 ▴'
-                          : '看哪些被挡（${detail.length}）▾',
-                      style: const TextStyle(
-                          fontSize: 11,
-                          color: Color(0xFF3F51B5),
-                          fontWeight: FontWeight.w600)))),
-          if (_showBlockDetail)
-            ...detail.map((d) => Padding(
-                padding: const EdgeInsets.only(top: 3),
-                child: Text(
-                    '· ${d["code"]} → ${d["dest"].toString().isEmpty ? "待分配" : d["dest"]} · ${(d["seq"] as List?)?.join("→") ?? d["rsn"]} · ${_dur((d["min"] as num?)?.toInt() ?? 0)}${(d["by"] ?? "").toString().isNotEmpty ? " · ${d["by"]}" : ""}',
-                    style: const TextStyle(
-                        fontSize: 10.5, color: Colors.black87, height: 1.3)))),
+                                fontWeight: FontWeight.w700,
+                                color: Colors.blueGrey)),
+                        ...act.take(3).map((c) => Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                                '🚨 ${c["car"]} ${(c["rsn"] ?? "").toString()} · ${c["open"] == true ? "故障中 ${_dur((c["min"] as num?)?.toInt() ?? 0)}${c["acked"] == true ? "（有人处理中）" : ""}" : "已恢复 ${_dur((c["min"] as num?)?.toInt() ?? 0)}"}${c["flap"] == true && (c["segN"] as num? ?? 0) >= 2 ? " · 反复抖动×${c["segN"]}·累计${_dur((c["totMin"] as num?)?.toInt() ?? 0)}" : ""}',
+                                style: const TextStyle(
+                                    fontSize: 11.5,
+                                    color: Color(0xFFC62828),
+                                    fontWeight: FontWeight.w600,
+                                    height: 1.35)))),
+                        if (act.length > 3)
+                          Text('…另有 ${act.length - 3} 台（详见消息中心）',
+                              style: const TextStyle(
+                                  fontSize: 10.5, color: Colors.black45)),
+                        ...rec.map((c) => Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                                '✅ ${c["car"]} 已恢复 · 停了 ${_dur((c["min"] as num?)?.toInt() ?? 0)}（${c["since"]}→${c["recAt"]}）',
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.black45,
+                                    height: 1.35)))),
+                      ],
+                      // —— 块③ 等车清单：一行一框，标签/格位用等宽字体便于核对 ——
+                      if (detail.isNotEmpty) ...[
+                        const SizedBox(height: 7),
+                        const Text('📦 等车清单',
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.blueGrey)),
+                        ...detail.take(8).map((d) => Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                                '· ${d["code"]} → ${d["dest"].toString().isEmpty ? "待分配" : d["dest"]} · 等 ${_dur((d["min"] as num?)?.toInt() ?? 0)}${(d["by"] ?? "").toString().isNotEmpty ? " · ${d["by"]}" : ""}',
+                                style: const TextStyle(
+                                    fontSize: 11,
+                                    fontFamily: "monospace",
+                                    color: Colors.black87,
+                                    height: 1.35)))),
+                        if (detail.length > 8)
+                          Text('…另有 ${detail.length - 8} 框',
+                              style: const TextStyle(
+                                  fontSize: 10.5, color: Colors.black45)),
+                      ],
+                      // —— 块④ 近6h 趋势：柱 + 一句人话（不是裸数字）——
+                      if (trend.isNotEmpty) ...[
+                        const SizedBox(height: 7),
+                        Row(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              const Text('📈 近6h ',
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.blueGrey)),
+                              ...trend.map((t) {
+                                final m = (t["min"] as num?)?.toInt() ?? 0;
+                                final h = maxT > 0 ? (m / maxT * 16) : 0.0;
+                                return Padding(
+                                    padding: const EdgeInsets.only(right: 2.5),
+                                    child: Container(
+                                        width: 7,
+                                        height: (h < 2 ? 2 : h).toDouble(),
+                                        color: lc.withOpacity(0.5)));
+                              }),
+                              const SizedBox(width: 5),
+                              Expanded(
+                                  child: Text(
+                                      dir == 'improving'
+                                          ? '↓ 在好转（比上小时少 ${delta.abs()} 分）'
+                                          : dir == 'worsening'
+                                              ? '↑ 在变堵（比上小时多 $delta 分）'
+                                              : '→ 平稳',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: dir == 'improving'
+                                              ? const Color(0xFF2E7D32)
+                                              : dir == 'worsening'
+                                                  ? const Color(0xFFC62828)
+                                                  : Colors.blueGrey))),
+                            ]),
+                      ],
+                    ])),
         ],
       ),
     );
