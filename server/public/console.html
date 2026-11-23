@@ -829,29 +829,34 @@ function ppDailyRender(){const el=$('#ppdaily');if(!el||!TPD.data)return;const j
  const mx=Math.max(1,...D.map((x)=>Math.max(x.inQ,x.outQ)));
  const nowMs=Date.now();
  const dayHit=(x)=>`onclick="TPD.open=TPD.open==='${x.d}'?'':'${x.d}';ppDailyRender()"`;
- const bars=D.map((x)=>{const dayMs=new Date(x.d+'T12:00:00').getTime();const fresh=dayMs>=(j.freshFrom||0); // ㉖v202 删死码 rptDayStart?0:0——引用未定义变量运行期ReferenceError被catch吞, 误报"需重启"(语法闸查不出, 真错在渲染层不是数据层)
-  const ih=Math.round(x.inQ/mx*92),oh=Math.round(x.outQ/mx*92);
-  const tip=x.d+' 入 '+(x.inN||x.inB)+'笔/'+x.inB+'框/'+x.inQ+'件 · 出 '+x.outQ+'件'+(fresh?'（近48h·未定）':'');
-  return `<div class="pdcol${TPD.open===x.d?' pdon':''}" title="${_esc(tip)}" ${dayHit(x)} style="flex:1;min-width:14px;display:flex;flex-direction:column;align-items:center;cursor:pointer">
-   <div style="height:100px;display:flex;align-items:flex-end;gap:1.5px;width:100%;justify-content:center">
-    <div style="width:45%;border-radius:2px 2px 0 0;position:relative;overflow:hidden;${ih>0?`height:${Math.max(ih,3)}px;background:linear-gradient(180deg,#515BD4,#2E7D32)`:'height:2px;background:var(--line)'}">${fresh&&ih>0?'<div style="position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,255,255,.45) 3px,rgba(255,255,255,.45) 5px)"></div>':''}</div>
-    <div style="width:45%;border-radius:2px 2px 0 0;position:relative;overflow:hidden;${oh>0?`height:${Math.max(oh,3)}px;background:linear-gradient(180deg,#E07000,#F9A825)`:'height:2px;background:var(--line)'}">${fresh&&oh>0?'<div style="position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,255,255,.45) 3px,rgba(255,255,255,.45) 5px)"></div>':''}</div>
-   </div>
-   <div style="font-size:8.5px;color:var(--sub);margin-top:2px;transform:rotate(-52deg);height:22px;white-space:nowrap">${x.d.slice(5)}</div></div>`}).join('');
- // ㉖v202 折线态：SVG 双折线+淡填充看走势。日历轴补全（服务器只回有数据的日子，旧版按数组等距画
- // 把空日压扁=断续活动冒充连续节奏趋势失真，截图实锤 10-24→10-25 相邻实为隔空日）：按窗口 win 补满
- // 连续自然日、空日落 0 占位；标签抽稀（每天画 90 天窗必叠字），左右留白防末标签裁切。
- const H=112,PX=16,PB=22,PT=8;
- const win=Math.max(2,Math.min(90,(j.win||TPD.days||30)));
+ // ㉖v236 日历轴计算前置（柱图/折线共用一套）：服务器只回有数据的日子，旧版柱图按数组等距 flex:1
+ // 铺满 → 窗口内只有 1 天有数据时那一天的柱子被拉成整张色块（用户截图实锤：仅 11-23 入库，
+ // 近7天柱图=一根占满 550px 宽的大色块，完全无法读）。改按窗口补满连续自然日、空日落基线占位。
  const dmap={};D.forEach((x)=>{dmap[x.d]=x;});
  const dkey2=(ms)=>new Date(ms+8*36e5).toISOString().slice(0,10);
  const freshDay=dkey2(j.freshFrom||0);
  const rightDay=dkey2((j.freshFrom||Date.now())+2*864e5); // 服务器 now≈freshFrom+2天（东八区日）
- // 左界= min(窗口左缘, 服务器首条日)：服务器窗口=[now-win天,now]，首条可能落在右缘-win那天，
- // 只画右锚 win 天会切掉左缘有数据的一天（柱图有它、折线没有=两态口径分裂）
+ const win=Math.max(2,Math.min(90,(j.win||TPD.days||30)));
+ // 左界= min(窗口左缘, 服务器首条日)：只画右锚 win 天会切掉左缘有数据的一天（柱图有它、折线没有=两态口径分裂）
  const leftDay=(()=>{const base=new Date(rightDay+'T12:00:00').getTime()-(win-1)*864e5;const ld=dkey2(base);if(!D.length)return ld;const fd=String(D[0].d||'');return fd<ld?fd:ld;})();
  const winN=Math.max(2,Math.round((new Date(rightDay+'T12:00:00').getTime()-new Date(leftDay+'T12:00:00').getTime())/864e5)+1);
  const allDays=[];{const base=new Date(rightDay+'T12:00:00').getTime();for(let i=winN-1;i>=0;i--){const k=dkey2(base-i*864e5);const o=dmap[k];allDays.push({d:k,inQ:o?o.inQ:0,outQ:o?o.outQ:0,inN:o?o.inN:0,inB:o?o.inB:0,has:!!o,fresh:k>=freshDay});}}
+ // 标签抽稀：90 天窗口每天画必叠字（柱图与折线同规则）
+ const _lblEvery=winN<=14?1:winN<=31?2:winN<=62?5:10;
+ const bars=allDays.map((x,ix)=>{const fresh=x.fresh;
+  const ih=x.inQ>0?Math.max(Math.round(x.inQ/mx*92),3):2,oh=x.outQ>0?Math.max(Math.round(x.outQ/mx*92),3):2;
+  const tip=x.d+' 入 '+(x.inN||x.inB)+'笔/'+x.inB+'框/'+x.inQ+'件 · 出 '+x.outQ+'件'+(fresh&&x.has?'（近48h·未定）':(x.has?'':'（无出入库）'));
+  // 柱宽上限 18px：短窗口（近7天）列宽上百像素时，柱体不再被撑成粗色块；长窗口下 45% 自然收窄
+  const bw='width:45%;max-width:18px;min-width:2px';
+  return `<div class="pdcol${TPD.open===x.d?' pdon':''}" title="${_esc(tip)}" ${x.has?dayHit(x):''} style="flex:1;min-width:6px;display:flex;flex-direction:column;align-items:center;cursor:${x.has?'pointer':'default'}">
+   <div style="height:100px;display:flex;align-items:flex-end;gap:1.5px;width:100%;justify-content:center">
+    <div style="${bw};border-radius:2px 2px 0 0;position:relative;overflow:hidden;${x.inQ>0?`height:${ih}px;background:linear-gradient(180deg,#515BD4,#2E7D32)`:'height:2px;background:var(--line)'};opacity:${x.has?1:.45}">${fresh&&x.inQ>0?'<div style="position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,255,255,.45) 3px,rgba(255,255,255,.45) 5px)"></div>':''}</div>
+    <div style="${bw};border-radius:2px 2px 0 0;position:relative;overflow:hidden;${x.outQ>0?`height:${oh}px;background:linear-gradient(180deg,#E07000,#F9A825)`:'height:2px;background:var(--line)'};opacity:${x.has?1:.45}">${fresh&&x.outQ>0?'<div style="position:absolute;inset:0;background:repeating-linear-gradient(45deg,transparent,transparent 3px,rgba(255,255,255,.45) 3px,rgba(255,255,255,.45) 5px)"></div>':''}</div>
+   </div>
+   <div style="font-size:8.5px;color:var(--sub);margin-top:2px;transform:rotate(-52deg);height:22px;white-space:nowrap">${(ix%_lblEvery===0||ix===winN-1)?x.d.slice(5):''}</div></div>`}).join('');
+ // ㉖v202 折线态：SVG 双折线+淡填充看走势。日历轴/空日补全/窗口(win/winN/leftDay/allDays)见上方
+ // ㉖v236 前置块（柱图与折线共用一套口径，两态不再分裂），此处只留绘制几何常量。
+ const H=112,PX=16,PB=22,PT=8;
  const step0=winN<=31?26:winN<=62?15:11;
  // ㉖v213 折线图宽度自适应（用户截图实锤：近7天折线只占卡片左侧约1/5，右侧大片空白）：
  // 旧版 step 固定档位→近7天 SVG 总宽仅 188px，容器上千像素。柱图靠 flex:1 天然撑满，折线漏了。
