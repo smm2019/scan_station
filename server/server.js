@@ -6144,8 +6144,32 @@ return send(res, 200, {
           }
           if (!rel) continue;
           REQS.add(no);
-          push(r.createdAt, 'req', '📋 领料下单 ' + no, (r.items || []).map((i) => String(i.partNo || '') + '×' + (Number(i.qty) || 0)).join('、'), r.byName || '');
-          for (const h of r.history || []) push(h.time, 'req', '🔸 ' + String(h.text || ''), no, h.by || '');
+          // ㉖v229 领料履历相关性过滤（v169 同款病灶在领料层复发，用户 11-23 实锤 N26K170012）：
+          //   旧版把整单 history 无条件全推 → 查一个框，同单另外 10 行的"发料/转MES"全列成它的经历，
+          //   下单明细也整单摊开 11 行（现场读作"这框领了 11 种料、出了 11 次库"）。
+          //   口径与 v169 出库明细一致：查单号=列整单（本就该看全）；查框/零件=只列与本框相关的行与节点。
+          const _full = no === Q;
+          const _rows = _full ? (r.items || []) : (r.items || []).filter((i) => {
+            if (partExpand && PNS.has(codeOf(i.partNo))) return true;
+            for (const e2 of i.issued || []) if (CODES.has(codeOf(typeof e2 === 'string' ? e2 : e2.c))) return true;
+            return false;
+          });
+          const _relPN = new Set(_rows.map((i) => codeOf(i.partNo)));
+          const _allN = (r.items || []).length, _ownN = _rows.length;
+          push(r.createdAt, 'req', '📋 领料下单 ' + no, _rows.map((i) => String(i.partNo || '') + '×' + (Number(i.qty) || 0)).join('、')
+            + (!_full && _ownN < _allN ? `（本框相关 ${_ownN}/${_allN} 行）` : ''), r.byName || '');
+          // 节点级过滤：文本提到标签码（N+8 位以上，货位码带连字符不会误命中）→ 必须含本框集内码才显示；
+          // "转MES××"按零件号归属判定；其余（接单/派车/转入货位/完成/签收/拒单等单级事件）照常显示。
+          const _codeRe = /N[A-Z0-9]{8,}/g;
+          for (const h of r.history || []) {
+            const tx = String(h.text || '');
+            if (!_full) {
+              const _cs = tx.match(_codeRe);
+              if (_cs && _cs.length) { if (!_cs.some((cd) => CODES.has(cd))) continue; }
+              else { const _m = tx.match(/^转MES\s+([A-Z0-9]+)/); if (_m && !_relPN.has(_m[1])) continue; }
+            }
+            push(h.time, 'req', '🔸 ' + tx, no, h.by || '');
+          }
         }
         // — ㉖v59 ④ 出库单：字段修正 item.code=零件号、item.barcode=框码（旧版写反致框→出库匹配失效）
         // 出库单/领料单查询时：预收集命中单据明细的框码，使该框的采集/在架事件反查纳入（单据→货物方向）
