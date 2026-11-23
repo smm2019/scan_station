@@ -2606,7 +2606,8 @@ class _MainPageState extends State<MainPage>
       // 选位还被同托兄弟误拦）。非整托模式重采一个"服务器认知的托框"→ 当面问一次：
       // 拆=进声明队列（推送显式发 pid:""，服务器 v225 认拆出）；保留=零改动零声明（=旧行为）。
       // 关掉弹窗（点外部）按"保留原托"处理：不打断保存，数据零变化。
-      if (!pallet0 && !_retMode) {
+      // 判据只认快照 pallet0/ret0（R154 铁律：本函数 await 窗口禁读实时值，防模式漂移混档）
+      if (!pallet0 && !ret0) {
         try {
           final _up2 = code.trim().toUpperCase();
           final _sp2 = await SharedPreferences.getInstance();
