@@ -2992,6 +2992,7 @@ const PARAMS = {
   batch:          { grp: '调度节奏', name: '单轮最多下发', unit: '单', min: 1, max: 8, d: 4, tip: '排队调度器每轮最多真实下发几单（保守节奏）' },
   transferConc:   { grp: '调度节奏', name: '移库并发上限', unit: '条', min: 0, max: 8, d: 2, tip: '㉖v196 移库/返架(transfer)在途并发上限：批量移地面/返架不再一次铺满抢车，超出部分排队、调度器按空位匀速补发（与出库共享巷道 aisleCap 闸门）。0=不限（回退旧的"发起即全部直发"行为）；默认2' },
   agingMin:       { grp: '调度节奏', name: '排队防饿死升级', unit: '分钟', min: 2, max: 120, d: 10, tip: '普通队列项等待超此时长自动按急料优先级调度' },
+  agvBlockRedMin: { grp: '调度节奏', name: '备料被挡红牌阈值', unit: '分钟', min: 5, max: 120, d: 15, tip: '㉖v237 备料看板被挡任务最长等待≥此值→安灯升红牌(需介入腾车/催单/人工发车)，未达阈值黄牌；绿=无被挡' },
   sendTimeoutMin: { grp: '调度节奏', name: '下发无回执判失败', unit: '分钟', min: 1, max: 30, d: 5, tip: '下发中超此时长无回执→判失败可重试，防站台封死' },
   staleMin:       { grp: '调度节奏', name: '在途超时判定', unit: '分钟', min: 5, max: 240, d: 40, tip: '已下发/移库超此时长未完成→判失败并通知' },
   manualHoldMin:  { grp: '调度节奏', name: '人工占台压制', unit: '分钟', min: 1, max: 240, d: 30, tip: '人工标记站台占用后的压制时长，防误叫车撞台' },
@@ -3995,10 +3996,48 @@ function queueBoardOf(nowReq) {
   const ahead = items.slice(0, Math.max(0, myIdx));
   // 前方需处理单里仓管会逐个消化；正在备料=已接单的靠前项
   const servingNow = items.filter((x) => x.status === 'accepted');
+  // ㉖v237 备料排队看板·安灯化增强（用户 11-23 按顶尖工厂看板提三问：为何被挡/挡了哪些/中间好转没）：
+  //   旧版头部只给"7 个被挡（最长24分·无空闲台）"一行，答不了"哪些单、卡在哪台、这半小时比上小时好转没"。
+  //   数据全纯读取（agvQueue 活跃被挡项 + schedBlock 小时桶），不碰调度器 dispatchOne 一行。
+  const _nowMs = Date.now();
+  const _bd = []; // 被挡明细（当前活跃被挡项，含无领料单号的返架/检验/采集叫车）
+  const _rsnAgg = {}; // 原因 -> {n, maxMin, codes[]}
+  for (const q of db.agvQueue || []) {
+    if (['完成', '取消'].includes(q.state) || !q.blockRsn) continue;
+    const _bs = Number(q.blockSince) || Number(q.at) || 0;
+    const _bm = _bs ? min(_nowMs - _bs) : 0;
+    const _rs = String(q.blockRsn);
+    _bd.push({ code: String(q.code || ''), type: String(q.type || ''), dest: String(q.stationManual || q.station || ''), by: String(q.by || ''), rsn: _rs, key: String(q.blockKey || '站台'), min: _bm, seq: Array.from(new Set((q.blockSeq || []).concat(_rs))), reqId: String(q.reqId || ''), reqNo: String(q.reqNo || '') });
+    const _a = _rsnAgg[_rs] || (_rsnAgg[_rs] = { n: 0, maxMin: 0, codes: [] });
+    _a.n++; if (_bm > _a.maxMin) _a.maxMin = _bm; if (_bd.length <= 40 && q.code && _a.codes.length < 8) _a.codes.push(String(q.code));
+  }
+  _bd.sort((a, b) => b.min - a.min); // 卡最久置顶
+  const _byRsn = Object.entries(_rsnAgg).map(([rsn, v]) => ({ rsn, n: v.n, maxMin: v.maxMin, codes: v.codes })).sort((a, b) => b.n - a.n);
+  // 近6小时被挡趋势：schedBlock 按小时桶已存 n/sec/max（放行/终态才入桶=已消化的被挡段，与"当前卡着"的 _bd 互补）
+  const _hrNow = Math.floor(_nowMs / 3600000) * 3600000, _trend = [];
+  for (let i = 5; i >= 0; i--) {
+    const _h = _hrNow - i * 3600000; let n = 0, sec = 0;
+    for (const b of db.schedBlock || []) if (b.hr === _h) { n += Number(b.n) || 0; sec += Number(b.sec) || 0; }
+    _trend.push({ hr: _h, n, min: Math.round(sec / 60) });
+  }
+  // 好转判定：本小时(未完,仅参考) vs 上一完整小时 的被挡总时长（分钟）
+  const _cur = _trend[_trend.length - 1] || { min: 0 }, _prev = _trend[_trend.length - 2] || { min: 0 };
+  const _delta = Math.round(_cur.min - _prev.min);
+  const _dir = _delta <= -Math.max(3, _prev.min * 0.2) ? 'improving' : (_delta >= Math.max(3, _prev.min * 0.2) ? 'worsening' : 'flat');
+  const _redMin = Number(P().agvBlockRedMin) || 15;
+  const _light = agvBlocked === 0 ? 'green' : (agvBlockedMaxMin >= _redMin ? 'red' : 'yellow');
+  const _worst = _bd[0] || null;
+  const agvBoard = {
+    light: _light, redMin: _redMin,
+    detail: _bd.slice(0, 40), byRsn: _byRsn, trend: _trend, trendDeltaMin: _delta, trendDir: _dir,
+    worst: _worst ? { code: _worst.code, dest: _worst.dest, rsn: _worst.rsn, min: _worst.min, by: _worst.by } : null,
+    redFlag: _light === 'red' && _worst ? { code: _worst.code, dest: _worst.dest, rsn: _worst.rsn, min: _worst.min, reqNo: _worst.reqNo } : null,
+  };
   return {
     rank: myIdx >= 0 ? myIdx + 1 : null, total: active.length, agvActive,
     agvBlocked, agvBlockedMaxMin, agvWorstRsn, // ㉖v202 车队整体拥堵：被挡叫车数+最长被挡时长+最堵原因
     agvFail, agvFailMaxMin, agvWorstFailRsn, // ㉖v226 车队下发失败同列上卡：含无单号项，24h窗
+    agvBoard, // ㉖v237 安灯增强：信号灯/被挡明细/原因分布/近6小时趋势/好转判定/红牌点名
     aheadCount: ahead.length, behind: items.slice(myIdx >= 0 ? myIdx + 1 : items.length),
     ahead, servingNow, items,
     // 预计等待=前方单逐个消化：待接单的按均时全算，备料中的只算剩余（均时-已备分钟）
