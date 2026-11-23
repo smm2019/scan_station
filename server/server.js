@@ -4681,11 +4681,13 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
     if (req.method === 'GET' && p === '/api/scanlog') {
       const fc = (url.searchParams.get('c') || '').trim().toUpperCase();
       const fpn = (url.searchParams.get('pn') || '').trim().toUpperCase();
+      const fbatch = (url.searchParams.get('batch') || '').trim().toUpperCase(); // ㉖v230 按采集批次过滤（零件档案入库履历"关联批次"点开=同批全部标签）
       const fft = Number(url.searchParams.get('from')) || 0, ftt = Number(url.searchParams.get('to')) || 0;
       const lim = Math.min(20000, Math.max(1, Number(url.searchParams.get('limit')) || 2000));
       let arr = Object.entries(db.scanlog).map(([k, v]) => { v.k = k; return v; }).sort((a, x) => (x.t || 0) - (a.t || 0)); // ㉖⑯ 附带主键k供网页作废/恢复定位
       if (fc) arr = arr.filter(x => String(x.code).toUpperCase() === fc);
       if (fpn) arr = arr.filter(x => String(x.pn || '').toUpperCase() === fpn); // ㉖B7 零件号过滤
+      if (fbatch) arr = arr.filter(x => String(x.batch || '').toUpperCase() === fbatch); // ㉖v230 采集批次过滤
       if (fft || ftt) arr = arr.filter(x => (!fft || (x.t || 0) >= fft) && (!ftt || (x.t || 0) <= ftt)); // ㉖B7 时间窗
       // ㉖ 批次口径：按 MES 标签打印时间派生（浅拷贝返回，不回写 db.scanlog，保持库内原样）
       // ㉖v122 reg 生效态：账本在=1；已作废=-1；流水正常但账本无此码=0（登记被拒/未落账）——
@@ -6278,7 +6280,7 @@ return send(res, 200, {
         const _sl = Object.values(db.scanlog || {}).filter((st) => String(st.pn || '').toUpperCase() === pn).sort((a, x) => (x.t || 0) - (a.t || 0));
         // ㉖v83 漏登记标记：地面模式只选区排未落成格位（gl=粗码），或登记步骤失败——未作废、不在账本、也无出库史 = 实物在库系统查无，需去「修正与返架」补登记
         const _outCodes = new Set(); for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) _outCodes.add(String(i.barcode || '').toUpperCase());
-        const inb = _sl.slice(0, 60).map((st) => ({ t: Number(st.t) || 0, code: st.code, q: Number(st.q) || 0, lot: printLot(st.mk, st.lot), loc: (st.wt === 0 ? st.st : st.gl) || '', op: st.op || '', cx: !!st.cx, unreg: !st.cx && !(db.ledger || []).some((x) => String(x.c || '').toUpperCase() === String(st.code || '').toUpperCase()) && !_outCodes.has(String(st.code || '').toUpperCase()) && !db.seenOut[String(st.code || '').toUpperCase()] }));
+        const inb = _sl.slice(0, 60).map((st) => ({ t: Number(st.t) || 0, code: st.code, q: Number(st.q) || 0, lot: printLot(st.mk, st.lot), batch: String(st.batch || ''), loc: (st.wt === 0 ? st.st : st.gl) || '', op: st.op || '', cx: !!st.cx, unreg: !st.cx && !(db.ledger || []).some((x) => String(x.c || '').toUpperCase() === String(st.code || '').toUpperCase()) && !_outCodes.has(String(st.code || '').toUpperCase()) && !db.seenOut[String(st.code || '').toUpperCase()] }));
         const outAll = [];
         for (const o of Object.values(db.outbound || {})) for (const i of (o.items || [])) { if (String(i.code || '').toUpperCase() !== pn) continue; outAll.push({ t: Number(o.createdAt) || 0, no: o.orderNo, q: Number(i.qty) || 0, tag: i.barcode || '', from: i.fromLoc || '', to: o.toLoc || '', req: o.linkReqNo || '', by: opNameOf(o.operator), mv: isMoveOrder(o) ? 1 : 0 }); } // ㉖v100 mv=1 移仓单（去向非线边仓），前端标注保留可见
         outAll.sort((a, x) => x.t - a.t);
