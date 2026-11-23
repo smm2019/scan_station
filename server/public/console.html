@@ -267,7 +267,16 @@ async function newReqGo(btn){ // ㉖v128 框数→件数换算（对齐 PDA requ
  if((over.length||empty.length)&&!confirm((over.length?'⚠ 以下行需求超过当前在架量：\n'+over.map(i=>i.partNo+'：约'+i.qty+'件（'+i.boxes+'框） > 在架约'+(Math.round(i.avail*i.perBox*10)/10)+'件（'+i.avail+'框×'+i.perBox+'件/框）').join('\n')+(empty.length?'\n\n':''):'')+(empty.length?'⚠ 以下零件当前无在架库存，仓管接单时可能无货可发：\n'+empty.map(i=>i.partNo+(i.perBox>0?'':'（不在字典，提交后仓管需人工核对名称）')).join('\n'):'')+'\n\n若物料已在途/补货已安排，点确定仍可提交。'))return;
  btn.disabled=true;
  try{const j=await api('/api/requisitions',{method:'POST',body:{items,remark:$('#nrm').value.trim(),assigneeId:$('#nasg').value,needDate:$('#nnd').value,rush:$('#nrush').checked}});
-  if(j.ok){T('✅ 已提交 '+(j.req&&j.req.no||''),1);$('#mask').classList.add('hide');pgReqs()}else T('❌ '+(j.msg||'失败'))}catch(_){T('提交失败')}btn.disabled=false}
+  // ㉖v235 重复下单软拦：服务器判 10 分钟内同人同零件同数量 → 弹明细让用户确认（确属补料→带 confirmDup 重提）
+  if(j&&j.code==='dup_req'&&Array.isArray(j.dups)){
+   btn.disabled=false;
+   if(!confirm('⚠ 刚才已提交过相同需求的领料单：\n'+j.dups.map(d=>`${d.no}（${d.status==='accepted'?'备料中':d.status==='ready'?'待签收':'待接单'} · ${new Date(d.at).toLocaleString('zh-CN',{hour12:false}).slice(11,16)} · ${d.items.join('、')}）`).join('\n')+'\n\n若系误重复提交请点「取消」；确属补料/另需请点「确定」再次提交。'))return;
+   btn.disabled=true;
+   const j2=await api('/api/requisitions',{method:'POST',body:{items,remark:$('#nrm').value.trim(),assigneeId:$('#nasg').value,needDate:$('#nnd').value,rush:$('#nrush').checked,confirmDup:1}});
+   btn.disabled=false;
+   if(j2.ok){T('✅ 已提交 '+(j2.req&&j2.req.no||''),1);$('#mask').classList.add('hide');pgReqs()}else T('❌ '+(j2.msg||'失败'));return;
+  }
+  if(j.ok){T('✅ 已提交 '+(j.req&&j.req.no||'')+(Array.isArray(j.dupWarn)?'（⚠ 与近期单据同需求，已按急料放行）':''),1);$('#mask').classList.add('hide');pgReqs()}else T('❌ '+(j.msg||'失败'))}catch(_){T('提交失败')}btn.disabled=false}
 async function webCancel(k,cx,code){if(!confirm(cx?('作废流水 '+code+'？将同步整框消账并允许重新扫码录入'):('恢复流水 '+code+'？将按原货位重登账本')))return;
  try{const j=await api('/api/scanlog/cancel',{method:'POST',body:{k,cx}});T(j.ok?('✅ '+(j.msg||'完成')):('❌ '+(j.msg||'失败')),2);if(j.ok)flowGo()}catch(_){T('操作失败')}} // ㉖⑫ 概览下钻统一入口：全量重置筛选(含搜索词/我的待办/急料/超时/视图)，杜绝"点进去空白"
 function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.remove('lgmode');if(U&&U.mustChangePw&&!document.getElementById('cpmust')){const d=document.createElement('div');d.id='cpmust';d.style.cssText='background:#fff3e0;border-bottom:2px solid #e65100;color:#bf360c;padding:7px 16px;font-size:13px;font-weight:600';d.innerHTML='⚠ 首次登录：请尽快修改初始密码 —— 点右上「⚙ 偏好」→「修改密码」区；改完此提示消失。';document.getElementById('app').insertBefore(d,document.querySelector('#app header').nextSibling||null);}try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();setInterval(notifPoll,45000)}catch(_){}}
@@ -652,7 +661,7 @@ async function kDrop(e,col){e.preventDefault();col.classList.remove('drop-on');c
   if(!confirm(`接单：由你（${U.name}）开始备料 ${r.no}${who}？`))return;await kDo(id,'accept',{})}
  else{const note=prompt(`退回 ${r.no} 继续备料，原因（可空，进流转历史）：`,'')||'';await kDo(id,'back',{note})}}
 async function kDo(id,act,body){try{const j=await api('/api/requisitions/'+id+'/'+act,{method:'POST',body});
- if(j.ok){T('✅ '+(act=='accept'?'已接单':act=='ready'?'已标记备齐':'已退回备料'),1);pgReqs()}else T('❌ '+(j.msg||('HTTP 操作失败')))}catch(_){T('操作失败')}}
+ if(j.ok){T('✅ '+(act=='accept'?'已接单':act=='ready'?'已标记备齐':'已退回备料')+(j.warn?`｜${j.warn}`:''),j.warn?5:1);pgReqs()}else T('❌ '+(j.msg||('HTTP 操作失败')))}catch(_){T('操作失败')}}
 // ---- ㉖B6 零件档案页（画像+预约管理） ----
 let TP={};
 // ---- ㉖v57 任务/货物追溯看板：跨实体统一时间线（扫码→上架→领料→调度→AGV→到站→出库） ----
@@ -1055,7 +1064,7 @@ async function qLoad(silent){const j=await api('/api/requisitions/queue');if(!j.
  $('#qcard').innerHTML=h}
 async function qAccept(id){const x=(window._qboard||[]).find((i)=>i.id==id)||{};
  if(!confirm('接单：由你（'+U.name+'）开始备料 '+x.byName+' 的单 '+(x.no||id)+'？'))return;
- try{const j=await api('/api/requisitions/'+id+'/accept',{method:'POST',body:{}});T(j.ok?'✅ 已接单，开始备料（接单即派 AGV）':('❌ '+(j.msg||'失败')));qLoad()}catch(_){T('操作失败')}}
+ try{const j=await api('/api/requisitions/'+id+'/accept',{method:'POST',body:{}});T(j.ok?('✅ 已接单，开始备料（接单即派 AGV）'+(j.warn?`｜${j.warn}`:'')):('❌ '+(j.msg||'失败')));qLoad()}catch(_){T('操作失败')}}
 // ===== ㉖v50 容器管理：让每只框"自我介绍"——类型健康度、滞留预警、区域热力，一屏看全 =====
 let CTN={types:{},timer:0};
 let _ctv='ov';        // 当前视图：ov=概览清单 / map=库位地图

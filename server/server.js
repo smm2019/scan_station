@@ -8689,6 +8689,33 @@ return send(res, 200, {
           }
           if (!clean.length) return send(res, 400, { ok: false, msg: '至少一行有效的零件号+数量' });
           if (clean.length > 20) return send(res, 400, { ok: false, msg: '一张单最多20行' });
+          // ㉖v235 重复下单软提示（用户 11-23 实锤胡志文 34 秒双单空转+24h 内 4 组同类组合）：
+          //   同人+同零件+同数量(±1件容 FIFO 核准微差) 10 分钟内已有活跃单(非取消/非拒) → 拦一次给看。
+          //   合法重复（补框/被拒重开）带 confirmDup=1 复提交直通；旧版端不带此字段=零变化。
+          //   急料豁免（现场两单同刻加急=产线真急，打断改二次提交风险更高）：只随响应带 dupWarn 提示。
+          let _dupWarn = null;
+          if (b.confirmDup !== true && b.confirmDup !== 1) {
+            const _dn = Date.now(), dups = [];
+            const _keys = new Set(clean.map((i) => i.partNo.toUpperCase() + '|' + Math.round(Number(i.qty))));
+            for (const o of db.requisitions || []) {
+              if (o.by !== u.id) continue;
+              if (['cancelled', 'rejected'].includes(o.status)) continue;
+              const _ct = Date.parse(o.createdAt) || 0;
+              if (!_ct || _dn - _ct > 600000) continue;
+              const hit = (o.items || []).filter((i) => {
+                const kk = String(i.partNo || '').toUpperCase() + '|' + Math.round(Number(i.qty) || 0);
+                if (_keys.has(kk)) return true;
+                const [pn0, q0] = kk.split('|'); const qq = Number(q0) || 0;
+                return clean.some((c0) => String(c0.partNo).toUpperCase() === pn0 && Math.abs((Number(c0.qty) || 0) - qq) <= 1);
+              });
+              if (hit.length) dups.push({ no: o.no, status: o.status, at: o.createdAt, items: hit.map((i) => `${i.partNo}×${i.qty}`) });
+            }
+            if (dups.length) {
+              const _rush = b.rush === true || clean.some((i) => i.rush);
+              if (!_rush) return send(res, 409, { ok: false, code: 'dup_req', dups, msg: '刚刚已提交过相同需求的领料单，请确认是否重复提交（确属补料请再点一次提交）' });
+              _dupWarn = dups;
+            }
+          }
           let assignee = null;
           const assigneeId = String(b.assigneeId || '').trim();
           if (assigneeId) {
@@ -8733,7 +8760,7 @@ return send(res, 200, {
           console.log(`[req] ${u.name} 下单 ${r.no}${assignee ? ' → 指定 ' + assignee.name : ''}`);
           // ㉖v52 排队位次看板：本单在待接单/备料中队列里的排位、前方单数、正在给谁备料、AGV 活跃任务数、预计备齐时长
           let board = null; try { board = queueBoardOf(r); } catch (_) {}
-          return send(res, 200, { ok: true, req: reqView(r), queueAhead: board ? board.aheadCount : null, queue: board });
+          return send(res, 200, { ok: true, req: reqView(r), queueAhead: board ? board.aheadCount : null, queue: board, ...(_dupWarn ? { dupWarn: _dupWarn } : {}) });
         }
 
         // 列表：物料员看自己的，仓管/管理员看全部；scope=todo 只看待办
@@ -8852,6 +8879,7 @@ return send(res, 200, {
             r.history.push({ time: new Date().toISOString(), by: '系统', text: `⚡并发提醒：${u.name}提交「${act}」时，${cf}（软模式放行·单rev=${_rev0}·请求baseRev=${b.baseRev}）` });
           }
           const hpush = (text) => { r.history.push({ time: new Date().toISOString(), by: u.name, text }); };
+          let actWarn = ''; // ㉖v235 动作层软警示（重复单空转提醒等）：随成功响应返回端上弹提示，不阻断动作本身
           // issued 统一为 [{c:标签, q:件数}]，兼容旧数据纯字符串（按0件计）
           const normIssued = (i) => (i.issued || []).map(x => typeof x === 'string' ? { c: x, q: 0 } : Object.assign({ c: String(x.c || ''), q: Number(x.q) || 0 }, x.l ? { l: String(x.l) } : {}, x.b ? { b: String(x.b) } : {}, x.f ? { f: String(x.f) } : {}, x.pid ? { pid: String(x.pid) } : {}, x.n ? { n: String(x.n) } : {}, x.e ? { e: 1, by: x.by || '', why: x.why || '' } : {})); // ㉖v92c 保留 l：旧版丢字段致出库流水原货位空白；㉖v94q 保留 b/f/pid/n：撤扫复挂要还原批次与托号，否则账本批次被清空→FIFO排序退化成按货位、同托归并失效
           const issuedQty = (i) => normIssued(i).reduce((s, e) => s + e.q, 0);
@@ -8865,10 +8893,21 @@ return send(res, 200, {
               else if ((Number(i.transferQty) || 0) < (Number(i.qty) || 0)) shorts.push(`${i.partNo} 短${(Number(i.qty) || 0) - (Number(i.transferQty) || 0)}件(实发${Number(i.transferQty) || 0})`);
             }
             if (shorts.length) r.shortInfo = shorts.join('；');
-            hpush(`全部行处理完成${r.shortInfo ? '，短装：' + r.shortInfo : ''}，待签收`);
-            notify(r.by, 'req_ready', `你的领料单 ${r.no} 已备齐${r.shortInfo ? '（短装：' + r.shortInfo + '）' : ''}，请确认收货`, r.id);
+            // ㉖v235 空转收口（用户 11-23 实锤：同人 34 秒双单，后单无货可派全靠"跳过"收尾，
+            //   旧文案"短装：跳过(0件)"把重复单污染进短装语义）。判据=整单零发料(一框未出)，
+            //   文案改"重复单空转"+挂 idleSpin 标志（供取消闸口/端上展示），漏斗 shortN 口径不动。
+            const _zeroOut = !(r.items || []).some((i) => issuedQty(i) > 0);
+            let _finTxt;
+            if (_zeroOut) {
+              r.idleSpin = 1;
+              _finTxt = '⚠ 全部行 0 发料=本单空转（若系重复提交，建议直接取消本单，勿签收）';
+            } else {
+              _finTxt = `全部行处理完成${r.shortInfo ? '，短装：' + r.shortInfo : ''}，待签收`;
+            }
+            hpush(_finTxt);
+            notify(r.by, 'req_ready', `你的领料单 ${r.no} ${_zeroOut ? '0 发料空转（若系重复提交请直接取消本单）' : '已备齐' + (r.shortInfo ? '（短装：' + r.shortInfo + '）' : '')}，请${_zeroOut ? '核对处理' : '确认收货'}`, r.id);
             db.users.filter(x => x.role === 'warehouse' && x.enabled && x.id !== u.id).forEach(x =>
-              notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）已备齐${r.shortInfo ? '，短装：' + r.shortInfo : ''}`, r.id));
+              notify(x.id, 'req_ready_wh', `领料单 ${r.no}（${r.byName}）${_zeroOut ? '0 发料空转，建议协调取消' : '已备齐' + (r.shortInfo ? '，短装：' + r.shortInfo : '')}`, r.id));
           };
 
           if (act === 'accept') {
@@ -8893,6 +8932,25 @@ return send(res, 200, {
               }
             } catch (_) {}
             hpush(`接单（${u.name}）${r.assigneeName && r.assigneeId !== u.id ? '，原指定 ' + r.assigneeName + ' 超时未接' : ''}`);
+            // ㉖v235 接单重复警示（现场实锤：同一需求 34 秒双单，第二单被接单后无货可派空转）：
+            //   存在同人同零件同数量的更早活跃单（更早已推进的概率高）→ 软警示建议协调取消本单。
+            try {
+              const _myKeys = new Set((r.items || []).map((i) => String(i.partNo || '').toUpperCase() + '|' + Math.round(Number(i.qty) || 0)));
+              const _mk = [];
+              const _at0 = Date.parse(r.createdAt) || 0;
+              for (const o of db.requisitions || []) {
+                if (o.id === r.id || o.by !== r.by) continue;
+                if (!['pending', 'accepted', 'ready'].includes(o.status)) continue;
+                if ((Date.parse(o.createdAt) || 0) > _at0) continue; // 只提"更早"的单（后开的重复单该取消的是新开那张）
+                const h = (o.items || []).some((i) => {
+                  const kk = String(i.partNo || '').toUpperCase() + '|' + Math.round(Number(i.qty) || 0);
+                  if (_myKeys.has(kk)) return true;
+                  return [..._myKeys].some((k0) => { const [p0, q0] = k0.split('|'); const [p1, q1] = kk.split('|'); return p0 === p1 && Math.abs((Number(q0) || 0) - (Number(q1) || 0)) <= 1; });
+                });
+                if (h) _mk.push(o.no + '(' + (o.status === 'accepted' ? '备料中' : o.status === 'ready' ? '待签收' : '待接单') + ')');
+              }
+              if (_mk.length) actWarn = `⚠ 同一需求更早还有 ${_mk.slice(0, 3).join('、')}${_mk.length > 3 ? ' 等' : ''} 在处理中——若本单系重复提交，建议取消本单免空转`;
+            } catch (_) {}
             notify(r.by, 'req_accept', `你的领料单 ${r.no} 已由 ${u.name} 接单备料`, r.id);
             if (r.assigneeId && r.assigneeId !== u.id) { const aU = db.users.find((x) => x.id === r.assigneeId); if (aU && aU.enabled) notify(r.assigneeId, 'req_reassign', `📢 你被指定的领料单 ${r.no} 已由 ${u.name} 接单，请勿再备料`, r.id); } // ⑲防原指定人白备料
             // 接单即派：建议货架框自动入队（是否真实下发仍由演算/真实模式把关）
@@ -9274,7 +9332,11 @@ return send(res, 200, {
               notify(x.id, 'req_done', `${r.byName} 已签收领料单 ${r.no}`, r.id));
           } else if (act === 'cancel') {
             if (r.by !== u.id && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅下单人或管理员可取消' });
-            if (!['pending', 'accepted'].includes(r.status)) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可取消` });
+            // ㉖v235 空转单放行取消（用户拍板三层修法第3层）：ready 态默认不可取消是防"纸面撤回
+            //   已发实物"，但整单零发料的空转单（重复提交收尾）无实物、无 MES 账，取消零风险——
+            //   放行给重复单一键出路；有实物/有转账的仍走原状态闸拦死。
+            const _idleZero = r.status === 'ready' && !(r.items || []).some((i) => i.transferred || normIssuedG(i).length > 0);
+            if (!['pending', 'accepted'].includes(r.status) && !_idleZero) return send(res, 400, { ok: false, msg: `当前状态[${r.status}]不可取消` });
             // 已有行真实转过MES：纸面取消会造成库存与MES不一致，禁止整单取消（剩余行走转单或跳过收尾）
             if (r.items.some(i => i.transferred)) return send(res, 400, { ok: false, msg: '已有行转MES出库，不能整单取消；请对剩余行转单或跳过收尾' });
             // ㉖v209 取消须回滚"已扫未转"的框（复核实锤的地基漏洞：scan 成功即从权威账本 splice，
@@ -9307,7 +9369,7 @@ return send(res, 200, {
             r.lastAct = { by: u.id, name: u.name || u.id, at: new Date().toISOString(), act };
           }
           save();
-          return send(res, 200, { ok: true, req: reqView(r) });
+          return send(res, 200, { ok: true, req: reqView(r), ...(actWarn ? { warn: actWarn } : {}) });
         }
         return send(res, 404, { ok: false, msg: '接口不存在' });
       }

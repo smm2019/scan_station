@@ -177,7 +177,8 @@ class AuthApi {
             "password": password,
             "dev": await deviceId(),
             "kind": "pda",
-            "ver": AppUpdater.localBuild // ㉖v201 登录上报 APK build 号：管理后台设备面板直接看各台版本/是否落后，免现场翻"关于"页
+            "ver": AppUpdater
+                .localBuild // ㉖v201 登录上报 APK build 号：管理后台设备面板直接看各台版本/是否落后，免现场翻"关于"页
           },
           serverOverride: server);
   static Future<Map> me() async =>
@@ -238,14 +239,16 @@ class AuthApi {
   static Future<Map> reqCreate(List<Map> items, String remark,
           {String assigneeId = "",
           bool rush = false,
-          String needDate = ""}) async =>
+          String needDate = "",
+          bool confirmDup = false}) async =>
       _req("POST", "/api/requisitions",
           body: {
             "items": items,
             "remark": remark,
             "assigneeId": assigneeId,
             "rush": rush,
-            if (needDate.isNotEmpty) "needDate": needDate
+            if (needDate.isNotEmpty) "needDate": needDate,
+            if (confirmDup) "confirmDup": 1
           },
           token: await AuthStore.token());
 
@@ -402,10 +405,12 @@ class AuthApi {
   static Future<Map> ledgerGetByCode(String c) async =>
       _req("GET", "/api/ledger?c=" + Uri.encodeComponent(c),
           token: await AuthStore.token());
+
   /// ㉖v199 拉下架选框：模糊查（零件号/标签/货位 任一含子串，服务器 fz 参数）
   static Future<Map> ledgerFuzzy(String fz) async =>
       _req("GET", "/api/ledger?fz=" + Uri.encodeComponent(fz),
           token: await AuthStore.token());
+
   /// ㉖v199 项目字典（码表 list + 零件→项目映射 map）：拉下架「项目批量」下拉数据源
   static Future<Map> projDict() async =>
       _req("GET", "/api/proj", token: await AuthStore.token());
@@ -414,7 +419,8 @@ class AuthApi {
       _req("POST", "/api/scanlog/sync",
           body: {
             "items": items,
-            if (kDiagPulse.isNotEmpty) "diag": Map.of(kDiagPulse) // ㉖v199d 诊断搭车·流水通道：账本哑死时流水照带（根因照拿）
+            if (kDiagPulse.isNotEmpty)
+              "diag": Map.of(kDiagPulse) // ㉖v199d 诊断搭车·流水通道：账本哑死时流水照带（根因照拿）
           },
           token: await AuthStore.token());
   static Future<Map> scanlogDeleteBatch(String batch) async =>
@@ -499,12 +505,16 @@ class AuthApi {
   /// 全库流水已 4438 条 > limit 2000，不传 code 时老框采集节点整段隐身。
   /// ㉖v212 pn=按零件号精确过滤：零件档案页"补全别台设备采集的框"用——档案页本来就只要本件流水，
   /// 旧写法拉 5000 条全库回端上筛，全库 4438 逼近上限；越界那刻起老框（流水时刻早、排倒序尾部）整段漏掉。
-  static Future<Map> scanlogGet({int limit = 5000, String? code, String? pn}) async {
+  static Future<Map> scanlogGet(
+      {int limit = 5000, String? code, String? pn}) async {
     final qs = <String>["limit=$limit"];
     if (pn != null && pn.isNotEmpty) qs.add("pn=${Uri.encodeComponent(pn)}");
-    if (code != null && code.isNotEmpty) qs.add("c=${Uri.encodeComponent(code)}");
-    return _req("GET", "/api/scanlog?${qs.join("&")}", token: await AuthStore.token());
+    if (code != null && code.isNotEmpty)
+      qs.add("c=${Uri.encodeComponent(code)}");
+    return _req("GET", "/api/scanlog?${qs.join("&")}",
+        token: await AuthStore.token());
   }
+
   /// ㉖v210 pn=按零件号精确过滤（服务器过滤在 500 条上限之前）：零件档案页拼"累计出库"专用。
   /// 不传 pn=最新 500 单（旧行为，列表页用）；档案页必须传，否则老单被截→累计出库少报、账外框虚报。
   /// ㉖v211 code=按框码精确过滤（同样过滤先于截断）：全链路兜底路径按标签追出库用。
@@ -513,9 +523,11 @@ class AuthApi {
       if (pn != null && pn.isNotEmpty) "pn=${Uri.encodeComponent(pn)}",
       if (code != null && code.isNotEmpty) "c=${Uri.encodeComponent(code)}",
     ];
-    return _req("GET", qs.isEmpty ? "/api/outbound" : "/api/outbound?${qs.join("&")}",
+    return _req(
+        "GET", qs.isEmpty ? "/api/outbound" : "/api/outbound?${qs.join("&")}",
         token: await AuthStore.token());
   }
+
   static Future<Map> agvTaskOf(String code) async =>
       _req("GET", "/api/agv/taskOf?c=${Uri.encodeComponent(code)}",
           token: await AuthStore.token());
@@ -571,8 +583,7 @@ class AuthApi {
       _req("GET", "/api/inventory/baseline", token: await AuthStore.token());
   // ㉖v202 零件日流水（零件档案每日出入库图数据源，服务器全厂口径）
   static Future<Map> pnDaily(String pn, {int days = 30}) async => _req(
-      "GET",
-      "/api/report/pn-daily?pn=${Uri.encodeComponent(pn)}&days=$days",
+      "GET", "/api/report/pn-daily?pn=${Uri.encodeComponent(pn)}&days=$days",
       token: await AuthStore.token());
   static Future<Map> ttsModelInfo() async =>
       _req("GET", "/api/tts/info", token: await AuthStore.token());
@@ -916,8 +927,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       kOutWhKeys = (r["outWhKeys"] as String).trim();
     // ㉖v209 领料AGV刷新秒数（服务器参数 pdaAgvRefSec 下发）：夹 3~300 防脏值；旧服务器无字段=保留上次值
     if (r["pdaAgvRefSec"] is num)
-      kPdaAgvRefSec =
-          (r["pdaAgvRefSec"] as num).toInt().clamp(3, 300);
+      kPdaAgvRefSec = (r["pdaAgvRefSec"] as num).toInt().clamp(3, 300);
     Auth.user = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
     Auth.features = Map<String, bool>.from(r["features"] ?? {});
     AuthStore.markVerified();
