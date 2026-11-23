@@ -5173,6 +5173,11 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
     final agvBlocked = (q["agvBlocked"] as num?)?.toInt() ?? 0; // ㉖v202 车队被挡任务数
     final agvBlockedMaxMin = (q["agvBlockedMaxMin"] as num?)?.toInt() ?? 0; // 最长被挡分钟
     final agvWorstRsn = (q["agvWorstRsn"] ?? "").toString(); // 最堵原因
+    // ㉖v226 失败上卡：头部此前只报"在跑 N 个"，失败只在带单号的卡片上——无单号叫车失败全静默。
+    // 服务端已并入头部（含无单号项，24小时窗），此处如实展示"错误信息+持续影响时间"。
+    final agvFail = (q["agvFail"] as num?)?.toInt() ?? 0;
+    final agvFailMaxMin = (q["agvFailMaxMin"] as num?)?.toInt() ?? 0;
+    final agvWorstFailRsn = (q["agvWorstFailRsn"] ?? "").toString();
     final eta = (q["etaMin"] as num?)?.toInt();
     final serving = List<Map>.from(q["servingNow"] ?? []);
     final isMine = rank != null;
@@ -5230,9 +5235,26 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
             ),
           Padding(
             padding: const EdgeInsets.only(top: 4),
-            child: Text("🤖 仓库在跑 $agv 个 AGV 搬运任务",
-                style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            child: Text(
+                // ㉖v226 有失败时底行直接带失败数（旧版只报"在跑N"，失败在暗处）
+                agvFail > 0
+                    ? "🤖 仓库在跑 $agv 个 AGV 搬运任务 · $agvFail 个失败"
+                    : "🤖 仓库在跑 $agv 个 AGV 搬运任务",
+                style: TextStyle(
+                    fontSize: 12,
+                    color: agvFail > 0 ? const Color(0xFFC62828) : Colors.grey)),
           ),
+          // ㉖v226 失败告警行：错误信息+持续时长上头部（含无领料单号的采集/返架/检验搬运失败），
+          // 与"被挡"分开：被挡=排队等车，失败=下发被拒需要人处置（重叫或人工搬）。
+          if (agvFail > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Text(
+                  "🚧 $agvFail 个搬运任务下发失败"
+                  "${agvWorstFailRsn.isNotEmpty ? "（最久 ${_dur(agvFailMaxMin)}·$agvWorstFailRsn）" : "（最久 ${_dur(agvFailMaxMin)}）"}",
+                  style: const TextStyle(
+                      fontSize: 12, color: Color(0xFFC62828), fontWeight: FontWeight.w600)),
+            ),
           // ㉖v202 车队被挡告警：叫车排着但没车接(无空闲台/巷道节流等)→备料被动卡住, 与"仓管没接单"
           // 是两码事, 单列出来让仓管一眼分清"该我动手"还是"等车队腾车"。仅确有被挡时显示。
           if (agvBlocked > 0)

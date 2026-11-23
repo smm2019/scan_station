@@ -3927,9 +3927,24 @@ function queueBoardOf(nowReq) {
     if (!_p || _is.min > _p.min) _agvIssue[rid] = _is;
   }
   // 头部：全仓库活跃叫车里被挡数 + 最长被挡及原因（独立于当前看哪几张单, 反映车队整体拥堵）
+  // ㉖v226 失败同列上卡（用户 11-23 问"看板有没有 AGV 错误信息和持续影响时间"实锤缺口）：
+  //   旧版头部只算被挡、明确排除失败，失败只挂在带 reqId 的单卡上——①头部看着健康、失败全在暗处；
+  //   ②采集页叫车/返架/检验搬运等【无领料单号】的失败全看板任何地方都不体现，完全静默。
+  //   失败项靠 updAt 滞留队列（无出队归档），故加 24 小时窗：久到早已被人处置的旧失败不再长期红头部，
+  //   当班失败如实可见（含持续时长）。全仓库口径，不挑 reqId。
+  const FAIL_WIN_MS = 86400000;
   let agvBlocked = 0, agvBlockedMaxMin = 0, agvWorstRsn = '';
+  let agvFail = 0, agvFailMaxMin = 0, agvWorstFailRsn = '';
   for (const q of db.agvQueue || []) {
-    if (['完成', '取消', '失败'].includes(q.state) || !q.blockRsn) continue;
+    if (q.state === '失败') {
+      const _f0 = Number(q.updAt) || Number(q.at) || 0;
+      if (!_f0 || Date.now() - _f0 > FAIL_WIN_MS) continue; // 超24小时=早已处置，不再长红
+      agvFail++;
+      const _fm = _f0 ? min(Date.now() - _f0) : 0;
+      if (_fm > agvFailMaxMin) { agvFailMaxMin = _fm; agvWorstFailRsn = String(q.err || 'AGV 下发失败').slice(0, 40); }
+      continue;
+    }
+    if (['完成', '取消'].includes(q.state) || !q.blockRsn) continue;
     agvBlocked++;
     const _f = Number(q.blockSince) || Number(q.at) || 0;
     const _bm = _f ? min(Date.now() - _f) : 0;
@@ -3954,6 +3969,7 @@ function queueBoardOf(nowReq) {
   return {
     rank: myIdx >= 0 ? myIdx + 1 : null, total: active.length, agvActive,
     agvBlocked, agvBlockedMaxMin, agvWorstRsn, // ㉖v202 车队整体拥堵：被挡叫车数+最长被挡时长+最堵原因
+    agvFail, agvFailMaxMin, agvWorstFailRsn, // ㉖v226 车队下发失败同列上卡：含无单号项，24h窗
     aheadCount: ahead.length, behind: items.slice(myIdx >= 0 ? myIdx + 1 : items.length),
     ahead, servingNow, items,
     // 预计等待=前方单逐个消化：待接单的按均时全算，备料中的只算剩余（均时-已备分钟）
