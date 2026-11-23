@@ -4825,56 +4825,63 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     ];
     int cur = steps.indexWhere((s) => s[1] != true);
     if (cur < 0) cur = steps.length;
+    // ㉖v239 压扁（用户实锤发料屏信息密度过低需反复翻）：竖排圆点150px → 单行 chip 34px，
+    // 完成✓绿、当前靛底加粗、未开始灰字；语义不变（状态全部从单据字段推导，零请求）
     return Container(
         margin: const EdgeInsets.only(top: 6, bottom: 2),
-        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 6),
+        padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
         decoration: BoxDecoration(
             color: const Color(0xFFF2F3FA),
-            borderRadius: BorderRadius.circular(10)),
+            borderRadius: BorderRadius.circular(8)),
         child: Row(children: [
           for (var i = 0; i < steps.length; i++) ...[
             Expanded(
-                child: Column(children: [
-              Container(
-                  width: 22,
-                  height: 22,
-                  decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: i < cur
-                          ? const Color(0xFF2E7D32)
-                          : (i == cur ? const Color(0xFF515BD4) : Colors.white),
-                      border: Border.all(
-                          color: i <= cur
-                              ? Colors.transparent
-                              : const Color(0xFFB0B7D9),
-                          width: 1.5)),
-                  child: Center(
-                      child: i < cur
-                          ? const Icon(Icons.check,
-                              size: 14, color: Colors.white)
-                          : Text("${i + 1}",
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: i == cur
-                                      ? Colors.white
-                                      : const Color(0xFF8890B8))))),
-              const SizedBox(height: 3),
-              Text(steps[i][0].toString(),
-                  style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight:
-                          i == cur ? FontWeight.bold : FontWeight.normal,
-                      color: i <= cur ? const Color(0xFF303F9F) : Colors.grey)),
-            ])),
+                child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 3),
+                    decoration: BoxDecoration(
+                        color: i == cur
+                            ? const Color(0xFF515BD4)
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(6)),
+                    child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          if (i < cur)
+                            const Icon(Icons.check_circle,
+                                size: 12, color: Color(0xFF2E7D32))
+                          else
+                            Text('${i + 1}',
+                                style: TextStyle(
+                                    fontSize: 10,
+                                    height: 1.1,
+                                    fontWeight: FontWeight.bold,
+                                    color: i == cur
+                                        ? Colors.white
+                                        : const Color(0xFF8890B8))),
+                          const SizedBox(width: 2),
+                          Flexible(
+                              child: Text(steps[i][0].toString(),
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                      fontSize: 10.5,
+                                      height: 1.2,
+                                      fontWeight: i == cur
+                                          ? FontWeight.bold
+                                          : FontWeight.normal,
+                                      color: i == cur
+                                          ? Colors.white
+                                          : i < cur
+                                              ? const Color(0xFF2E7D32)
+                                              : Colors.grey))),
+                        ]))),
             if (i < steps.length - 1)
-              SizedBox(
-                  width: 10,
-                  child: Container(
-                      height: 2,
+              Text('›',
+                  style: TextStyle(
+                      fontSize: 11,
                       color: i < cur
                           ? const Color(0xFF2E7D32)
-                          : const Color(0xFFD3D8EE))),
+                          : const Color(0xFFB7BEDD))),
           ],
         ]));
   }
@@ -5035,8 +5042,10 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                         Expanded(
                             child: Text(
                                 _queueItems.isEmpty
-                                    ? "本单AGV任务：暂无排队（点行内「一键叫车」入队）"
-                                    : "本单AGV任务：${_queueCnt("排队")}排 · ${_queueCnt("在途")}在途 · ${_queueCnt("已到站")}到站${_queueCnt("失败") > 0 ? " · ${_queueCnt("失败")}失败" : ""}",
+                                    ? "AGV 无排队（行内「一键叫车」入队）"
+                                    : "AGV：${_queueCnt("排队")}排 · ${_queueCnt("在途")}在途 · ${_queueCnt("已到站")}到站${_queueCnt("失败") > 0 ? " · ${_queueCnt("失败")}失败" : ""}",
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                     fontSize: 12.5,
                                     fontWeight: FontWeight.w600,
@@ -5094,10 +5103,18 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
             else
               Row(children: [
                 Expanded(
-                  child: Text(
-                      "转入：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}（${_to["LOC_CODE"]}）",
-                      style: const TextStyle(
-                          fontSize: 12, color: Color(0xFF3F51B5))),
+                  child: Tooltip(
+                    // ㉖v239 主屏只显末级货位（三级全路径"焊-宁波-线边仓/…/A109-1"重复三遍占两行），
+                    // 长按看全路径；改货位入口不变
+                    message:
+                        "转入：${_to["WAREHOUSE_NAME"]}/${_to["DISTRICT_NAME"]}/${_to["LOC_NAME"]}（${_to["LOC_CODE"]}）",
+                    child: Text('📍 ${_to["LOC_NAME"]}（${_to["LOC_CODE"]}）',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF3F51B5))),
+                  ),
                 ),
                 TextButton(
                     onPressed: _busy
@@ -5107,20 +5124,20 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                             _refocusLoc();
                           },
                     child: const Text("改货位", style: TextStyle(fontSize: 12))),
+                // ㉖v239 SAP库存校验：独立 SwitchListTile（整行~100px）→ 折进本行右侧小开关
+                const Text("SAP",
+                    style: TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                Switch(
+                  value: _checkSap,
+                  onChanged: (v) => setState(() => _checkSap = v),
+                ),
               ]),
-            SwitchListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              title: const Text("开启SAP库存校验", style: TextStyle(fontSize: 13)),
-              value: _checkSap,
-              onChanged: (v) => setState(() => _checkSap = v),
-            ),
             TextField(
               controller: _scanCtrl, focusNode: _scanFocus,
               // 修复：删除 autofocus，避免打开详情时抢走转入货位框的焦点导致扫货位无反应
               decoration: InputDecoration(
                 hintText: _issuePart == null
-                    ? "先点击下方零件行选择发料目标，再连续扫码"
+                    ? "📷 先点下方零件行选目标，再扫码"
                     : "连续扫码发料中：$_issuePart",
                 isDense: true,
                 prefixIcon: const Icon(Icons.qr_code_scanner, size: 20),
