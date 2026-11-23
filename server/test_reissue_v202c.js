@@ -12,7 +12,6 @@ let fail = 0, total = 0;
 const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '❌'} ${n}${i !== undefined ? '  [' + i + ']' : ''}`); };
 (async () => {
   const TDIR = path.join(__dirname, '_tdata_reissue202c');
-  const PORT = Number(process.env.RI_PORT || (9950 + Math.floor(Math.random() * 30)));
   fs.rmSync(TDIR, { recursive: true, force: true }); fs.mkdirSync(TDIR, { recursive: true });
   const salt = crypto.randomBytes(16).toString('hex');
   const mkU = (id, un, nm, role) => ({ id, username: un, name: nm, role, enabled: true, createdAt: new Date().toISOString(), mustChangePw: false, salt, passHash: crypto.scryptSync('Ri#202', salt, 32).toString('hex') });
@@ -48,9 +47,29 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
     ],
   };
   fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(d0));
-  const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch('http://127.0.0.1:' + PORT + '/api/health')).ok; } catch (_) {} }
-  let out = ''; srv.stdout.on('data', (d) => { out += d; }); srv.stderr.on('data', (d) => { out += d; });
+  // ㉖v240 逐端口试启+身份校验（CI 僵尸劫持治法，同 v199/v219/v225 一脉）：agent_host 下 kill 只杀
+  //   shell、真服务孙进程存活占端口，上一套件随机端口若撞残留监听 → 健康检查连上旧实例=护栏假过、
+  //   断言全灭（本轮 CI 6 处失败正是此形态，本地同码 7/7 全绿）。判据=health 回包 code.startedAt
+  //   必须晚于本进程拉起时刻（旧实例 startedAt 早=僵尸，弃该端口换下一个）。
+  let PORT = 0, srv = null, out = '', up = false;
+  { const _t0 = Date.now();
+    for (let _try = 0; _try < 8 && !up; _try++) {
+      const _p = 9941 + _try * 3;
+      const _s = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(_p), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let _o = ''; _s.stdout.on('data', (d) => { _o += d; }); _s.stderr.on('data', (d) => { _o += d; });
+      for (let i = 0; i < 24 && !up; i++) {
+        await sleep(250);
+        try {
+          const h = await fetch('http://127.0.0.1:' + _p + '/api/health', { signal: AbortSignal.timeout(800) });
+          if (!h.ok) continue;
+          const hj = await h.json().catch(() => ({}));
+          const _sa = Date.parse(((hj.code || {}).startedAt) || '') || 0;
+          if (_sa && _sa >= _t0 - 3000) { up = true; PORT = _p; srv = _s; out = _o; } // 本拉起时刻之后=亲儿子
+        } catch (_) {}
+      }
+      if (!up) { try { cp.execSync(`taskkill /pid ${_s.pid} /T /F`, { stdio: 'ignore', windowsHide: true }); } catch (_) {} await sleep(300); } // 僵尸/起不来→树杀换端口
+    } }
+  if (srv) { srv.stdout.on('data', (d) => { out += d; }); srv.stderr.on('data', (d) => { out += d; }); } // 接管后持续采集(试启块 _o 只到接管那一刻)
   const API = async (p2, body, tk) => { const r = await fetch('http://127.0.0.1:' + PORT + p2, { method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', ...(tk ? { Authorization: 'Bearer ' + tk } : {}) }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, json: await r.json().catch(() => ({})) }; };
   const lg = async (un) => (await API('/api/login', { username: un, password: 'Ri#202' })).json.token;
   const scan = async (reqId, code, tk) => { const _p = { r1: 'PNRT', r2: 'PNRT2', r3: 'PNRT3', r4: 'PNRT4' }[reqId] || '', _q = { RT0080: 48, RT0081: 60, RT0082: 30, RT0083: 30 }[code] || 0; return (await API('/api/requisitions/' + reqId + '/scan', { barcode: code, partNo: _p, qty: _q }, tk)).json; };

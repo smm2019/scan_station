@@ -10,7 +10,11 @@
 //  B4 输入框控制器仍经 putIfAbsent 与行生命周期解耦（懒加载下不丢已填值）
 //  B5 常领chip零件号保留（用户建议经分析否决：非卡顿源且去号不可区分）
 const fs = require('fs');
-const dart = fs.readFileSync(__dirname + '/../lib/requisition_page.dart', 'utf8');
+// ㉖v240 空白归一化（同 v233 修 test_race_v154 那把钥匙）：v232 的 dart format 全量 reflow 会把
+// 长表达式拆成多行，旧版精确单行 includes/正则被冲垮=假阳性。断言要守的是"懒加载结构在位"的语义，
+// 不是某个精确换行——故载入即折叠所有连续空白（含换行/缩进）为单空格再匹配，锁语义不锁排版。
+const norm = (s) => s.replace(/\s+/g, ' ');
+const dart = norm(fs.readFileSync(__dirname + '/../lib/requisition_page.dart', 'utf8'));
 let fail = 0, total = 0;
 const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS' : 'FAIL!'} [${n}]${c ? '' : ' ←' + (why || '')}`); };
 console.log('== B组 懒加载结构 ==');

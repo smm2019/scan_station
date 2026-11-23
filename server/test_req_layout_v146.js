@@ -5,7 +5,11 @@
 // ④预约改行内状态机（预约中…/✓已预约/✗重试，不依赖 SnackBar）+ 打开弹层回读服务器存量预约；
 //   ⑤断供组加勾选（含全选）+ 底部"批量预约(N)"按钮串行登记；"加入领料单"本就支持多选（v137 已有，确认在位）。
 const fs = require('fs');
-const dart = fs.readFileSync(__dirname + '/../lib/requisition_page.dart', 'utf8');
+// ㉖v240 空白归一化（同 v233 修 test_race_v154 那把钥匙）：v232 的 dart format 全量 reflow 把长表达式
+// 拆成多行，旧版精确单行 includes/正则被冲垮=假阳性（本轮 CI A4/B2/B3/B4/C2 五条即此因，代码逻辑均在
+// 位、python 实测归一化后全命中）。断言守的是"预约反馈/懒加载结构在位"的语义不是精确换行——载入即折叠
+// 连续空白为单空格再匹配，锁语义不锁排版。
+const dart = fs.readFileSync(__dirname + '/../lib/requisition_page.dart', 'utf8').replace(/\s+/g, ' ');
 let fail = 0, total = 0;
 const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS' : 'FAIL!'} [${n}]${c ? '' : ' ←' + (why || '')}`); };
 const chk = (n, g, w) => { total++; const ok = JSON.stringify(g) === JSON.stringify(w); if (!ok) fail++; console.log(`${ok ? 'PASS' : 'FAIL!'} [${n}] got=${String(JSON.stringify(g)).slice(0, 140)} want=${String(JSON.stringify(w)).slice(0, 140)}`); };
@@ -32,7 +36,9 @@ console.log('== B组 多选批量预约 ==');
 console.log('== C组 布局压缩 ==');
 {
   const body = dart.slice(dart.indexOf('㉖v146 布局压缩'), dart.indexOf('㉖v146 布局压缩') + 2600).replace(/\r/g, ''); // 归一 CRLF 防行尾差异假阴性
-  chkT('C1 补料建议并入横滑工具条首位（独占行已删）', body.includes('if (_sugOn && _sug.isNotEmpty)\n                    Padding(\n                      padding: const EdgeInsets.only(right: 8),'), '');
+  // ㉖v240 needle 去硬编码换行/缩进为单空格：源已被载入归一化（连续空白→单空格），原 needle 里的
+  // \n+缩进反而永远匹配不到（归一化反噬）。语义不变：chip 并入横滑工具条首位、独占 Padding 行已删
+  chkT('C1 补料建议并入横滑工具条首位（独占行已删）', body.includes('if (_sugOn && _sug.isNotEmpty) Padding( padding: const EdgeInsets.only(right: 8),'), '');
   chkT('C2 工具条条件合并（三者之一即显示）', dart.includes('if (_sugOn && _sug.isNotEmpty || _freq.isNotEmpty || _tpls.isNotEmpty) ...['), '');
   const bottom = dart.slice(dart.indexOf('㉖v146 底部合并一行'), dart.indexOf('㉖v146 底部合并一行') + 2200);
   chkT('C3 急料与存为模板同 Row（旧 Align 独占块已删）', bottom.includes('Row(crossAxisAlignment: CrossAxisAlignment.start, children: [') && bottom.includes('if (chosen.isNotEmpty)') && !dart.includes('heightFactor: 1.0, // ㉖v70b'), '');
@@ -51,7 +57,8 @@ console.log('== E组 v147 单件预约弹框可改框数 ==');
 {
   const bookSeg = dart.slice(dart.indexOf('Future<void> doBook()'), dart.indexOf('return Row(children: [', dart.indexOf('Future<void> doBook()')));
   chkT('E1 预约先弹对话框（预填建议框数+确认按钮）', bookSeg.includes('showDialog<bool>') && bookSeg.includes('labelText: "预约框数"') && bookSeg.includes('确认预约'), '');
-  chkT('E2 预填=建议框数（sug>0 回填，0 留空）', /TextEditingController\(text: sug > 0 \? "\$sug" : ""\)/.test(bookSeg), '');
+  // ㉖v240 左括号补 \s*：归一化后 dart format 折叠的换行成单空格 → "TextEditingController( text:"（带空格）
+  chkT('E2 预填=建议框数（sug>0 回填，0 留空）', /TextEditingController\(\s*text: sug > 0 \? "\$sug" : ""\)/.test(bookSeg), '');
   chkT('E3 框数>0 才自动开单（0=纯到货提醒 auto:false）', bookSeg.includes('auto: q > 0') && bookSeg.includes('qty: q > 0 ? q : 0'), '');
   chkT('E4 取消不发起请求（ok!=true 直接 return）', bookSeg.includes('if (ok != true) return;'), '');
   chkT('E5 输入框数字键盘+自动聚焦', bookSeg.includes('TextInputType.number') && bookSeg.includes('autofocus: true'), '');
