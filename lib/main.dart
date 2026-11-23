@@ -2601,6 +2601,63 @@ class _MainPageState extends State<MainPage>
       }
       final String palletIdForSave =
           pallet0 ? (_currentPalletId ?? "") : "";
+      // ㉖v225 拆框确认（11-23 现场 N26J220047 实锤：整托登记后现场要把两框拆成两格，
+      // "关掉整托重采"根本拆不动——本机扩展表托号虽清，服务器多机字段保护又继承旧托号，
+      // 选位还被同托兄弟误拦）。非整托模式重采一个"服务器认知的托框"→ 当面问一次：
+      // 拆=进声明队列（推送显式发 pid:""，服务器 v225 认拆出）；保留=零改动零声明（=旧行为）。
+      // 关掉弹窗（点外部）按"保留原托"处理：不打断保存，数据零变化。
+      if (!pallet0 && !_retMode) {
+        try {
+          final _up2 = code.trim().toUpperCase();
+          final _sp2 = await SharedPreferences.getInstance();
+          final _q2 = <String>{...?_sp2.getStringList(_kLedgerSplit)};
+          if (!_q2.contains(_up2)) {
+            // 旧托号先查服务器缓存（最权威，别机扫的托也在），再查本机扩展表
+            final _oldPid = (await _isar.labelInfos
+                        .filter().goodsCodeEqualTo(_up2).findFirst())
+                    ?.palletId ??
+                "";
+            final _oldPid2 = _oldPid.isNotEmpty
+                ? _oldPid
+                : ((await _isar.recordExtras
+                        .filter().goodsCodeEqualTo(_up2).findFirst())
+                    ?.palletId ?? "");
+            if (_oldPid2.isNotEmpty && mounted) {
+              final _split = await showDialog<bool>(
+                  context: context,
+                  barrierDismissible: false,
+                  builder: (dc) => AlertDialog(
+                        icon: const Icon(Icons.call_split,
+                            color: Color(0xFF515BD4), size: 32),
+                        title: const Text("这箱货原本在整托上"),
+                        content: Text(
+                            "$_up2 已按整托登记（托号 $_oldPid2）。\n\n"
+                            "本次【没有】选整托模式——要把这箱拆成独立框、单独分一个货位吗？\n\n"
+                            "· 拆为独立框：脱离原托，单独登记新货位（原托其他框留在原位）\n"
+                            "· 保留原托：仍按原托登记，和原托其他框保持同格"),
+                        actions: [
+                          TextButton(
+                              onPressed: () =>
+                                  Navigator.pop(dc, false),
+                              child: const Text("保留原托")),
+                          FilledButton(
+                              onPressed: () =>
+                                  Navigator.pop(dc, true),
+                              child: const Text("拆为独立框")),
+                        ],
+                      ));
+              if (_split == true) {
+                _q2.add(_up2);
+                await _sp2.setStringList(_kLedgerSplit, _q2.toList());
+                LocalLog.op('拆框声明',
+                    '$_up2 由托 $_oldPid2 拆出为独立框（下次账本推送生效，服务器将清托号且不搬动兄弟框）');
+              }
+            }
+          }
+        } catch (e) {
+          LocalLog.err('拆框确认弹层异常（按旧行为继续保存）', e);
+        }
+      }
 
 // ===================== MES接口请求【统一走 mesQueryLabel：失效自动静默重登并重试一次】=====================
       String? mesPartNo;
@@ -2924,16 +2981,53 @@ class _MainPageState extends State<MainPage>
       }
       var prior =
           await _isar.shelfPlacements.filter().locEqualTo(loc).findAll();
-      var foreign = prior
-          .where((p) => !codes.contains(p.goodsCode.toUpperCase()))
-          .toList();
+      // ㉖v225 同件兄弟豁免（11-23 N26J220047 实锤：拆托时目标格住着同托兄弟框 220042，
+      // 旧 foreign 只认"本批 codes"，把同托/同零件号兄弟当外人拦死，拆框登记被误拒"本筐未入账本"）。
+      // 口径与服务器互斥闸逐字对齐：同货位+同零件号=同框（server.js ledgerSync 撞格闸），不算 foreign。
+      final _pnMap = <String, String>{}; // 大写码→零件号（本批+占位框按需补查）
+      Future<String> _pnLookup(String c) async {
+        if (_pnMap.containsKey(c)) return _pnMap[c]!;
+        var _pn = (await _isar.labelInfos
+                    .filter().goodsCodeEqualTo(c).findFirst())
+                ?.partNo ??
+            "";
+        if (_pn.isEmpty) {
+          for (final rr in await _isar.scanRecords
+              .filter().goodsCodeEqualTo(c).findAll()) {
+            if (!rr.isCancel && (rr.mesPartNo ?? "").isNotEmpty) {
+              _pn = rr.mesPartNo!;
+              break;
+            }
+          }
+        }
+        _pnMap[c] = _pn.toUpperCase();
+        return _pnMap[c]!;
+      }
+      for (final c in codes) {
+        await _pnLookup(c);
+      }
+      final _selfPns = <String>{
+        for (final c in codes)
+          if ((_pnMap[c] ?? "").isNotEmpty) _pnMap[c]!
+      };
+      List<ShelfPlacement> _calcForeign(List<ShelfPlacement> _prior) =>
+          _prior
+              .where((p) => !codes.contains(p.goodsCode.toUpperCase()))
+              .where((p) {
+                final _fpn = _pnMap[p.goodsCode.toUpperCase()] ?? "";
+                return _fpn.isEmpty ||
+                    !_selfPns.contains(_fpn); // 同零件号=同框，放行
+              })
+              .toList();
+      var foreign = _calcForeign(prior);
       if (foreign.isNotEmpty) {
         // 本机数据可能整体过期：强制与服务器对齐一次再复查，避免拿旧缓存误拦
         await ledgerPullMerge(force: true);
         prior = await _isar.shelfPlacements.filter().locEqualTo(loc).findAll();
-        foreign = prior
-            .where((p) => !codes.contains(p.goodsCode.toUpperCase()))
-            .toList();
+        for (final p in prior) {
+          await _pnLookup(p.goodsCode.toUpperCase()); // 拉取后新进占位框补零件号
+        }
+        foreign = _calcForeign(prior);
       }
       if (foreign.isNotEmpty) {
         if (mounted)

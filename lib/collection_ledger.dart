@@ -1139,6 +1139,11 @@ bool _ledgerPushPending = false; // ㉖⑰ 有未推送的账本变更
 bool get ledgerPushPending => _ledgerPushPending;
 // ㉖v69 账本世代：服务器整表替换（数据迁移）会盖世代章；本机世代不符先清旧缓存再同步，防旧账本残留本机/推回服务器
 const _kLedgerEpoch = "ledger_epoch_v69";
+// ㉖v225 拆框声明待推队列（11-23 N26J220047 实锤：整托登记后现场拆框分位被三层焊点锁死）。
+// 保存时人工确认"拆为独立框"的标签进此队列；ledgerPushNow 对这些码显式发 pid:""
+// （服务器 v225 认显式空串=拆出：不继承旧托号+改位不连坐兄弟）；服务器确认落账后出队。
+// 存盘不用内存态：叫车/MES 异步链随时可能触发 push，声明绝不能因切页丢失。
+const _kLedgerSplit = "ledger_split_v225";
 String? _ledgerEpochSeen; // 本进程已对齐的世代；null=尚未对齐
 void scheduleLedgerPush({int seconds = 15}) {
   _ledgerPushPending = true;
@@ -1212,6 +1217,8 @@ Future<Map> ledgerPushNow() async {
       for (final e in await _globalIsar.recordExtras.where().findAll())
         e.goodsCode.toUpperCase(): e.palletId
     }; // 托号：整托多码同框（㉖ 键统一大写：扩展表存扫码原样，账本存大写，此前大小写不一致致托号丢失）
+    // ㉖v225 拆框声明集：这些码下方显式发 pid:""（服务器认显式空串=人工确认拆出）
+    final _splitSet = <String>{...?(sp0.getStringList(_kLedgerSplit))};
     // 入库搬运方式：采集流水 workType 0=AGV站台(来站=stationNo) 1=人工地面(来源=groundLocation)；无流水=手工登记
     final mvMap = <String, String>{}, srcMap = <String, String>{};
     final pnMap = <String, String>{},
@@ -1273,7 +1280,9 @@ Future<Map> ledgerPushNow() async {
         "t": p.assignedAt,
         "mv": mv,
         if (src.isNotEmpty) "src": src,
-        if (pid.isNotEmpty) "pid": pid,
+        if (_splitSet.contains(up))
+          "pid": "" // ㉖v225 拆框声明：显式空串（服务器认拆出=清托号+不连坐兄弟），非缺字段
+        else if (pid.isNotEmpty) "pid": pid,
         if (pn.isNotEmpty) "p": pn,
         if (nm.isNotEmpty) "n": nm,
         if (qty > 0) "q": qty,
@@ -1320,6 +1329,40 @@ Future<Map> ledgerPushNow() async {
     }
     if (r["ok"] == true) {
       await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
+      // ㉖v225 拆框声明出队：本次推送被服务器受理（未进拒回名单）的声明码=拆出已落账。
+      // 拒回=本轮没进账（货位冲突等），声明保留待下次推送重试，绝不静默丢。
+      if (_splitSet.isNotEmpty) {
+        final _sp3 = await SharedPreferences.getInstance();
+        final _rejTxt = rejL.join('\n');
+        final _left = _splitSet
+            .where((c) => !items.any((itx) => itx["c"]?.toString().toUpperCase() == c) ||
+                _rejTxt.contains(c))
+            .toSet();
+        if (_left.length != _splitSet.length) {
+          if (_left.isEmpty)
+            await _sp3.remove(_kLedgerSplit);
+          else
+            await _sp3.setStringList(_kLedgerSplit, _left.toList());
+          // 已落账的拆框码：本机托号缓存同步清掉（否则下次推送又焊回去；
+          // 且 v99 拉取自愈"只补空值"不会覆盖非空旧值，必须在此显式清零）
+          for (final c in _splitSet.difference(_left)) {
+            final ex = await _globalIsar.recordExtras
+                .filter().goodsCodeEqualTo(c).findAll();
+            for (final e in ex) {
+              if (e.palletId.isNotEmpty) {
+                e.palletId = "";
+                await _globalIsar.recordExtras.put(e);
+              }
+            }
+            final li = await _globalIsar.labelInfos
+                .filter().goodsCodeEqualTo(c).findFirst();
+            if (li != null && li.palletId.isNotEmpty) {
+              li.palletId = "";
+              await _globalIsar.labelInfos.put(li);
+            }
+          }
+        }
+      }
       _ledgerPushPending = false; // ㉖⑰ 推送成功清 pending
       _ledgerEpochSeen = sp0.getString(_kLedgerEpoch) ?? ""; // ㉖v69 推送成功=与当前世代对齐
       _diagRetryN = 0; // ㉖v199d 诊断袋：成功归零计数、记成功时刻与拒回数

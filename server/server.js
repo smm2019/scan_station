@@ -4915,10 +4915,18 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           const tot = Number(it && it.q) || 0; const per = Math.floor(tot / cs.length); let rem = tot - per * cs.length;
           for (const cc of cs) { const one = Object.assign({}, it, { c: cc, q: per + (rem > 0 ? 1 : 0), _split: 1 }); if (rem > 0) rem--; clean.push(_qa(one)); }
         };
+        // ㉖v225 拆框声明收集（11-23 现场 N26J220047 实锤：整托登记后现场要拆框分位，"关整托重采"根本拆不动——
+        //   本机 push 只要缓存带旧托号就焊住，服务器 5044 又把空托号继承回来，同件兄弟还连坐搬移）。
+        //   协议：PDA 对"人工确认拆出"的框显式发 pid:""（空串）。⚠ 必须显式空串才认——缺 pid 字段
+        //   =旧版PDA/普通重登，照常继承旧托号（v99 多机字段保护语义逐字不变），两种形态在清洗后都是
+        //   空串无法事后区分，故只能在 it0 原始层捕获。声明只影响该框自身：不继承托号+改位不连坐兄弟。
+        const _splitSet = new Set();
         for (const it0 of raw) {
           // ㉖v95b 乱码清洗补齐 f/p/b/src（旧版只洗 n/mv，容器类型"托<乱码>"混进账本与合并diff留痕）
           const _cw = (s0, cap) => String(s0 == null ? '' : s0).replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').trim().slice(0, cap);
           const it = (() => { const c = String((it0 && it0.c) || '').trim().toUpperCase(); const l = String((it0 && it0.l) || '').trim().toUpperCase(); if (!c || !l) return null; if (seen.has(c)) return null; seen.add(c); return { c, l, f: ctNorm(it0 && it0.f, db.containerTypes), t: Number(it0 && it0.t) || 0, p: _cw(it0 && it0.p, 40).toUpperCase(), n: _cw(it0 && it0.n, 80), q: Number(it0 && it0.q) || 0, b: _cw(it0 && it0.b, 40), pid: _cw(it0 && it0.pid, 40), mv: (() => { const s0 = _cw(it0 && it0.mv, 20); if (!s0) return ''; if (/AGV/i.test(s0)) return 'AGV'; if (s0.includes('记')) return '登记'; if (s0.includes('人工') || s0 === '人') return '人工'; return s0.length <= 4 ? s0 : '人工'; })(), src: _cw(it0 && it0.src, 40) }; })(); // ㉓乱码清洗+㉖v61b mv归一+㉖v95b f归一（对账包搬运方式列数据源）
+          // ㉖v225 拆框声明捕获：原始层 pid 是【空字符串】（非缺字段、非 null）= 该框人工确认拆出
+          if (it && it0 && typeof it0.pid === 'string' && it0.pid.trim() === '') _splitSet.add(it.c);
           // ㉖v100 货位格式防线（账本层）：账本 l 必须是完整货架位/地面格位（locStrict）。实测在库 356 行
           // 100% 符合、0 行站台码/粗码混入 → 用 locStrict 硬拦零误伤；站台码 NB02-CK 属"在途/出库位"，
           // 一旦进账本会把 AGV/地面框标成站台（用户所问反向病）并污染选位/地图/链路/导出，故一并拒。
@@ -5041,7 +5049,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
             const _mvIn = String(it.mv || ''), _mvOld = String(old.mv || '');
             if ((!_mvIn || _mvIn === '登记') && _mvOld && _mvOld !== '登记') it.mv = _mvOld;
             if (!it.src && old.src) it.src = old.src;
-            if (!it.pid && old.pid) it.pid = old.pid;
+            if (!it.pid && old.pid && !_splitSet.has(key)) it.pid = old.pid; // ㉖v225 拆框声明(pid:"")不继承旧托号=真拆出；缺字段(旧PDA)照常继承，语义不变
             if (!it.p && old.p) it.p = old.p; if (!it.n && old.n) it.n = old.n; if (!it.b && old.b) it.b = old.b; if (!it.q && old.q) it.q = old.q; if (!it.f && old.f) it.f = old.f;
           }
           if (old) { updated++; const fl = []; for (const k of ['l', 'p', 'q', 'b', 'f', 'mv']) { const av = String(old[k] == null ? '' : old[k]), bv = String(it[k] == null ? '' : it[k]); if (av !== bv) fl.push(k + ':' + (av || '∅') + '→' + (bv || '∅')); } if (fl.length) _diffs.push(it.c + ' ' + fl.join(' ')); if (String(old.l) !== String(it.l)) _diffs.length === 0 && _diffs.push(it.c + ' l:' + old.l + '→' + it.l); } else { added++; seenNew.add(key); _diffs.push(it.c + ' 入账@' + it.l + (it.p ? '(' + it.p + ')' : '')); }
@@ -5062,6 +5070,10 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (old) {
             const _ol = String(old.l || '').toUpperCase(), _nl = String(it.l || '').toUpperCase();
             if (/^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(_ol) && /^NB02-[A-H]-\d{1,2}-[1-4]F$/.test(_nl)) {
+              // ㉖v225 拆框豁免：本框声明拆出（pid:""）→ 它是独立单框，改位不得再拖同托/同件兄弟连坐跟位
+              // （旧版把"同托 TP×"或"同零件号"兄弟一起搬走，正是"想单移一框另一框也被拖"的拆框死路）。
+              if (_splitSet.has(key)) { _diffs.push(key + ' 拆框单移(兄弟不随动)'); }
+              else {
               const _bk2 = boxKeyOf({ l: _ol, p: String(it.p || old.p || ''), pid: String(it.pid || old.pid || '') });
               const _pn2 = String(it.p || old.p || '').toUpperCase();
               let _sib = 0;
@@ -5070,6 +5082,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
                 if (boxKeyOf(orow) === _bk2 || (_pn2 && String(orow.p || '').toUpperCase() === _pn2)) { ledgerPut(cur, oc, { ...orow, l: _nl, t: Date.now(), by: _by, rec: rec0 }, orow); _sib++; }
               }
               if (_sib) _diffs.push(key + ' 整框随动' + _sib + '码(' + _ol + '→' + _nl + ')');
+              }
             }
           }
           _wroteCodes.add(key); // ㉖v167 该行确已写入账本 → 它的取代凭证可以在本请求末尾兑现（被格式闸/冲突拒收的不会走到这里）
