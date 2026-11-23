@@ -6074,7 +6074,12 @@ return send(res, 200, {
         // ㉖v59 核心修正：仅"按零件号查询"才扩散到该零件全部框/历史；按框/单/任务查询只追自身，避免搜一个框把全仓同零件的38框+无关出库单都拽进来
         const partExpand = isPart && !isTask && !isOrder && !isBox;
         const EV = [];
-        const push = (t, k, title, detail, actor) => { const tt = Number(t) || 0; if (tt) EV.push({ t: tt, kind: String(k || ''), title: String(title || ''), detail: String(detail || ''), actor: String(actor || '') }); };
+        // ㉖v228 领料节点全灭修复（用户 11-23 实锤 N26K170012 链路"之前有领料单现在没了"）：
+        //   领料单 createdAt/history.time 全库 100% 是 ISO 串（750 单/9203 节点全数实测），
+        //   旧写法 Number(ISO)=NaN||0 判假静默丢弃 → 📋领料下单/🔸接单/备齐/签收全部消失；
+        //   出库单时刻恰为数字毫秒才显存在（v222 统一后首次暴露，重启前老路径不受影响）。
+        //   修复=数字毫秒与 ISO 串双口径归一（数字照旧、ISO 走 Date.parse、坏值仍归 0 丢弃语义不变）。
+        const push = (t, k, title, detail, actor) => { const tt = Number(t) || Date.parse(t) || 0; if (tt) EV.push({ t: tt, kind: String(k || ''), title: String(title || ''), detail: String(detail || ''), actor: String(actor || '') }); };
         const CODES = new Set(); const PNS = new Set(); const TASKS = new Set(); const REQS = new Set();
         // — ① 调度队列项：按 code/wmsTask/taskNo/reqNo 命中
         const qItems = [];
