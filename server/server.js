@@ -5253,6 +5253,18 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           const f = _glIdx[String(v.code || '').toUpperCase()];
           if (f) { v.gl = f; db.scanlog[k] = v; }
         }
+        // ㉖v227 hist 去噪断根（用户 11-23 实锤 N26K230060：全链路 3 条"♻曾被采集"与活跃行逐字段全同）：
+        //   v205 真覆盖判定在前、gl 粗码对齐段在后——AGV 模式推送行 gl=空串 → 与库内完整格位"不同"→ 误产 hist，
+        //   随后对齐段又把 v.gl 填回完整值 → hist 摘要与活跃行全同 → 灰节点谎报覆盖且"看不出改了啥"。
+        //   断根=对齐落定后，把 hist 中与自身窄字段摘要全同的条目剔除（真位置/数量变化的仍保留），
+        //   且 PDA 周期全量回灌会自然清洗存量脏 hist（自愈，无需修数）。
+        { const _hsum = (x) => [Number(x.t) || 0, Number(x.q) || 0, String(x.gl || ''), String(x.st || ''), Number(x.wt) || 0, !!x.cx].join('\u0001');
+          for (const v of Object.values(snap)) {
+            if (!Array.isArray(v.hist) || !v.hist.length) continue;
+            const _mine = _hsum(v);
+            const _keep = v.hist.filter((h) => h && _hsum(h) !== _mine);
+            if (_keep.length !== v.hist.length) v.hist = _keep;
+          } }
         // ㉖v100 货位格式防线②（流水层·只体检不回改）：跨模式错配=AGV 模式初始位 st 却填地面格位(NB03)、
         // 地面模式 gl 却填站台码(NB02-CK)。现场采集逻辑不可能产出这种值，只可能是缺陷或脏数据（实测存量 0 行）。
         // 流水是采集现场的原始证据，服务器擅自改写字段=篡改证据、风险大于收益，故命中即留痕进日志+活动流，
@@ -6097,8 +6109,13 @@ return send(res, 200, {
           // ㉖v205 覆盖历史灰节点（用户实锤：同键重扫旧内容蒸发、事后无从核对改了什么）：
           //   把该流水被覆盖掉的旧行摘要还原成灰色事件（新→旧倒序转正序展示），查问题一眼可见"上次是什么"。
           if (Array.isArray(st.hist) && st.hist.length) {
+            // ㉖v227 显示端同步去噪：与本次活跃行窄字段摘要全同的 hist=对齐误判产出的假覆盖
+            //   （存量脏数据在流水不再被推送时不会自愈，故渲染侧一并跳过），真覆盖照旧展示。
+            const _hsum = (x) => [Number(x.t) || 0, Number(x.q) || 0, String(x.gl || ''), String(x.st || ''), Number(x.wt) || 0, !!x.cx].join('\u0001');
+            const _mine = _hsum(st);
             for (const h of st.hist.slice().reverse()) {
               if (!h || !(Number(h.t) > 0)) continue;
+              if (_hsum(h) === _mine) continue;
               const _hl = h.wt === 0 ? String(h.st || '') : String(h.gl || '');
               push(Number(h.t), 'hist', '♻ 曾被采集（已被覆盖） ' + String(st.code || ''),
                 (_hl ? '位置 ' + _hl + ' · ' : '') + '数量 ' + (Number(h.q) || 0) + (h.cx ? ' · 该次后被作废' : ''), h.op || '');
