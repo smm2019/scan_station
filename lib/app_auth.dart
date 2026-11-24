@@ -555,7 +555,8 @@ class AuthApi {
           String itemName = "",
           String due = "",
           bool auto = true,
-          bool forceStock = false}) async =>
+          bool forceStock = false,
+          bool shortOk = false}) async =>
       _req("POST", "/api/watchlist",
           body: {
             "partNo": partNo, "on": on,
@@ -563,10 +564,16 @@ class AuthApi {
             if (on && itemName.isNotEmpty) "itemName": itemName,
             if (on && due.isNotEmpty) "due": due,
             if (on) "auto": auto,
+            if (on && shortOk)
+              "shortOk": true, // ㉖v251 不够数也开单：超期望日仍未凑够→按实际到料先开单
             if (on && forceStock)
               "forceStock": true // ㉖v184 有货预约闸：确认"明知有货仍要等下批"后重试
           },
           token: await AuthStore.token());
+  // ㉖v251 不够数先开单：预订人主动按当前实际到料数开领料单（本轮结束）；服务端防呆零到料/已履行
+  static Future<Map> watchFill(String partNo) async =>
+      _req("POST", "/api/watchlist/fill",
+          body: {"partNo": partNo}, token: await AuthStore.token());
   static Future<Map> groundSlotsGet() async =>
       _req("GET", "/api/ground-slots", token: await AuthStore.token());
   static Future<Map> groundSlotsSet(List entries) async =>

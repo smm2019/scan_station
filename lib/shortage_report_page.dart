@@ -17,6 +17,7 @@ class _ShortageItem {
   String desc; // 异常描述（默认按口径生成，可改）
   double inStockQty; // 在库件数
   int inBoxes; // 在库框数
+  int recvBoxes = 0; // ㉖v255 其中在一楼来料区(NB04)待转入框数（含在 inBoxes 内，框键去重同口径）
   double needQty; // 在途需求（未满足件数）
   String needFrom; // 需求来源单号摘要
   String kind = ""; // ㉖v75 口径徽章：零库存/欠料/低水位
@@ -44,6 +45,7 @@ class _ShortageItem {
     lotC.text = lot;
     carC.text = carModel;
   }
+
   void dispose() {
     descC.dispose();
     lotC.dispose();
@@ -68,7 +70,8 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       _kProj = "sr_projects",
       _kDefDesc = "sr_def_desc", // ㉖v199d 异常描述默认值（用户要求自定义；缺料反馈弹层与缺料单共用）
       _kShowLast = "sr_show_last", // ㉖v179 分享模板自定义：是否随文案显示末次领用（日期+数量）
-      _kLowStockOnly = "sr_low_stock_only"; // ㉖v249 低水位口径开关：开=在架低于线即入清单(纯库存预警,不看在途需求)；关(默认)=须叠加"有人下单且不够发"(v180 防有货无人要误报)
+      _kLowStockOnly =
+          "sr_low_stock_only"; // ㉖v249 低水位口径开关：开=在架低于线即入清单(纯库存预警,不看在途需求)；关(默认)=须叠加"有人下单且不够发"(v180 防有货无人要误报)
   static const _defDescFallback = "生产急需，请安排采购/到货"; // 未自定义时的内置默认
   String _unit = "鄞州豪斯特生产部",
       _duty = "鄞州豪斯特运营部",
@@ -77,8 +80,11 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
   String _defDesc = _defDescFallback; // ㉖v199d 异常描述默认值（可自定义，缺料反馈弹层未显式指定描述时用它）
   bool _showLast = true; // ㉖v179 默认显示末次领用（现场最想知道的就是"多久没来过货"）
   double _lowLine = 0; // 低水位阈值（0=不启用）
-  bool _lowStockOnly = false; // ㉖v249 低水位"仅看库存"：开=低于线即算低水位（不看有没有人下单）；关(默认)=v180 须叠加真实缺口
-  bool _showZero = true, _showShort = true, _showLow = true; // 口径开关（低水位阈值未开时不显示该chip）
+  bool _lowStockOnly =
+      false; // ㉖v249 低水位"仅看库存"：开=低于线即算低水位（不看有没有人下单）；关(默认)=v180 须叠加真实缺口
+  bool _showZero = true,
+      _showShort = true,
+      _showLow = true; // 口径开关（低水位阈值未开时不显示该chip）
   // ㉖v75 项目分类：物料名包含关键字（不区分大小写）即命中；默认表可在设置里增删
   static const _defProjects = ["EX11", "E281", "V446K", "EX1H", "EF2H"];
   List<String> _projects = _defProjects;
@@ -91,8 +97,8 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
   final GlobalKey _allKey = GlobalKey(); // 长图整体截取用
 
   // ㉖v108 车型正则修复（用户反馈：EX1H 被截成 EX1）：EX/EF 系支持字母后缀（EX1H/EF2H）
-  static final RegExp _carRe =
-      RegExp(r'(EX\d+[A-Z]?|EF\d+[A-Z]?|V\d{3}K|E\d{3}|L\d{3}K)'); // 车型：物料名自带（吉利EX11/EX1H/EF2H/沃尔沃V446K/E281…）
+  static final RegExp _carRe = RegExp(
+      r'(EX\d+[A-Z]?|EF\d+[A-Z]?|V\d{3}K|E\d{3}|L\d{3}K)'); // 车型：物料名自带（吉利EX11/EX1H/EF2H/沃尔沃V446K/E281…）
 
   @override
   void initState() {
@@ -103,9 +109,12 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         _duty = sp.getString(_kDuty) ?? _duty;
         _conf = sp.getString(_kConf) ?? _conf;
         _at = sp.getString(_kAt) ?? _at;
-        _defDesc = (sp.getString(_kDefDesc) ?? "").trim().isEmpty ? _defDescFallback : sp.getString(_kDefDesc)!.trim(); // ㉖v199d
+        _defDesc = (sp.getString(_kDefDesc) ?? "").trim().isEmpty
+            ? _defDescFallback
+            : sp.getString(_kDefDesc)!.trim(); // ㉖v199d
         _lowLine = (sp.getDouble(_kLow) ?? 0);
-        _lowStockOnly = sp.getBool(_kLowStockOnly) ?? false; // ㉖v249 低水位仅看库存（默认关=v180 叠加缺口行为）
+        _lowStockOnly = sp.getBool(_kLowStockOnly) ??
+            false; // ㉖v249 低水位仅看库存（默认关=v180 叠加缺口行为）
         _projects = sp.getStringList(_kProj) ?? _defProjects;
         _showLast = sp.getBool(_kShowLast) ?? true; // ㉖v179 分享模板：末次领用行开关（默认显示）
       });
@@ -114,12 +123,18 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
   }
 
   Future<void> _load() async {
-    setState(() { _loading = true; _err = ""; });
+    setState(() {
+      _loading = true;
+      _err = "";
+    });
     // ㉖v74b 全厂口径（换设备结果一致）：在库=服务器货位账本（各PDA合并），需求=领料单，零件全集=采集流水出现过
     final stock = <String, double>{}; // partNo → 全厂在库件数
     final boxes = <String, Set<String>>{}; // partNo → 框键集（托号优先，同账本归并口径）
+    final recvBx = <String,
+        Set<String>>{}; // ㉖v255 partNo → 一楼来料区(NB04)框键集（同口径去重，"账上有货≠现在能发"拆桶）
     final names = <String, String>{};
-    final lastLot = <String, String>{}, lastLotT = <String, int>{}; // 最近登记批次（有零头时预填）
+    final lastLot = <String, String>{},
+        lastLotT = <String, int>{}; // 最近登记批次（有零头时预填）
     try {
       final lg = await AuthApi.ledgerGet().timeout(const Duration(seconds: 10));
       if (lg["ok"] != true) throw Exception(lg["msg"]?.toString() ?? "查询失败");
@@ -130,17 +145,27 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         final pid = (x["pid"]?.toString() ?? "").toUpperCase();
         final loc = (x["l"]?.toString() ?? "").toUpperCase();
         final code = (x["c"]?.toString() ?? "").toUpperCase();
-        (boxes[pn] ??= <String>{})
-            .add(pid.isNotEmpty ? "P|$pid" : (loc.isNotEmpty ? "L|$loc|$pn" : "C|$code"));
+        final _bk = pid.isNotEmpty
+            ? "P|$pid"
+            : (loc.isNotEmpty ? "L|$loc|$pn" : "C|$code");
+        (boxes[pn] ??= <String>{}).add(_bk);
+        if (loc.startsWith("NB04-"))
+          (recvBx[pn] ??= <String>{}).add(_bk); // ㉖v255 一楼待转入桶
         final nm = x["n"]?.toString() ?? "";
         if (nm.isNotEmpty && (names[pn] ?? "").isEmpty) names[pn] = nm;
         final t = (x["t"] as num?)?.toInt() ?? 0;
         final b = x["b"]?.toString() ?? "";
-        if (b.isNotEmpty && t >= (lastLotT[pn] ?? 0)) { lastLotT[pn] = t; lastLot[pn] = b; }
+        if (b.isNotEmpty && t >= (lastLotT[pn] ?? 0)) {
+          lastLotT[pn] = t;
+          lastLot[pn] = b;
+        }
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() { _loading = false; _err = "全厂货位账本拉取失败：$e"; });
+      setState(() {
+        _loading = false;
+        _err = "全厂货位账本拉取失败：$e";
+      });
       return; // 账本是缺料判定的地基，拉不到必须报错，绝不静默显示"没有缺料"
     }
     // 在途需求：pending/accepted 领料单逐行 需求−已发（拉失败降级=只报零库存，不阻塞）
@@ -154,7 +179,9 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
           for (final it in List<Map>.from(q["items"] ?? [])) {
             final pn = (it["partNo"]?.toString() ?? "").toUpperCase();
             if (pn.isEmpty) continue;
-            final issued = (it["issued"] is List) ? List.from(it["issued"] as List) : const [];
+            final issued = (it["issued"] is List)
+                ? List.from(it["issued"] as List)
+                : const [];
             double got = 0;
             for (final e in issued) {
               if (e is Map) got += (e["q"] as num?)?.toDouble() ?? 0;
@@ -171,7 +198,8 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     // 数据迁移清空流水后零库存零件全部丢失背书被误过滤（"库存汇总很多零库存、缺料反馈却没有"根因）
     final hist = <String>{};
     try {
-      final bk = await AuthApi.partsBacking().timeout(const Duration(seconds: 8));
+      final bk =
+          await AuthApi.partsBacking().timeout(const Duration(seconds: 8));
       if (bk["ok"] == true) {
         for (final x in List<Map>.from(bk["list"] ?? [])) {
           final pn = (x["pn"]?.toString() ?? "").toUpperCase();
@@ -185,7 +213,8 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     if (hist.isEmpty) {
       // 背书接口失败降级：仍拉全厂流水（旧口径），保证零库存判定有兜底
       try {
-        final sl = await AuthApi.scanlogGet(limit: 20000).timeout(const Duration(seconds: 8));
+        final sl = await AuthApi.scanlogGet(limit: 20000)
+            .timeout(const Duration(seconds: 8));
         if (sl["ok"] == true) {
           for (final s in List<Map>.from(sl["items"] ?? [])) {
             final pn = (s["pn"]?.toString() ?? "").toUpperCase();
@@ -209,18 +238,26 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       // ㉖v249 双模式："仅看库存"开关开=低于线即算低水位（纯库存预警,采购场景,不看在途需求）；
       //   关(默认)=v180 须叠加缺口。叠加缺口件（low∧short）徽章仍优先显"低水位"（信息更全），
       //   纯低库存件不因 low 入表而被误标"欠料"（它没缺口，徽章=低水位，文案如实 0 需求）。
-      final lowBand = _lowLine > 0 && st > 1e-9 && st < _lowLine; // 低于水位线（两模式共用前提）
+      final lowBand =
+          _lowLine > 0 && st > 1e-9 && st < _lowLine; // 低于水位线（两模式共用前提）
       final low = lowBand && (_lowStockOnly || short); // 纳入清单的判定（模式决定要不要叠加缺口）
-      if (!(zero || short || low)) continue; // ㉖v75 口径开关不参与计算，全量入表由视图层筛选（切开关即时生效免重拉）
+      if (!(zero || short || low))
+        continue; // ㉖v75 口径开关不参与计算，全量入表由视图层筛选（切开关即时生效免重拉）
       if (zero && !hist.contains(pn) && nd <= 1e-9) continue; // 从未入库也无人要：不是缺料
       final it = _ShortageItem(pn)
         ..itemName = names[pn] ?? ""
         ..inStockQty = st
         ..inBoxes = (boxes[pn] ?? const {}).length
+        ..recvBoxes =
+            (recvBx[pn] ?? const {}).length // ㉖v255 一楼待转入框（含在 inBoxes 内）
         ..needQty = nd
         ..needFrom = (needFromMap[pn] ?? []).take(3).join("、")
         ..lot = zero ? "" : (lastLot[pn] ?? "")
-        ..kind = zero ? "零库存" : (low ? "低水位" : "欠料"); // ㉖v180/v249 徽章序：zero→low(含叠加缺口件,信息更全优先显低水位)→short=欠料；先判 low 防低水位徽章被欠料吞
+        ..kind = zero
+            ? "零库存"
+            : (low
+                ? "低水位"
+                : "欠料"); // ㉖v180/v249 徽章序：zero→low(含叠加缺口件,信息更全优先显低水位)→short=欠料；先判 low 防低水位徽章被欠料吞
       // ㉖v108 车型两级推导（用户反馈：有的车型显示不全、有的不显示）：
       // ①物料名自带车型码优先（吉利EX11/EX1H/EF2H/沃尔沃V446K/E281…）
       // ②名称不含车型关键词的（"11-排气管后…"这类），回退用项目归属码预填——
@@ -235,14 +272,20 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       } else {
         final nmUp = it.itemName.toUpperCase();
         for (final p in _projects) {
-          if (p.trim().isNotEmpty && nmUp.contains(p.trim().toUpperCase())) { it.proj = [p.trim().toUpperCase()]; break; }
+          if (p.trim().isNotEmpty && nmUp.contains(p.trim().toUpperCase())) {
+            it.proj = [p.trim().toUpperCase()];
+            break;
+          }
         }
       }
-      if (it.carModel.isEmpty && it.proj.isNotEmpty) it.carModel = it.proj.first;
+      if (it.carModel.isEmpty && it.proj.isNotEmpty)
+        it.carModel = it.proj.first;
       final tail = nd > 0 ? "，待领 ${_fmtInvNum(nd)} 件" : "";
       it.desc = zero
           ? "报缺，仓库无单件$tail"
-          : (short ? "报缺，全厂在库仅 ${_fmtInvNum(st)} 件，低于待领需求$tail" : "库存偏低，全厂在库 ${_fmtInvNum(st)} 件$tail");
+          : (short
+              ? "报缺，全厂在库仅 ${_fmtInvNum(st)} 件，低于待领需求$tail"
+              : "库存偏低，全厂在库 ${_fmtInvNum(st)} 件$tail");
       it.initCtrls();
       out.add(it);
     }
@@ -257,10 +300,12 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     // 分享基本取自"零库存→有需求→需求大"的头部，取不到的保持未知态=文案整行不出现，不谎报）
     if (out.isNotEmpty) {
       try {
-        final lj = await AuthApi.reqLast(out.take(200).map((e) => e.partNo).join(','));
+        final lj =
+            await AuthApi.reqLast(out.take(200).map((e) => e.partNo).join(','));
         if (lj["ok"] == true) {
           final mp = lj["map"] is Map ? lj["map"] as Map : const {};
-          _shortLastWindow = (lj["windowDays"] as num?)?.toInt() ?? _shortLastWindow;
+          _shortLastWindow =
+              (lj["windowDays"] as num?)?.toInt() ?? _shortLastWindow;
           for (final it in out.take(200)) {
             final m = mp[it.partNo];
             if (m is Map) {
@@ -302,7 +347,9 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       } else if (_proj.isNotEmpty) {
         if (!it.proj.contains(_proj)) return false; // ㉖v101 多值任一命中
       }
-      if (k.isNotEmpty && !it.partNo.toLowerCase().contains(k) && !it.itemName.toLowerCase().contains(k)) return false;
+      if (k.isNotEmpty &&
+          !it.partNo.toLowerCase().contains(k) &&
+          !it.itemName.toLowerCase().contains(k)) return false;
       return true;
     }).toList();
   }
@@ -317,8 +364,14 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       if (it.kind == "零库存" && !_showZero) return false;
       if (it.kind == "欠料" && !_showShort) return false;
       if (it.kind == "低水位" && !_showLow) return false;
-      if (k.isNotEmpty && !it.partNo.toLowerCase().contains(k) && !it.itemName.toLowerCase().contains(k)) return false;
-      return p.isEmpty ? true : (p == "__other__" ? it.proj.isEmpty : it.proj.contains(p)); // ㉖v101 多值任一命中
+      if (k.isNotEmpty &&
+          !it.partNo.toLowerCase().contains(k) &&
+          !it.itemName.toLowerCase().contains(k)) return false;
+      return p.isEmpty
+          ? true
+          : (p == "__other__"
+              ? it.proj.isEmpty
+              : it.proj.contains(p)); // ㉖v101 多值任一命中
     }).length;
   }
 
@@ -347,8 +400,11 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         "物料名称：${it.itemName}",
         // ㉖v179b 删除"全厂在库：N框·N件"一行（用户实锤没用）：该数值已被下面"异常描述"
         // 完整包含（欠料类描述本身写"全厂在库仅X件，低于待领需求"），两行说的是同一件事。
-        if (it.needQty > 0) "待领需求：${_fmtInvNum(it.needQty)} 件${it.needFrom.isNotEmpty ? "（${it.needFrom}）" : ""}",
-        ...(_lastLine(it).isEmpty ? const <String>[] : [_lastLine(it)]), // ㉖v179 可自定义开关；空则整行不出现
+        if (it.needQty > 0)
+          "待领需求：${_fmtInvNum(it.needQty)} 件${it.needFrom.isNotEmpty ? "（${it.needFrom}）" : ""}",
+        ...(_lastLine(it).isEmpty
+            ? const <String>[]
+            : [_lastLine(it)]), // ㉖v179 可自定义开关；空则整行不出现
         "异常描述：${it.descC.text}",
         "反馈单位：$_unit",
         "反馈人：${Auth.user?.name ?? ''}",
@@ -376,9 +432,12 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         d = TextEditingController(text: _duty),
         c = TextEditingController(text: _conf),
         a = TextEditingController(text: _at),
-        dd = TextEditingController(text: _defDesc), // ㉖v199d 异常描述默认值（共享键 sr_def_desc，缺料反馈弹层未显式指定描述时带出）
-        l = TextEditingController(text: _lowLine > 0 ? _fmtInvNum(_lowLine) : ""),
-        pj = TextEditingController(text: _projects.join("、")); // ㉖v75 项目自定义（顿号/逗号分隔，物料名包含即命中）
+        dd = TextEditingController(
+            text: _defDesc), // ㉖v199d 异常描述默认值（共享键 sr_def_desc，缺料反馈弹层未显式指定描述时带出）
+        l = TextEditingController(
+            text: _lowLine > 0 ? _fmtInvNum(_lowLine) : ""),
+        pj = TextEditingController(
+            text: _projects.join("、")); // ㉖v75 项目自定义（顿号/逗号分隔，物料名包含即命中）
     // ㉖v179b 开关值必须是弹窗自己的局部状态：showDialog 的内容属独立路由，
     // 外层 State 的 setState 刷不到它——原先直接写 value:_showLast + setState，
     // 表现为"点了没反应"（值其实改了，但开关外观不跳，用户以为没生效）。
@@ -388,49 +447,104 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         context: context,
         builder: (ctx) => StatefulBuilder(
             builder: (bctx, setDlg) => AlertDialog(
-            title: const Text("缺料单默认字段（记住，下次自动带出）"),
-            content: SizedBox(
-                width: 340,
-                child: SingleChildScrollView(
-                    child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                  TextField(controller: u, decoration: const InputDecoration(labelText: "反馈单位", isDense: true)),
-                  TextField(controller: d, decoration: const InputDecoration(labelText: "责任单位", isDense: true)),
-                  TextField(controller: c, decoration: const InputDecoration(labelText: "确认人", isDense: true)),
-                  TextField(controller: a, decoration: const InputDecoration(labelText: "@人员（顿号分隔）", isDense: true)),
-                  TextField(controller: dd, maxLines: 2, minLines: 1, decoration: const InputDecoration(labelText: "异常描述（默认值）", isDense: true, helperText: "缺料反馈/缺料单的异常描述默认带此文案，反馈时仍可临时改", helperStyle: TextStyle(fontSize: 10))), // ㉖v199d 用户要求：异常描述可自定义为默认字段
-                  TextField(controller: pj, decoration: const InputDecoration(labelText: "项目分类（顿号/逗号分隔）", isDense: true, helperText: "物料名包含关键字即归入该项目，如 EX11、E281、V446K", helperStyle: TextStyle(fontSize: 10))),
-                  TextField(controller: l, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: "低水位阈值（件，0=不启用）", isDense: true, helperText: lso ? "仅看库存已开：在架低于此值即算低水位纳入（不看在途需求）" : "在库低于此值且有人下单不够发才算缺料纳入；有货无人要=不缺货，不纳入", helperStyle: const TextStyle(fontSize: 10))), // ㉖v249 helper 随开关口径联动
-                  // ㉖v179 分享模板自定义：末次领用行（日期+数量+多少天没领过）
-                  SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      value: sl,
-                      onChanged: (v) => setDlg(() => sl = v),
-                      title: const Text("显示末次领用（日期+数量）", style: TextStyle(fontSize: 13)),
-                      subtitle: Text("全厂口径（含同事领的），按${_shortLastWindow}天窗口；窗口内无人领过会如实标注", style: const TextStyle(fontSize: 10.5))),
-                  // ㉖v249 低水位口径开关：默认关=v180 须叠加"有人下单不够发"（防有货无人要误报白跑）；
-                  // 开=纯库存预警口径（低于线即入清单），给采购提前备货场景用
-                  SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      dense: true,
-                      value: lso,
-                      onChanged: (v) => setDlg(() => lso = v),
-                      title: const Text("低水位仅看库存（不看在途需求）", style: TextStyle(fontSize: 13)),
-                      subtitle: Text(lso ? "低于阈值即入清单：库存预警口径，适合提前催采购；有货无人要也会列入" : "默认：须同时有人下单且不够发（v180 防\"有货无人要\"误报白跑）", style: const TextStyle(fontSize: 10.5))),
-                ]))),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
-              FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text("保存")),
-            ])));
+                    title: const Text("缺料单默认字段（记住，下次自动带出）"),
+                    content: SizedBox(
+                        width: 340,
+                        child: SingleChildScrollView(
+                            child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                              TextField(
+                                  controller: u,
+                                  decoration: const InputDecoration(
+                                      labelText: "反馈单位", isDense: true)),
+                              TextField(
+                                  controller: d,
+                                  decoration: const InputDecoration(
+                                      labelText: "责任单位", isDense: true)),
+                              TextField(
+                                  controller: c,
+                                  decoration: const InputDecoration(
+                                      labelText: "确认人", isDense: true)),
+                              TextField(
+                                  controller: a,
+                                  decoration: const InputDecoration(
+                                      labelText: "@人员（顿号分隔）", isDense: true)),
+                              TextField(
+                                  controller: dd,
+                                  maxLines: 2,
+                                  minLines: 1,
+                                  decoration: const InputDecoration(
+                                      labelText: "异常描述（默认值）",
+                                      isDense: true,
+                                      helperText:
+                                          "缺料反馈/缺料单的异常描述默认带此文案，反馈时仍可临时改",
+                                      helperStyle: TextStyle(
+                                          fontSize:
+                                              10))), // ㉖v199d 用户要求：异常描述可自定义为默认字段
+                              TextField(
+                                  controller: pj,
+                                  decoration: const InputDecoration(
+                                      labelText: "项目分类（顿号/逗号分隔）",
+                                      isDense: true,
+                                      helperText:
+                                          "物料名包含关键字即归入该项目，如 EX11、E281、V446K",
+                                      helperStyle: TextStyle(fontSize: 10))),
+                              TextField(
+                                  controller: l,
+                                  keyboardType: TextInputType.number,
+                                  decoration: InputDecoration(
+                                      labelText: "低水位阈值（件，0=不启用）",
+                                      isDense: true,
+                                      helperText: lso
+                                          ? "仅看库存已开：在架低于此值即算低水位纳入（不看在途需求）"
+                                          : "在库低于此值且有人下单不够发才算缺料纳入；有货无人要=不缺货，不纳入",
+                                      helperStyle: const TextStyle(
+                                          fontSize:
+                                              10))), // ㉖v249 helper 随开关口径联动
+                              // ㉖v179 分享模板自定义：末次领用行（日期+数量+多少天没领过）
+                              SwitchListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  dense: true,
+                                  value: sl,
+                                  onChanged: (v) => setDlg(() => sl = v),
+                                  title: const Text("显示末次领用（日期+数量）",
+                                      style: TextStyle(fontSize: 13)),
+                                  subtitle: Text(
+                                      "全厂口径（含同事领的），按${_shortLastWindow}天窗口；窗口内无人领过会如实标注",
+                                      style: const TextStyle(fontSize: 10.5))),
+                              // ㉖v249 低水位口径开关：默认关=v180 须叠加"有人下单不够发"（防有货无人要误报白跑）；
+                              // 开=纯库存预警口径（低于线即入清单），给采购提前备货场景用
+                              SwitchListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  dense: true,
+                                  value: lso,
+                                  onChanged: (v) => setDlg(() => lso = v),
+                                  title: const Text("低水位仅看库存（不看在途需求）",
+                                      style: TextStyle(fontSize: 13)),
+                                  subtitle: Text(
+                                      lso
+                                          ? "低于阈值即入清单：库存预警口径，适合提前催采购；有货无人要也会列入"
+                                          : "默认：须同时有人下单且不够发（v180 防\"有货无人要\"误报白跑）",
+                                      style: const TextStyle(fontSize: 10.5))),
+                            ]))),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(ctx, false),
+                          child: const Text("取消")),
+                      FilledButton(
+                          onPressed: () => Navigator.pop(ctx, true),
+                          child: const Text("保存")),
+                    ])));
     if (ok == true && mounted) {
       setState(() {
         _unit = u.text.trim().isEmpty ? _unit : u.text.trim();
         _duty = d.text.trim().isEmpty ? _duty : d.text.trim();
         _conf = c.text.trim().isEmpty ? _conf : c.text.trim();
         _at = a.text.trim().isEmpty ? _at : a.text.trim();
-        _defDesc = dd.text.trim().isEmpty ? _defDesc : dd.text.trim(); // ㉖v199d 异常描述默认值（空=不改）
+        _defDesc = dd.text.trim().isEmpty
+            ? _defDesc
+            : dd.text.trim(); // ㉖v199d 异常描述默认值（空=不改）
         _lowLine = double.tryParse(l.text.trim()) ?? 0;
         _showLast = sl; // ㉖v179b 采纳弹窗内的开关值
         _lowStockOnly = lso; // ㉖v249 采纳低水位口径开关
@@ -441,7 +555,9 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
             .toList();
         if (np.isNotEmpty) _projects = np;
         final pUp = _proj.toUpperCase(); // 筛选值恒为大写，与项目表大小写归一比对
-        if (pUp != "__OTHER__" && !_projects.map((e) => e.trim().toUpperCase()).contains(pUp)) _proj = "";
+        if (pUp != "__OTHER__" &&
+            !_projects.map((e) => e.trim().toUpperCase()).contains(pUp))
+          _proj = "";
       });
       _saveGlobals();
       _load(); // 阈值/项目表变了：重算全量清单
@@ -456,34 +572,41 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     await Future.delayed(const Duration(milliseconds: 80)); // 等挂载布局
     // 纹理上限约 8192px：按逻辑高自适应缩放（单量少时保持 2.5 倍高清）
     final h = bo.size.height;
-    final ratio = h <= 0 ? 2.5 : [2.5, 8000 / h].reduce((a, b) => a < b ? a : b);
+    final ratio =
+        h <= 0 ? 2.5 : [2.5, 8000 / h].reduce((a, b) => a < b ? a : b);
     final img = await bo.toImage(pixelRatio: ratio);
     final bd = await img.toByteData(format: ui.ImageByteFormat.png);
     if (bd == null) return const [];
     final dir = await getTemporaryDirectory();
-    final f = File("${dir.path}/shortage_${DateTime.now().millisecondsSinceEpoch}.png");
+    final f = File(
+        "${dir.path}/shortage_${DateTime.now().millisecondsSinceEpoch}.png");
     await f.writeAsBytes(bd.buffer.asUint8List());
     return [f.path];
   }
 
   Future<void> _share() async {
-    final chosen = _visible.where((e) => e.checked).toList(); // ㉖v75 与页面展示范围一致：筛选 ∧ 勾选
+    final chosen =
+        _visible.where((e) => e.checked).toList(); // ㉖v75 与页面展示范围一致：筛选 ∧ 勾选
     if (chosen.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("请至少勾选一张缺料单")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text("请至少勾选一张缺料单")));
       return;
     }
     setState(() => _busy = true);
     try {
       if (_mode == 0) {
         final text = chosen.map(_feedText).join("\n\n");
-        await _shareCh.invokeMethod("share", {"text": text, "paths": <String>[]});
+        await _shareCh
+            .invokeMethod("share", {"text": text, "paths": <String>[]});
       } else {
         final paths = await _captureImages();
         if (paths.isEmpty) throw Exception("图片生成失败");
         await _shareCh.invokeMethod("share", {"text": "", "paths": paths});
       }
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("分享失败：$e"), backgroundColor: Colors.red.shade700));
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("分享失败：$e"), backgroundColor: Colors.red.shade700));
     }
     if (mounted) setState(() => _busy = false);
   }
@@ -527,26 +650,40 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                   child: Row(children: [
                     FilterChip(
                         label: Text("⛔零库存 ${_kindCount("零库存")}",
-                            style: TextStyle(fontSize: 11.5, color: _kindCount("零库存") == 0 ? Colors.black26 : null)),
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: _kindCount("零库存") == 0
+                                    ? Colors.black26
+                                    : null)),
                         selected: _showZero,
                         onSelected: (v) => setState(() => _showZero = v)),
                     const SizedBox(width: 6),
                     FilterChip(
                         label: Text("📉欠料 ${_kindCount("欠料")}",
-                            style: TextStyle(fontSize: 11.5, color: _kindCount("欠料") == 0 ? Colors.black26 : null)),
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                color: _kindCount("欠料") == 0
+                                    ? Colors.black26
+                                    : null)),
                         selected: _showShort,
                         onSelected: (v) => setState(() => _showShort = v)),
                     if (_lowLine > 0) ...[
                       const SizedBox(width: 6),
                       FilterChip(
                           label: Text("⚠️低水位 ${_kindCount("低水位")}",
-                              style: TextStyle(fontSize: 11.5, color: _kindCount("低水位") == 0 ? Colors.black26 : null)),
+                              style: TextStyle(
+                                  fontSize: 11.5,
+                                  color: _kindCount("低水位") == 0
+                                      ? Colors.black26
+                                      : null)),
                           selected: _showLow,
                           onSelected: (v) => setState(() => _showLow = v)),
                     ],
                     const Spacer(),
-                    Text("共 ${_visible.length} 项${_items.length != _visible.length ? "/${_items.length}" : ""} · 已选 ${chosen.length}",
-                        style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
+                    Text(
+                        "共 ${_visible.length} 项${_items.length != _visible.length ? "/${_items.length}" : ""} · 已选 ${chosen.length}",
+                        style: const TextStyle(
+                            fontSize: 11.5, color: Colors.blueGrey)),
                   ])),
               // ㉖v75 项目分类 chips（物料名包含关键字命中；"其他"兜底不漏件）
               SizedBox(
@@ -558,52 +695,74 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                         ...[
                           ["", "全部"],
                           // ㉖v101 候选=项目字典码 ∪ 本机关键字表（大写去重；字典在前，网页维护的正式项目优先曝光）
-                          for (final p in {..._projCodesCache.map((c) => c.toUpperCase()), ..._projects.where((x) => x.trim().isNotEmpty).map((e) => e.trim().toUpperCase())}) [p, p],
+                          for (final p in {
+                            ..._projCodesCache.map((c) => c.toUpperCase()),
+                            ..._projects
+                                .where((x) => x.trim().isNotEmpty)
+                                .map((e) => e.trim().toUpperCase())
+                          })
+                            [p, p],
                           ["__other__", "其他"],
                         ].map((e) => Padding(
                             padding: const EdgeInsets.only(right: 6, top: 4),
                             child: ChoiceChip(
-                                label: Text("${e[1]} ${_projCount(e[0])}", style: const TextStyle(fontSize: 11.5)),
+                                label: Text("${e[1]} ${_projCount(e[0])}",
+                                    style: const TextStyle(fontSize: 11.5)),
                                 selected: _proj == e[0],
                                 showCheckmark: false,
                                 selectedColor: const Color(0xFF515BD4),
-                                labelStyle: TextStyle(fontSize: 11.5, color: _proj == e[0] ? Colors.white : Colors.blueGrey),
-                                onSelected: (_) => setState(() => _proj = _proj == e[0] ? "" : e[0])))),
+                                labelStyle: TextStyle(
+                                    fontSize: 11.5,
+                                    color: _proj == e[0]
+                                        ? Colors.white
+                                        : Colors.blueGrey),
+                                onSelected: (_) => setState(
+                                    () => _proj = _proj == e[0] ? "" : e[0])))),
                       ])),
               // ㉖v75 零件搜索
               Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
-                  child: TextField(
-                      onChanged: (v) => setState(() => _search = v),
-                      style: const TextStyle(fontSize: 13),
-                      decoration: InputDecoration(
-                          hintText: "搜零件号/物料名",
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                          prefixIcon: const Icon(Icons.search, size: 18),
-                          prefixIconConstraints: const BoxConstraints(minWidth: 34, minHeight: 0),
-                          suffixIcon: _search.isEmpty
-                              ? null
-                              : IconButton(
-                                  icon: const Icon(Icons.clear, size: 16),
-                                  onPressed: () => setState(() => _search = "")),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)))),
+                padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
+                child: TextField(
+                    onChanged: (v) => setState(() => _search = v),
+                    style: const TextStyle(fontSize: 13),
+                    decoration: InputDecoration(
+                        hintText: "搜零件号/物料名",
+                        isDense: true,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 8),
+                        prefixIcon: const Icon(Icons.search, size: 18),
+                        prefixIconConstraints:
+                            const BoxConstraints(minWidth: 34, minHeight: 0),
+                        suffixIcon: _search.isEmpty
+                            ? null
+                            : IconButton(
+                                icon: const Icon(Icons.clear, size: 16),
+                                onPressed: () => setState(() => _search = "")),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8)))),
               ),
               Expanded(
                   child: _visible.isEmpty
                       ? Center(
                           child: _err.isNotEmpty
-                              ? Column(mainAxisSize: MainAxisSize.min, children: [
-                                  Text(_err,
-                                      textAlign: TextAlign.center,
-                                      style: const TextStyle(color: Colors.red, fontSize: 13)),
-                                  const SizedBox(height: 10),
-                                  OutlinedButton.icon(
-                                      onPressed: _load,
-                                      icon: const Icon(Icons.refresh, size: 16),
-                                      label: const Text("重试")),
-                                ])
-                              : Text(_items.isEmpty ? "当前没有符合口径的缺料零件" : "当前筛选下无匹配，换个项目或清空搜索试试",
+                              ? Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                      Text(_err,
+                                          textAlign: TextAlign.center,
+                                          style: const TextStyle(
+                                              color: Colors.red, fontSize: 13)),
+                                      const SizedBox(height: 10),
+                                      OutlinedButton.icon(
+                                          onPressed: _load,
+                                          icon: const Icon(Icons.refresh,
+                                              size: 16),
+                                          label: const Text("重试")),
+                                    ])
+                              : Text(
+                                  _items.isEmpty
+                                      ? "当前没有符合口径的缺料零件"
+                                      : "当前筛选下无匹配，换个项目或清空搜索试试",
                                   style: const TextStyle(color: Colors.grey)))
                       : ListView.builder(
                           padding: const EdgeInsets.all(10),
@@ -615,48 +774,64 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
               // 底部：模式切换 + 分享按钮（图片模式需先渲染卡片，用隐藏 Stack 挂载）
               Container(
                   color: Colors.white,
-                  padding: EdgeInsets.fromLTRB(10, 8, 10, MediaQuery.of(context).padding.bottom + 10),
+                  padding: EdgeInsets.fromLTRB(
+                      10, 8, 10, MediaQuery.of(context).padding.bottom + 10),
                   child: Column(children: [
                     SegmentedButton<int>(
-                        style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                        style: const ButtonStyle(
+                            visualDensity: VisualDensity.compact),
                         segments: const [
                           ButtonSegment(value: 0, label: Text("文字版（可复制）")),
                           ButtonSegment(value: 1, label: Text("图片版（长图）")),
                         ],
                         selected: {_mode},
-                        onSelectionChanged: (s) => setState(() => _mode = s.first)),
+                        onSelectionChanged: (s) =>
+                            setState(() => _mode = s.first)),
                     const SizedBox(height: 8),
                     SizedBox(
                         width: double.infinity,
                         child: FilledButton.icon(
-                            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF07C160), padding: const EdgeInsets.symmetric(vertical: 13)),
+                            style: FilledButton.styleFrom(
+                                backgroundColor: const Color(0xFF07C160),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 13)),
                             onPressed: _busy ? null : _share,
                             icon: _busy
-                                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2, color: Colors.white))
                                 : const Icon(Icons.wechat, size: 20),
-                            label: Text(_mode == 0 ? "分享到微信（文字 ${chosen.length} 单）" : "分享到微信（${chosen.length} 单合成长图）",
-                                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700)))),
+                            label: Text(
+                                _mode == 0
+                                    ? "分享到微信（文字 ${chosen.length} 单）"
+                                    : "分享到微信（${chosen.length} 单合成长图）",
+                                style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w700)))),
                   ])),
               // 图片模式：卡片真实尺寸渲染、Transform 移出屏幕外（ClipRect 防溢出告警；
               // RepaintBoundary 自带 layer，toImage 截取不受祖先裁剪影响——零尺寸容器方案会截出空图，已规避）
               // 图片模式：勾选卡片按 750 宽真实布局、平移出屏，整体一个 RepaintBoundary 截长图
               if (_mode == 1 && chosen.isNotEmpty)
                 ClipRect(
-                    child: SizedBox(
-                        width: 1,
-                        height: 1,
-                        child: UnconstrainedBox(
-                            alignment: Alignment.topLeft,
-                            child: Transform.translate(
-                                offset: const Offset(-800, -800),
-                                child: RepaintBoundary(
-                                    key: _allKey,
-                                    child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
+                  child: SizedBox(
+                      width: 1,
+                      height: 1,
+                      child: UnconstrainedBox(
+                          alignment: Alignment.topLeft,
+                          child: Transform.translate(
+                            offset: const Offset(-800, -800),
+                            child: RepaintBoundary(
+                                key: _allKey,
+                                child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
                                       ...chosen.map((it) => _feedCard(it)),
                                     ])),
-                            ))),
+                          ))),
                 ),
             ]),
     );
@@ -667,42 +842,92 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         margin: const EdgeInsets.symmetric(vertical: 5),
         child: Padding(
             padding: const EdgeInsets.fromLTRB(10, 6, 10, 10),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
-                Checkbox(value: it.checked, visualDensity: VisualDensity.compact, onChanged: (v) => setState(() => it.checked = v ?? true)),
+                Checkbox(
+                    value: it.checked,
+                    visualDensity: VisualDensity.compact,
+                    onChanged: (v) => setState(() => it.checked = v ?? true)),
                 Expanded(
                     child: Text("${it.partNo}  ${it.itemName}",
-                        maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700))),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 13.5, fontWeight: FontWeight.w700))),
                 // ㉖v75 口径徽章：一眼分清零库存/欠料/低水位（修"零库存筛选混排低水位项无法分辨"）
                 Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 6, vertical: 1.5),
                     decoration: BoxDecoration(
-                        color: (it.kind == "零库存" ? const Color(0xFFE53935) : it.kind == "欠料" ? const Color(0xFFE65100) : const Color(0xFFF9A825)).withOpacity(.1),
+                        color: (it.kind == "零库存"
+                                ? const Color(0xFFE53935)
+                                : it.kind == "欠料"
+                                    ? const Color(0xFFE65100)
+                                    : const Color(0xFFF9A825))
+                            .withOpacity(.1),
                         borderRadius: BorderRadius.circular(5)),
                     child: Text(it.kind,
                         style: TextStyle(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w700,
-                            color: it.kind == "零库存" ? const Color(0xFFE53935) : it.kind == "欠料" ? const Color(0xFFE65100) : const Color(0xFFF9A825)))),
+                            color: it.kind == "零库存"
+                                ? const Color(0xFFE53935)
+                                : it.kind == "欠料"
+                                    ? const Color(0xFFE65100)
+                                    : const Color(0xFFF9A825)))),
                 const SizedBox(width: 6),
-                Text(it.inStockQty <= 0 ? "在库 0" : "在库 ${_fmtInvNum(it.inStockQty)} · ${it.inBoxes}框",
-                    style: const TextStyle(fontSize: 11, color: Colors.blueGrey)),
+                Text(
+                    it.inStockQty <= 0
+                        ? "在库 0"
+                        : "在库 ${_fmtInvNum(it.inStockQty)} · ${it.inBoxes}框",
+                    style:
+                        const TextStyle(fontSize: 11, color: Colors.blueGrey)),
               ]),
+              // ㉖v255 账上有货≠现在能发：一楼待转入框单独点出，先转入别催采购
+              if (it.recvBoxes > 0)
+                Padding(
+                    padding: const EdgeInsets.only(left: 4, bottom: 2),
+                    child: Text("🏜 其中 ${it.recvBoxes} 框在一楼待转入",
+                        style: const TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFFE65100),
+                            fontWeight: FontWeight.w600))),
               if (it.needQty > 0)
                 Padding(
                     padding: const EdgeInsets.only(left: 4, bottom: 2),
-                    child: Text("待领 ${_fmtInvNum(it.needQty)} 件${it.needFrom.isNotEmpty ? " · ${it.needFrom}" : ""}",
-                        style: const TextStyle(fontSize: 11.5, color: Color(0xFFE65100)))),
+                    child: Text(
+                        "待领 ${_fmtInvNum(it.needQty)} 件${it.needFrom.isNotEmpty ? " · ${it.needFrom}" : ""}",
+                        style: const TextStyle(
+                            fontSize: 11.5, color: Color(0xFFE65100)))),
               Row(children: [
                 const SizedBox(width: 4),
-                const Text("车型", style: TextStyle(fontSize: 11, color: Colors.grey)),
+                const Text("车型",
+                    style: TextStyle(fontSize: 11, color: Colors.grey)),
                 const SizedBox(width: 6),
-                SizedBox(width: 90, child: TextField(controller: it.carC, style: const TextStyle(fontSize: 12.5), decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6), border: OutlineInputBorder()))),
+                SizedBox(
+                    width: 90,
+                    child: TextField(
+                        controller: it.carC,
+                        style: const TextStyle(fontSize: 12.5),
+                        decoration: const InputDecoration(
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 6),
+                            border: OutlineInputBorder()))),
                 const SizedBox(width: 10),
-                const Text("批次号", style: TextStyle(fontSize: 11, color: Colors.grey)),
+                const Text("批次号",
+                    style: TextStyle(fontSize: 11, color: Colors.grey)),
                 const SizedBox(width: 6),
-                Expanded(child: TextField(controller: it.lotC, style: const TextStyle(fontSize: 12.5), decoration: const InputDecoration(isDense: true, contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6), border: OutlineInputBorder()))),
+                Expanded(
+                    child: TextField(
+                        controller: it.lotC,
+                        style: const TextStyle(fontSize: 12.5),
+                        decoration: const InputDecoration(
+                            isDense: true,
+                            contentPadding: EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 6),
+                            border: OutlineInputBorder()))),
               ]),
               const SizedBox(height: 6),
               TextField(
@@ -710,8 +935,11 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                   maxLines: 2,
                   style: const TextStyle(fontSize: 12.5),
                   decoration: const InputDecoration(
-                      labelText: "异常描述", isDense: true, labelStyle: TextStyle(fontSize: 11),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      labelText: "异常描述",
+                      isDense: true,
+                      labelStyle: TextStyle(fontSize: 11),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                       border: OutlineInputBorder())),
             ])));
   }
@@ -721,39 +949,61 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     Widget row(String k, String v) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 5),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          SizedBox(width: 110, child: Text("$k：", style: const TextStyle(fontSize: 17, color: Color(0xFF666666)))),
-          Expanded(child: Text(v.isEmpty ? "—" : v, style: const TextStyle(fontSize: 17, color: Color(0xFF222222), fontWeight: FontWeight.w600))),
+          SizedBox(
+              width: 110,
+              child: Text("$k：",
+                  style:
+                      const TextStyle(fontSize: 17, color: Color(0xFF666666)))),
+          Expanded(
+              child: Text(v.isEmpty ? "—" : v,
+                  style: const TextStyle(
+                      fontSize: 17,
+                      color: Color(0xFF222222),
+                      fontWeight: FontWeight.w600))),
         ]));
     return SizedBox(
         width: 750,
         child: Container(
             color: Colors.white,
             padding: const EdgeInsets.all(28),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                decoration: BoxDecoration(color: const Color(0xFFE53935), borderRadius: BorderRadius.circular(6)),
-                child: const Text("缺料反馈", style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.white))),
-            const SizedBox(width: 12),
-            const Text("鄞州豪斯特 · 原料库", style: TextStyle(fontSize: 15, color: Color(0xFF999999))),
-          ]),
-          const SizedBox(height: 14),
-          const Divider(height: 1, color: Color(0xFFEEEEEE)),
-          const SizedBox(height: 6),
-          row("反馈日期", _today),
-          row("车型", it.carC.text),
-          row("批次号", it.lotC.text),
-          row("零件号", it.partNo), // ㉖v180 与文字版同改（原"物料号"实为 partNo）
-          row("物料名称", it.itemName),
-          row("异常描述", it.descC.text),
-          row("反馈单位", _unit),
-          row("反馈人", Auth.user?.name ?? ""),
-          row("责任单位", _duty),
-          row("确认人", _conf),
-          row("确认日期", _today),
-          const Divider(height: 20, color: Color(0xFFEEEEEE)),
-          Text(_ats, style: const TextStyle(fontSize: 17, color: Color(0xFF1A73E8), fontWeight: FontWeight.w600)),
-        ])));
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    decoration: BoxDecoration(
+                        color: const Color(0xFFE53935),
+                        borderRadius: BorderRadius.circular(6)),
+                    child: const Text("缺料反馈",
+                        style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white))),
+                const SizedBox(width: 12),
+                const Text("鄞州豪斯特 · 原料库",
+                    style: TextStyle(fontSize: 15, color: Color(0xFF999999))),
+              ]),
+              const SizedBox(height: 14),
+              const Divider(height: 1, color: Color(0xFFEEEEEE)),
+              const SizedBox(height: 6),
+              row("反馈日期", _today),
+              row("车型", it.carC.text),
+              row("批次号", it.lotC.text),
+              row("零件号", it.partNo), // ㉖v180 与文字版同改（原"物料号"实为 partNo）
+              row("物料名称", it.itemName),
+              row("异常描述", it.descC.text),
+              row("反馈单位", _unit),
+              row("反馈人", Auth.user?.name ?? ""),
+              row("责任单位", _duty),
+              row("确认人", _conf),
+              row("确认日期", _today),
+              const Divider(height: 20, color: Color(0xFFEEEEEE)),
+              Text(_ats,
+                  style: const TextStyle(
+                      fontSize: 17,
+                      color: Color(0xFF1A73E8),
+                      fontWeight: FontWeight.w600)),
+            ])));
   }
 }

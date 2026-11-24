@@ -17,8 +17,8 @@ part of 'main.dart';
 /// 有货硬约=干等）。"库存将空想排队等下批"是真实场景，弹一次确认可带 forceStock
 /// 放行。全部建预约调用点统一走本函数，确认交互只写一遍。返回 null=用户取消。
 Future<Map?> watchBookWithGate(BuildContext ctx, String pn,
-    {required int qty, String itemName = "", String due = "", bool auto = true}) async {
-  var r = await AuthApi.watchlistSet(pn, true, qty: qty, itemName: itemName, due: due, auto: auto);
+    {required int qty, String itemName = "", String due = "", bool auto = true, bool shortOk = false}) async {
+  var r = await AuthApi.watchlistSet(pn, true, qty: qty, itemName: itemName, due: due, auto: auto, shortOk: shortOk);
   if (r["ok"] != true && r["code"] == "in_stock" && ctx.mounted) {
     final boxes = (r["boxes"] as num?)?.toInt() ?? 0;
     final go = await showDialog<bool>(
@@ -33,7 +33,7 @@ Future<Map?> watchBookWithGate(BuildContext ctx, String pn,
               FilledButton(onPressed: () => Navigator.pop(c2, true), child: const Text("仍要等新货")),
             ]));
     if (go == true) {
-      r = await AuthApi.watchlistSet(pn, true, qty: qty, itemName: itemName, due: due, auto: auto, forceStock: true);
+      r = await AuthApi.watchlistSet(pn, true, qty: qty, itemName: itemName, due: due, auto: auto, shortOk: shortOk, forceStock: true);
     } else {
       return null;
     }
@@ -94,19 +94,43 @@ class _WatchListPageState extends State<WatchListPage> {
     }
   }
 
-  /// 新增/改约：与零件档案预约同一弹窗（预订筐数 + 期望到货 + 够数自动开单）
-  Future<void> _book(String pn, String nm, {int initQty = 0, String initDue = "", bool initAuto = true}) async {
-    final cfg = await bookingDlgOf(context, pn, nm, initQty: initQty, initDue: initDue, initAuto: initAuto);
+  /// 新增/改约：与零件档案预约同一弹窗（预订筐数 + 期望到货 + 够数自动开单；㉖v251 +自定义筐数/不够数也开单）
+  Future<void> _book(String pn, String nm, {int initQty = 0, String initDue = "", bool initAuto = true, bool initShortOk = false}) async {
+    final cfg = await bookingDlgOf(context, pn, nm, initQty: initQty, initDue: initDue, initAuto: initAuto, initShortOk: initShortOk);
     if (cfg == null || !mounted) return;
     setState(() => _busy = true);
     final r = await watchBookWithGate(context, pn,
-        qty: (cfg["qty"] as int?) ?? 0, itemName: nm, due: (cfg["due"] as String?) ?? "", auto: (cfg["auto"] as bool?) ?? true);
+        qty: (cfg["qty"] as int?) ?? 0, itemName: nm, due: (cfg["due"] as String?) ?? "", auto: (cfg["auto"] as bool?) ?? true, shortOk: (cfg["shortOk"] as bool?) ?? false);
     if (!mounted) return;
     setState(() => _busy = false);
     if (r == null) return; // 用户经闸改选"去开领料单"
     if (r["ok"] != true) { _toast("预约失败：${r["msg"]}"); return; }
     final q = (cfg["qty"] as int?) ?? 0;
     _toast(q > 0 ? "已预约 $pn 预订 $q 框，够数自动开领料单" : "已预约 $pn，到料时通知你", err: false);
+    _load();
+  }
+
+  /// ㉖v251 不够数先开单：确认"来料就这些"→按当前累计到料数开领料单（服务端防呆：零到料/已履行拒开）
+  Future<void> _fill(Map m) async {
+    final pn = (m["partNo"] ?? "").toString();
+    final target = (m["target"] as num?)?.toInt() ?? 0;
+    final arrived = (m["arrived"] as num?)?.toInt() ?? 0;
+    final go = await showDialog<bool>(
+        context: context,
+        builder: (c2) => AlertDialog(
+            title: const Text("不够数先开单", style: TextStyle(fontSize: 15)),
+            content: Text("零件 $pn 已到料 $arrived/$target 框。\n\n确认货就这些？将按实际到料 $arrived 框为你开领料单，本轮预约随之结束（后续再到货不再累计到这单）。"),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(c2, false), child: const Text("再等等")),
+              FilledButton(onPressed: () => Navigator.pop(c2, true), child: Text("按 $arrived 框开单")),
+            ]));
+    if (go != true || !mounted) return;
+    setState(() => _busy = true);
+    final r = await AuthApi.watchFill(pn);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (r["ok"] != true) { _toast("先开单失败：${r["msg"]}"); return; }
+    _toast("已按实际到料 $arrived 框开领料单", err: false);
     _load();
   }
 
@@ -220,6 +244,7 @@ class _WatchListPageState extends State<WatchListPage> {
     final done = m["done"] == true, overdue = m["overdue"] == true;
     final reqNo = (m["reqNo"] ?? "").toString();
     final due = (m["due"] ?? "").toString();
+    final shortOk = m["shortOk"] == true, filledShort = m["filledShort"] == true; // ㉖v251
     final pct = target > 0 ? (arrived / target).clamp(0.0, 1.0) : (stock > 0 ? 1.0 : 0.0);
     final Color acc = overdue ? const Color(0xFFC62828) : done ? const Color(0xFF2E7D32) : const Color(0xFF515BD4);
     return Container(
@@ -232,7 +257,7 @@ class _WatchListPageState extends State<WatchListPage> {
             Container(
                 padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                 decoration: BoxDecoration(color: acc.withOpacity(.1), borderRadius: BorderRadius.circular(4)),
-                child: Text(done ? (reqNo.startsWith("LL") ? "已自动开单" : "已达成") : (overdue ? "⚠ 已逾期" : target > 0 ? "等货中" : "到料提醒"),
+                child: Text(done ? (filledShort ? "不够数已开单" : reqNo.startsWith("LL") ? "已自动开单" : "已达成") : (overdue ? "⚠ 已逾期" : target > 0 ? "等货中" : "到料提醒"),
                     style: TextStyle(fontSize: 10.5, color: acc, fontWeight: FontWeight.w700))),
           ]),
           if (nm.isNotEmpty) Text(nm, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, color: Colors.black87)),
@@ -248,13 +273,17 @@ class _WatchListPageState extends State<WatchListPage> {
             const Text("到料提醒型（未填预订筐数）：到料只通知，不开单", style: TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
           Text("当前全厂在架 $stock 框"
               "${due.isNotEmpty ? "　·　期望 ${due.substring(5)}" : ""}"
+              "${shortOk && !done ? "　·　不够数也开单" : ""}"
               "${overdue ? "（已过期望日仍未开单）" : ""}"
               "${done && reqNo.isNotEmpty ? "　·　$reqNo" : ""}",
               style: const TextStyle(fontSize: 11.5, color: Colors.blueGrey)),
           Row(mainAxisAlignment: MainAxisAlignment.end, children: [
             if (done && reqNo.startsWith("LL"))
               TextButton(onPressed: () { Clipboard.setData(ClipboardData(text: reqNo)); _toast("单号已复制", err: false); }, child: const Text("复制单号", style: TextStyle(fontSize: 12.5))),
-            TextButton(onPressed: _busy ? null : () => _book(pn, nm, initQty: target, initDue: due, initAuto: m["auto"] != false), child: const Text("改约", style: TextStyle(fontSize: 12.5))),
+            // ㉖v251 不够数先开单：等货中且已有到料→一键按实际数先开单，不再干等凑够
+            if (!done && target > 0 && arrived > 0)
+              TextButton(onPressed: _busy ? null : () => _fill(m), child: Text("不够数先开单($arrived框)", style: const TextStyle(fontSize: 12.5, color: Color(0xFFEF6C00)))),
+            TextButton(onPressed: _busy ? null : () => _book(pn, nm, initQty: target, initDue: due, initAuto: m["auto"] != false, initShortOk: shortOk), child: const Text("改约", style: TextStyle(fontSize: 12.5))),
             TextButton(onPressed: _busy ? null : () => _cancel(m), child: Text(done ? "清掉记录" : "取消预约", style: const TextStyle(fontSize: 12.5, color: Colors.redAccent))),
           ]),
         ]));

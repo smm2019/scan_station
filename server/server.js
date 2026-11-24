@@ -83,6 +83,7 @@ function defaultDb() {
     outbound: {}, // 出库单（按单号存最新快照）
     outboundAt: '', outboundCount: 0,
     watchlist: [], // ⑮预约来料 [{userId,partNo,at, qty:预订框数0=仅提醒, itemName, auto:到货自动开领料单, due:期望到货日YYYY-MM-DD, got:累计到料框, filledReq:已转单id}] // ㉖v94n 预约升级：数量预订+进度+自动开单（旧条目无新字段=纯通知型，行为不变）
+                   // ㉖v251 追加 shortOk:true=超期望日未凑够也按实际到料先开单；filledShort:true=该轮以"不够数先开单"方式结束
     inspects: [], seenIn: {}, seenOut: {}, // ㉖④检验工单 / ①②标签生命周期索引 [{userId,partNo,at}]
     groundSlots: {}, // ⑮地面排格数覆盖 {"NB03-A-11":13}，缺省12
     reqTemplates: [], // ㉖v62 产线领料模板 {id,name,by,byName,shared,items,use,at}
@@ -1770,7 +1771,12 @@ function bookingDueSweep() {
       const user = db.users.find((x) => x.id === w.userId);
       if (!user || !user.enabled) continue;
       const got = Math.max(0, Number(w.got) || 0); // ㉖v94n 与履行链同源：累计到料数
-      notify(user.id, 'watch_in', `⏰ 预约逾期：零件 ${w.partNo} 超期望日 ${w.due.slice(5)} 仍未到齐（${got}/${wq} 框）。可调整期望日、等自动开单，或取消预约`, '');
+      // ㉖v251 勾选"不够数也开单"→到期不再只提醒：有部分到料就按实际数先开单（结算本轮）；零到料仍只提醒（开0件无意义）
+      if (w.shortOk === true && got > 0) {
+        bookingFulfill(w, user, String(w.partNo || '').toUpperCase(), got, wq, '系统·超期望日结算', Number(w.gotQty) || 0, 'due');
+        n++; continue;
+      }
+      notify(user.id, 'watch_in', `⏰ 预约逾期：零件 ${w.partNo} 超期望日 ${w.due.slice(5)} 仍未到齐（${got}/${wq} 框）。可调整期望日、等自动开单，或取消预约${w.shortOk === true ? '' : '；勾选"不够数也开单"后，超期一有到料就会按实际数先开单'}`, '');
       n++;
     }
     if (n) { save(); console.log('[booking-due] 逾期提醒 ' + n + ' 条'); }
@@ -3405,11 +3411,12 @@ function sweepAssignOpen() {
 // ===== ⑮ 库存事件检测：预约到料 + 断料预警（账本合并后调用） =====
 // ㉖v94n 预约够数履行：数量预订满额→自动开领料单（与手动建单同构：单号LL+本地时间+序号；pending状态；留痕+双方通知）
 // 防呆：已有同零件未完结领料单→不重复开（通知说明）；auto=false→只通知不开单；无领料权限→转告仓管
-function bookingFulfill(w, user, pn, got, want, byName, gotQty) {
+function bookingFulfill(w, user, pn, got, want, byName, gotQty, shortMode) {
   try {
+    const shortTxt = shortMode === 'manual' ? '不够数先开单（本人手动）' : shortMode ? '不够数先开单（超期望日自动结算）' : '';
     const open = (db.requisitions || []).find((r) => ['pending', 'accepted'].includes(r.status) && (r.items || []).some((i) => String(i.partNo || '').toUpperCase() === pn));
     if (open) { w.filledReq = 'dup'; notify(user.id, 'watch_in', `📦 预约达成但已有未完结领料单 ${open.no}（含零件 ${pn}），未重复开单。可在那张单里核销，或先处理后再预约`, open.id); return; }
-    if (w.auto === false) { w.filledReq = 'auto-off'; notify(user.id, 'watch_in', `📦 预约达成：零件 ${pn} 到料 ${got}/${want} 框（你设置了不自动开单）。请自行开领料单或联系仓管`, ''); (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'watch_in', `📦 预约到货：${user.name} 预订的零件 ${pn} 已到 ${got} 框（目标 ${want}）`, '')); return; }
+    if (w.auto === false && shortMode !== 'manual') { w.filledReq = 'auto-off'; notify(user.id, 'watch_in', `📦 预约达成：零件 ${pn} 到料 ${got}/${want} 框（你设置了不自动开单）。请自行开领料单或联系仓管`, ''); (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'watch_in', `📦 预约到货：${user.name} 预订的零件 ${pn} 已到 ${got} 框（目标 ${want}）`, '')); return; }
     const canReq = (db.features[user.role] || {}).requisition === true;
     if (!canReq) { w.filledReq = 'no-perm'; notify(user.id, 'watch_in', `📦 预约达成：零件 ${pn} 到料 ${got}/${want} 框。当前角色未开领料权限，已转告仓管备料`, ''); (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'watch_in', `📦 预约到货：${user.name} 预订的零件 ${pn} 已到 ${got} 框，请安排备料`, '')); return; }
     // ㉖v102 件数换算（10/30 现场事故：预订2框→自动开单 qty=2"件"，领料行 qty 语义是件，建议对着300件/框的整筐报"严重超发白搬298件"）：
@@ -3418,14 +3425,14 @@ function bookingFulfill(w, user, pn, got, want, byName, gotQty) {
     const now = new Date(), ts = localTs(now);
     const r = { id: newId('rq'), no: `LL${ts}${String(db.requisitions.length % 100).padStart(2, '0')}`, by: user.id, byName: user.name,
       items: [{ partNo: pn, itemName: String(w.itemName || ''), qty, issued: [], rush: false }], status: 'pending',
-      remark: `预约自动开单：${user.name} 预订 ${want} 框，实际到料 ${got} 框（${byName} 入库触发）${gotQty > 0 ? `，到料合计 ${qty} 件` : ''}`, createdAt: now.toISOString(), history: [{ time: now.toISOString(), by: '系统', text: `🤖 预约达成自动开单：零件 ${pn} 到料 ${got}/${want} 框，开单 ${qty} 件${gotQty > 0 ? '' : '（件数未知暂按框数，请核对）'}` }],
+      remark: `预约自动开单：${user.name} 预订 ${want} 框，实际到料 ${got} 框（${byName} 入库触发${shortTxt ? '，' + shortTxt : ''}）${gotQty > 0 ? `，到料合计 ${qty} 件` : ''}`, createdAt: now.toISOString(), history: [{ time: now.toISOString(), by: '系统', text: `🤖 ${shortMode ? shortTxt + '：' : '预约达成自动开单：'}零件 ${pn} 到料 ${got}/${want} 框，开单 ${qty} 件${gotQty > 0 ? '' : '（件数未知暂按框数，请核对）'}` }],
       assigneeId: '', assigneeName: '', assignOpenAt: '', rush: false, rushBy: '', needDate: w.due || '', fromBooking: true };
     db.requisitions.push(r);
-    w.filledReq = r.id; w.filledAt = Date.now();
-    (db.users || []).filter((x) => x.role === 'warehouse' && x.enabled).forEach((x) => notify(x.id, 'req_new', `🤖 预约到齐自动开单：${user.name} 预订零件 ${pn} 已到 ${got} 框 → 领料单 ${r.no}（需 ${qty} 件，请按 ${got} 框备料）`, r.id));
-    notify(user.id, 'watch_in', `✅ 预约达成：零件 ${pn} 到料 ${got}/${want} 框，已自动为你开领料单 ${r.no}（${qty} 件）`, r.id);
-    pushOps(user, '预约自动开单', pn, `到料${got}框/${qty}件 → ${r.no}`);
-    console.log('[booking] ' + pn + ' 够数自动开单 ' + r.no + ' qty=' + qty + (gotQty > 0 ? '(件数)' : '(回退框数)'));
+    w.filledReq = r.id; w.filledAt = Date.now(); if (shortMode) w.filledShort = true;
+    (db.users || []).filter((x) => x.role === 'warehouse' && x.enabled).forEach((x) => notify(x.id, 'req_new', `🤖 ${shortMode ? '预约不够数先开单' : '预约到齐自动开单'}：${user.name} 预订零件 ${pn} 已到 ${got}/${want} 框 → 领料单 ${r.no}（需 ${qty} 件，请按 ${got} 框备料）`, r.id));
+    notify(user.id, 'watch_in', `✅ ${shortMode ? '不够数先开单' : '预约达成'}：零件 ${pn} 到料 ${got}/${want} 框，已为你开领料单 ${r.no}（${qty} 件）`, r.id);
+    pushOps(user, shortMode ? '预约不够数先开单' : '预约自动开单', pn, `到料${got}框/${qty}件 → ${r.no}`);
+    console.log('[booking] ' + pn + (shortMode ? ' 不够数先开单 ' : ' 够数自动开单 ') + r.no + ' qty=' + qty + (gotQty > 0 ? '(件数)' : '(回退框数)'));
   } catch (e) { console.log('[booking] 履行异常：', e.message); logErr('bookingFulfill', e); }
 }
 function partBoxCounts() {
@@ -3435,6 +3442,21 @@ function partBoxCounts() {
     const kk = p + '|' + boxKeyOf(x); if (seen[kk]) continue; seen[kk] = 1;
     m[p] = (m[p] || 0) + 1;
   }
+  return m;
+}
+// ㉖v255 一楼来料区(NB04)按零件拆桶：框数(同托去重)/件数/格位清单——"账上有货≠现在能发"的信息断层根治，
+// 档案/缺料/预约提醒共用同一函数=单一数据源；判据与 locRecv、boxKeyOf 全系统同源。
+function recvBoxInfo() {
+  const m = {}, seen = {};
+  for (const x of db.ledger || []) {
+    if (!locRecv(x.l)) continue;
+    const p = String(x.p || '').toUpperCase(); if (!p) continue;
+    const e = (m[p] = m[p] || { boxes: 0, qty: 0, slots: [], _seen: {} });
+    e.qty += Number(x.q) || 0;
+    const kk = boxKeyOf(x);
+    if (!e._seen[kk]) { e._seen[kk] = 1; e.boxes++; if (e.slots.length < 6) e.slots.push(String(x.l || '').toUpperCase().replace(/^NB04-/, '')); }
+  }
+  for (const p of Object.keys(m)) { delete m[p]._seen; if (m[p].slots.length) m[p].slotsTip = m[p].slots.join('、') + ' 排'; }
   return m;
 }
 // ===== ㉖v178 缺料反馈闭环（二期·用户拍板"分两期：先入口，再闭环"）=====
@@ -3459,14 +3481,16 @@ function shortDemandMap() { // 在途需求（活跃单未发件数）：与 PDA
   }
   return { qty: m, docs: d };
 }
-function shortView(s, boxOf, qtyOf, dem) { // 列表富化：现架框/件/均值/在途需求/建议补框（无均值不折框，与一期同规则）
+function shortView(s, boxOf, qtyOf, dem, recv0) { // 列表富化：现架框/件/均值/在途需求/建议补框（无均值不折框，与一期同规则）
   const boxes = Number(boxOf[s.pn]) || 0, q = Number(qtyOf[s.pn]) || 0;
   const per = boxes > 0 && q > 0 ? Math.round(q / boxes * 10) / 10 : 0; // 零在架=算不出均值（不折框数，与一期同规则）
   const need = dem.qty[s.pn] || 0;
   const gap = need - q > 0 ? need - q : (boxes <= 0 ? need : 0);
+  const _rb = recv0 && recv0[s.pn] ? Number(recv0[s.pn].boxes) || 0 : 0; // ㉖v255 一楼来料区待转入框数（含在 boxes 总口径内）
   return Object.assign({}, s, {
     boxes, qty: Math.round(q * 100) / 100, perBox: per, demand: Math.round(need * 100) / 100, demandDocs: dem.docs[s.pn] || 0,
     gapQty: Math.round(gap * 100) / 100, suggestBoxes: gap > 0 && per > 0 ? Math.min(999, Math.ceil(gap / per)) : 0,
+    recvBoxes: _rb, // ㉖v255 前端据此显示"楼下 N 框待转入，先转入别催采购"
     ageDays: Math.floor((Date.now() - (Number(s.firstAt) || Date.now())) / 86400000),
   });
 }
@@ -3541,6 +3565,7 @@ function stockWatchScan(pre, byName) {
       const dayKey = new Date().toISOString().slice(0, 10); // ㉖ 预约到料=每零件每天一次（旧10分钟窗口：当天只要持续入库就反复轰炸）
       db.watchSeen = (db.watchSeen && typeof db.watchSeen === 'object' && !Array.isArray(db.watchSeen)) ? db.watchSeen : {};
       for (const k of Object.keys(db.watchSeen)) if (!k.endsWith('|' + dayKey)) delete db.watchSeen[k]; // 跨天自动清
+      const _rbk = recvBoxInfo(); // ㉖v255 一楼待转入桶：进度通知带"楼下还压着几框"，预约人不再干等采购
       for (const w of wl) {
         const p = String(w.partNo || '').toUpperCase();
         if (!p || !arrived[p]) continue;
@@ -3566,7 +3591,12 @@ function stockWatchScan(pre, byName) {
         const pct = Math.min(100, Math.round(got * 100 / wq));
         if (!user || !user.enabled) continue;
         if (got < wq) {
-          notify(w.userId, 'watch_in', `📦 预约进度：零件 ${p} 已到料 ${got}/${wq} 框（${pct}%），在架 ${post[p] || 0}，够数将自动开领料单`, '');
+          // ㉖v251 不够数也开单：勾选 shortOk 且已超期望日、确有部分到料→按实际到料先开单（结算本轮，不再干等凑够）
+          if (w.shortOk === true && got > 0 && w.due && Date.now() > new Date(w.due + 'T23:59:59').getTime()) {
+            bookingFulfill(w, user, p, got, wq, byName, Number(w.gotQty) || 0, 'due');
+            continue;
+          }
+          notify(w.userId, 'watch_in', `📦 预约进度：零件 ${p} 已到料 ${got}/${wq} 框（${pct}%），在架 ${post[p] || 0}${_rbk[p] ? `（含楼下待转入 ${_rbk[p].boxes} 框）` : ''}，${w.shortOk === true ? (w.due ? '超期望日将按实际到料先开单' : '够数将自动开领料单（可手动"不够数先开单"）') : '够数将自动开领料单'}`, '');
         } else {
           bookingFulfill(w, user, p, got, wq, byName, Number(w.gotQty) || 0); // 够数→自动开单（内部留痕+通知；auto关闭时降级为提醒）
         }
@@ -4887,7 +4917,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       let arr = Object.values(db.outbound).sort((a, x) => (x.createdAt || 0) - (a.createdAt || 0));
       if (fl) arr = arr.filter(x => String(x.linkReqNo || '').toUpperCase() === fl);
       const fq = (url.searchParams.get('q') || '').trim().toUpperCase();
-      if (fq) arr = arr.filter(x => String(x.orderNo || '').toUpperCase().includes(fq) || String(x.linkReqNo || '').toUpperCase().includes(fq) || String(x.toLoc || '').toUpperCase().includes(fq) || String(x.operator || '').toUpperCase().includes(fq) || (x.items || []).some((i) => String(i.code || '').toUpperCase().includes(fq) || String(i.name || '').toUpperCase().includes(fq) || String(i.barcode || '').toUpperCase().includes(fq))); // ㉖B7 关键字过滤
+      if (fq) arr = arr.filter(x => String(x.orderNo || '').toUpperCase().includes(fq) || String(x.linkReqNo || '').toUpperCase().includes(fq) || String(x.toLoc || '').toUpperCase().includes(fq) || String(x.operator || '').toUpperCase().includes(fq) || (x.items || []).some((i) => String(i.code || '').toUpperCase().includes(fq) || String(i.name || '').toUpperCase().includes(fq) || String(i.barcode || '').toUpperCase().includes(fq) || String(i.fromLoc || '').toUpperCase().includes(fq))); // ㉖B7 关键字过滤；㉖v254 补 items.fromLoc：从 NB04 楼下直拣的出库单按货位搜（前端行级过滤同步补）
       // ㉖v210 按零件号精确过滤（零件档案页拼"累计出库"用）：必须排在下面 slice(0,500) 之前——
       // 11-20 实锤：全库 1771 单只下发最新 500 单，6608068396 涉及 16 单仅 5 单落在前 500 内，
       // 档案页累计出库 2620（真值 9326、少报 72%），被截掉的 6706 件老单因"无出库记录+不在账本"
@@ -6497,7 +6527,36 @@ return send(res, 200, {
         }
         EV.sort((a, b) => a.t - b.t);
         const lastQ = qItems.length ? qItems[qItems.length - 1] : null;
-        return send(res, 200, { ok: true, q: q0, kind: kind, count: EV.length, onShelf: onShelf, state: lastQ ? lastQ.state : '', codes: Array.from(CODES).slice(0, 20), pns: Array.from(PNS).slice(0, 20), tasks: Array.from(TASKS).slice(0, 20), reqs: Array.from(REQS).slice(0, 20), events: EV.slice(0, 400) });
+        // ㉖v257 「一眼看懂」契约（服务端单源算好，网页/PDA 只渲染不分叉）：
+        // final=这框现在到底在哪、什么状态（一句结论）；milestones=两楼全流程六道里程碑达成态（含时间），进度条数据。
+        const _has = (ks) => EV.some((e) => ks.includes(e.kind));
+        const _firstT = (ks) => { const e = EV.find((x) => ks.includes(x.kind)); return e ? e.t : 0; };
+        let finalTxt = '', finalCol = '#9E9E9E';
+        const _shelf = (_lv || []).filter((x) => CODES.has(codeOf(x.c)) || codeOf(x.c) === Q);
+        if (EV.some((e) => e.kind === 'insp' && /退货已出账/.test(e.title || ''))) { finalTxt = '📤 检验退货已出账（框已离仓）'; finalCol = '#E65100'; }
+        else if (onShelf > 0 && _shelf.length) { // ㉖v257 按框键拆桶：NB04 框不算"可发在架"——取证 T2a 抓出旧版绿色"在架 NB04"误导，与 recv 桶语义打架
+          const _bs = {}; for (const x of _shelf) { const k = boxKeyOf(x); (_bs[k] = _bs[k] || []).push(x); }
+          let _rv = 0, _sh = 0, _sl0 = null;
+          for (const k of Object.keys(_bs)) { const rs = _bs[k], r0 = rs.find((x) => !locRecv(x.l)); if (r0) { _sh++; _sl0 = _sl0 || r0; } else _rv++; }
+          if (_sh && _rv) { finalTxt = `📦 在架 ${String(_sl0.l || '')} · 另 ${_rv} 框压在一楼待转入`; finalCol = '#FB8C00'; }
+          else if (_rv) { finalTxt = '🏜 压在一楼来料区（' + String(_shelf[0].l || '') + '）——二楼扫码转入后才可发料'; finalCol = '#E65100'; }
+          else { finalTxt = '📦 在架 ' + String(_sl0.l || '') + '（数量 ' + (Number(_sl0.q) || 0) + '）'; finalCol = '#2E7D32'; } }
+        else if (onShelf > 0) { finalTxt = '📦 在架'; finalCol = '#2E7D32'; }
+        else if (_has(['out'])) { finalTxt = '📤 已出库转MES（已离仓）'; finalCol = '#E65100'; }
+        else if (_has(['recv']) && !_has(['tin', 'scan'])) { const _rp = (_lv || []).find((x) => codeOf(x.c) === Q); finalTxt = _rp && locRecv(_rp.l) ? '🏜 压在一楼来料区（' + String(_rp.l || '') + '）——二楼扫码转入后才可发料' : '🏭 已在一楼登记，二楼未入库（流水在、未落账）'; finalCol = '#E65100'; }
+        else if (_has(['tin']) && _has(['out'])) finalTxt = '✅ 走完两楼→出库全流程（已离仓）';
+        else finalTxt = '❓ 无现行记录（可能已归档，走导出中心核查）';
+        const MILE = [
+          { k: 'recv', n: '一楼登记', t: _firstT(['recv']), need: _has(['recv']) || _has(['tin']) }, // 二楼原生入库框不走一楼：无 recv/tin 则此站灰显不算缺失
+          { k: 'tin', n: '二楼入库', t: _firstT(['tin', 'scan']), need: _has(['recv']) || _has(['out']) },
+          { k: 'req', n: '领料', t: _firstT(['req']), need: _has(['out']) },
+          { k: 'agv', n: 'AGV搬运', t: _firstT(['agv', 'station']), need: false },
+          { k: 'out', n: '出库转MES', t: _firstT(['out']), need: false },
+          { k: 'done', n: '签收', t: 0, need: _has(['out']) },
+        ];
+        const _lastEv = EV.length ? EV[EV.length - 1] : null;
+        if (_lastEv && /签收确认/.test(_lastEv.title || '')) MILE[5].t = _lastEv.t;
+        return send(res, 200, { ok: true, q: q0, kind: kind, count: EV.length, onShelf: onShelf, state: lastQ ? lastQ.state : '', final: finalTxt, finalCol: finalCol, milestones: MILE, codes: Array.from(CODES).slice(0, 20), pns: Array.from(PNS).slice(0, 20), tasks: Array.from(TASKS).slice(0, 20), reqs: Array.from(REQS).slice(0, 20), events: EV.slice(0, 400) });
       }
       if (req.method === 'GET' && p === '/api/part/profile') {
         const pn = String(url.searchParams.get('pn') || '').trim().toUpperCase();
@@ -6531,7 +6590,8 @@ return send(res, 200, {
         let nm = ''; for (const b of Object.values(bm)) { if (b.nm) { nm = b.nm; break; } }
         if (!nm && inb.length) { const rec = Object.values(db.scanlog || {}).find((st) => String(st.pn || '').toUpperCase() === pn && st.nm); nm = rec ? rec.nm : ''; }
         if (!nm && db.itemDict && db.itemDict[pn]) nm = db.itemDict[pn].nm || '';
-        return send(res, 200, { ok: true, pn, name: String(nm || '').slice(0, 80), projs: projOf(pn), boxes, qty, inb, inbTotal: _sl.filter((st) => !st.cx).length, out: outAll.slice(0, 200), outTotal: outAll.filter((x) => !x.mv).length, mvTotal: outAll.filter((x) => x.mv).length, demand, watchers, watched: watchers.some((w) => w.uid === u.id) }); // ㉖v100 outTotal=真出库；mvTotal=移仓单行（去向非线边仓）单列；㉖v101 projs=所属项目码
+        const _rcv = recvBoxInfo()[pn] || { boxes: 0, qty: 0, slots: [], slotsTip: '' }; // ㉖v255 拆桶：一楼待转入（账本 NB04 框，拣选闸本就排除=可发桶仍是全账本口径）——网页/PDA 档案同一口径
+        return send(res, 200, { ok: true, pn, name: String(nm || '').slice(0, 80), projs: projOf(pn), boxes, qty, recv: _rcv, inb, inbTotal: _sl.filter((st) => !st.cx).length, out: outAll.slice(0, 200), outTotal: outAll.filter((x) => !x.mv).length, mvTotal: outAll.filter((x) => x.mv).length, demand, watchers, watched: watchers.some((w) => w.uid === u.id) }); // ㉖v100 outTotal=真出库；mvTotal=移仓单行（去向非线边仓）单列；㉖v101 projs=所属项目码；㉖v255 recv=一楼待转入桶
       }
       if (req.method === 'POST' && p === '/api/watchlist/rm') {
         if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可代他人取消预约' });
@@ -7085,6 +7145,7 @@ return send(res, 200, {
         const due = /^\d{4}-\d{2}-\d{2}$/.test(String(b.due || '')) ? String(b.due) : '';
         const itemName = String(b.itemName || '').slice(0, 60);
         const auto = b.auto !== false;
+        const shortOk = b.shortOk === true; // ㉖v251 不够数也开单：超期望日未凑够→按实际到料先开单
         // ㉖v184 有货不配预约等货（用户确认方案，与缺料 in_stock 闸同套路同判据 partBoxCounts）：
         // 全厂有在架时预约=让got(只数新到框)永远凑不够→有库存反而干等开单。默认提示改走直接
         // 开领料单；现场确有"库存将空想排队等下批"合理场景→forceStock 确认后放行并打标。
@@ -7096,8 +7157,25 @@ return send(res, 200, {
         if (!w) {
           if (db.watchlist.length > 3000) return send(res, 400, { ok: false, msg: '预约条目已满，请先清理' });
           w = { userId: u.id, partNo: pn, at: Date.now() }; db.watchlist.push(w);
-        } else if (qty > 0 && (w.qty !== qty || w.filledReq)) { w.got = 0; w.arrDate = ''; w.arrLast = 0; w.notifiedGot = 0; w.filledReq = ''; w.filledAt = 0; } // ㉖v94n 改数量或已履行过=新一轮：到料计数清零重计（旧单消耗不影响新轮计数）
-        w.qty = qty; w.auto = auto; w.due = due; if (itemName) w.itemName = itemName;
+        } else if (qty > 0 && (w.qty !== qty || w.filledReq)) { w.got = 0; w.arrDate = ''; w.arrLast = 0; w.notifiedGot = 0; w.filledReq = ''; w.filledAt = 0; w.filledShort = false; } // ㉖v94n 改数量或已履行过=新一轮：到料计数清零重计（旧单消耗不影响新轮计数）；㉖v251 新一轮清先开单标记
+        w.qty = qty; w.auto = auto; w.due = due; w.shortOk = shortOk; if (itemName) w.itemName = itemName;
+        save();
+        return send(res, 200, { ok: true, entry: w });
+      }
+      // ㉖v251 不够数先开单：预订人主动确认"来料就这些"→按实际到料数开领料单（与够数达成同构，本轮结束）。
+      // 防呆：零到料拒开（0件无意义）；已履行拒重复；已有同零件未完单由 bookingFulfill 内部 dup 防呆兜住。
+      // 手动点击=明确意愿，不受"够数自动开单"开关约束；无领料权限仍转仓管（内部处理）。
+      if (req.method === 'POST' && p === '/api/watchlist/fill') {
+        const b = await readBody(req);
+        const pn = String(b.partNo || '').trim().toUpperCase().slice(0, 40);
+        const w = (db.watchlist || []).find((x) => x.userId === u.id && String(x.partNo || '').toUpperCase() === pn);
+        if (!pn || !w) return send(res, 400, { ok: false, msg: '没有该零件的预约' });
+        const wq = Number(w.qty) || 0;
+        if (!wq) return send(res, 400, { ok: false, msg: '到料提醒型预约没有预订数，不涉及开单' });
+        if (w.filledReq) return send(res, 400, { ok: false, msg: '该预约已处理过，无需先开单' });
+        const got = Number(w.got) || 0;
+        if (got <= 0) return send(res, 400, { ok: false, msg: '还没有到料记录，无法先开单——到货后卡片上会亮出此按钮' });
+        bookingFulfill(w, u, pn, got, wq, '我的预约·不够数先开单', Number(w.gotQty) || 0, 'manual');
         save();
         return send(res, 200, { ok: true, entry: w });
       }
@@ -8365,8 +8443,14 @@ return send(res, 200, {
         const stnAliases = {}; for (const c of AGV_STNS) { const a = stnAlias(c); if (a) stnAliases[c] = a; }
         const queueNow = (db.agvQueue || []).filter((q) => ['排队', '下发中', '已下发'].includes(q.state)).length;
         const inspWait = (db.inspects || []).filter((q) => ['waitOut', 'waitBack', 'waitReturn'].includes(q.state)).length;
+        // ㉖v252 「昨日同期」对照：昨日 0 点 → 昨日同一时刻（今天已作业多久就对照多久），口径与今日各卡完全同源
+        // （入库=二楼上架剔NB04按标签去重、出库=墓碑行数、AGV=fin落窗任务数）——公平比较，防"早上10点比昨天全天"的假暴跌
+        const _yBase = todayStart - dayMs, _yEnd = _yBase + (Date.now() - todayStart);
+        const _yIn = new Set(), _yQ = new Map();
+        for (const s of Object.values(db.scanlog || {})) { if (s.cx || !s.t || !s.code || s.t < _yBase || s.t > _yEnd) continue; if (/^NB04-/.test(String((s.st || s.gl) || '').toUpperCase())) continue; _yIn.add(s.code); if (!_yQ.has(s.code) || (_yQ.get(s.code).t || 0) < s.t) _yQ.set(s.code, s); }
+        const yPrev = { inBoxes: _yIn.size, inQty: [..._yQ.values()].reduce((s, x) => s + (Number(x.q) || 0), 0), outToday: (db.ledgerTomb || []).filter((x) => x.t >= _yBase && x.t <= _yEnd).length, agvToday: Object.values(db.agvTasks || {}).filter((t) => (t.fin || 0) >= _yBase && (t.fin || 0) <= _yEnd).length };
         return send(res, 200, { ok: true, at: new Date().toISOString(),
-          kpi: { inBoxes, inQty, recvToday, pendRecv, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday: agvDoneToday, agvQueue: queueNow,
+          kpi: { inBoxes, inQty, recvToday, pendRecv, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday: agvDoneToday, agvQueue: queueNow, yPrev, // ㉖v252 yPrev=昨日同期（同口径同时刻），前端算增减
             stockBoxes: new Set(ledgerView().map((x) => boxKeyOf(x))).size, stockLocs: locs.size, pending: st.pending, accepted: st.accepted, ready: st.ready, stnBusy, stnTotal: stnOn, inspWait, stnToday, stnAliases }, // ㉖ 在库框数=按框聚合（同托多标签/同位同件=1框），与库存汇总D2同口径；此前误用标签条数(421)致与占位货位(412)不等
           // ㉖v98c 窗口左移同步标签；ds 改本地年月日拼（原 toISOString 是 UTC，东八区本地零点会少一天，下钻流水查错日期）
           trend: Array.from({ length: 7 }, (_, i) => { const dt = new Date(winStart + i * dayMs); return { d: dstr(winStart + i * dayMs), in: trendIn[i], out: trendOut[i], ds: dt.getFullYear() + '-' + String(dt.getMonth() + 1).padStart(2, '0') + '-' + String(dt.getDate()).padStart(2, '0') }; }) });
@@ -8716,7 +8800,7 @@ return send(res, 200, {
           const boxOf = partBoxCounts(), qtyOf = shortQtyMap(), dem = shortDemandMap(); // 三份映射各建一次，勿逐条扫账本
           const all = (db.shortages || []).slice().sort((a, b) => ((b.n || 1) - (a.n || 1)) || (Number(b.at) || 0) - (Number(a.at) || 0));
           const list = (flt === 'resolved' ? all.filter((s) => s.status === 'resolved') : all.filter((s) => s.status !== 'resolved'))
-            .slice(0, 200).map((s) => shortView(s, boxOf, qtyOf, dem));
+            .slice(0, 200).map((s) => shortView(s, boxOf, qtyOf, dem, recvBoxInfo())); // ㉖v255 带一楼待转入桶
           const mine = []; // 我反馈过的零件（入口据此显示"已反馈·进度"，避免重复提交后看不见状态）
           for (const s of db.shortages || []) if ((s.byList || []).some((x) => x.id === u.id)) { mine.push(s.pn); if (mine.length >= 500) break; }
           return send(res, 200, { ok: true, list, mine, openN: (db.shortages || []).filter((s) => s.status !== 'resolved').length });

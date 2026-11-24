@@ -17,9 +17,9 @@ const T = (n, a, b) => { total++; const ok = JSON.stringify(a) === JSON.stringif
 
 const KARR14 = ['今日入库(标签)', '今日入库件数', '一楼来料登记(标签)', '待入库(来料区)', '今日出库拣下', '今日AGV搬运', '队列中', '在库框数', '占用货位', '待接单', '备料中', '待签收', '站台在用', '检验待处理'];
 
-// 抽取真实代码块：const KARR=... 到 kshow 计算结束（不含 $('#main').innerHTML 渲染）
+// 抽取真实代码块：const KARR=... 到 kshow 计算结束、渲染 $('#main').innerHTML 之前（v252 渲染辅助 _spark/cell 在 KARR 之前不落入块内，块只含 _KALL/_hid/kshow 显隐逻辑）
 const s0 = h.indexOf(' const KARR=[');
-const s1 = h.indexOf(" $('#main').innerHTML=`<div class=\"row\"><span style=\"color:var(--sub)\">数据时刻");
+const s1 = h.indexOf(" $('#main').innerHTML=`<div class=\"row\" style=\"margin-bottom:8px\">");
 if (s0 < 0 || s1 < 0 || s1 < s0) { console.log('FATAL: 未定位 KPI 显隐代码块'); process.exit(2); }
 const block = h.slice(s0, s1);
 if (!block.includes('_KALL') || !block.includes('_hid')) { console.log('FATAL: 抽取块不含 v151 新逻辑'); process.exit(2); }

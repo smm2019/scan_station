@@ -148,7 +148,8 @@ Future<_StockAgg> computeStock() async {
   // 把两框并成一框，件数全记进先入框的零件→汇总页 2240=0/2241=600 双倍虚高，详情页逐框算=300
   // 同页打架；1821 盘点 LIVE 基准(本机拼账)原样继承账面 600/0+假已出库。兄弟码合并语义不变：
   // 同托同零件多码照常并框相加，只禁止不同零件互相吞并——不同零件本就不可能是同一框）
-  final boxesByKey = <String, _StockBox>{}; // ㉖v52 键改标签号：同托多码仍各自留框（分布/滞留需要），下方汇总处再按框键合并
+  final boxesByKey =
+      <String, _StockBox>{}; // ㉖v52 键改标签号：同托多码仍各自留框（分布/滞留需要），下方汇总处再按框键合并
   String boxKey(String pid, String loc, String partNo, String code) => pid
           .isNotEmpty
       ? "P|$pid|$partNo"
@@ -192,7 +193,8 @@ Future<_StockAgg> computeStock() async {
           ..container = r.containerType ?? ""
           ..operator = oper
           ..loc = loc
-          ..ageH = ((DateTime.now()).difference(r.scanTime).inMinutes / 60).floor()
+          ..ageH =
+              ((DateTime.now()).difference(r.scanTime).inMinutes / 60).floor()
           ..inStock = !outCodes.contains(r.goodsCode)
           ..inStockQty = outCodes.contains(r.goodsCode) ? 0 : qty);
   }
@@ -216,10 +218,16 @@ Future<_StockAgg> computeStock() async {
     if (b != null) {
       // 账本带权威信息补全流水框：容器/操作人/货位以账本为准；滞留取更早入账时刻（流水扫描 vs 账本登记）
       if ((p.container ?? "").isNotEmpty) b.container = p.container;
-      if ((p.operator ?? "").isNotEmpty && b.operator.isEmpty) b.operator = p.operator;
+      if ((p.operator ?? "").isNotEmpty && b.operator.isEmpty)
+        b.operator = p.operator;
       if (b.loc.isEmpty && p.loc.isNotEmpty) b.loc = p.loc;
-      final age2 = ((DateTime.now()).difference(DateTime.fromMillisecondsSinceEpoch(p.assignedAt)).inMinutes / 60).floor();
-      if (b.ageH < 0 || age2 > b.ageH) b.ageH = age2; // assignedAt 是登记入账时刻，取更大滞留
+      final age2 = ((DateTime.now())
+                  .difference(DateTime.fromMillisecondsSinceEpoch(p.assignedAt))
+                  .inMinutes /
+              60)
+          .floor();
+      if (b.ageH < 0 || age2 > b.ageH)
+        b.ageH = age2; // assignedAt 是登记入账时刻，取更大滞留
     } else {
       addBox(
           p.goodsCode.toUpperCase(),
@@ -231,7 +239,12 @@ Future<_StockAgg> computeStock() async {
             ..container = p.container
             ..operator = p.operator
             ..loc = p.loc
-            ..ageH = ((DateTime.now()).difference(DateTime.fromMillisecondsSinceEpoch(p.assignedAt)).inMinutes / 60).floor()
+            ..ageH = ((DateTime.now())
+                        .difference(
+                            DateTime.fromMillisecondsSinceEpoch(p.assignedAt))
+                        .inMinutes /
+                    60)
+                .floor()
             ..inStock = !outCodes.contains(p.goodsCode)
             ..inStockQty = outCodes.contains(p.goodsCode) ? 0 : info.qty);
     }
@@ -246,6 +259,7 @@ Future<_StockAgg> computeStock() async {
     if (a.isNotEmpty) return a;
     return infoMap[code]?.palletId ?? "";
   }
+
   for (final b in boxesByKey.values) {
     final k = boxKey(pidOf(b.barcode), b.loc, b.partNo, b.barcode);
     final old = merged[k];
@@ -254,9 +268,11 @@ Future<_StockAgg> computeStock() async {
     } else {
       old.qty += b.qty; // ㉖ 框数量=框内各标签之和（一筐两标签各25→50）
       old.inStockQty += b.inStockQty; // ㉖v59 在库量=未发标签之和（半发托不整框连坐）
-      old.inStock = old.inStock || b.inStock; // ㉖v59 方案B：框内任一标签未发→框仍在库（旧口径"任一已发整框出库"作废）
+      old.inStock =
+          old.inStock || b.inStock; // ㉖v59 方案B：框内任一标签未发→框仍在库（旧口径"任一已发整框出库"作废）
       if (old.loc.isEmpty && b.loc.isNotEmpty) old.loc = b.loc;
-      if (old.ageH < 0 || (b.ageH >= 0 && b.ageH > old.ageH)) old.ageH = b.ageH; // 同托取最早入账（最大滞留）
+      if (old.ageH < 0 || (b.ageH >= 0 && b.ageH > old.ageH))
+        old.ageH = b.ageH; // 同托取最早入账（最大滞留）
     }
   }
   for (final box in merged.values) {
@@ -277,8 +293,10 @@ Future<_StockAgg> computeStock() async {
     if (!box.inStock) continue;
     row.inBoxes++;
     row.inStockQty += box.inStockQty; // ㉖v59 方案B：在库量=框内未发码之和（半发托只算剩余码）
-    if (box.ageH >= 168) { row.staleBoxes++; agg.staleBoxes++; }
-    else if (box.ageH >= 0 && box.ageH < 72) agg.freshBoxes++;
+    if (box.ageH >= 168) {
+      row.staleBoxes++;
+      agg.staleBoxes++;
+    } else if (box.ageH >= 0 && box.ageH < 72) agg.freshBoxes++;
     if (box.loc.isNotEmpty) {
       agg.byLoc.putIfAbsent(box.loc, () => []).add(box);
       // 货位前两段归并做分布展示（NB02-A-05-2F → NB02-A · 2F 太碎，聚到巷道级）
@@ -293,9 +311,18 @@ Future<_StockAgg> computeStock() async {
   // ㉖v99 今日出入库改服务器全厂口径（自然日）：旧版按本机流水/本机遇历统计，"谁扫的算谁的"→
   // 两台仓管设备同屏 0 vs 40 不一致。取 /api/counts todayIn/todayOut（60秒缓存，45秒自动刷新的库存页够用）；
   // 服务器不通时保留本机口径兜底（下方 fallback 值），离线不空白
-  final _day0 = DateTime.now().copyWith(hour: 0, minute: 0, second: 0, millisecond: 0);
-  final _fbIn = agg.inRows.where((r) => !r.cancelled && r.time.isAfter(_day0)).map((r) => r.barcode.toUpperCase()).toSet().length;
-  final _fbOut = agg.outRows.where((r) => r.time.isAfter(_day0)).map((r) => r.barcode.toUpperCase()).toSet().length;
+  final _day0 =
+      DateTime.now().copyWith(hour: 0, minute: 0, second: 0, millisecond: 0);
+  final _fbIn = agg.inRows
+      .where((r) => !r.cancelled && r.time.isAfter(_day0))
+      .map((r) => r.barcode.toUpperCase())
+      .toSet()
+      .length;
+  final _fbOut = agg.outRows
+      .where((r) => r.time.isAfter(_day0))
+      .map((r) => r.barcode.toUpperCase())
+      .toSet()
+      .length;
   final _srv = await _todayCountsCached();
   agg.todayIn = _srv?["todayIn"] as int? ?? _fbIn;
   agg.todayOut = _srv?["todayOut"] as int? ?? _fbOut;
@@ -328,7 +355,9 @@ Future<_StockAgg> computeStock() async {
 /// 零件全集缓存（5 分钟）：库存页 45 秒自动刷新不重复打服务器
 Map<String, String> _backingCache = {};
 int _backingAt = 0;
-void invalidatePartsBacking() { _backingAt = 0; } // ㉖v98 一键对齐时强制下次重拉全集（0 让 5 分钟窗失效）
+void invalidatePartsBacking() {
+  _backingAt = 0;
+} // ㉖v98 一键对齐时强制下次重拉全集（0 让 5 分钟窗失效）
 
 // ㉖v101 项目字典缓存（10分钟新鲜窗+失败退避120秒）：/api/proj 的 list/map；失败保留旧值不阻塞页面。
 // 维护在网页「项目」页（PDA 只消费）；空清单=还没配置，下拉自动隐藏，功能零入侵。
@@ -345,7 +374,8 @@ Future<void> projRefresh() async {
     if (r["ok"] == true) {
       final m = <String, List<String>>{};
       (r["map"] as Map?)?.forEach((k, v) {
-        if (v is List) m[k.toString().toUpperCase()] = v.map((e) => e.toString()).toList();
+        if (v is List)
+          m[k.toString().toUpperCase()] = v.map((e) => e.toString()).toList();
       });
       _projMapCache = m;
       _projCodesCache = ((r["list"] as List?) ?? [])
@@ -359,6 +389,7 @@ Future<void> projRefresh() async {
     _projFailAt = now; // 离线/超时静默降级，下轮45秒刷新再试
   }
 }
+
 List<String> projOfPn(String pn) => _projMapCache[pn.toUpperCase()] ?? const [];
 
 // ㉖v99 今日出入库全厂口径缓存（60 秒）：/api/counts todayIn/todayOut；失败返回 null 由调用方本机兜底
@@ -376,9 +407,14 @@ Future<Map<String, int>?> _todayCountsCached() async {
   try {
     final r = await AuthApi.counts().timeout(const Duration(seconds: 6));
     if (r["ok"] == true && r["todayIn"] is num) {
-      _todayCache = {"todayIn": (r["todayIn"] as num).toInt(), "todayOut": ((r["todayOut"] as num?) ?? 0).toInt(),
-        "stockBoxes": ((r["stockBoxes"] as num?) ?? -1).toInt(), "stockQty": ((r["stockQty"] as num?) ?? -1).toInt(),
-        "stockParts": ((r["stockParts"] as num?) ?? -1).toInt(), "stockStale7": ((r["stockStale7"] as num?) ?? -1).toInt()};
+      _todayCache = {
+        "todayIn": (r["todayIn"] as num).toInt(),
+        "todayOut": ((r["todayOut"] as num?) ?? 0).toInt(),
+        "stockBoxes": ((r["stockBoxes"] as num?) ?? -1).toInt(),
+        "stockQty": ((r["stockQty"] as num?) ?? -1).toInt(),
+        "stockParts": ((r["stockParts"] as num?) ?? -1).toInt(),
+        "stockStale7": ((r["stockStale7"] as num?) ?? -1).toInt()
+      };
       _todayCacheAt = now;
       _todayFailAt = 0;
       return _todayCache;
@@ -389,9 +425,11 @@ Future<Map<String, int>?> _todayCountsCached() async {
   } // 服务器不通：退避窗口内不再打点
   return _todayCache; // 拉取失败但有过旧值：续用旧值（比闪回本机口径稳）
 }
+
 Future<Map<String, String>> _partsBackingCached() async {
   final now = DateTime.now().millisecondsSinceEpoch;
-  if (_backingCache.isNotEmpty && now - _backingAt < 300000) return _backingCache;
+  if (_backingCache.isNotEmpty && now - _backingAt < 300000)
+    return _backingCache;
   try {
     final r = await AuthApi.partsBacking().timeout(const Duration(seconds: 8));
     if (r["ok"] == true) {
@@ -526,22 +564,27 @@ class _InventoryStockPageState extends State<InventoryStockPage>
             Padding(
                 padding: const EdgeInsets.only(right: 2),
                 child: Tooltip(
-                    message: '上次与服务器对齐：${TimeOfDay.fromDateTime(ledgerLastSyncAt!).format(context)}\n点圆点立即重新对齐（绿<2分钟 · 橙<10分钟 · 红≥10分钟）',
+                    message:
+                        '上次与服务器对齐：${TimeOfDay.fromDateTime(ledgerLastSyncAt!).format(context)}\n点圆点立即重新对齐（绿<2分钟 · 橙<10分钟 · 红≥10分钟）',
                     child: InkWell(
                         borderRadius: BorderRadius.circular(10),
                         onTap: _busyPull ? null : _autoPullThenReload,
                         child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                            child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 4, vertical: 2),
+                            child:
+                                Row(mainAxisSize: MainAxisSize.min, children: [
                               Container(
-                                  width: 9, height: 9,
+                                  width: 9,
+                                  height: 9,
                                   decoration: BoxDecoration(
                                       shape: BoxShape.circle,
                                       color: _syncLampColor())),
                               const SizedBox(width: 3),
                               Text(
                                   '同步 ${TimeOfDay.fromDateTime(ledgerLastSyncAt!).format(context)}',
-                                  style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+                                  style: const TextStyle(
+                                      fontSize: 10.5, color: Colors.blueGrey)),
                             ]))))),
           if (Auth.can("agv_control"))
             IconButton(
@@ -619,13 +662,22 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
           content: Text("已保存：${f.path}"), backgroundColor: Colors.green));
   }
 
-  Color _ageColor(int ageH) =>
-      ageH >= 168 ? const Color(0xFFE53935) : (ageH >= 72 ? const Color(0xFFFB8C00) : const Color(0xFF43A047));
+  Color _ageColor(int ageH) => ageH >= 168
+      ? const Color(0xFFE53935)
+      : (ageH >= 72 ? const Color(0xFFFB8C00) : const Color(0xFF43A047));
 
   // ㉖v101 项目下拉条目（DropdownMenuItem value 不可为空串重复，选中态由外层 value 控制）
-  DropdownMenuItem<String> _pcItem(String v, String lbl, String cur) => DropdownMenuItem<String>(
-      value: v,
-      child: Text(lbl, overflow: TextOverflow.ellipsis, maxLines: 1, style: TextStyle(fontSize: 11.5, fontWeight: v == cur ? FontWeight.w700 : FontWeight.w400, color: v.isEmpty ? Colors.blueGrey : const Color(0xFF00897B))));
+  DropdownMenuItem<String> _pcItem(String v, String lbl, String cur) =>
+      DropdownMenuItem<String>(
+          value: v,
+          child: Text(lbl,
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+              style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: v == cur ? FontWeight.w700 : FontWeight.w400,
+                  color:
+                      v.isEmpty ? Colors.blueGrey : const Color(0xFF00897B))));
 
   @override
   Widget build(BuildContext context) {
@@ -656,8 +708,7 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
       if (xz != yz) return xz - yz;
       return x.partNo.compareTo(y.partNo);
     });
-    final firstEmpty = rows
-        .indexWhere((r) => r.inBoxes == 0 && r.stock <= 0);
+    final firstEmpty = rows.indexWhere((r) => r.inBoxes == 0 && r.stock <= 0);
     // ㉖v52 新鲜度点/分布摘要一次预计算（列表逐帧不重复扫 byLoc）
     final dots = <String, List<Widget>>{};
     final dotSeen = <String>{}; // 同托多码只画一点（与"框数"口径一致）
@@ -682,10 +733,13 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
       distOf[r.partNo] = d;
     }
     final totalBoxes = agg.parts.values.fold<int>(0, (s, r) => s + r.inBoxes);
-    final totalQty = agg.parts.values.fold<double>(0, (s, r) => s + r.inStockQty);
+    final totalQty =
+        agg.parts.values.fold<double>(0, (s, r) => s + r.inStockQty);
     final hasHdr = _flt != "zero" && firstEmpty >= 0; // ㉖v69 零库存分组头（筛选零库存时不折叠）
     chip(String key, String txt, Color c) => ChoiceChip(
-        label: Text(txt, style: TextStyle(fontSize: 11.5, color: _flt == key ? Colors.white : c)),
+        label: Text(txt,
+            style: TextStyle(
+                fontSize: 11.5, color: _flt == key ? Colors.white : c)),
         selected: _flt == key,
         showCheckmark: false,
         selectedColor: c,
@@ -701,22 +755,38 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 4),
           child: LayoutBuilder(builder: (ctx, c) {
             final kw = (c.maxWidth - 8 * 2) / 3;
-            Widget k(String t, String v, Color col, {VoidCallback? onTap, bool sel = false}) =>
-                SizedBox(width: kw, child: _kpiCard(t, v, col, onTap: onTap, selected: sel));
+            Widget k(String t, String v, Color col,
+                    {VoidCallback? onTap, bool sel = false}) =>
+                SizedBox(
+                    width: kw,
+                    child: _kpiCard(t, v, col, onTap: onTap, selected: sel));
             return Wrap(spacing: 8, runSpacing: 6, children: [
               // ㉖v119 四卡优先服务器账本口径（与网页看板同源）；离线/旧版服务器回退本机聚合值
-              k('零件种类', '${agg.srvParts ?? agg.parts.length}', const Color(0xFF515BD4)),
-              k('在库框数', '${agg.srvBoxes ?? totalBoxes}', const Color(0xFF00897B)),
-              k('在库数量', _fmtInvNum((agg.srvQty ?? totalQty).toDouble()), const Color(0xFF3949AB)), // ㉖CI闸修：srvQty为int与本机double兜底混型退化num，统一toDouble
+              k('零件种类', '${agg.srvParts ?? agg.parts.length}',
+                  const Color(0xFF515BD4)),
+              k('在库框数', '${agg.srvBoxes ?? totalBoxes}',
+                  const Color(0xFF00897B)),
+              k(
+                  '在库数量',
+                  _fmtInvNum((agg.srvQty ?? totalQty).toDouble()),
+                  const Color(
+                      0xFF3949AB)), // ㉖CI闸修：srvQty为int与本机double兜底混型退化num，统一toDouble
               k('今日入库', '${agg.todayIn}框', const Color(0xFF43A047)),
               k('今日出库', '${agg.todayOut}框', const Color(0xFFEF6C00)),
               // ㉖v108 滞留卡常驻：旧版为 0 时整卡隐藏导致末行只剩 2 张、右侧空半屏；
               // 改为 0 时用灰色显示"0框"（健康态同样一眼可见），保证 3+3 铺满。
               // ㉖v109 点卡筛选：原「🧊有滞留」chip 移除（用户要求），筛选入口挪到此卡——
               // 点一下只看滞留7天+的零件（选中实底高亮），再点取消；顶部数字即滞留框数，所见即入口。
-              k('滞留7天+', '${agg.srvStale7 ?? agg.staleBoxes}框',
-                  (agg.srvStale7 ?? agg.staleBoxes) > 0 ? const Color(0xFFE53935) : const Color(0xFF9E9E9E),
-                  onTap: (agg.srvStale7 ?? agg.staleBoxes) > 0 ? () => setState(() => _flt = _flt == 'stale' ? "" : 'stale') : null,
+              k(
+                  '滞留7天+',
+                  '${agg.srvStale7 ?? agg.staleBoxes}框',
+                  (agg.srvStale7 ?? agg.staleBoxes) > 0
+                      ? const Color(0xFFE53935)
+                      : const Color(0xFF9E9E9E),
+                  onTap: (agg.srvStale7 ?? agg.staleBoxes) > 0
+                      ? () =>
+                          setState(() => _flt = _flt == 'stale' ? "" : 'stale')
+                      : null,
                   sel: _flt == 'stale'),
             ]);
           })),
@@ -745,8 +815,14 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
                 visualDensity: VisualDensity.compact,
                 icon: const Icon(Icons.download, color: Color(0xFF515BD4))),
             TextButton.icon(
-                style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), visualDensity: VisualDensity.compact, foregroundColor: const Color(0xFF07C160)),
-                onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ShortageReportPage())),
+                style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: const Color(0xFF07C160)),
+                onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (_) => const ShortageReportPage())),
                 icon: const Icon(Icons.share, size: 15),
                 label: const Text("缺料", style: TextStyle(fontSize: 11.5))),
           ])),
@@ -769,7 +845,8 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
                 chip('zero', '⛔零库存', const Color(0xFF757575)),
               ]),
             )),
-            if (_projCodesCache.isNotEmpty || (_proj.isNotEmpty && !_projCodesCache.contains(_proj))) ...[
+            if (_projCodesCache.isNotEmpty ||
+                (_proj.isNotEmpty && !_projCodesCache.contains(_proj))) ...[
               const SizedBox(width: 8),
               // ㉖v101 项目筛选下拉：项目字典（网页「项目」页维护）非空才显示；当前值悬空（码被删）仍列入防assert
               ConstrainedBox(
@@ -784,8 +861,17 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
                       value: _proj,
                       isDense: true,
                       isExpanded: true,
-                      style: const TextStyle(fontSize: 11.5, color: Color(0xFF00897B), fontWeight: FontWeight.w600),
-                      items: [_pcItem('', '📦全部项目', _proj), ..._projCodesCache.map((c) => _pcItem(c, c, _proj)), if (!_projCodesCache.contains(_proj) && _proj.isNotEmpty) _pcItem(_proj, '$_proj(已删)', _proj)],
+                      style: const TextStyle(
+                          fontSize: 11.5,
+                          color: Color(0xFF00897B),
+                          fontWeight: FontWeight.w600),
+                      items: [
+                        _pcItem('', '📦全部项目', _proj),
+                        ..._projCodesCache.map((c) => _pcItem(c, c, _proj)),
+                        if (!_projCodesCache.contains(_proj) &&
+                            _proj.isNotEmpty)
+                          _pcItem(_proj, '$_proj(已删)', _proj)
+                      ],
                       onChanged: (v) => setState(() => _proj = v ?? ""),
                     ),
                   ),
@@ -799,137 +885,148 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
           child: rows.isEmpty && widget.search.trim().length >= 3
               ? SingleChildScrollView(
                   padding: const EdgeInsets.all(12),
-                  child: ShortNotFoundCard(keyword: widget.search.trim(), extraHint: "库存清单里没有这个号；下列结果按服务器全厂档案核（比本机快照新）"))
+                  child: ShortNotFoundCard(
+                      keyword: widget.search.trim(),
+                      extraHint: "库存清单里没有这个号；下列结果按服务器全厂档案核（比本机快照新）"))
               : rows.isEmpty
-              ? const Center(
-                  child: Text("暂无库存数据", style: TextStyle(color: Colors.grey)))
-              : ListView.builder(
-                  padding: const EdgeInsets.all(10),
-                  itemCount: rows.length + (hasHdr ? 1 : 0),
-                  itemBuilder: (ctx, i) {
-                    if (hasHdr && i == firstEmpty) {
-                      return Padding(
-                          padding: const EdgeInsets.only(top: 12, bottom: 2),
-                          child: Row(children: [
-                            Text("⛔ 零库存 ${rows.length - firstEmpty} 项 · 不在架",
-                                style: TextStyle(
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.grey.shade600)),
-                            const SizedBox(width: 8),
-                            Expanded(child: Divider(color: Colors.grey.shade300)),
-                          ]));
-                    }
-                    final r = rows[hasHdr && i > firstEmpty ? i - 1 : i];
-                    final empty = r.inBoxes == 0;
-                    // ㉖v69 纯零库存（无期初）沉底紧凑单行；筛选"零库存"时保留完整卡片
-                    if (empty && r.stock <= 0 && _flt != "zero") {
-                      return InkWell(
-                          onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (_) =>
-                                      PartProfilePage(partNo: r.partNo))),
-                          child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 10, vertical: 7),
-                              decoration: BoxDecoration(
-                                  border: Border(
-                                      bottom:
-                                          BorderSide(color: Colors.grey.shade200))),
+                  ? const Center(
+                      child:
+                          Text("暂无库存数据", style: TextStyle(color: Colors.grey)))
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(10),
+                      itemCount: rows.length + (hasHdr ? 1 : 0),
+                      itemBuilder: (ctx, i) {
+                        if (hasHdr && i == firstEmpty) {
+                          return Padding(
+                              padding:
+                                  const EdgeInsets.only(top: 12, bottom: 2),
                               child: Row(children: [
-                                const Icon(Icons.remove_circle_outline,
-                                    size: 13, color: Color(0xFF9E9E9E)),
-                                const SizedBox(width: 6),
-                                Expanded(
-                                    child: Text("${r.partNo}  ${r.itemName}",
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                            fontSize: 11.5,
-                                            color: Colors.black54))),
-                                Text("0",
+                                Text(
+                                    "⛔ 零库存 ${rows.length - firstEmpty} 项 · 不在架",
                                     style: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.grey.shade400,
-                                        fontWeight: FontWeight.w600)),
-                              ])));
-                    }
-                    // 分布摘要：NB02-A×3 · NB03-B×2（巷道级，最多列 3 处）
-                    final dist = distOf[r.partNo] ?? const [];
-                    final distTxt = dist
-                        .take(3)
-                        .map((e) => '${e.key.replaceFirst("NB0", "").replaceFirst("-0", "-")}×${e.value}')
-                        .join(' · ');
-                    return Card(
-                      margin: const EdgeInsets.symmetric(vertical: 4),
-                      child: ListTile(
-                        dense: true,
-                        onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) =>
-                                    PartProfilePage(partNo: r.partNo))),
-                        title: Row(children: [
-                          Flexible(
-                              child: Text("${r.partNo}  ${r.itemName}",
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontSize: 14,
-                                      fontWeight: FontWeight.w500))),
-                          if (r.staleBoxes > 0)
-                            Container(
-                                margin: const EdgeInsets.only(left: 6),
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 5, vertical: 1),
-                                decoration: BoxDecoration(
-                                    color: const Color(0xFFFFEBEE),
-                                    borderRadius: BorderRadius.circular(8)),
-                                child: Text('🧊${r.staleBoxes}',
-                                    style: const TextStyle(
-                                        fontSize: 10, color: Color(0xFFE53935)))),
-                        ]),
-                        subtitle: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                  empty
-                                      ? "⛔ 无在库框${r.opening > 0 ? "（仅期初 ${_fmtInvNum(r.opening)}）" : ""} · 点击查看全链路"
-                                      : "在库 ${r.inBoxes} 框 · ${_fmtInvNum(r.inStockQty)} 件${r.opening > 0 ? " · 另有期初" : ""}${distTxt.isNotEmpty ? " · $distTxt${dist.length > 3 ? " 等${dist.length}处" : ""}" : ""}",
-                                  style: TextStyle(
-                                      fontSize: 11,
-                                      color: empty
-                                          ? const Color(0xFF9E9E9E)
-                                          : Colors.blueGrey)),
-                              if (!empty)
-                                Padding(
-                                    padding: const EdgeInsets.only(top: 3),
-                                    child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text("新鲜度 ",
-                                              style: TextStyle(
-                                                  fontSize: 10.5,
-                                                  color: Colors.grey.shade500)),
-                                          ...dots[r.partNo]!.take(24),
-                                        ])),
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.grey.shade600)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                    child:
+                                        Divider(color: Colors.grey.shade300)),
+                              ]));
+                        }
+                        final r = rows[hasHdr && i > firstEmpty ? i - 1 : i];
+                        final empty = r.inBoxes == 0;
+                        // ㉖v69 纯零库存（无期初）沉底紧凑单行；筛选"零库存"时保留完整卡片
+                        if (empty && r.stock <= 0 && _flt != "zero") {
+                          return InkWell(
+                              onTap: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                      builder: (_) =>
+                                          PartProfilePage(partNo: r.partNo))),
+                              child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 7),
+                                  decoration: BoxDecoration(
+                                      border: Border(
+                                          bottom: BorderSide(
+                                              color: Colors.grey.shade200))),
+                                  child: Row(children: [
+                                    const Icon(Icons.remove_circle_outline,
+                                        size: 13, color: Color(0xFF9E9E9E)),
+                                    const SizedBox(width: 6),
+                                    Expanded(
+                                        child: Text(
+                                            "${r.partNo}  ${r.itemName}",
+                                            overflow: TextOverflow.ellipsis,
+                                            style: const TextStyle(
+                                                fontSize: 11.5,
+                                                color: Colors.black54))),
+                                    Text("0",
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey.shade400,
+                                            fontWeight: FontWeight.w600)),
+                                  ])));
+                        }
+                        // 分布摘要：NB02-A×3 · NB03-B×2（巷道级，最多列 3 处）
+                        final dist = distOf[r.partNo] ?? const [];
+                        final distTxt = dist
+                            .take(3)
+                            .map((e) =>
+                                '${e.key.replaceFirst("NB0", "").replaceFirst("-0", "-")}×${e.value}')
+                            .join(' · ');
+                        return Card(
+                          margin: const EdgeInsets.symmetric(vertical: 4),
+                          child: ListTile(
+                            dense: true,
+                            onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                    builder: (_) =>
+                                        PartProfilePage(partNo: r.partNo))),
+                            title: Row(children: [
+                              Flexible(
+                                  child: Text("${r.partNo}  ${r.itemName}",
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w500))),
+                              if (r.staleBoxes > 0)
+                                Container(
+                                    margin: const EdgeInsets.only(left: 6),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 5, vertical: 1),
+                                    decoration: BoxDecoration(
+                                        color: const Color(0xFFFFEBEE),
+                                        borderRadius: BorderRadius.circular(8)),
+                                    child: Text('🧊${r.staleBoxes}',
+                                        style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Color(0xFFE53935)))),
                             ]),
-                        trailing: Text(
-                            empty ? "—" : _fmtInvNum(r.stock),
-                            style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: empty
-                                    ? const Color(0xFFBDBDBD)
-                                    : const Color(0xFF2E7D32))),
-                      ),
-                    );
-                  },
-                )),
+                            subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                      empty
+                                          ? "⛔ 无在库框${r.opening > 0 ? "（仅期初 ${_fmtInvNum(r.opening)}）" : ""} · 点击查看全链路"
+                                          : "在库 ${r.inBoxes} 框 · ${_fmtInvNum(r.inStockQty)} 件${r.opening > 0 ? " · 另有期初" : ""}${distTxt.isNotEmpty ? " · $distTxt${dist.length > 3 ? " 等${dist.length}处" : ""}" : ""}",
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: empty
+                                              ? const Color(0xFF9E9E9E)
+                                              : Colors.blueGrey)),
+                                  if (!empty)
+                                    Padding(
+                                        padding: const EdgeInsets.only(top: 3),
+                                        child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Text("新鲜度 ",
+                                                  style: TextStyle(
+                                                      fontSize: 10.5,
+                                                      color: Colors
+                                                          .grey.shade500)),
+                                              ...dots[r.partNo]!.take(24),
+                                            ])),
+                                ]),
+                            trailing: Text(empty ? "—" : _fmtInvNum(r.stock),
+                                style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: empty
+                                        ? const Color(0xFFBDBDBD)
+                                        : const Color(0xFF2E7D32))),
+                          ),
+                        );
+                      },
+                    )),
     ]);
   }
 }
 
-Widget _kpiCard(String t, String v, Color c, {VoidCallback? onTap, bool selected = false}) {
+Widget _kpiCard(String t, String v, Color c,
+    {VoidCallback? onTap, bool selected = false}) {
   final card = Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
@@ -939,12 +1036,19 @@ Widget _kpiCard(String t, String v, Color c, {VoidCallback? onTap, bool selected
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(v,
             style: TextStyle(
-                fontSize: 15, fontWeight: FontWeight.w800, color: selected ? Colors.white : c)),
-        Text(t, style: TextStyle(fontSize: 10, color: selected ? Colors.white70 : Colors.black54)),
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+                color: selected ? Colors.white : c)),
+        Text(t,
+            style: TextStyle(
+                fontSize: 10,
+                color: selected ? Colors.white70 : Colors.black54)),
       ]));
   if (onTap == null) return card;
   return InkWell(
-      onTap: onTap, borderRadius: BorderRadius.circular(8), child: Padding(padding: EdgeInsets.zero, child: card));
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(padding: EdgeInsets.zero, child: card));
 }
 
 // ---------- Tab2 货架库位（㉖v69 对齐网页版货位账本：一框一行·同托多码归并·可搜索） ----------
@@ -1048,8 +1152,7 @@ class _ShelfTabState extends State<_ShelfTab> {
                     isDense: true,
                     contentPadding:
                         const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    prefixIcon:
-                        const Icon(Icons.search, size: 18),
+                    prefixIcon: const Icon(Icons.search, size: 18),
                     prefixIconConstraints:
                         const BoxConstraints(minWidth: 34, minHeight: 0),
                     suffixIcon: _q.isEmpty
@@ -1079,8 +1182,7 @@ class _ShelfTabState extends State<_ShelfTab> {
               else
                 ...shown.map((b) {
                   final exact = k.isNotEmpty &&
-                      b.codes
-                          .any((c) => c.toUpperCase() == k); // 精确标签命中高亮
+                      b.codes.any((c) => c.toUpperCase() == k); // 精确标签命中高亮
                   final reg = b.regAt > 0
                       ? DateTime.fromMillisecondsSinceEpoch(b.regAt)
                       : null;
@@ -1088,11 +1190,9 @@ class _ShelfTabState extends State<_ShelfTab> {
                       margin: const EdgeInsets.symmetric(vertical: 3),
                       color: exact ? const Color(0xFFFFF3CD) : null,
                       child: Padding(
-                          padding:
-                              const EdgeInsets.fromLTRB(10, 8, 10, 9),
+                          padding: const EdgeInsets.fromLTRB(10, 8, 10, 9),
                           child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(children: [
                                   Text(b.loc.isEmpty ? "未分配" : b.loc,
@@ -1153,7 +1253,9 @@ class _FlowView {
   final String partNo, itemName, barcode, sub;
   final double qty;
   final bool cancelled;
-  const _FlowView(this.time, this.partNo, this.itemName, this.barcode, this.qty, this.sub, {this.cancelled = false});
+  const _FlowView(
+      this.time, this.partNo, this.itemName, this.barcode, this.qty, this.sub,
+      {this.cancelled = false});
 }
 
 class _FlowTabState extends State<_FlowTab> {
@@ -1174,7 +1276,7 @@ class _FlowTabState extends State<_FlowTab> {
     if (_showIn) {
       for (final r in widget.agg.inRows.reversed) {
         views.add(_FlowView(r.time, r.partNo, r.itemName, r.barcode, r.qty,
-            "${r.loc}${r.container.isNotEmpty ? " · ${r.container}" : ""}${r.cancelled ? " · 已作废" : " · ${r.operator}"}",
+            "${r.loc}${r.loc.toUpperCase().startsWith("NB04-") && !r.cancelled ? " 🏜待转入" : ""}${r.container.isNotEmpty ? " · ${r.container}" : ""}${r.cancelled ? " · 已作废" : " · ${r.operator}"}", // ㉖v255 初始位=一楼来料区→橙标待二楼转入（作废行不标）
             cancelled: r.cancelled));
       }
     } else {
@@ -1184,7 +1286,8 @@ class _FlowTabState extends State<_FlowTab> {
       }
     }
     var list = views;
-    if (cutoff != null) list = list.where((r) => r.time.isAfter(cutoff)).toList();
+    if (cutoff != null)
+      list = list.where((r) => r.time.isAfter(cutoff)).toList();
     if (k.isNotEmpty) {
       list = list
           .where((r) =>
@@ -1196,7 +1299,10 @@ class _FlowTabState extends State<_FlowTab> {
     }
     final shown = list.take(300).toList();
     chip(int v, String t) => ChoiceChip(
-        label: Text(t, style: TextStyle(fontSize: 11.5, color: _win == v ? Colors.white : Colors.blueGrey)),
+        label: Text(t,
+            style: TextStyle(
+                fontSize: 11.5,
+                color: _win == v ? Colors.white : Colors.blueGrey)),
         selected: _win == v,
         showCheckmark: false,
         selectedColor: const Color(0xFF515BD4),
@@ -1250,7 +1356,8 @@ class _FlowTabState extends State<_FlowTab> {
             const SizedBox(width: 6),
             chip(0, "全部"),
             const Spacer(),
-            Text('${shown.length}${list.length > 300 ? "/${list.length}" : ""} 条',
+            Text(
+                '${shown.length}${list.length > 300 ? "/${list.length}" : ""} 条',
                 style: const TextStyle(fontSize: 11.5, color: Colors.grey)),
           ])),
       Expanded(
@@ -1267,15 +1374,22 @@ class _FlowTabState extends State<_FlowTab> {
                     return ListTile(
                       dense: true,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 6),
-                      leading: Icon(_showIn ? (r.cancelled ? Icons.block : Icons.login) : Icons.logout,
-                          color: _showIn ? (r.cancelled ? Colors.red : Colors.green) : Colors.deepOrange,
+                      leading: Icon(
+                          _showIn
+                              ? (r.cancelled ? Icons.block : Icons.login)
+                              : Icons.logout,
+                          color: _showIn
+                              ? (r.cancelled ? Colors.red : Colors.green)
+                              : Colors.deepOrange,
                           size: 20),
                       title: Text("${r.partNo} ${r.itemName}",
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                               fontSize: 13,
-                              decoration: r.cancelled ? TextDecoration.lineThrough : null)),
+                              decoration: r.cancelled
+                                  ? TextDecoration.lineThrough
+                                  : null)),
                       subtitle: Text(
                           "${r.barcode} · ${_fmtInvNum(r.qty)} 件 · ${r.sub}",
                           maxLines: 1,
@@ -1284,20 +1398,29 @@ class _FlowTabState extends State<_FlowTab> {
                               fontSize: 11,
                               color: r.cancelled ? Colors.red : null)),
                       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                        Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-                          Text(_invRelTime(t),
-                              style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
-                          Text("${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}",
-                              style: TextStyle(fontSize: 9.5, color: Colors.grey.shade400)),
-                        ]),
+                        Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(_invRelTime(t),
+                                  style: const TextStyle(
+                                      fontSize: 10.5, color: Colors.blueGrey)),
+                              Text(
+                                  "${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')} ${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}",
+                                  style: TextStyle(
+                                      fontSize: 9.5,
+                                      color: Colors.grey.shade400)),
+                            ]),
                         IconButton(
                             tooltip: "全链路",
                             visualDensity: VisualDensity.compact,
                             icon: const Icon(Icons.route,
                                 size: 17, color: Color(0xFF515BD4)),
-                            onPressed: () => Navigator.push(context,
+                            onPressed: () => Navigator.push(
+                                context,
                                 MaterialPageRoute(
-                                    builder: (_) => TracePage(seed: r.barcode)))),
+                                    builder: (_) =>
+                                        TracePage(seed: r.barcode)))),
                       ]),
                     );
                   },
@@ -1315,7 +1438,8 @@ class _FlowTabState extends State<_FlowTab> {
 /// 服务器不可达/旧版服务器无端点 → 降级走旧本机拼账路（保断网可用，meta.srvBuilt=false 留痕可查）。
 /// 只覆盖 baselineBooks/baselineLocs 两张盘点基准表（与CSV导入同样的整表替换），不触碰采集/发料/账本数据。
 Future<Map<String, dynamic>> buildLiveBaseline() async {
-  final pr = await ledgerPullMerge(force: true); // 本机账本对齐（服务器基准不依赖它，但盘点会话内扫码判定/其他页面要新鲜）
+  final pr = await ledgerPullMerge(
+      force: true); // 本机账本对齐（服务器基准不依赖它，但盘点会话内扫码判定/其他页面要新鲜）
   final key = "LIVE@${DateTime.now().millisecondsSinceEpoch}";
   final localRows = await _globalIsar.shelfPlacements.where().count();
   // ── 主路：服务器权威聚合 ──
@@ -1327,15 +1451,25 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
         final m = Map<String, dynamic>.from(x as Map);
         final pn = m["pn"]?.toString() ?? "";
         if (pn.isEmpty) continue;
-        books.add(BaselineBook(fileKey: key, partNo: pn, itemName: m["nm"]?.toString() ?? "", bookQty: ((m["book"] as num?) ?? 0).toDouble()));
+        books.add(BaselineBook(
+            fileKey: key,
+            partNo: pn,
+            itemName: m["nm"]?.toString() ?? "",
+            bookQty: ((m["book"] as num?) ?? 0).toDouble()));
       }
       final locMap = <String, BaselineLoc>{};
       for (final x in (j["locs"] as List)) {
         final m = Map<String, dynamic>.from(x as Map);
         final lc = m["loc"]?.toString() ?? "", pn = m["pn"]?.toString() ?? "";
         if (lc.isEmpty || pn.isEmpty) continue;
-        final cs = ((m["codes"] as List?) ?? []).map((s) => s.toString()).toList();
-        locMap["$lc|$pn"] = BaselineLoc(fileKey: key, locCode: lc, partNo: pn, qty: ((m["book"] as num?) ?? 0).toDouble(), goodsCode: cs.isEmpty ? "" : cs.first.split("|").first);
+        final cs =
+            ((m["codes"] as List?) ?? []).map((s) => s.toString()).toList();
+        locMap["$lc|$pn"] = BaselineLoc(
+            fileKey: key,
+            locCode: lc,
+            partNo: pn,
+            qty: ((m["book"] as num?) ?? 0).toDouble(),
+            goodsCode: cs.isEmpty ? "" : cs.first.split("|").first);
       }
       await _globalIsar.writeTxn(() async {
         await _globalIsar.baselineBooks.where().deleteAll();
@@ -1358,7 +1492,12 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
         final sp = await SharedPreferences.getInstance();
         await sp.setString("inv_live_meta_$key", jsonEncode(meta));
       } catch (_) {}
-      return {"key": key, "books": books.length, "locs": locMap.length, "meta": meta};
+      return {
+        "key": key,
+        "books": books.length,
+        "locs": locMap.length,
+        "meta": meta
+      };
     }
   } catch (_) {}
   // ── 降级：服务器不可达/旧版服务器无端点 → 旧本机拼账（有本机视角缺陷风险，meta 留痕 srvBuilt=false）──
@@ -1409,9 +1548,12 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
     (recByCode[r.goodsCode.trim().toUpperCase()] ??= []).add(r);
   }
   final labelInfos = await _globalIsar.labelInfos.where().findAll();
-  final infoByCode = {for (final li in labelInfos) li.goodsCode.trim().toUpperCase(): li};
+  final infoByCode = {
+    for (final li in labelInfos) li.goodsCode.trim().toUpperCase(): li
+  };
   final bIdx = <String, int>{
-    for (var i = 0; i < books.length; i++) books[i].partNo.trim().toUpperCase(): i
+    for (var i = 0; i < books.length; i++)
+      books[i].partNo.trim().toUpperCase(): i
   };
   var backfilled = 0;
   for (final p in await _globalIsar.shelfPlacements.where().findAll()) {
@@ -1422,7 +1564,11 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
     double q;
     if (rs != null && rs.isNotEmpty) {
       // 有流水：computeStock 的入基准条件=存在"未作废且 mesPartNo 非空"的流水；有则本码已计，跳过
-      final ok = rs.where((r) => !(r as dynamic).isCancel && ((r.mesPartNo ?? "").trim().isNotEmpty)).toList();
+      final ok = rs
+          .where((r) =>
+              !(r as dynamic).isCancel &&
+              ((r.mesPartNo ?? "").trim().isNotEmpty))
+          .toList();
       if (ok.isNotEmpty) continue;
       // 全被跳过：从 MES 缓存回填
       final li = infoByCode[cd];
@@ -1441,10 +1587,15 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
     final bi = bIdx[pn];
     if (bi != null) {
       final ob = books[bi];
-      books[bi] = BaselineBook(fileKey: key, partNo: ob.partNo, itemName: ob.itemName, bookQty: ob.bookQty + q); // 基准总账按零件号唯一行，累加合并
+      books[bi] = BaselineBook(
+          fileKey: key,
+          partNo: ob.partNo,
+          itemName: ob.itemName,
+          bookQty: ob.bookQty + q); // 基准总账按零件号唯一行，累加合并
     } else {
       bIdx[pn] = books.length;
-      books.add(BaselineBook(fileKey: key, partNo: pn, itemName: nm, bookQty: q));
+      books.add(
+          BaselineBook(fileKey: key, partNo: pn, itemName: nm, bookQty: q));
     }
     final lc = p.loc.trim().toUpperCase();
     final lk = "$lc|$pn";
@@ -1452,7 +1603,12 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
     if (old != null) {
       old.qty += q;
     } else {
-      locMap[lk] = BaselineLoc(fileKey: key, locCode: p.loc, partNo: pn, qty: q, goodsCode: p.goodsCode);
+      locMap[lk] = BaselineLoc(
+          fileKey: key,
+          locCode: p.loc,
+          partNo: pn,
+          qty: q,
+          goodsCode: p.goodsCode);
     }
   }
   await _globalIsar.writeTxn(() async {
@@ -1469,7 +1625,12 @@ Future<Map<String, dynamic>> buildLiveBaseline() async {
     final sp = await SharedPreferences.getInstance();
     await sp.setString("inv_live_meta_$key", jsonEncode(meta));
   } catch (_) {}
-  return {"key": key, "books": books.length, "locs": locMap.length, "meta": meta};
+  return {
+    "key": key,
+    "books": books.length,
+    "locs": locMap.length,
+    "meta": meta
+  };
 }
 
 class _OpeningTab extends StatelessWidget {
@@ -1661,7 +1822,8 @@ class _PPBox {
   // 离线（账本拉取失败 ledOn=null）→ onLed 回退旧口径（无出库记录即当在架），不阻断档案页。
   bool onLed = false;
   bool pendingOut = false;
-  bool get inStock => !cancelled && outTime == null && onLed; // 真在库=未作废·无出库记录·账本命中
+  bool get inStock =>
+      !cancelled && outTime == null && onLed; // 真在库=未作废·无出库记录·账本命中
   bool get ledgerOnly => inTime == null;
   String get ppState => cancelled
       ? "作废"
@@ -1679,6 +1841,10 @@ class _PPData {
   double opening = 0, inQty = 0, outQty = 0, stockQty = 0;
   int inBoxes = 0, outBoxes = 0, cancelBoxes = 0;
   int pendingBoxes = 0, ghostBoxes = 0; // ㉖v107 已发未转框数 / 账外框数（均不计库存，仅诚实展示）
+  // ㉖v255 一楼来料区(NB04)待转入桶（服务器 /api/part/profile recv 同源字段）：账上有货≠现在能发
+  int recvBoxes = 0;
+  double recvQty = 0;
+  String recvSlotsTip = "";
   bool serverOk = false; // 服务器数据合并成功（B）
   final List<_PPBox> boxes = [];
   final List<Map> demand = []; // ㉖v68 在途领料需求（pending/accepted 未满足行）
@@ -1724,7 +1890,8 @@ Future<_PPData> loadPartProfile(String partNo) async {
   } catch (_) {}
   // 服务器出库单先入表，本机出库单覆盖（本机更权威）：别台设备转单的框也能拿到出库链路
   try {
-    final ob = await AuthApi.outboundGet(pn: key).timeout(const Duration(seconds: 8)); // ㉖v210 带零件号：过滤在服务器500条上限之前，老单不再被截
+    final ob = await AuthApi.outboundGet(pn: key).timeout(
+        const Duration(seconds: 8)); // ㉖v210 带零件号：过滤在服务器500条上限之前，老单不再被截
     if (ob["ok"] == true) {
       d.serverOk = true;
       for (final o in List<Map>.from(ob["items"] ?? [])) {
@@ -1771,7 +1938,8 @@ Future<_PPData> loadPartProfile(String partNo) async {
     } catch (_) {}
   }
   void fillOut(_PPBox b) {
-    if (ledOn != null && ledOn.contains(b.barcode.toUpperCase())) return; // ㉖v98c 账本在架=在库权威，出库台账不覆盖当前事实
+    if (ledOn != null && ledOn.contains(b.barcode.toUpperCase()))
+      return; // ㉖v98c 账本在架=在库权威，出库台账不覆盖当前事实
     final oh = outHit[b.barcode.toUpperCase()];
     if (oh == null) return;
     b.outTime = DateTime.fromMillisecondsSinceEpoch(oh["t"] as int);
@@ -1794,7 +1962,8 @@ Future<_PPData> loadPartProfile(String partNo) async {
     latestValid[r.goodsCode.toUpperCase()] = r;
   }
   for (final r in recs) {
-    if (!r.isCancel && !identical(latestValid[r.goodsCode.toUpperCase()], r)) continue; // 同码非最新有效扫描→已去重跳过
+    if (!r.isCancel && !identical(latestValid[r.goodsCode.toUpperCase()], r))
+      continue; // 同码非最新有效扫描→已去重跳过
     final b = _PPBox()
       ..barcode = r.goodsCode
       ..qty = r.mesQty ?? 0
@@ -1823,7 +1992,8 @@ Future<_PPData> loadPartProfile(String partNo) async {
   try {
     // ㉖v212 带 pn：服务器按零件号过滤（排在 limit 截断之前）。本页端上本就只要 pn==key 的行，
     // 旧写法拉 5000 条全库回端筛——全库流水 4438 已逼近上限，越界后时刻早的老框沉到截断线以下整段漏掉
-    final sl = await AuthApi.scanlogGet(pn: key).timeout(const Duration(seconds: 8));
+    final sl =
+        await AuthApi.scanlogGet(pn: key).timeout(const Duration(seconds: 8));
     if (sl["ok"] == true) {
       d.serverOk = true;
       for (final s in List<Map>.from(sl["items"] ?? [])) {
@@ -1901,7 +2071,8 @@ Future<_PPData> loadPartProfile(String partNo) async {
   for (final entry in outHit.entries) {
     final bc = entry.key;
     if (seen.contains(bc)) continue;
-    if (ledOn != null && ledOn.contains(bc)) continue; // ㉖v98c 码仍在账本（如撤扫返架后旧出库单残留）→ 不补建已出库框，防重复计
+    if (ledOn != null && ledOn.contains(bc))
+      continue; // ㉖v98c 码仍在账本（如撤扫返架后旧出库单残留）→ 不补建已出库框，防重复计
     final oh = entry.value;
     if ((oh["code"]?.toString().toUpperCase() ?? "") != key) continue;
     final b = _PPBox()
@@ -1938,8 +2109,12 @@ Future<_PPData> loadPartProfile(String partNo) async {
     // 11/4 现场 6608225548 卡单（发料后转单死锁）两框不在账本、又无出库记录，被打成绿色"在库"，
     // 同屏出现"库存400 · 在库4框"自相矛盾。现逐框统一：账本命中=在库；有出库记录=已出库；
     // 不在账本但在已发未转集=已发未转（货已离架单据在途）；三者不沾=账外（漏登记/幽灵框）。
-    b.onLed = ledOn == null ? b.outTime == null : ledOn.contains(b.barcode.toUpperCase());
-    b.pendingOut = !b.onLed && b.outTime == null && pendOut.contains(b.barcode.toUpperCase());
+    b.onLed = ledOn == null
+        ? b.outTime == null
+        : ledOn.contains(b.barcode.toUpperCase());
+    b.pendingOut = !b.onLed &&
+        b.outTime == null &&
+        pendOut.contains(b.barcode.toUpperCase());
     if (b.outTime != null) {
       d.outBoxes++;
       d.outQty += b.qty;
@@ -1986,41 +2161,68 @@ Future<_PPData> loadPartProfile(String partNo) async {
           ["pick", "叉出", true],
           ["arrive", "到站", true],
           ["transfer", "转MES", false],
-          ["confirm", "签收", false] // ㉖v205 节点表加"真AGV动作"标记：转MES/签收只是业务节点，人工搬运出库也有
+          [
+            "confirm",
+            "签收",
+            false
+          ] // ㉖v205 节点表加"真AGV动作"标记：转MES/签收只是业务节点，人工搬运出库也有
         ];
         final parts = <String>[], biz = <String>[];
         var hasAgv = false;
         for (final e in steps) {
           final s = fm(ch[e[0]]);
           if (s.isEmpty) continue;
-          if (e[2] == true) { hasAgv = true; parts.add("${e[1]}$s"); }
-          else biz.add("${e[1]}$s");
+          if (e[2] == true) {
+            hasAgv = true;
+            parts.add("${e[1]}$s");
+          } else
+            biz.add("${e[1]}$s");
         }
         // ㉖v205 口径对齐网页版（用户实锤：人工搬运框被标"AGV链路"）：有任真AGV节点才挂
         // "AGV链路"（含随行的业务节点尾巴）；纯人工出库只有转MES/签收 → 标"业务链路"。
-        if (hasAgv) b.agvChain = [...parts, ...biz].join(" → ");
+        if (hasAgv)
+          b.agvChain = [...parts, ...biz].join(" → ");
         else if (biz.isNotEmpty) b.bizChain = biz.join(" → ");
       } catch (_) {}
     }));
   }
   // v55 在库框批量拉检验态（徽章+检验下架按钮用；服务器不可达静默=全部按未检显示）
-  final inStockBoxes = d.boxes.where((b) => b.inStock && b.barcode.isNotEmpty).toList();
+  final inStockBoxes =
+      d.boxes.where((b) => b.inStock && b.barcode.isNotEmpty).toList();
   if (inStockBoxes.isNotEmpty) {
     try {
-      final r = await AuthApi.inspectStatus(inStockBoxes.map((b) => b.barcode).toList()).timeout(const Duration(seconds: 8));
+      final r = await AuthApi.inspectStatus(
+              inStockBoxes.map((b) => b.barcode).toList())
+          .timeout(const Duration(seconds: 8));
       if (r["ok"] == true) {
         final m = r["map"];
         final busy = r["busy"];
-        if (m is Map) for (final b in inStockBoxes) { final e = m[b.barcode.toUpperCase()]; if (e is Map) b.insp = Map.from(e); }
-        if (busy is Map) for (final b in inStockBoxes) { final s = busy[b.barcode.toUpperCase()]; if (s != null) b.inspBusy = s.toString(); }
+        if (m is Map)
+          for (final b in inStockBoxes) {
+            final e = m[b.barcode.toUpperCase()];
+            if (e is Map) b.insp = Map.from(e);
+          }
+        if (busy is Map)
+          for (final b in inStockBoxes) {
+            final s = busy[b.barcode.toUpperCase()];
+            if (s != null) b.inspBusy = s.toString();
+          }
       }
     } catch (_) {}
   }
   // ㉖v68 在途领料需求（对齐网页零件档案：pending/accepted 未满足领料行）；服务器不通静默=不显示
   try {
-    final pp = await AuthApi.partProfile(key).timeout(const Duration(seconds: 8));
+    final pp =
+        await AuthApi.partProfile(key).timeout(const Duration(seconds: 8));
     if (pp["ok"] == true && pp["demand"] is List) {
       d.demand.addAll(List<Map>.from(pp["demand"] as List));
+    }
+    // ㉖v255 一楼待转入桶（与网页档案 recv 同口径：账本 NB04 框按托去重+件数+格位清单）
+    final rcv = pp["recv"];
+    if (pp["ok"] == true && rcv is Map) {
+      d.recvBoxes = (rcv["boxes"] as num?)?.toInt() ?? 0;
+      d.recvQty = (rcv["qty"] as num?)?.toDouble() ?? 0;
+      d.recvSlotsTip = rcv["slotsTip"]?.toString() ?? "";
     }
   } catch (_) {}
   return d;
@@ -2046,7 +2248,10 @@ class _PartProfilePageState extends State<PartProfilePage> {
   final ScrollController _ppSc = ScrollController(); // ㉖v244 >30天档横向滚动
 
   @override
-  void dispose() { _ppSc.dispose(); super.dispose(); } // ㉖v244 释放滚动句柄防泄漏
+  void dispose() {
+    _ppSc.dispose();
+    super.dispose();
+  } // ㉖v244 释放滚动句柄防泄漏
 
   @override
   void initState() {
@@ -2059,7 +2264,8 @@ class _PartProfilePageState extends State<PartProfilePage> {
   /// ㉖v244 人性化：数据右锚（最近=最右），图出现时默认停在最新日期端，省得手动拖
   void _ppJump() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _ppSc.hasClients && _ppSc.position.maxScrollExtent > 0) _ppSc.jumpTo(_ppSc.position.maxScrollExtent);
+      if (mounted && _ppSc.hasClients && _ppSc.position.maxScrollExtent > 0)
+        _ppSc.jumpTo(_ppSc.position.maxScrollExtent);
     });
   }
 
@@ -2067,7 +2273,10 @@ class _PartProfilePageState extends State<PartProfilePage> {
     try {
       final j = await AuthApi.pnDaily(widget.partNo, days: _ppDays);
       if (!mounted) return;
-      if (j["ok"] == true) { setState(() => _ppDaily = j); _ppJump(); }
+      if (j["ok"] == true) {
+        setState(() => _ppDaily = j);
+        _ppJump();
+      }
     } catch (_) {} // 旧版服务器无端点/断网：静默=图不显示，档案主体不受影响
   }
 
@@ -2080,36 +2289,61 @@ class _PartProfilePageState extends State<PartProfilePage> {
     final freshFrom = (j["freshFrom"] as num?)?.toInt() ?? 0;
     double mx = 1;
     for (final x in days) {
-      final a = (x["inQ"] as num?)?.toDouble() ?? 0, b = (x["outQ"] as num?)?.toDouble() ?? 0;
+      final a = (x["inQ"] as num?)?.toDouble() ?? 0,
+          b = (x["outQ"] as num?)?.toDouble() ?? 0;
       if (a > mx) mx = a;
       if (b > mx) mx = b;
     }
     final totIn = (j["totIn"] as num?)?.toInt() ?? 0;
     final totOut = (j["totOut"] as num?)?.toInt() ?? 0;
-    final pendQ = (j["pend"] is Map ? ((j["pend"] as Map)["q"] as num?)?.toInt() ?? 0 : 0);
+    final pendQ = (j["pend"] is Map
+        ? ((j["pend"] as Map)["q"] as num?)?.toInt() ?? 0
+        : 0);
     // ㉖v202 日历轴补全（与网页 ppDailyRender 同法，PDA 截图实锤 11-14/16/18 空日被压扁、间距失真）：
     // 服务器只回有出入库的日子，旧版按条目等距画柱→断续活动看着像连续。空日补占位列后，隔 3 天
     // 没动就是 3 列空档。右界=数据层 freshFrom+2天(≈服务器当日)，左界=min(窗口左缘, 首条日)防裁。
     final dmap = <String, Map<String, dynamic>>{};
-    for (final x in days) { dmap[(x["d"] ?? "").toString()] = x; }
+    for (final x in days) {
+      dmap[(x["d"] ?? "").toString()] = x;
+    }
     final winReq = (j["win"] as num?)?.toInt() ?? _ppDays;
     final D864 = 86400000;
     String dk(int ms) {
       final d = DateTime.fromMillisecondsSinceEpoch(ms);
-      final m = d.month.toString().padLeft(2, "0"), dd = d.day.toString().padLeft(2, "0");
+      final m = d.month.toString().padLeft(2, "0"),
+          dd = d.day.toString().padLeft(2, "0");
       return "${d.year}-$m-$dd";
     }
-    final rightK = dk((freshFrom > 0 ? freshFrom : DateTime.now().millisecondsSinceEpoch) + 2 * D864);
+
+    final rightK = dk(
+        (freshFrom > 0 ? freshFrom : DateTime.now().millisecondsSinceEpoch) +
+            2 * D864);
     final rightMs = DateTime.parse("${rightK}T12:00:00").millisecondsSinceEpoch;
     var leftK = dk(rightMs - (winReq - 1) * D864);
-    if (days.isNotEmpty && (days.first["d"] ?? "").toString().compareTo(leftK) < 0) { leftK = (days.first["d"] ?? "").toString(); }
-    final cnt = (DateTime.parse("${rightK}T12:00:00").millisecondsSinceEpoch - DateTime.parse("${leftK}T12:00:00").millisecondsSinceEpoch) ~/ D864 + 1;
+    if (days.isNotEmpty &&
+        (days.first["d"] ?? "").toString().compareTo(leftK) < 0) {
+      leftK = (days.first["d"] ?? "").toString();
+    }
+    final cnt = (DateTime.parse("${rightK}T12:00:00").millisecondsSinceEpoch -
+                DateTime.parse("${leftK}T12:00:00").millisecondsSinceEpoch) ~/
+            D864 +
+        1;
     final allDays = <Map<String, dynamic>>[];
     for (int i = cnt - 1; i >= 0; i--) {
       final k = dk(rightMs - i * D864);
       final o = dmap[k];
-      final m = <String, dynamic>{"d": k, "inQ": (o?["inQ"] as num?) ?? 0, "outQ": (o?["outQ"] as num?) ?? 0, "has": o != null};
-      if (o != null) { m["inN"] = o["inN"]; m["inB"] = o["inB"]; m["ins"] = o["ins"]; m["outs"] = o["outs"]; } // 弹层明细字段随行保留
+      final m = <String, dynamic>{
+        "d": k,
+        "inQ": (o?["inQ"] as num?) ?? 0,
+        "outQ": (o?["outQ"] as num?) ?? 0,
+        "has": o != null
+      };
+      if (o != null) {
+        m["inN"] = o["inN"];
+        m["inB"] = o["inB"];
+        m["ins"] = o["ins"];
+        m["outs"] = o["outs"];
+      } // 弹层明细字段随行保留
       allDays.add(m);
     }
     // 预构建柱列（扁平 for，避免深层嵌套闭包括号错位）；列等宽=可用宽/天数，窗口再大也不横向滚
@@ -2126,56 +2360,77 @@ class _PartProfilePageState extends State<PartProfilePage> {
                   margin: const EdgeInsets.symmetric(horizontal: 0.8),
                   decoration: BoxDecoration(
                       color: q > 0 ? c : const Color(0xFFE3E8F0),
-                      borderRadius: const BorderRadius.vertical(top: Radius.circular(2))),
+                      borderRadius:
+                          const BorderRadius.vertical(top: Radius.circular(2))),
                   height: q > 0 ? (q / mx * 84).clamp(4.0, 84.0) : 2)));
-      final lblEvery = cnt > 30 ? 7 : cnt > 15 ? (cnt / 9).ceil() : 1; // ㉖v244 90天档定7天一签（旧÷9=10在4px列上叠成一团）
+      final lblEvery = cnt > 30
+          ? 7
+          : cnt > 15
+              ? (cnt / 9).ceil()
+              : 1; // ㉖v244 90天档定7天一签（旧÷9=10在4px列上叠成一团）
       final idx = allDays.indexOf(x);
       final col = GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              // ㉖v210 传整行 x（含 inN/inB/ins/outs）：旧版只摘 d/inQ/outQ/has 四字段，
-              // 弹层拿不到笔数与明细数组 → "入0笔/0框/760件"且列表全打"当日无"（11-20 截图实锤）
-              onTap: () => _pnDaySheet(x, isFresh),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                SizedBox(
-                    height: 88,
-                    child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                      bar(iq, const Color(0xFF2E7D32)),
-                      bar(oq, const Color(0xFFE65100)),
-                    ])),
-                SizedBox(
-                    height: 22,
-                    child: idx % lblEvery == 0 || idx == cnt - 1
-                        ? RotatedBox(
-                            quarterTurns: 3,
-                            child: Text((x["d"] ?? "").toString().substring(5), textAlign: TextAlign.left, style: const TextStyle(fontSize: 8, color: Colors.blueGrey)))
-                        : const SizedBox.shrink(),
-                )]));
+          behavior: HitTestBehavior.opaque,
+          // ㉖v210 传整行 x（含 inN/inB/ins/outs）：旧版只摘 d/inQ/outQ/has 四字段，
+          // 弹层拿不到笔数与明细数组 → "入0笔/0框/760件"且列表全打"当日无"（11-20 截图实锤）
+          onTap: () => _pnDaySheet(x, isFresh),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            SizedBox(
+                height: 88,
+                child:
+                    Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                  bar(iq, const Color(0xFF2E7D32)),
+                  bar(oq, const Color(0xFFE65100)),
+                ])),
+            SizedBox(
+              height: 22,
+              child: idx % lblEvery == 0 || idx == cnt - 1
+                  ? RotatedBox(
+                      quarterTurns: 3,
+                      child: Text((x["d"] ?? "").toString().substring(5),
+                          textAlign: TextAlign.left,
+                          style: const TextStyle(
+                              fontSize: 8, color: Colors.blueGrey)))
+                  : const SizedBox.shrink(),
+            )
+          ]));
       // ㉖v244 90天档可读性修复（用户实锤：等宽压缩致每列仅~4px、柱成细线日期叠成乱码）：
       // ≤30天维持等宽撑满（7/30档视觉零变化）；>30天改定宽 18px 列 + 外层横向滚动，
       // 柱子/日期恢复 30 天档同样的可读宽度，横滚看历史。
-      cols.add(cnt <= 30 ? Expanded(child: col) : SizedBox(width: 18, child: col));
+      cols.add(
+          cnt <= 30 ? Expanded(child: col) : SizedBox(width: 18, child: col));
     }
     return Card(
         margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
         child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               // ㉖v202 标题行整行可点折叠（默认收起，用户: 别挡下面的框记录）。收起态仍显示窗口合计
               // 摘要——关键数不展开也能看；图体/窗口切换/口径说明只在展开时渲染，卡片高度 ~230→~44
               GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () { setState(() => _ppOpen = !_ppOpen); if (_ppOpen) _ppJump(); }, // ㉖v244 展开即停最新日期端(90档横滚;30档无滚动自动跳过)
+                  onTap: () {
+                    setState(() => _ppOpen = !_ppOpen);
+                    if (_ppOpen) _ppJump();
+                  }, // ㉖v244 展开即停最新日期端(90档横滚;30档无滚动自动跳过)
                   child: Row(children: [
-                    const Text("📅 每日出入库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                    const Text("📅 每日出入库",
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w700)),
                     const SizedBox(width: 8),
                     if (!_ppOpen)
                       Flexible(
                           child: Text(
                               "入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件" : ""}",
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF37474F)))),
+                              style: const TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFF37474F)))),
                     const Spacer(),
-                    Icon(_ppOpen ? Icons.expand_less : Icons.expand_more, size: 20, color: Colors.blueGrey),
+                    Icon(_ppOpen ? Icons.expand_less : Icons.expand_more,
+                        size: 20, color: Colors.blueGrey),
                   ])),
               if (_ppOpen) ...[
                 const SizedBox(height: 4),
@@ -2186,7 +2441,8 @@ class _PartProfilePageState extends State<PartProfilePage> {
                         padding: const EdgeInsets.only(left: 4),
                         child: ChoiceChip(
                             visualDensity: VisualDensity.compact,
-                            label: Text(n == 7 ? "7天" : "$n", style: const TextStyle(fontSize: 11)),
+                            label: Text(n == 7 ? "7天" : "$n",
+                                style: const TextStyle(fontSize: 11)),
                             selected: _ppDays == n,
                             onSelected: (_) {
                               setState(() => _ppDays = n);
@@ -2199,20 +2455,31 @@ class _PartProfilePageState extends State<PartProfilePage> {
                 SizedBox(
                     height: 112,
                     child: days.isEmpty
-                        ? const Center(child: Text("窗口内无任何出入库", style: TextStyle(fontSize: 12, color: Colors.grey)))
+                        ? const Center(
+                            child: Text("窗口内无任何出入库",
+                                style: TextStyle(
+                                    fontSize: 12, color: Colors.grey)))
                         // ㉖v202 等宽撑满(旧版固定列宽挤在左侧、右边大片空白)
                         // ㉖v244 ≤30天维持等宽撑满(Expanded)；>30天(90档)定宽列+横滚：旧版同法
                         // 等宽压缩致每列~4px不可读(用户实锤),Expanded 不可放横向滚动内故分档
                         : cnt <= 30
-                            ? Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols)
+                            ? Row(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: cols)
                             : SingleChildScrollView(
                                 controller: _ppSc,
                                 scrollDirection: Axis.horizontal,
                                 reverse: false,
-                                child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols))),
+                                child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: cols))),
                 const SizedBox(height: 2),
-                Text("窗口合计：入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件（无逐日时刻，不计入橙柱）" : ""}",
-                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF37474F))),
+                Text(
+                    "窗口合计：入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件（无逐日时刻，不计入橙柱）" : ""}",
+                    style: const TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF37474F))),
                 const Text("口径：入库=上架扫入按扫描时刻归日（剔一楼登记与作废）；出库=已转MES按单时刻归日；全厂数据",
                     style: TextStyle(fontSize: 9.5, color: Colors.blueGrey)),
               ]
@@ -2223,11 +2490,16 @@ class _PartProfilePageState extends State<PartProfilePage> {
   Future<void> _pnDaySheet(Map<String, dynamic> x, bool fresh) async {
     final fmt = (num? ms) => ms == null || ms <= 0
         ? ""
-        : DateTime.fromMillisecondsSinceEpoch(ms.toInt()) // toInt 而非 as int：JSON 数字反序列化成 double 时 as int 直接崩
+        : DateTime.fromMillisecondsSinceEpoch(
+                ms.toInt()) // toInt 而非 as int：JSON 数字反序列化成 double 时 as int 直接崩
             .toString()
             .substring(5, 16);
-    final ins = (x["ins"] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
-    final outs = (x["outs"] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final ins = (x["ins"] as List? ?? [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+    final outs = (x["outs"] as List? ?? [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
     if (!mounted) return;
     showModalBottomSheet(
         context: context,
@@ -2236,36 +2508,48 @@ class _PartProfilePageState extends State<PartProfilePage> {
             expand: false,
             initialChildSize: .55,
             builder: (bc, ctlr) => ListView(
-                controller: ctlr,
-                padding: const EdgeInsets.fromLTRB(14, 10, 14, 20),
-                children: [
-                  Text("${x["d"]} 当日明细",
-                      style: const TextStyle(
-                          fontSize: 15, fontWeight: FontWeight.w700)),
-                  Text(
-                      "入 ${(x["inN"] ?? 0)}笔/${x["inB"] ?? 0}框/${x["inQ"] ?? 0}件 · 出 ${x["outQ"] ?? 0}件${fresh ? " · ⚠近48h未定（他机可能还未推送）" : ""}",
-                      style: TextStyle(
-                          fontSize: 12,
-                          color: fresh ? const Color(0xFFE65100) : Colors.blueGrey)),
-                  const SizedBox(height: 8),
-                  const Text("入库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF2E7D32))),
-                  if (ins.isEmpty)
-                    const Text("当日无入库笔", style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  ...ins.map((e) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 3),
-                      child: Text(
-                          "${fmt(e["t"] as num?)}  ${e["code"]}  ${_fmtInvNum((e["q"] as num?)?.toDouble() ?? 0)}件${(e["lot"] ?? "").toString().isNotEmpty ? " · 批${e["lot"]}" : ""}${(e["gl"] ?? "").toString().isNotEmpty ? " · ${e["gl"]}" : ""} · ${e["op"] ?? ""}",
-                          style: const TextStyle(fontSize: 12)))),
-                  const SizedBox(height: 10),
-                  const Text("出库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFFE65100))),
-                  if (outs.isEmpty)
-                    const Text("当日无出库单（已发未转的货不在这——见卡角标）", style: TextStyle(fontSize: 12, color: Colors.grey)),
-                  ...outs.map((e) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 3),
-                      child: Text(
-                          "${fmt(e["t"] as num?)}  ${e["no"]}  ${(e["bc"] ?? "").toString().split(";").first}  ${_fmtInvNum((e["q"] as num?)?.toDouble() ?? 0)}件${(e["to"] ?? "").toString().isNotEmpty ? " →${e["to"]}" : ""} · ${e["op"] ?? ""}",
-                          style: const TextStyle(fontSize: 12)))),
-                ])));
+                    controller: ctlr,
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 20),
+                    children: [
+                      Text("${x["d"]} 当日明细",
+                          style: const TextStyle(
+                              fontSize: 15, fontWeight: FontWeight.w700)),
+                      Text(
+                          "入 ${(x["inN"] ?? 0)}笔/${x["inB"] ?? 0}框/${x["inQ"] ?? 0}件 · 出 ${x["outQ"] ?? 0}件${fresh ? " · ⚠近48h未定（他机可能还未推送）" : ""}",
+                          style: TextStyle(
+                              fontSize: 12,
+                              color: fresh
+                                  ? const Color(0xFFE65100)
+                                  : Colors.blueGrey)),
+                      const SizedBox(height: 8),
+                      const Text("入库",
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFF2E7D32))),
+                      if (ins.isEmpty)
+                        const Text("当日无入库笔",
+                            style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      ...ins.map((e) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: Text(
+                              "${fmt(e["t"] as num?)}  ${e["code"]}  ${_fmtInvNum((e["q"] as num?)?.toDouble() ?? 0)}件${(e["lot"] ?? "").toString().isNotEmpty ? " · 批${e["lot"]}" : ""}${(e["gl"] ?? "").toString().isNotEmpty ? " · ${e["gl"]}" : ""} · ${e["op"] ?? ""}",
+                              style: const TextStyle(fontSize: 12)))),
+                      const SizedBox(height: 10),
+                      const Text("出库",
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFFE65100))),
+                      if (outs.isEmpty)
+                        const Text("当日无出库单（已发未转的货不在这——见卡角标）",
+                            style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      ...outs.map((e) => Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: Text(
+                              "${fmt(e["t"] as num?)}  ${e["no"]}  ${(e["bc"] ?? "").toString().split(";").first}  ${_fmtInvNum((e["q"] as num?)?.toDouble() ?? 0)}件${(e["to"] ?? "").toString().isNotEmpty ? " →${e["to"]}" : ""} · ${e["op"] ?? ""}",
+                              style: const TextStyle(fontSize: 12)))),
+                    ])));
   }
 
   Future<void> _loadWatch() async {
@@ -2273,9 +2557,11 @@ class _PartProfilePageState extends State<PartProfilePage> {
       final r = await AuthApi.watchlistGet();
       if (!mounted) return;
       final list = List<Map>.from(r["list"] ?? []);
-      final mine = list.where((w) =>
-          (w["partNo"]?.toString() ?? "").toUpperCase() ==
-          widget.partNo.toUpperCase()).toList();
+      final mine = list
+          .where((w) =>
+              (w["partNo"]?.toString() ?? "").toUpperCase() ==
+              widget.partNo.toUpperCase())
+          .toList();
       setState(() {
         _watched = mine.isNotEmpty;
         _watchRow = mine.isEmpty ? null : mine.first;
@@ -2292,7 +2578,8 @@ class _PartProfilePageState extends State<PartProfilePage> {
           qty: cfg["qty"] as int,
           itemName: _itemNameCache,
           due: cfg["due"] as String,
-          auto: cfg["auto"] as bool);
+          auto: cfg["auto"] as bool,
+          shortOk: (cfg["shortOk"] as bool?) ?? false);
       if (!mounted) return;
       if (r0 == null) return; // 用户经闸改选"去开领料单"
       final r = r0;
@@ -2312,6 +2599,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
     }
     final w = _watchRow ?? {};
     final tgt = (w["target"] as num?)?.toInt() ?? 0;
+    final arrN = (w["arrived"] as num?)?.toInt() ?? 0; // ㉖v251 不够数先开单按钮判据
     final act = await showDialog<String>(
         context: context,
         builder: (c2) => AlertDialog(
@@ -2319,7 +2607,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
                   style: const TextStyle(fontSize: 15)),
               content: Text(
                   tgt > 0
-                      ? "预订 $tgt 筐 · 已到 ${(w["arrived"] as num?)?.toInt() ?? 0} 筐${(w["due"]?.toString() ?? "").isNotEmpty ? " · 期望 ${w["due"]}" : ""}\n${w["done"] == true ? "已自动开单：${w["reqNo"] ?? ""}" : "够数后自动开领料单并通知仓管"}"
+                      ? "预订 $tgt 筐 · 已到 $arrN 筐${(w["due"]?.toString() ?? "").isNotEmpty ? " · 期望 ${w["due"]}" : ""}\n${w["done"] == true ? "已自动开单：${w["reqNo"] ?? ""}" : "够数后自动开领料单并通知仓管"}"
                       : "到料时站内通知你（纯提醒模式）${w["done"] == true ? " · 已到料" : ""}",
                   style: const TextStyle(fontSize: 13, height: 1.5)),
               actions: [
@@ -2330,6 +2618,12 @@ class _PartProfilePageState extends State<PartProfilePage> {
                     onPressed: () => Navigator.pop(c2, "off"),
                     child: const Text("取消预约",
                         style: TextStyle(color: Colors.orange))),
+                // ㉖v251 等货中且已有到料→按实际到料先开单，不再干等凑够
+                if (tgt > 0 && arrN > 0 && w["done"] != true)
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2, "fill"),
+                      child: Text("不够数先开单($arrN框)",
+                          style: const TextStyle(color: Color(0xFFEF6C00)))),
                 FilledButton(
                     style: FilledButton.styleFrom(
                         backgroundColor: const Color(0xFF00897B)),
@@ -2338,6 +2632,34 @@ class _PartProfilePageState extends State<PartProfilePage> {
               ],
             ));
     if (!mounted || act == null) return;
+    if (act == "fill") {
+      final go = await showDialog<bool>(
+          context: context,
+          builder: (c2) => AlertDialog(
+                  title: const Text("不够数先开单", style: TextStyle(fontSize: 15)),
+                  content: Text(
+                      "零件 ${widget.partNo} 已到料 $arrN/$tgt 框。\n\n确认货就这些？将按实际到料 $arrN 框为你开领料单，本轮预约随之结束（后续再到货不再累计到这单）。"),
+                  actions: [
+                    TextButton(
+                        onPressed: () => Navigator.pop(c2, false),
+                        child: const Text("再等等")),
+                    FilledButton(
+                        onPressed: () => Navigator.pop(c2, true),
+                        child: Text("按 $arrN 框开单")),
+                  ]));
+      if (go != true || !mounted) return;
+      final r = await AuthApi.watchFill(widget.partNo);
+      if (!mounted) return;
+      if (r["ok"] != true) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text("先开单失败：${r["msg"]}")));
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("已按实际到料 $arrN 框开领料单"), backgroundColor: Colors.green));
+      await _loadWatch();
+      return;
+    }
     if (act == "off") {
       final r = await AuthApi.watchlistSet(widget.partNo, false);
       if (!mounted) return;
@@ -2346,21 +2668,23 @@ class _PartProfilePageState extends State<PartProfilePage> {
             .showSnackBar(SnackBar(content: Text("取消失败：${r["msg"]}")));
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("已取消预约"), backgroundColor: Colors.orange));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("已取消预约"), backgroundColor: Colors.orange));
       await _loadWatch();
       return;
     }
     final cfg = await bookingDlgOf(context, widget.partNo, _itemNameCache,
         initQty: tgt,
         initDue: w["due"]?.toString() ?? "",
-        initAuto: w["auto"] != false);
+        initAuto: w["auto"] != false,
+        initShortOk: w["shortOk"] == true);
     if (cfg == null || !mounted) return;
     final r0 = await watchBookWithGate(context, widget.partNo,
         qty: cfg["qty"] as int,
         itemName: _itemNameCache,
         due: cfg["due"] as String,
-        auto: cfg["auto"] as bool);
+        auto: cfg["auto"] as bool,
+        shortOk: (cfg["shortOk"] as bool?) ?? false);
     if (!mounted) return;
     if (r0 == null) return; // 用户经闸改选"去开领料单"
     final r = r0;
@@ -2412,7 +2736,9 @@ class _PartProfilePageState extends State<PartProfilePage> {
       _ => const _PpBadge("账外", Color(0xFF9E9E9E)),
     };
     // v55 检验态徽章 + 检验下架入口（在库·AGV货架位·无在途工单·有检验权限）
-    final isShelf = b.inStock && RegExp(r'^NB02-').hasMatch(b.curLoc) && !b.curLoc.contains('-CK-');
+    final isShelf = b.inStock &&
+        RegExp(r'^NB02-').hasMatch(b.curLoc) &&
+        !b.curLoc.contains('-CK-');
     final canInsp = isShelf && b.inspBusy.isEmpty && Auth.can("inspect_mode");
     Widget? inspBadge;
     if (b.inStock && (b.insp != null || b.inspBusy.isNotEmpty)) {
@@ -2434,9 +2760,11 @@ class _PartProfilePageState extends State<PartProfilePage> {
           margin: const EdgeInsets.only(left: 6),
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
           decoration: BoxDecoration(
-              color: col.withOpacity(.1), borderRadius: BorderRadius.circular(7)),
+              color: col.withOpacity(.1),
+              borderRadius: BorderRadius.circular(7)),
           child: Text(txt,
-              style: TextStyle(fontSize: 10.5, color: col, fontWeight: FontWeight.w600)));
+              style: TextStyle(
+                  fontSize: 10.5, color: col, fontWeight: FontWeight.w600)));
     }
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 5),
@@ -2477,17 +2805,24 @@ class _PartProfilePageState extends State<PartProfilePage> {
             if (b.cancelled)
               _stepLine(Icons.block, Colors.grey, "已作废", "人工作废，不计入库存"),
             if (b.outTime != null)
-              _stepLine(Icons.logout, const Color(0xFFE65100), isMoveToLoc(b.outTo) ? "移仓" : "出库", // ㉖v100 去向非线边仓=移仓（与服务器同判据，不计出库口径）
+              _stepLine(
+                  Icons.logout,
+                  const Color(0xFFE65100),
+                  isMoveToLoc(b.outTo)
+                      ? "移仓"
+                      : "出库", // ㉖v100 去向非线边仓=移仓（与服务器同判据，不计出库口径）
                   "${_t(b.outTime)}  ·  ${b.outFrom.isNotEmpty ? b.outFrom : "?"} → ${b.outTo}  ·  ${b.outMove.isEmpty ? "" : "${b.outMove}搬运 · "}${b.outOrder}${b.outLink.isNotEmpty ? "（领料单 ${b.outLink}）" : ""}  ·  ${b.outOperator}"),
             if (b.agvChain.isNotEmpty)
               _stepLine(Icons.route, Colors.indigo, "AGV链路", b.agvChain)
             else if (b.bizChain.isNotEmpty)
               // ㉖v205 人工搬运出库：只有转MES/签收业务节点，如实标"业务链路"（灰，与网页版口径对齐）
-              _stepLine(Icons.link, const Color(0xFF78909C), "业务链路", b.bizChain),
+              _stepLine(
+                  Icons.link, const Color(0xFF78909C), "业务链路", b.bizChain),
             if (canInsp)
               Padding(
                   padding: const EdgeInsets.only(top: 4),
-                  child: Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                  child:
+                      Row(mainAxisAlignment: MainAxisAlignment.end, children: [
                     TextButton.icon(
                         onPressed: () => _inspStart(b),
                         icon: const Icon(Icons.local_shipping_outlined,
@@ -2526,8 +2861,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
       if (st == null || !mounted) return;
       station = st;
     }
-    final r = await AuthApi.inspectStart(b.curLoc, "库存页发起检验",
-        station: station);
+    final r = await AuthApi.inspectStart(b.curLoc, "库存页发起检验", station: station);
     if (!mounted) return;
     if (r["ok"] == true) {
       final rec = Map.from(r["rec"] ?? {});
@@ -2567,8 +2901,8 @@ class _PartProfilePageState extends State<PartProfilePage> {
               const Padding(
                   padding: EdgeInsets.all(12),
                   child: Text("指定检验下架站台",
-                      style:
-                          TextStyle(fontWeight: FontWeight.bold, fontSize: 15))),
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 15))),
               ...free.map((st) => ListTile(
                   leading: const Icon(Icons.pin_drop_outlined,
                       color: Color(0xFF00897B)),
@@ -2591,25 +2925,26 @@ class _PartProfilePageState extends State<PartProfilePage> {
             (r["events"] is List) ? List<Map>.from(r["events"]) : <Map>[];
         if (evs.isNotEmpty) {
           String fmt(int n) {
-          final dt = DateTime.fromMillisecondsSinceEpoch(n);
-          String p(int x) => x.toString().padLeft(2, "0");
-          return "${p(dt.month)}-${p(dt.day)} ${p(dt.hour)}:${p(dt.minute)}";
-        }
-        return evs.map((e) {
-          final k = e["kind"]?.toString() ?? "";
-          final tt = (e["t"] as num?)?.toInt() ?? 0;
-          final t1 = e["title"]?.toString() ?? "";
-          final det = [
-            e["detail"]?.toString() ?? "",
-            e["actor"]?.toString() ?? ""
-          ].where((s) => s.isNotEmpty).join(" · ");
-          return <Object?>[
-            _TracePageState._kIcon[k] ?? Icons.circle,
-            _TracePageState._kCol[k] ?? Colors.blueGrey,
-            tt > 0 ? "${fmt(tt)}  $t1" : t1,
-            det
-          ];
-        }).toList();
+            final dt = DateTime.fromMillisecondsSinceEpoch(n);
+            String p(int x) => x.toString().padLeft(2, "0");
+            return "${p(dt.month)}-${p(dt.day)} ${p(dt.hour)}:${p(dt.minute)}";
+          }
+
+          return evs.map((e) {
+            final k = e["kind"]?.toString() ?? "";
+            final tt = (e["t"] as num?)?.toInt() ?? 0;
+            final t1 = e["title"]?.toString() ?? "";
+            final det = [
+              e["detail"]?.toString() ?? "",
+              e["actor"]?.toString() ?? ""
+            ].where((s) => s.isNotEmpty).join(" · ");
+            return <Object?>[
+              _TracePageState._kIcon[k] ?? Icons.circle,
+              _TracePageState._kCol[k] ?? Colors.blueGrey,
+              tt > 0 ? "${fmt(tt)}  $t1" : t1,
+              det
+            ];
+          }).toList();
         }
       }
     } catch (_) {}
@@ -2621,36 +2956,38 @@ class _PartProfilePageState extends State<PartProfilePage> {
     showDialog(
         context: context,
         builder: (c2) => AlertDialog(
-            title: Text("🔎 全链路 · $code"),
-            content: SizedBox(
-                width: double.maxFinite,
-                child: FutureBuilder<List<List<Object?>>>(
-                    future: _traceServerFirst(code),
-                    builder: (ctx, snap) {
-                      if (snap.connectionState != ConnectionState.done)
-                        return const Center(
-                            child: SizedBox(
-                                width: 26,
-                                height: 26,
-                                child: CircularProgressIndicator(
-                                    strokeWidth: 2.5)));
-                      final ns = snap.data ?? const [];
-                      if (ns.isEmpty)
-                        return const Text(
-                            "该标签在采集/账本/AGV/出库各域均无记录（可能属更早归档）",
-                            style: TextStyle(fontSize: 12.5));
-                      return ListView(
-                          shrinkWrap: true,
-                          children: ns
-                              .map((n) => _stepLine(n[0] as IconData,
-                                  n[1] as Color, n[2] as String, n[3] as String))
-                              .toList());
-                    })),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(c2),
-                  child: const Text("关闭")),
-            ]));
+                title: Text("🔎 全链路 · $code"),
+                content: SizedBox(
+                    width: double.maxFinite,
+                    child: FutureBuilder<List<List<Object?>>>(
+                        future: _traceServerFirst(code),
+                        builder: (ctx, snap) {
+                          if (snap.connectionState != ConnectionState.done)
+                            return const Center(
+                                child: SizedBox(
+                                    width: 26,
+                                    height: 26,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2.5)));
+                          final ns = snap.data ?? const [];
+                          if (ns.isEmpty)
+                            return const Text("该标签在采集/账本/AGV/出库各域均无记录（可能属更早归档）",
+                                style: TextStyle(fontSize: 12.5));
+                          return ListView(
+                              shrinkWrap: true,
+                              children: ns
+                                  .map((n) => _stepLine(
+                                      n[0] as IconData,
+                                      n[1] as Color,
+                                      n[2] as String,
+                                      n[3] as String))
+                                  .toList());
+                        })),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(c2),
+                      child: const Text("关闭")),
+                ]));
   }
 
   Future<List<List<Object?>>> _traceNodes(String code) async {
@@ -2666,7 +3003,8 @@ class _PartProfilePageState extends State<PartProfilePage> {
     final rs = await Future.wait([
       // ㉖v211 兜底路径按标签精确过滤：全库流水 4438>limit、出库单 1771>500（N26H030146 出库单
       // 倒序排 1770），旧写法无过滤全量拉回再端上筛——老框的采集/出库节点整段隐身
-      AuthApi.scanlogGet(limit: 2000, code: code).catchError((_) => <String, dynamic>{}),
+      AuthApi.scanlogGet(limit: 2000, code: code)
+          .catchError((_) => <String, dynamic>{}),
       AuthApi.outboundGet(code: code).catchError((_) => <String, dynamic>{}),
       AuthApi.inspectList().catchError((_) => <String, dynamic>{}),
       AuthApi.agvTaskOf(code).catchError((_) => <String, dynamic>{}),
@@ -2709,7 +3047,8 @@ class _PartProfilePageState extends State<PartProfilePage> {
       final v = ch[st[0]];
       if (v is num && v > 0) nodes.add([st[2], st[3], st[1], fm(v)]);
     }
-    for (final o in (ob["items"] is List ? List<Map>.from(ob["items"]) : <Map>[])) {
+    for (final o
+        in (ob["items"] is List ? List<Map>.from(ob["items"]) : <Map>[])) {
       final it = (List<Map>.from(o["items"] ?? [])).firstWhere(
           (i) => i["barcode"]?.toString().toUpperCase() == code,
           orElse: () => const {});
@@ -2752,18 +3091,20 @@ class _PartProfilePageState extends State<PartProfilePage> {
                         : Icons.shopping_cart_outlined,
                     size: 18,
                     color: _watched ? Colors.amber : Colors.white),
-                label: Text(_watched
-                    ? (((_watchRow?["target"] as num?)?.toInt() ?? 0) > 0
-                        ? "已预约 ${(_watchRow?["arrived"] as num?)?.toInt() ?? 0}/${(_watchRow?["target"] as num?)?.toInt() ?? 0}筐"
-                        : "已预约")
-                    : "预约来料",
+                label: Text(
+                    _watched
+                        ? (((_watchRow?["target"] as num?)?.toInt() ?? 0) > 0
+                            ? "已预约 ${(_watchRow?["arrived"] as num?)?.toInt() ?? 0}/${(_watchRow?["target"] as num?)?.toInt() ?? 0}筐"
+                            : "已预约")
+                        : "预约来料",
                     style: const TextStyle(fontSize: 12))),
             // ㉖v177 入口③：档案页信息最全（累计出入库/当前库存/在途需求），在此反馈质量最高
             TextButton.icon(
                 style: TextButton.styleFrom(foregroundColor: Colors.white),
                 onPressed: () => shortageFeedback(context, [widget.partNo],
                     hint: "来自零件档案 · 已自动附全厂在架与在途需求"),
-                icon: const Icon(Icons.campaign_outlined, size: 18, color: Colors.white),
+                icon: const Icon(Icons.campaign_outlined,
+                    size: 18, color: Colors.white),
                 label: const Text("反馈缺料", style: TextStyle(fontSize: 12)))
           ]),
       body: FutureBuilder<_PPData>(
@@ -2831,12 +3172,14 @@ class _PartProfilePageState extends State<PartProfilePage> {
                                               Text("已发未转 ${d.pendingBoxes} 框",
                                                   style: const TextStyle(
                                                       fontSize: 12,
-                                                      color: Color(0xFFB26A00))),
+                                                      color:
+                                                          Color(0xFFB26A00))),
                                             if (d.ghostBoxes > 0)
                                               Text("账外 ${d.ghostBoxes} 框",
                                                   style: const TextStyle(
                                                       fontSize: 12,
-                                                      color: Color(0xFF9E9E9E))),
+                                                      color:
+                                                          Color(0xFF9E9E9E))),
                                           ])),
                                       Text("当前库存 ",
                                           style: const TextStyle(
@@ -2848,6 +3191,27 @@ class _PartProfilePageState extends State<PartProfilePage> {
                                               fontWeight: FontWeight.w800,
                                               color: const Color(0xFF2E7D32))),
                                     ]),
+                                // ㉖v255 一楼待转入横幅：账上有货≠现在能发——转入后才可发料（服务器 recv 桶，X=0 不显示）
+                                if (d.recvBoxes > 0) ...[
+                                  const SizedBox(height: 6),
+                                  Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 9, vertical: 6),
+                                      decoration: BoxDecoration(
+                                          color: const Color(0xFFFFF3E0),
+                                          borderRadius:
+                                              BorderRadius.circular(7),
+                                          border: Border.all(
+                                              color: const Color(0xFFFFB74D))),
+                                      child: Text(
+                                          "🏜 其中 ${d.recvBoxes} 框（${_fmtInvNum(d.recvQty)} 件）在一楼待转入，转入后才能发料"
+                                          "${d.recvSlotsTip.isEmpty ? "" : "（格 ${d.recvSlotsTip}）"}",
+                                          style: const TextStyle(
+                                              fontSize: 11.5,
+                                              color: Color(0xFFE65100),
+                                              fontWeight: FontWeight.w600))),
+                                ],
                                 const SizedBox(height: 4),
                                 Text(
                                     d.serverOk
@@ -3009,7 +3373,8 @@ class _WatchTabState extends State<_WatchTab> {
     // ㉖v96 人性化：候选行附当前在库筐数/件数（库存页同口径），在库>0 排前——已到料的先看，避免重复预约
     final hits0 = known.map((h) {
       final pr = widget.agg.parts[h.partNo];
-      return _PnHit2(h.partNo, h.itemName, pr?.inBoxes ?? 0, (pr?.inStockQty ?? 0).toInt());
+      return _PnHit2(h.partNo, h.itemName, pr?.inBoxes ?? 0,
+          (pr?.inStockQty ?? 0).toInt());
     }).toList()
       ..sort((a, b) => a.boxes != b.boxes
           ? b.boxes.compareTo(a.boxes)
@@ -3093,9 +3458,7 @@ class _WatchTabState extends State<_WatchTab> {
                               picked = _PnHit2(typed, "", 0, 0);
                               Navigator.pop(dctx);
                             },
-                      child: Text(typed.isEmpty
-                          ? "手动预约该零件号"
-                          : "预约「$typed」")),
+                      child: Text(typed.isEmpty ? "手动预约该零件号" : "预约「$typed」")),
                 ],
               );
             }));
@@ -3130,7 +3493,8 @@ class _WatchTabState extends State<_WatchTab> {
         qty: cfg["qty"] as int,
         itemName: picked!.itemName,
         due: cfg["due"] as String,
-        auto: cfg["auto"] as bool);
+        auto: cfg["auto"] as bool,
+        shortOk: (cfg["shortOk"] as bool?) ?? false);
     if (!mounted) return;
     if (r0 == null) return; // 用户经闸改选"去开领料单"
     final r = r0;
@@ -3150,9 +3514,15 @@ class _WatchTabState extends State<_WatchTab> {
   // ㉖v94n 预约设置弹层：预订框数(0=仅提醒旧模式) + 期望到货 + 够数自动开领料单
   // ㉖v96 弹窗体提为顶层 bookingDlgOf 共享——零件档案页「预约来料」按钮同弹窗同功能
   Future<Map?> _bookingDlg(String pn, String itemName,
-          {int initQty = 0, String initDue = "", bool initAuto = true}) =>
+          {int initQty = 0,
+          String initDue = "",
+          bool initAuto = true,
+          bool initShortOk = false}) =>
       bookingDlgOf(context, pn, itemName,
-          initQty: initQty, initDue: initDue, initAuto: initAuto);
+          initQty: initQty,
+          initDue: initDue,
+          initAuto: initAuto,
+          initShortOk: initShortOk);
 
   // ㉖v94n 修改已有预约（卡片铅笔按钮）
   Future<void> _edit(Map w) async {
@@ -3163,13 +3533,15 @@ class _WatchTabState extends State<_WatchTab> {
     final cfg = await _bookingDlg(pn, nm,
         initQty: (w["target"] as num?)?.toInt() ?? 0,
         initDue: w["due"]?.toString() ?? "",
-        initAuto: w["auto"] != false);
+        initAuto: w["auto"] != false,
+        initShortOk: w["shortOk"] == true);
     if (cfg == null || !mounted) return;
     final r0 = await watchBookWithGate(context, pn,
         qty: cfg["qty"] as int,
         itemName: nm,
         due: cfg["due"] as String,
-        auto: cfg["auto"] as bool);
+        auto: cfg["auto"] as bool,
+        shortOk: (cfg["shortOk"] as bool?) ?? false);
     if (!mounted) return;
     if (r0 == null) return; // 用户经闸改选"去开领料单"
     final r = r0;
@@ -3197,14 +3569,16 @@ class _WatchTabState extends State<_WatchTab> {
   @override
   Widget build(BuildContext context) {
     // 已到料（当前在架>0）排前面，让"等到的"最先看到；其余按预约时间倒序
-    final sorted = _items.toList()..sort((a, b) {
-      final pa = widget.agg.parts[a["partNo"]?.toString()];
-      final pb = widget.agg.parts[b["partNo"]?.toString()];
-      final ha = (pa != null && pa.inBoxes > 0) ? 1 : 0;
-      final hb = (pb != null && pb.inBoxes > 0) ? 1 : 0;
-      if (ha != hb) return hb - ha;
-      return ((b["at"] as num?)?.toInt() ?? 0).compareTo((a["at"] as num?)?.toInt() ?? 0);
-    });
+    final sorted = _items.toList()
+      ..sort((a, b) {
+        final pa = widget.agg.parts[a["partNo"]?.toString()];
+        final pb = widget.agg.parts[b["partNo"]?.toString()];
+        final ha = (pa != null && pa.inBoxes > 0) ? 1 : 0;
+        final hb = (pb != null && pb.inBoxes > 0) ? 1 : 0;
+        if (ha != hb) return hb - ha;
+        return ((b["at"] as num?)?.toInt() ?? 0)
+            .compareTo((a["at"] as num?)?.toInt() ?? 0);
+      });
     final arrived = sorted.where((w) {
       final p = widget.agg.parts[w["partNo"]?.toString()];
       return p != null && p.inBoxes > 0;
@@ -3214,10 +3588,12 @@ class _WatchTabState extends State<_WatchTab> {
           padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
           child: Row(children: [
             Expanded(
-                child: Text(_items.isEmpty
-                    ? "到料时通知我的零件号（入库后推送，同零件10分钟聚合一条）"
-                    : "共 ${_items.length} 个预约 · $arrived 个已到料在架",
-                    style: const TextStyle(fontSize: 12, color: Colors.blueGrey))),
+                child: Text(
+                    _items.isEmpty
+                        ? "到料时通知我的零件号（入库后推送，同零件10分钟聚合一条）"
+                        : "共 ${_items.length} 个预约 · $arrived 个已到料在架",
+                    style:
+                        const TextStyle(fontSize: 12, color: Colors.blueGrey))),
             FilledButton.icon(
                 style: FilledButton.styleFrom(
                     backgroundColor: const Color(0xFF00897B)),
@@ -3255,29 +3631,39 @@ class _WatchTabState extends State<_WatchTab> {
                                 ? (inStock
                                         ? "✅ 已到料 · 在架 ${pr.inBoxes} 框 · ${_fmtInvNum(pr.inStockQty)} 件"
                                         : "⏳ 等待来料中") +
-                                    (at > 0 ? " · 预约于 ${_invRelTime(DateTime.fromMillisecondsSinceEpoch(at))}" : "")
+                                    (at > 0
+                                        ? " · 预约于 ${_invRelTime(DateTime.fromMillisecondsSinceEpoch(at))}"
+                                        : "")
                                 : done
                                     ? "✅ 已转领料单 $reqNo"
                                     : "到料 $got/$tgt 框（${(got * 100 / tgt).round()}%）· 在架 ${(w["stock"] as num?)?.toInt() ?? 0}" +
                                         (overdue ? " · ⏰已超期望日" : "") +
-                                        (w["due"]?.toString().isNotEmpty == true ? " · 期望 ${w["due"]}" : "");
+                                        (w["due"]?.toString().isNotEmpty == true
+                                            ? " · 期望 ${w["due"]}"
+                                            : "");
                             return Card(
                                 margin: const EdgeInsets.symmetric(vertical: 4),
                                 color: done
                                     ? const Color(0xFFE8F5E9)
                                     : overdue
                                         ? const Color(0xFFFFF3E0)
-                                        : inStock ? const Color(0xFFF1F8E9) : null,
+                                        : inStock
+                                            ? const Color(0xFFF1F8E9)
+                                            : null,
                                 child: ListTile(
                                   dense: true,
                                   leading: Icon(
-                                      done ? Icons.check_circle : Icons.shopping_cart,
+                                      done
+                                          ? Icons.check_circle
+                                          : Icons.shopping_cart,
                                       color: done
                                           ? const Color(0xFF2E7D32)
                                           : const Color(0xFF00897B),
                                       size: 22),
                                   title: Text(
-                                      pr != null && pr.itemName.isNotEmpty ? "${pn}  ${pr.itemName}" : pn,
+                                      pr != null && pr.itemName.isNotEmpty
+                                          ? "${pn}  ${pr.itemName}"
+                                          : pn,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: const TextStyle(
@@ -3285,7 +3671,8 @@ class _WatchTabState extends State<_WatchTab> {
                                           fontFamily: "monospace",
                                           fontWeight: FontWeight.w600)),
                                   subtitle: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
                                         Text(sub,
                                             style: TextStyle(
@@ -3297,12 +3684,18 @@ class _WatchTabState extends State<_WatchTab> {
                                                         : Colors.grey)),
                                         if (tgt > 0 && !done)
                                           ClipRRect(
-                                              borderRadius: BorderRadius.circular(3),
+                                              borderRadius:
+                                                  BorderRadius.circular(3),
                                               child: LinearProgressIndicator(
                                                   minHeight: 4,
-                                                  value: (got / tgt).clamp(0.0, 1.0),
-                                                  backgroundColor: const Color(0xFFE0E0E0),
-                                                  color: overdue ? Colors.deepOrange : const Color(0xFF00897B)))
+                                                  value: (got / tgt)
+                                                      .clamp(0.0, 1.0),
+                                                  backgroundColor:
+                                                      const Color(0xFFE0E0E0),
+                                                  color: overdue
+                                                      ? Colors.deepOrange
+                                                      : const Color(
+                                                          0xFF00897B)))
                                       ]),
                                   trailing: Row(
                                       mainAxisSize: MainAxisSize.min,
@@ -3310,8 +3703,10 @@ class _WatchTabState extends State<_WatchTab> {
                                         if (tgt > 0)
                                           IconButton(
                                               tooltip: "修改预约",
-                                              icon: const Icon(Icons.edit_outlined,
-                                                  size: 18, color: Color(0xFF00897B)),
+                                              icon: const Icon(
+                                                  Icons.edit_outlined,
+                                                  size: 18,
+                                                  color: Color(0xFF00897B)),
                                               onPressed: () => _edit(w)),
                                         IconButton(
                                             tooltip: "查看档案",
@@ -3352,18 +3747,28 @@ class _PnHit2 extends _PnHit {
 
 /// ㉖v96 预约设置弹层（顶层共享）：预订筐数(0=仅提醒) + 期望到货 + 够数自动开领料单。
 /// 「我的预约·添加」与「零件档案·预约来料」两处入口共用，功能完全一致。
+/// ㉖v251 预订筐数支持自定义任意正整数；新增 shortOk=不够数也开单（超期望日未凑够→按实际到料先开单）。
 Future<Map?> bookingDlgOf(BuildContext ctx, String pn, String itemName,
-    {int initQty = 0, String initDue = "", bool initAuto = true}) async {
+    {int initQty = 0,
+    String initDue = "",
+    bool initAuto = true,
+    bool initShortOk = false}) async {
   int qty = initQty;
   String due = initDue;
   bool auto = initAuto;
+  bool shortOk = initShortOk;
+  const baseOpts = <int>[0, 1, 2, 3, 5, 10]; // 常用档；数值不在档内=自定义档高亮
+  final ctl = TextEditingController(
+      text: baseOpts.contains(initQty) ? "" : (initQty > 0 ? "$initQty" : ""));
   String fmtOff(int days) {
     final d = DateTime.now().add(Duration(days: days));
     return "${d.year.toString().padLeft(4, "0")}-${d.month.toString().padLeft(2, "0")}-${d.day.toString().padLeft(2, "0")}";
   }
+
   return showDialog<Map>(
       context: ctx,
       builder: (c2) => StatefulBuilder(builder: (bctx2, setSt2) {
+            final custom = !baseOpts.contains(qty) && qty > 0;
             final dueOpts = <List<String>>[
               ["", "不限"],
               [fmtOff(1), "明天"],
@@ -3388,13 +3793,45 @@ Future<Map?> bookingDlgOf(BuildContext ctx, String pn, String itemName,
                         const SizedBox(height: 6),
                         const Text("预订筐数（0=只提醒不开单）",
                             style: TextStyle(fontSize: 12)),
-                        Wrap(spacing: 6, children: [0, 1, 2, 3, 5, 10].map((v) {
-                          return ChoiceChip(
-                              label: Text(v == 0 ? "仅提醒" : "$v 筐"),
-                              selected: qty == v,
+                        Wrap(spacing: 6, children: [
+                          ...baseOpts.map((v) {
+                            return ChoiceChip(
+                                label: Text(v == 0 ? "仅提醒" : "$v 筐"),
+                                selected: qty == v,
+                                selectedColor: const Color(0xFFB2DFDB),
+                                onSelected: (_) => setSt2(() {
+                                      qty = v;
+                                      if (baseOpts.contains(v)) ctl.text = "";
+                                    }));
+                          }),
+                          ChoiceChip(
+                              label: const Text("自定义"),
+                              selected: custom,
                               selectedColor: const Color(0xFFB2DFDB),
-                              onSelected: (_) => setSt2(() => qty = v));
-                        }).toList()),
+                              onSelected: (_) => setSt2(() {
+                                    final v =
+                                        int.tryParse(ctl.text.trim()) ?? 0;
+                                    if (v > 0) qty = v.clamp(1, 9999);
+                                    if (baseOpts.contains(qty)) ctl.text = "";
+                                  })),
+                        ]),
+                        if (custom) ...[
+                          const SizedBox(height: 6),
+                          TextField(
+                              controller: ctl,
+                              autofocus: true,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(fontSize: 13),
+                              decoration: const InputDecoration(
+                                  labelText: "自定义筐数（1~9999）",
+                                  isDense: true,
+                                  suffixText: "筐",
+                                  border: OutlineInputBorder()),
+                              onChanged: (v) {
+                                final n = int.tryParse(v.trim()) ?? 0;
+                                if (n > 0 && n <= 9999) setSt2(() => qty = n);
+                              }),
+                        ],
                         if (qty > 0) ...[
                           const SizedBox(height: 6),
                           const Text("期望到货", style: TextStyle(fontSize: 12)),
@@ -3405,7 +3842,8 @@ Future<Map?> bookingDlgOf(BuildContext ctx, String pn, String itemName,
                                     label: Text(d[1]),
                                     selected: due == d[0],
                                     selectedColor: const Color(0xFFB2DFDB),
-                                    onSelected: (_) => setSt2(() => due = d[0]));
+                                    onSelected: (_) =>
+                                        setSt2(() => due = d[0]));
                               }).toList()),
                           SwitchListTile(
                               contentPadding: EdgeInsets.zero,
@@ -3413,11 +3851,23 @@ Future<Map?> bookingDlgOf(BuildContext ctx, String pn, String itemName,
                                   style: TextStyle(fontSize: 12)),
                               value: auto,
                               onChanged: (v) => setSt2(() => auto = v)),
+                          SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text("不够数也开单",
+                                  style: TextStyle(fontSize: 12)),
+                              subtitle: Text(
+                                  due.isEmpty
+                                      ? "超期望日后没凑够，也按实际到料数先开单（当前期望日=不限：无自动时点，可事后在卡片上手动先开单）"
+                                      : "超过期望日 $due 仍未凑够，一有到料就按实际数先开领料单",
+                                  style: const TextStyle(
+                                      fontSize: 11, color: Colors.grey)),
+                              value: shortOk,
+                              onChanged: (v) => setSt2(() => shortOk = v)),
                         ],
                         const SizedBox(height: 2),
                         Text(
                             qty > 0
-                                ? "来料入库累计到 $qty 筐后，按实际到料数自动开领料单并通知仓管"
+                                ? "来料入库累计到 $qty 筐后，按实际到料数自动开领料单并通知仓管${shortOk ? (due.isEmpty ? "；也可随时在「我的预约」手动不够数先开单" : "；超过期望日未凑够将按实际到料数先开单") : ""}"
                                 : "到料时站内通知你（纯提醒模式）",
                             style: const TextStyle(
                                 fontSize: 11, color: Colors.grey)),
@@ -3429,8 +3879,15 @@ Future<Map?> bookingDlgOf(BuildContext ctx, String pn, String itemName,
                 FilledButton(
                     style: FilledButton.styleFrom(
                         backgroundColor: const Color(0xFF00897B)),
-                    onPressed: () =>
-                        Navigator.pop(c2, {"qty": qty, "due": due, "auto": auto}),
+                    onPressed: () {
+                      final q = qty.clamp(0, 9999);
+                      Navigator.pop(c2, {
+                        "qty": q,
+                        "due": due,
+                        "auto": auto,
+                        "shortOk": q > 0 ? shortOk : false
+                      });
+                    },
                     child: const Text("确认预约")),
               ],
             );
@@ -3452,22 +3909,32 @@ class _TracePageState extends State<TracePage> {
   String _err = "";
   static const _kIcon = <String, IconData>{
     "scan": Icons.login, "scanx": Icons.block, "req": Icons.assignment,
-    "out": Icons.logout, "queue": Icons.hourglass_bottom, "trace": Icons.explore,
+    "out": Icons.logout, "queue": Icons.hourglass_bottom,
+    "trace": Icons.explore,
     "station": Icons.flag, "agv": Icons.forklift, "shelf": Icons.inventory_2,
-    "recv": Icons.warehouse_outlined, "tin": Icons.arrow_upward, // ㉖v130 两楼流转：一楼来料登记 / 二楼转入
+    "recv": Icons.warehouse_outlined,
+    "tin": Icons.arrow_upward, // ㉖v130 两楼流转：一楼来料登记 / 二楼转入
     "hist": Icons.history, // ㉖v205 被覆盖旧采集灰节点
     "insp": Icons.find_in_page, // ㉖v222 检验下架/收口（两端统一：服务端 trace 补检验汇聚后 PDA 可见）
   };
   static const _kCol = <String, Color>{
-    "scan": Color(0xFF2E7D32), "scanx": Color(0xFF9E9E9E), "req": Color(0xFF3949AB),
-    "out": Color(0xFFE65100), "queue": Color(0xFFE65100), "trace": Color(0xFF6A1B9A),
-    "station": Color(0xFF00897B), "agv": Color(0xFFEF6C00), "shelf": Color(0xFF00897B),
-    "recv": Color(0xFF00695C), "tin": Color(0xFF00897B), // ㉖v130 来料登记(深青) / 二楼转入(青)
+    "scan": Color(0xFF2E7D32), "scanx": Color(0xFF9E9E9E),
+    "req": Color(0xFF3949AB),
+    "out": Color(0xFFE65100), "queue": Color(0xFFE65100),
+    "trace": Color(0xFF6A1B9A),
+    "station": Color(0xFF00897B), "agv": Color(0xFFEF6C00),
+    "shelf": Color(0xFF00897B),
+    "recv": Color(0xFF00695C),
+    "tin": Color(0xFF00897B), // ㉖v130 来料登记(深青) / 二楼转入(青)
     "hist": Color(0xFF9E9E9E), // ㉖v205 覆盖历史(灰)
     "insp": Color(0xFF515BD4), // ㉖v222 检验(蓝紫，与网页旧版同族)
   };
   static const _seedName = <String, String>{
-    "task": "AGV任务", "order": "单据", "box": "框码", "part": "零件号", "unknown": "未知",
+    "task": "AGV任务",
+    "order": "单据",
+    "box": "框码",
+    "part": "零件号",
+    "unknown": "未知",
   };
 
   @override
@@ -3478,26 +3945,47 @@ class _TracePageState extends State<TracePage> {
   }
 
   @override
-  void dispose() { _q.dispose(); super.dispose(); }
+  void dispose() {
+    _q.dispose();
+    super.dispose();
+  }
 
   Future<void> _go([String? s]) async {
     final q = (s ?? _q.text).trim();
     if (q.isEmpty) {
-      if (mounted) setState(() { _err = "请输入框码 / 零件号 / 单号"; _res = null; });
+      if (mounted)
+        setState(() {
+          _err = "请输入框码 / 零件号 / 单号";
+          _res = null;
+        });
       return;
     }
-    setState(() { _loading = true; _err = ""; });
+    setState(() {
+      _loading = true;
+      _err = "";
+    });
     try {
       final r = await AuthApi.trace(q).timeout(const Duration(seconds: 10));
       if (!mounted) return;
       if (r["ok"] == true) {
-        setState(() { _res = r; _loading = false; });
+        setState(() {
+          _res = r;
+          _loading = false;
+        });
       } else {
-        setState(() { _loading = false; _err = (r["msg"] ?? "查询失败").toString(); _res = null; });
+        setState(() {
+          _loading = false;
+          _err = (r["msg"] ?? "查询失败").toString();
+          _res = null;
+        });
       }
     } catch (_) {
       if (!mounted) return;
-      setState(() { _loading = false; _err = "服务器未连通，请检查网络后重试"; _res = null; });
+      setState(() {
+        _loading = false;
+        _err = "服务器未连通，请检查网络后重试";
+        _res = null;
+      });
     }
   }
 
@@ -3512,7 +4000,75 @@ class _TracePageState extends State<TracePage> {
 
   /// 关键节点强调（出生/离场/闭环三锚点加粗底色）
   static bool _isKey(String k, String title) =>
-      title.contains("采集入库") || title.contains("入账登记") || title.contains("出库 ") || title.contains("签收确认") || title.contains("转MES") || title.contains("来料登记") || title.contains("二楼转入");
+      title.contains("采集入库") ||
+      title.contains("入账登记") ||
+      title.contains("出库 ") ||
+      title.contains("签收确认") ||
+      title.contains("转MES") ||
+      title.contains("来料登记") ||
+      title.contains("二楼转入");
+
+  static Color? _parseHex(String? s) {
+    if (s == null || !s.startsWith("#") || s.length != 7) return null;
+    final v = int.tryParse(s.substring(1), radix: 16);
+    return v == null ? null : Color(0xFF000000 | v);
+  }
+
+  /// ㉖v257 两楼六道里程碑条：达成=绿√带时刻，应达未达=红!，不涉及=灰·（三态与网页 traceBox 同契约）
+  List<Widget> _mileRow(dynamic msList) {
+    final ms = (msList as List).whereType<Map>().toList();
+    final out = <Widget>[];
+    for (int i = 0; i < ms.length; i++) {
+      final m = ms[i];
+      final t = (m["t"] as num?)?.toInt() ?? 0;
+      final need = m["need"] == true;
+      final st = t > 0 ? 0 : (need ? 1 : 2); // 0=ok 1=miss 2=na
+      final col = st == 0
+          ? const Color(0xFF2E7D32)
+          : st == 1
+              ? const Color(0xFFC62828)
+              : const Color(0xFFB0BEC5);
+      if (i > 0) {
+        final prev = (ms[i - 1]["t"] as num?)?.toInt() ?? 0;
+        out.add(Expanded(
+            child: Container(
+                height: 2,
+                margin: const EdgeInsets.only(top: 10),
+                color: prev > 0 && t > 0
+                    ? const Color(0xFF2E7D32)
+                    : const Color(0xFFCFD8DC))));
+      }
+      out.add(SizedBox(
+          width: 56,
+          child: Column(children: [
+            Container(
+                width: 20,
+                height: 20,
+                decoration: BoxDecoration(color: col, shape: BoxShape.circle),
+                child: Center(
+                    child: Text(
+                        st == 0
+                            ? "✓"
+                            : st == 1
+                                ? "!"
+                                : "·",
+                        style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white)))),
+            const SizedBox(height: 2),
+            Text(m["n"]?.toString() ?? "",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 9.5, color: col, fontWeight: FontWeight.w600)),
+            if (t > 0)
+              Text(
+                  "${DateTime.fromMillisecondsSinceEpoch(t).month}/${DateTime.fromMillisecondsSinceEpoch(t).day}",
+                  style: const TextStyle(fontSize: 8.5, color: Colors.grey)),
+          ])));
+    }
+    return out;
+  }
 
   /// 事件按自然日分组（新→旧展示更贴合"最近发生了什么"，组内保持时间正序=一生从左到右读）
   List<Map<String, Object>> _groupEvents(List<Map> evs) {
@@ -3535,17 +4091,27 @@ class _TracePageState extends State<TracePage> {
     Map<String, Object>? head;
     for (final r in rows) {
       if (r.containsKey("head")) {
-        if (head != null) { out.add(head!); out.addAll(buf.reversed); buf = []; }
+        if (head != null) {
+          out.add(head!);
+          out.addAll(buf.reversed);
+          buf = [];
+        }
         head = r;
-      } else { buf.add(r); }
+      } else {
+        buf.add(r);
+      }
     }
-    if (head != null) { out.add(head); out.addAll(buf.reversed); }
+    if (head != null) {
+      out.add(head);
+      out.addAll(buf.reversed);
+    }
     return out;
   }
 
   @override
   Widget build(BuildContext context) {
-    final evs = (_res?["events"] is List) ? List<Map>.from(_res!["events"]) : <Map>[];
+    final evs =
+        (_res?["events"] is List) ? List<Map>.from(_res!["events"]) : <Map>[];
     final _grouped = _groupEvents(evs); // ㉖v99 日期分组时间线
     final kind = _res?["kind"]?.toString() ?? "";
     final count = (_res?["count"] as num?)?.toInt() ?? evs.length;
@@ -3563,30 +4129,30 @@ class _TracePageState extends State<TracePage> {
             child: Row(children: [
               Expanded(
                   child: TextField(
-                controller: _q,
-                textInputAction: TextInputAction.search,
-                onSubmitted: (_) => _go(),
-                decoration: InputDecoration(
-                    hintText: "框码 / 零件号 / 出库单 / 领料单 / AGV任务号",
-                    isDense: true,
-                    filled: true,
-                    fillColor: Colors.white,
-                    prefixIcon: const Icon(Icons.search, size: 20),
-                    suffixIcon: IconButton(
-                        icon: const Icon(Icons.arrow_forward,
-                            size: 18, color: Color(0xFF515BD4)),
-                        onPressed: () => _go()),
-                    border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8)),
-              ))),
+                      controller: _q,
+                      textInputAction: TextInputAction.search,
+                      onSubmitted: (_) => _go(),
+                      decoration: InputDecoration(
+                        hintText: "框码 / 零件号 / 出库单 / 领料单 / AGV任务号",
+                        isDense: true,
+                        filled: true,
+                        fillColor: Colors.white,
+                        prefixIcon: const Icon(Icons.search, size: 20),
+                        suffixIcon: IconButton(
+                            icon: const Icon(Icons.arrow_forward,
+                                size: 18, color: Color(0xFF515BD4)),
+                            onPressed: () => _go()),
+                        border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(8)),
+                      ))),
             ])),
         if (_res != null)
           Padding(
               padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
               child: Row(children: [
                 Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 8, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(
                         color: const Color(0xFF515BD4).withOpacity(.1),
                         borderRadius: BorderRadius.circular(7)),
@@ -3603,6 +4169,26 @@ class _TracePageState extends State<TracePage> {
                         style: const TextStyle(
                             fontSize: 11.5, color: Colors.blueGrey))),
               ])),
+        // ㉖v257 一眼看懂：一句结论横幅 + 两楼六道里程碑条（final/milestones 服务端单源，与网页同契约）
+        if (_res != null && _res!["final"]?.toString().isNotEmpty == true)
+          Container(
+              margin: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                  color: _parseHex(_res!["finalCol"]?.toString()) ??
+                      const Color(0xFF607D8B),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Text(_res!["final"].toString(),
+                  style: const TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white))),
+        if (_res != null && _res!["milestones"] is List)
+          Padding(
+              padding: const EdgeInsets.fromLTRB(10, 2, 10, 8),
+              child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: _mileRow(_res!["milestones"]))),
         Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
@@ -3627,7 +4213,8 @@ class _TracePageState extends State<TracePage> {
                             : ListView.builder(
                                 padding:
                                     const EdgeInsets.fromLTRB(10, 0, 10, 16),
-                                itemCount: _grouped.length + (count > evs.length ? 1 : 0),
+                                itemCount: _grouped.length +
+                                    (count > evs.length ? 1 : 0),
                                 itemBuilder: (ctx, i) {
                                   if (i >= _grouped.length) {
                                     return Padding(
@@ -3642,13 +4229,17 @@ class _TracePageState extends State<TracePage> {
                                   final row = _grouped[i];
                                   if (row.containsKey("head")) {
                                     return Padding(
-                                        padding: const EdgeInsets.fromLTRB(2, 14, 2, 4),
+                                        padding: const EdgeInsets.fromLTRB(
+                                            2, 14, 2, 4),
                                         child: Row(children: [
                                           Container(
-                                              padding: const EdgeInsets.symmetric(
-                                                  horizontal: 8, vertical: 2),
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                      horizontal: 8,
+                                                      vertical: 2),
                                               decoration: BoxDecoration(
-                                                  color: const Color(0xFF515BD4),
+                                                  color:
+                                                      const Color(0xFF515BD4),
                                                   borderRadius:
                                                       BorderRadius.circular(9)),
                                               child: Text("${row["head"]}",
@@ -3685,8 +4276,7 @@ class _TracePageState extends State<TracePage> {
                                                 width: 44,
                                                 child: Column(
                                                     crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .end,
+                                                        CrossAxisAlignment.end,
                                                     children: [
                                                       Text(
                                                           dt == null
@@ -3696,10 +4286,11 @@ class _TracePageState extends State<TracePage> {
                                                               fontSize: 10.5,
                                                               fontFamily:
                                                                   "monospace",
-                                                              color:
-                                                                  Colors.blueGrey.shade400)),
-                                                      if (i < _grouped.length -
-                                                          1)
+                                                              color: Colors
+                                                                  .blueGrey
+                                                                  .shade400)),
+                                                      if (i <
+                                                          _grouped.length - 1)
                                                         Container(
                                                             width: 1.6,
                                                             height: 30,
@@ -3708,7 +4299,8 @@ class _TracePageState extends State<TracePage> {
                                                     ])),
                                             const SizedBox(width: 6),
                                             Container(
-                                                margin: const EdgeInsets.only(top: 2),
+                                                margin: const EdgeInsets.only(
+                                                    top: 2),
                                                 padding:
                                                     const EdgeInsets.all(4),
                                                 decoration: BoxDecoration(
@@ -3733,8 +4325,8 @@ class _TracePageState extends State<TracePage> {
                                                                 0.06)
                                                             : Colors.white,
                                                         borderRadius:
-                                                            BorderRadius.circular(
-                                                                7),
+                                                            BorderRadius
+                                                                .circular(7),
                                                         border: Border.all(
                                                             color: key
                                                                 ? c.withOpacity(
@@ -3742,30 +4334,34 @@ class _TracePageState extends State<TracePage> {
                                                                 : const Color(
                                                                     0xFFE7EBF2))),
                                                     child: Column(
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .start,
-                                                    children: [
-                                                  Text(title,
-                                                      style: TextStyle(
-                                                          fontSize: 12,
-                                                          fontWeight:
-                                                              FontWeight.w700,
-                                                          color: c)),
-                                                  if (detail.isNotEmpty)
-                                                    Text(detail,
-                                                        style: const TextStyle(
-                                                            fontSize: 11.5,
-                                                            color: Colors
-                                                                .blueGrey,
-                                                            height: 1.35)),
-                                                  if (actor.isNotEmpty)
-                                                    Text(actor,
-                                                        style: const TextStyle(
-                                                            fontSize: 11,
-                                                            color:
-                                                                Colors.grey)),
-                                                ]))),
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .start,
+                                                        children: [
+                                                          Text(title,
+                                                              style: TextStyle(
+                                                                  fontSize: 12,
+                                                                  fontWeight:
+                                                                      FontWeight
+                                                                          .w700,
+                                                                  color: c)),
+                                                          if (detail.isNotEmpty)
+                                                            Text(detail,
+                                                                style: const TextStyle(
+                                                                    fontSize:
+                                                                        11.5,
+                                                                    color: Colors
+                                                                        .blueGrey,
+                                                                    height:
+                                                                        1.35)),
+                                                          if (actor.isNotEmpty)
+                                                            Text(actor,
+                                                                style: const TextStyle(
+                                                                    fontSize:
+                                                                        11,
+                                                                    color: Colors
+                                                                        .grey)),
+                                                        ]))),
                                           ]));
                                 })),
       ]),

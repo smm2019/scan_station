@@ -2397,7 +2397,7 @@ class _MainPageState extends State<MainPage>
   }
 
   //【MOD‑Bug1修复：重置作废标记，解决连续录入12345后状态残留bug】
-  Future<bool> _isCodeDuplicate(String code) async {
+  Future<bool> _isCodeDuplicate(String code, {int? wt}) async {
     final exist = await _isar.scanRecords
         .filter()
         .batchIdEqualTo(_currentBatchId!)
@@ -2420,6 +2420,39 @@ class _MainPageState extends State<MainPage>
       final realLoc =
           led.map((e) => e.loc).where((l) => l.trim().isNotEmpty).join("、");
       if (realLoc.isNotEmpty) posInfo = "人工货位$realLoc";
+    }
+    final _wtNow =
+        wt ?? _workType; // ㉖v253 转入判据：优先用调用方模式快照（R154 铁律：保存链禁读实时值），缺省回退实时值
+    // ㉖v253 一楼→二楼转入=正常动线，零弹窗（用户 11-26 定性：服务端 v118 对 NB04→二楼本就放行=blockIn=false+recvLoc；
+    // 整托模式本为"一筐多标签"设计，逐标签扫=逐标签取代一楼记录，动作与单框一致，不该弹"已登记"拦人）。
+    // 命中【二楼入库模式(AGV站台/人工地面) ∧ 旧记录在一楼来料区】→ 静默作废一楼采集流水（服务器同步 cx 作废、
+    // 账本原行改位不翻倍）、直接放行按当前模式录入，只留一条不打断连扫的短提示；
+    // 其余重复形态（货架位真重复/出库复用）仍走下方三按钮弹窗，本机防重一分不松。
+    final _oldInRecv = exist.workType == 2 ||
+        (exist.groundLocation ?? "").toUpperCase().startsWith("NB04-") ||
+        posInfo.contains("NB04"); // groundLocation 可空（AGV 站台旧记录=null），必须空安全处理
+    if ((_wtNow == 0 || _wtNow == 1) && _oldInRecv) {
+      _cxLocalOpAt[scanlogKeyOf(exist)] = DateTime.now()
+          .millisecondsSinceEpoch; // ㉖v253 登记主动作废时刻（v122 新者胜仲裁）：服务器据此记 cxA 权威作废，该码旧缓存日后回灌一律压回，杜绝流水复活成双计
+      await _isar.writeTxn(() async {
+        exist.isCancel = true;
+        await _isar.scanRecords.put(exist);
+        if (exist.workType == 0 && exist.stationNo != null) {
+          final batch = await _getCurrentBatch();
+          if (batch != null) {
+            batch.usedStation = batch.usedStation.toList()
+              ..remove(exist.stationNo);
+            await _isar.batchInfos.put(batch);
+          }
+        }
+      });
+      LocalLog.op('来料转入二楼·自动作废一楼记录', exist.goodsCode);
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text("✓ $code 一楼来料记录已转入作废，本条按二楼位置入账"),
+            backgroundColor: const Color(0xFF00897B),
+            duration: const Duration(seconds: 2)));
+      return false; // 非重复：放行，继续按当前模式录入（本函数返回 true 才代表"重复已拦、中止录入"）
     }
     final res = await showDialog<String>(
       context: context,
@@ -2622,7 +2655,8 @@ class _MainPageState extends State<MainPage>
       if (await _globalDupCheck(code,
           recv: wt0 == 2, ret: ret0 && wt0 != 2, reShelf: rs0 && wt0 == 0))
         return; // ㉖① 跨批次/跨设备全局查重（服务器权威，断网降级本机全库）；来料模式带 recv；㉖v122 退库勾选带 ret（来料模式不适用）；㉖v198 重新上架勾选带 rs（仅 AGV 站台模式）
-      if (await _isCodeDuplicate(code)) return;
+      if (await _isCodeDuplicate(code, wt: wt0))
+        return; // ㉖v253 带模式快照：命中"来料区转入"形态静默放行，其余重复照拦
       if (wt0 == 0 && st0 == null) {
         if (mounted) {
           ScaffoldMessenger.of(context)
@@ -3186,7 +3220,8 @@ class _MainPageState extends State<MainPage>
           }
           if (cur != null && cur.groundLocation != loc) {
             cur.groundLocation = loc;
-            final fixRec = cur; // 外层判空后局部非空副本：闭包捕获可空变量在写事务内被提升为可空，直传报 argument_type_not_assignable
+            final fixRec =
+                cur; // 外层判空后局部非空副本：闭包捕获可空变量在写事务内被提升为可空，直传报 argument_type_not_assignable
             await _isar.writeTxn(() => _isar.scanRecords.put(fixRec));
           }
         }

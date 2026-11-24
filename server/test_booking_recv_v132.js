@@ -82,7 +82,7 @@ const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS'
     chk('S3e 跨日转入计入今日到料（PN3 got=1，t 刷新前提端到端成立）', Number((await wlOf(PN3)).got) || 0, 1);
     // ===== S4 断料预警口径不变（partBoxCounts 含 NB04） =====
     const src = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
-    const pbc = src.slice(src.indexOf('function partBoxCounts'), src.indexOf('function partBoxCounts') + 420);
+    const _p0 = src.indexOf('function partBoxCounts'); const pbc = src.slice(_p0, src.indexOf('}', src.indexOf('return m;', _p0)) + 1); // ㉖v255 窗口=函数体精确边界（旧固定 420 字符会盖进后续新增函数 recvBoxInfo 里的合法 locRecv，造成假阳性）
     chk('S4a partBoxCounts 不排除 NB04（断料预警/在架统计口径零改动）', /locRecv/.test(pbc), false);
     chkT('S4b stockWatchScan 到料循环含 locRecv 排除', /if \(\(x\.t \|\| 0\) < t0\.getTime\(\) \|\| locRecv\(x\.l\)\) continue/.test(src), '');
     // ===== S5 纯提醒型预约：NB04 阶段 watchSeen 不落键（不发"今日首次"通知） =====

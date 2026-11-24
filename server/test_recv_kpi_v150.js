@@ -61,7 +61,14 @@ async function main() {
   chkT('B3 K 白名单注册两新名', html.includes("'一楼来料登记(标签)','待入库(来料区)'"), '');
   chkT('B4 来料登记卡下钻预填 NB04 过滤流水', html.includes("['一楼来料登记(标签)',k.recvToday||0,'',\"go('flow');TF={k:'in',d:todayStr(),q:'NB04'};pgFlow()\""), '');
   chkT('B5 待入库卡下钻账本预填 NB04', html.includes("TM.lq='NB04';go('ledger')"), '');
-  chkT('B6 流水搜索字段含货位 loc', /String\(x\.loc\|\|''\)\.toUpperCase\(\)\.includes\(k\)/.test(html), '');
+  // B6 行为化（㉖v254 升级）：旧版断言只查代码含 x.loc 字符串——流水行根本没有 loc 字段（真字段=gl/st），
+  // 字符串断言全绿但搜索永远 0 命中（11-27 用户输 NB04 命中 0 实锤）。现抽出页面真实过滤表达式，喂 gl/st 数据行验真命中。
+  const _fp = /if\(TF\.q\)\{const k=TF\.q\.toUpperCase\(\);A=A\.filter\(\(x\)=>\{([\s\S]*?)\}\);/;
+  const _m = html.match(_fp);
+  let _hitIn = null;
+  try { const f = new Function('x', 'k', _m[1]); _hitIn = { recv: f({ code: 'AAA', wt: 2, gl: 'NB04-A-01-001' }, 'NB04'), rack: f({ code: 'AAA', wt: 0, st: 'NB02-CK-05' }, 'NB04'), pn: f({ code: 'AAA', pn: 'NB04X001', gl: 'NB02-A-01-1F' }, 'NB04') }; } catch (e) { _hitIn = { err: String(e) }; }
+  chk('B6 货位搜索真命中（gl=NB04行命中，站台行不命中，零件号仍可搜）', _hitIn, { recv: true, rack: false, pn: true });
+  chkT('B7 出库搜索含原货位 fromLoc（前后端同步）', /String\(i\.fromLoc \|\| ''\)\.toUpperCase\(\)\.includes\(fq\)/.test(fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8')) && html.includes("+(i.fromLoc||'')"), '');
   console.log('== C组 口径手工复算 ==');
   // 复算：今日一楼扫过的标签集合（含已转二楼）
   const _rc = new Set();
