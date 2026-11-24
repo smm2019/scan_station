@@ -67,7 +67,8 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       _kLow = "sr_low_line",
       _kProj = "sr_projects",
       _kDefDesc = "sr_def_desc", // ㉖v199d 异常描述默认值（用户要求自定义；缺料反馈弹层与缺料单共用）
-      _kShowLast = "sr_show_last"; // ㉖v179 分享模板自定义：是否随文案显示末次领用（日期+数量）
+      _kShowLast = "sr_show_last", // ㉖v179 分享模板自定义：是否随文案显示末次领用（日期+数量）
+      _kLowStockOnly = "sr_low_stock_only"; // ㉖v249 低水位口径开关：开=在架低于线即入清单(纯库存预警,不看在途需求)；关(默认)=须叠加"有人下单且不够发"(v180 防有货无人要误报)
   static const _defDescFallback = "生产急需，请安排采购/到货"; // 未自定义时的内置默认
   String _unit = "鄞州豪斯特生产部",
       _duty = "鄞州豪斯特运营部",
@@ -76,6 +77,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
   String _defDesc = _defDescFallback; // ㉖v199d 异常描述默认值（可自定义，缺料反馈弹层未显式指定描述时用它）
   bool _showLast = true; // ㉖v179 默认显示末次领用（现场最想知道的就是"多久没来过货"）
   double _lowLine = 0; // 低水位阈值（0=不启用）
+  bool _lowStockOnly = false; // ㉖v249 低水位"仅看库存"：开=低于线即算低水位（不看有没有人下单）；关(默认)=v180 须叠加真实缺口
   bool _showZero = true, _showShort = true, _showLow = true; // 口径开关（低水位阈值未开时不显示该chip）
   // ㉖v75 项目分类：物料名包含关键字（不区分大小写）即命中；默认表可在设置里增删
   static const _defProjects = ["EX11", "E281", "V446K", "EX1H", "EF2H"];
@@ -103,6 +105,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         _at = sp.getString(_kAt) ?? _at;
         _defDesc = (sp.getString(_kDefDesc) ?? "").trim().isEmpty ? _defDescFallback : sp.getString(_kDefDesc)!.trim(); // ㉖v199d
         _lowLine = (sp.getDouble(_kLow) ?? 0);
+        _lowStockOnly = sp.getBool(_kLowStockOnly) ?? false; // ㉖v249 低水位仅看库存（默认关=v180 叠加缺口行为）
         _projects = sp.getStringList(_kProj) ?? _defProjects;
         _showLast = sp.getBool(_kShowLast) ?? true; // ㉖v179 分享模板：末次领用行开关（默认显示）
       });
@@ -203,7 +206,11 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
       // ㉖v180 有货不算缺料（用户实锤"有货怎么能反馈缺货"）：旧版 low 只看库存绝对值，
       // 设了阈值就会把"在架 4000 件、无人下单"的件印成缺料单发进群+进闭环，仓管按补货白跑。
       // 现要求叠加真实缺口（有人要且不够）；零库存仍单独成立（真没货，报缺合理）。
-      final low = _lowLine > 0 && st > 1e-9 && st < _lowLine && short;
+      // ㉖v249 双模式："仅看库存"开关开=低于线即算低水位（纯库存预警,采购场景,不看在途需求）；
+      //   关(默认)=v180 须叠加缺口。叠加缺口件（low∧short）徽章仍优先显"低水位"（信息更全），
+      //   纯低库存件不因 low 入表而被误标"欠料"（它没缺口，徽章=低水位，文案如实 0 需求）。
+      final lowBand = _lowLine > 0 && st > 1e-9 && st < _lowLine; // 低于水位线（两模式共用前提）
+      final low = lowBand && (_lowStockOnly || short); // 纳入清单的判定（模式决定要不要叠加缺口）
       if (!(zero || short || low)) continue; // ㉖v75 口径开关不参与计算，全量入表由视图层筛选（切开关即时生效免重拉）
       if (zero && !hist.contains(pn) && nd <= 1e-9) continue; // 从未入库也无人要：不是缺料
       final it = _ShortageItem(pn)
@@ -213,7 +220,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         ..needQty = nd
         ..needFrom = (needFromMap[pn] ?? []).take(3).join("、")
         ..lot = zero ? "" : (lastLot[pn] ?? "")
-        ..kind = zero ? "零库存" : (low ? "低水位" : "欠料"); // ㉖v180 low 已蕴含 short，须先判 low（否则低水位徽章永不出现）
+        ..kind = zero ? "零库存" : (low ? "低水位" : "欠料"); // ㉖v180/v249 徽章序：zero→low(含叠加缺口件,信息更全优先显低水位)→short=欠料；先判 low 防低水位徽章被欠料吞
       // ㉖v108 车型两级推导（用户反馈：有的车型显示不全、有的不显示）：
       // ①物料名自带车型码优先（吉利EX11/EX1H/EF2H/沃尔沃V446K/E281…）
       // ②名称不含车型关键词的（"11-排气管后…"这类），回退用项目归属码预填——
@@ -300,6 +307,9 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     }).toList();
   }
 
+  // ㉖v249 口径计数（全量按 kind，不受口径开关影响——开关关掉不该让计数归零，防"循环置灰"）
+  int _kindCount(String kind) => _items.where((it) => it.kind == kind).length;
+
   // 项目 chip 计数（受口径开关与搜索影响，不含项目自身维度）
   int _projCount(String p) {
     final k = _search.trim().toLowerCase();
@@ -358,6 +368,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     await sp.setDouble(_kLow, _lowLine);
     await sp.setStringList(_kProj, _projects); // ㉖v75 自定义项目表
     await sp.setBool(_kShowLast, _showLast); // ㉖v179 分享模板：末次领用开关
+    await sp.setBool(_kLowStockOnly, _lowStockOnly); // ㉖v249 低水位仅看库存开关
   }
 
   Future<void> _editGlobals() async {
@@ -372,6 +383,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
     // 外层 State 的 setState 刷不到它——原先直接写 value:_showLast + setState，
     // 表现为"点了没反应"（值其实改了，但开关外观不跳，用户以为没生效）。
     bool sl = _showLast;
+    bool lso = _lowStockOnly; // ㉖v249 低水位"仅看库存"（弹窗局部状态，同 v179b 模式）
     final ok = await showDialog<bool>(
         context: context,
         builder: (ctx) => StatefulBuilder(
@@ -389,7 +401,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                   TextField(controller: a, decoration: const InputDecoration(labelText: "@人员（顿号分隔）", isDense: true)),
                   TextField(controller: dd, maxLines: 2, minLines: 1, decoration: const InputDecoration(labelText: "异常描述（默认值）", isDense: true, helperText: "缺料反馈/缺料单的异常描述默认带此文案，反馈时仍可临时改", helperStyle: TextStyle(fontSize: 10))), // ㉖v199d 用户要求：异常描述可自定义为默认字段
                   TextField(controller: pj, decoration: const InputDecoration(labelText: "项目分类（顿号/逗号分隔）", isDense: true, helperText: "物料名包含关键字即归入该项目，如 EX11、E281、V446K", helperStyle: TextStyle(fontSize: 10))),
-                  TextField(controller: l, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: "低水位阈值（件，0=不启用）", isDense: true, helperText: "在库低于此值且有人下单不够发才算缺料纳入；有货无人要=不缺货，不纳入", helperStyle: TextStyle(fontSize: 10))),
+                  TextField(controller: l, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: "低水位阈值（件，0=不启用）", isDense: true, helperText: lso ? "仅看库存已开：在架低于此值即算低水位纳入（不看在途需求）" : "在库低于此值且有人下单不够发才算缺料纳入；有货无人要=不缺货，不纳入", helperStyle: const TextStyle(fontSize: 10))), // ㉖v249 helper 随开关口径联动
                   // ㉖v179 分享模板自定义：末次领用行（日期+数量+多少天没领过）
                   SwitchListTile(
                       contentPadding: EdgeInsets.zero,
@@ -398,6 +410,15 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
                       onChanged: (v) => setDlg(() => sl = v),
                       title: const Text("显示末次领用（日期+数量）", style: TextStyle(fontSize: 13)),
                       subtitle: Text("全厂口径（含同事领的），按${_shortLastWindow}天窗口；窗口内无人领过会如实标注", style: const TextStyle(fontSize: 10.5))),
+                  // ㉖v249 低水位口径开关：默认关=v180 须叠加"有人下单不够发"（防有货无人要误报白跑）；
+                  // 开=纯库存预警口径（低于线即入清单），给采购提前备货场景用
+                  SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      dense: true,
+                      value: lso,
+                      onChanged: (v) => setDlg(() => lso = v),
+                      title: const Text("低水位仅看库存（不看在途需求）", style: TextStyle(fontSize: 13)),
+                      subtitle: Text(lso ? "低于阈值即入清单：库存预警口径，适合提前催采购；有货无人要也会列入" : "默认：须同时有人下单且不够发（v180 防\"有货无人要\"误报白跑）", style: const TextStyle(fontSize: 10.5))),
                 ]))),
             actions: [
               TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("取消")),
@@ -412,6 +433,7 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
         _defDesc = dd.text.trim().isEmpty ? _defDesc : dd.text.trim(); // ㉖v199d 异常描述默认值（空=不改）
         _lowLine = double.tryParse(l.text.trim()) ?? 0;
         _showLast = sl; // ㉖v179b 采纳弹窗内的开关值
+        _lowStockOnly = lso; // ㉖v249 采纳低水位口径开关
         final np = pj.text
             .split(RegExp(r"[、,，;；\s]+"))
             .map((e) => e.trim())
@@ -498,22 +520,27 @@ class _ShortageReportPageState extends State<ShortageReportPage> {
           ? const Center(child: CircularProgressIndicator())
           : Column(children: [
               // 口径开关 + 计数（㉖v75 切换只重算派生视图，不再拉服务器）
+              // ㉖v249 计数为 0 的口径 chip 文字置灰并带计数：用户实锤"低水位设了没显示"分不清
+              // 是开关关了还是本来没有——计数直显（计数=全量按 kind，不受口径开关影响，防循环置灰）
               Padding(
                   padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
                   child: Row(children: [
                     FilterChip(
-                        label: const Text("⛔零库存", style: TextStyle(fontSize: 11.5)),
+                        label: Text("⛔零库存 ${_kindCount("零库存")}",
+                            style: TextStyle(fontSize: 11.5, color: _kindCount("零库存") == 0 ? Colors.black26 : null)),
                         selected: _showZero,
                         onSelected: (v) => setState(() => _showZero = v)),
                     const SizedBox(width: 6),
                     FilterChip(
-                        label: const Text("📉欠料", style: TextStyle(fontSize: 11.5)),
+                        label: Text("📉欠料 ${_kindCount("欠料")}",
+                            style: TextStyle(fontSize: 11.5, color: _kindCount("欠料") == 0 ? Colors.black26 : null)),
                         selected: _showShort,
                         onSelected: (v) => setState(() => _showShort = v)),
                     if (_lowLine > 0) ...[
                       const SizedBox(width: 6),
                       FilterChip(
-                          label: const Text("⚠️低水位", style: TextStyle(fontSize: 11.5)),
+                          label: Text("⚠️低水位 ${_kindCount("低水位")}",
+                              style: TextStyle(fontSize: 11.5, color: _kindCount("低水位") == 0 ? Colors.black26 : null)),
                           selected: _showLow,
                           onSelected: (v) => setState(() => _showLow = v)),
                     ],
