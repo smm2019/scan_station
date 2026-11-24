@@ -5224,7 +5224,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                                         size: 16, color: Colors.teal)),
                             ]),
                             const SizedBox(height: 4),
-                            Wrap(spacing: 6, runSpacing: 4, children: [
+                            Wrap(spacing: 4, runSpacing: 4, children: [
                               ...codes.map((c) {
                                 final isEm = List.from(item["issued"] ?? [])
                                     .any((x) =>
@@ -5242,6 +5242,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                                             ? Colors.green.shade700
                                             : Colors.green),
                                     padding: EdgeInsets.zero,
+                                    labelPadding: const EdgeInsets.symmetric(
+                                        horizontal: 5, vertical: 2), // ㉖v247 Chip默认labelPadding水平各8是变宽主凶(v209加·件数后3列挤成2列),收到5;件数信息保留不砍
                                     visualDensity: VisualDensity.compact);
                               }),
                             ]),
