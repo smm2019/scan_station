@@ -2043,6 +2043,10 @@ class _PartProfilePageState extends State<PartProfilePage> {
   int _ppDays = 30;
   Map? _ppDaily;
   bool _ppOpen = false; // ㉖v202 每日出入库默认折叠（用户: 别挡下面的框记录），点标题行展开
+  final ScrollController _ppSc = ScrollController(); // ㉖v244 >30天档横向滚动
+
+  @override
+  void dispose() { _ppSc.dispose(); super.dispose(); } // ㉖v244 释放滚动句柄防泄漏
 
   @override
   void initState() {
@@ -2052,11 +2056,18 @@ class _PartProfilePageState extends State<PartProfilePage> {
     _loadPnDaily();
   }
 
+  /// ㉖v244 人性化：数据右锚（最近=最右），图出现时默认停在最新日期端，省得手动拖
+  void _ppJump() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _ppSc.hasClients && _ppSc.position.maxScrollExtent > 0) _ppSc.jumpTo(_ppSc.position.maxScrollExtent);
+    });
+  }
+
   Future<void> _loadPnDaily() async {
     try {
       final j = await AuthApi.pnDaily(widget.partNo, days: _ppDays);
       if (!mounted) return;
-      if (j["ok"] == true) setState(() => _ppDaily = j);
+      if (j["ok"] == true) { setState(() => _ppDaily = j); _ppJump(); }
     } catch (_) {} // 旧版服务器无端点/断网：静默=图不显示，档案主体不受影响
   }
 
@@ -2117,10 +2128,9 @@ class _PartProfilePageState extends State<PartProfilePage> {
                       color: q > 0 ? c : const Color(0xFFE3E8F0),
                       borderRadius: const BorderRadius.vertical(top: Radius.circular(2))),
                   height: q > 0 ? (q / mx * 84).clamp(4.0, 84.0) : 2)));
-      final lblEvery = cnt > 15 ? (cnt / 9).ceil() : 1;
+      final lblEvery = cnt > 30 ? 7 : cnt > 15 ? (cnt / 9).ceil() : 1; // ㉖v244 90天档定7天一签（旧÷9=10在4px列上叠成一团）
       final idx = allDays.indexOf(x);
-      cols.add(Expanded(
-          child: GestureDetector(
+      final col = GestureDetector(
               behavior: HitTestBehavior.opaque,
               // ㉖v210 传整行 x（含 inN/inB/ins/outs）：旧版只摘 d/inQ/outQ/has 四字段，
               // 弹层拿不到笔数与明细数组 → "入0笔/0框/760件"且列表全打"当日无"（11-20 截图实锤）
@@ -2139,7 +2149,11 @@ class _PartProfilePageState extends State<PartProfilePage> {
                             quarterTurns: 3,
                             child: Text((x["d"] ?? "").toString().substring(5), textAlign: TextAlign.left, style: const TextStyle(fontSize: 8, color: Colors.blueGrey)))
                         : const SizedBox.shrink(),
-                )]))));
+                )]));
+      // ㉖v244 90天档可读性修复（用户实锤：等宽压缩致每列仅~4px、柱成细线日期叠成乱码）：
+      // ≤30天维持等宽撑满（7/30档视觉零变化）；>30天改定宽 18px 列 + 外层横向滚动，
+      // 柱子/日期恢复 30 天档同样的可读宽度，横滚看历史。
+      cols.add(cnt <= 30 ? Expanded(child: col) : SizedBox(width: 18, child: col));
     }
     return Card(
         margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
@@ -2150,7 +2164,7 @@ class _PartProfilePageState extends State<PartProfilePage> {
               // 摘要——关键数不展开也能看；图体/窗口切换/口径说明只在展开时渲染，卡片高度 ~230→~44
               GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => setState(() => _ppOpen = !_ppOpen),
+                  onTap: () { setState(() => _ppOpen = !_ppOpen); if (_ppOpen) _ppJump(); }, // ㉖v244 展开即停最新日期端(90档横滚;30档无滚动自动跳过)
                   child: Row(children: [
                     const Text("📅 每日出入库", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
                     const SizedBox(width: 8),
@@ -2186,8 +2200,16 @@ class _PartProfilePageState extends State<PartProfilePage> {
                     height: 112,
                     child: days.isEmpty
                         ? const Center(child: Text("窗口内无任何出入库", style: TextStyle(fontSize: 12, color: Colors.grey)))
-                        // ㉖v202 等宽撑满(旧版固定列宽挤在左侧、右边大片空白; 且 Expanded 不可放横向滚动内)
-                        : Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols)),
+                        // ㉖v202 等宽撑满(旧版固定列宽挤在左侧、右边大片空白)
+                        // ㉖v244 ≤30天维持等宽撑满(Expanded)；>30天(90档)定宽列+横滚：旧版同法
+                        // 等宽压缩致每列~4px不可读(用户实锤),Expanded 不可放横向滚动内故分档
+                        : cnt <= 30
+                            ? Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols)
+                            : SingleChildScrollView(
+                                controller: _ppSc,
+                                scrollDirection: Axis.horizontal,
+                                reverse: false,
+                                child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: cols))),
                 const SizedBox(height: 2),
                 Text("窗口合计：入 $totIn 件 · 出 $totOut 件${pendQ > 0 ? " · 🕓已发未转 $pendQ 件（无逐日时刻，不计入橙柱）" : ""}",
                     style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: Color(0xFF37474F))),
