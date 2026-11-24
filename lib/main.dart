@@ -3186,7 +3186,8 @@ class _MainPageState extends State<MainPage>
           }
           if (cur != null && cur.groundLocation != loc) {
             cur.groundLocation = loc;
-            await _isar.writeTxn(() => _isar.scanRecords.put(cur));
+            final fixRec = cur; // 外层判空后局部非空副本：闭包捕获可空变量在写事务内被提升为可空，直传报 argument_type_not_assignable
+            await _isar.writeTxn(() => _isar.scanRecords.put(fixRec));
           }
         }
       }
