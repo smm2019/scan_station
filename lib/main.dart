@@ -3172,15 +3172,21 @@ class _MainPageState extends State<MainPage>
       });
       if (wtSnap == 1) {
         // 采集流水地面位置升级为完整格位编码（原来只有 B13 区）；整托兄弟码一并更新
+        // ㉖v246 修重采框作业位置漏升级：旧版 recsG 按插入序取"第一条未作废"就 break，重采码
+        //   (有历史未作废记录)被升级的是最早那条、本次新记录原地留粗区码(F7)——账本已在完整格位
+        //   而作业位置显粗码自相矛盾(用户 11-24 实拍 J210016)。改:只升级"最新未作废"那条(代表
+        //   本次有效流水)，历史条目保留各自当时真实作业位置不篡改。
         for (final cG in codes) {
           final recsG =
               await _isar.scanRecords.filter().goodsCodeEqualTo(cG).findAll();
+          ScanRecord? cur;
           for (final rg in recsG) {
-            if (!rg.isCancel && rg.groundLocation != loc) {
-              rg.groundLocation = loc;
-              await _isar.writeTxn(() => _isar.scanRecords.put(rg));
-              break;
-            }
+            if (rg.isCancel) continue;
+            if (cur == null || rg.scanTime.isAfter(cur.scanTime)) cur = rg;
+          }
+          if (cur != null && cur.groundLocation != loc) {
+            cur.groundLocation = loc;
+            await _isar.writeTxn(() => _isar.scanRecords.put(cur));
           }
         }
       }
