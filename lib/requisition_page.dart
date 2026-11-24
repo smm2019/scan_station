@@ -3110,8 +3110,50 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     if (!mounted) return;
     _agvTimer = Timer(Duration(seconds: kPdaAgvRefSec), () async {
       await _loadAgvStat();
+      await _syncReqIfChanged(); // ㉖v248 多仓管协同：单据本体搭车自动同步（见下）
       _scheduleAgvTick();
     });
+  }
+
+  /// ㉖v248 多仓管协同备料·单据搭车同步（用户实锤：两人同备一单，同事扫码发走的框必须
+  /// 关页面重进才看得到）：AGV 定时链每轮顺带 reqOne 比对服务器版本号 rev——没变=绝大多数轮次，
+  /// 零重绘；rev 前进=他人已扫码/跳过/标备齐等，拉回整单 setState 即时反映（他人框变绿、
+  /// 行计数、"已发 n 框·已转"、状态徽章全自动更新）。只挂定时器链不掺扫码直调链，发料节奏零拖累。
+  /// 防竞态三则：①拿回 rev < 本地 = 自己动作落库前发出的陈旧包，丢弃不回退显示（下轮追平）；
+  /// ②自己每个动作成功后 _rev 已同步抬升，正常轮次 rev 相等不误刷；③重入锁防慢网叠拉。
+  /// 目标行被他人处理时人性化点名：选中行被删/被跳过 → 取消选中并提示重选，防继续往消失的行扫码。
+  bool _reqSyncing = false;
+  Future<void> _syncReqIfChanged() async {
+    if (_reqSyncing || !mounted) return;
+    _reqSyncing = true;
+    try {
+      final j = await AuthApi.reqOne(_r["id"].toString());
+      if (!mounted || j["ok"] != true || j["req"] is! Map) return;
+      final fresh = Map<String, dynamic>.from(j["req"] as Map);
+      final sRev = (fresh["rev"] as num?)?.toInt() ?? 0;
+      if (sRev <= _rev) return; // 无变化(相等)或陈旧包(更小)：丢弃
+      final oldSt = _r["status"].toString();
+      final myPart = _issuePart;
+      setState(() {
+        _r = fresh;
+        _rev = sRev;
+      });
+      // 状态被同事推进：点名一句（发料中的人最怕不知道单子已经不是自己在推）
+      const stTxt = {'pending': '待接单', 'accepted': '备料中', 'ready': '已备齐', 'done': '已签收', 'cancelled': '已取消', 'rejected': '已拒单'};
+      final newSt = _r["status"].toString();
+      if (newSt != oldSt) widget.toast("同事已操作，本单状态更新为「${stTxt[newSt] ?? newSt}」", err: false);
+      // 选中目标行被他人删除/跳过 → 取消选中并提示重选
+      if (myPart != null && myPart.isNotEmpty) {
+        final rows = List<Map>.from(_r["items"] ?? []);
+        final row = rows.firstWhere((e) => e["partNo"] == myPart, orElse: () => const {});
+        if (row.isEmpty || row["skipped"] == true) {
+          setState(() => _issuePart = null);
+          widget.toast(row.isEmpty ? "发料目标行 $myPart 已被同事删除，请重新选择" : "发料目标行 $myPart 已被同事标记无货，请重新选择", err: false);
+        }
+      }
+    } finally {
+      _reqSyncing = false;
+    }
   }
 
   @override
