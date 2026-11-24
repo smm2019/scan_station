@@ -780,6 +780,59 @@ function dictFfdCleanV158() {
     try { selfHealCount('dictFfdCleanV158', n) } catch (_hc) {}
   } catch (e) { console.log('[dict-ffd-v158] 失败：', e.message); }
 }
+
+// ---- ㉖v242 scanlog 标签键归一大写 + 三要素回填（用户 11-24 拍板：3 条手输小写键有效行修复）----
+// 背景：v241 前手输标签原样存键（小写 n26k230106 等）→ 与推送链/查询链大写键裂 → 扩展表整行
+//   关联断（物料名/采集人丢失）+ 详情页四字段消失。v241 已挡新数据；本迁移洗历史有效行。
+// 三要素回填依据（全库实测锁定，零猜测）：物料名←itemDict[pn].nm；采集人←同 batch 众数操作人；
+//   初始货位←出库单同码 fromLoc（粗码"A1"格位化）。幂等标志 db.scanKeyUpperV242；回填全留档可回滚。
+function scanKeyUpperV242() {
+  try {
+    if (db.scanKeyUpperV242) return;
+    db.scanKeyFixLogV242 = db.scanKeyFixLogV242 || [];
+    const SL = db.scanlog || {};
+    // ① 键归一：code 段转大写；大写形态键已存（大小写孪生并存）→ 保留小写行不覆盖，记冲突
+    //   ②回填严格限定=本次被改名的行（用户批准范围=键裂致字段丢失的行；其余历史空值行不动，
+    //   首跑越权回填 63 行已纠，全库空值普查另立议题经批准再做）
+    let renamed = 0, conflict = 0; const renamedKeys = [];
+    for (const k of Object.keys(SL)) {
+      const seg = k.split('|'); const code = seg[0];
+      if (code === code.toUpperCase()) continue;
+      const upper = code.toUpperCase() + '|' + seg.slice(1).join('|');
+      if (SL[upper]) { conflict++; continue; } // 大写孪生已在 → 不动（防覆盖有效行）
+      SL[upper] = SL[k]; delete SL[k]; renamed++; renamedKeys.push(upper);
+    }
+    // ② 同批次操作人众数表（一次遍历）
+    const batchOp = {};
+    for (const v of Object.values(SL)) { const b = String(v.batch || ''), o = String(v.op || ''); if (b && o) { batchOp[b] = batchOp[b] || {}; batchOp[b][o] = (batchOp[b][o] || 0) + 1; } }
+    const modeOp = (b) => { const m = batchOp[b]; if (!m) return ''; let best = '', bn = 0; for (const o of Object.keys(m)) if (m[o] > bn) { bn = m[o]; best = o; } return best; };
+    // ③ 出库明细 code→fromLoc（格位回填源）+ 账本 code→l（兜底）
+    const obFrom = {}; for (const o of Object.values(db.outbound || {})) for (const i of o.items || []) { const bc = String(i.barcode || '').toUpperCase(); if (bc && i.fromLoc) obFrom[bc] = String(i.fromLoc).toUpperCase(); }
+    const ledLoc = {}; for (const x of db.ledger || []) { const cc = String(x.c || '').toUpperCase(); if (cc && x.l) ledLoc[cc] = String(x.l).toUpperCase(); }
+    let filled = 0;
+    for (const k of renamedKeys) {
+      const v = SL[k];
+      const codeU = String(v.code || k.split('|')[0] || '').toUpperCase();
+      const chg = {};
+      // 物料名：空且零件号命中字典 → 回填
+      if (!String(v.nm || '').trim()) { const pnU = String(v.pn || '').toUpperCase(); const dd = db.itemDict && (db.itemDict[pnU] || db.itemDict[v.pn]); const nm = dd && dd.nm ? String(dd.nm) : ''; if (nm) chg.nm = nm; }
+      // 采集人：空且同批次有众数 → 回填
+      if (!String(v.op || '').trim()) { const mo = modeOp(String(v.batch || '')); if (mo) chg.op = mo; }
+      // 初始货位：地面模式 gl 为粗码（非完整格位格式）→ 出库拣货格位/账本位回填
+      const gl = String(v.gl || '');
+      if (Number(v.wt) === 1 && gl && !/^NB\d{2}-[A-H]-\d{1,2}-\d{1,2}$/.test(gl)) { const fl = obFrom[codeU] || ledLoc[codeU]; if (fl) chg.gl = fl; }
+      if (Object.keys(chg).length) {
+        const before = {};
+        for (const f of Object.keys(chg)) { before[f] = v[f]; v[f] = chg[f]; }
+        db.scanKeyFixLogV242.push({ k, code: codeU, before, after: chg, at: Date.now() });
+        filled++;
+      }
+    }
+    db.scanKeyUpperV242 = 1; if (renamed || filled) save();
+    console.log('[scan-key-v242] 键归一 ' + renamed + ' 条（冲突保留 ' + conflict + '）· 三要素回填 ' + filled + ' 条');
+    try { selfHealCount('scanKeyUpperV242', renamed + filled); } catch (_hc) {}
+  } catch (e) { console.log('[scan-key-v242] 失败：', e.message); }
+}
 // projDict：{码:{nm,at}} 项目清单（≤200 上限，小规模不剪枝）；projMap：{PN:[码,…]} 归属（单PN≤20码）
 // projSuggest 只从物料名派生"建议"（实测97%名称自带车型字样），【永不写库】——项目是业务概念，
 // 系统无法凭空知晓归属（同物料号"字典是存不是知"原则），必须人工确认经 /api/proj/set 入典。
@@ -11717,4 +11770,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); try { selfHealCount('outboundLedgerFix', n) } catch (_hc) {} if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} try { lostCallSweep(); } catch (_) {} try { dictFfdCleanV158(); } catch (_) {} /* ㉖v158 字典乱码键清理：放 8 秒链内=当日备份(backupDb)必已落盘，清理前原件在备份里可回滚 */ }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目；㉖v152 启动跑一轮丢单巡检（去重映射持久库内，重启不重复轰炸）
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); try { selfHealCount('outboundLedgerFix', n) } catch (_hc) {} if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} try { lostCallSweep(); } catch (_) {} try { dictFfdCleanV158(); } catch (_) {} try { scanKeyUpperV242(); } catch (_) {} /* ㉖v242 小写键归一+三要素回填：同放 8 秒链=当日备份已落盘，改前原件可回滚 */ /* ㉖v158 字典乱码键清理：放 8 秒链内=当日备份(backupDb)必已落盘，清理前原件在备份里可回滚 */ }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目；㉖v152 启动跑一轮丢单巡检（去重映射持久库内，重启不重复轰炸）
