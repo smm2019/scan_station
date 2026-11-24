@@ -2525,6 +2525,12 @@ class _MainPageState extends State<MainPage>
 
   Future<void> _saveRecord(String code) async {
     if (_isSaving) return;
+    // ㉖v241 标签号入口统一大写（用户 11-24 实锤：手输小写 n26k230111 同框裂双键——
+    //   scanlog/scanRecords/recordExtras 存扫码原样，详情页/本机查询按大写键，扩展表查空
+    //   →物料名/批次/采集人/托盘号整段消失；账本推送与MES本就大写口径，MES对小写也命中
+    //   故仅键不一致，无数据错误）。保存链唯一入口归一，覆盖手输/相机/网页回传全路径；
+    //   格式闸本就容忍大小写，归一在闸前执行。
+    code = code.trim().toUpperCase();
     // ㉖v69 标签格式闸（用户拍板）：N开头+10位，不符禁止录入
     {
       final fmtErr = labelFormatErr(code);
