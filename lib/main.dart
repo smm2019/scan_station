@@ -54,6 +54,7 @@ part 'dash_page.dart'; // ⑥数据驾驶舱：KPI+7日趋势
 part 'agv_map_page.dart'; // ①2D实时地图
 part 'agv_report_page.dart'; // ⑦AGV效率报表
 part 'update_page.dart'; // ⑬APK自动更新
+part 'upgrade_gate.dart'; // ㉖v243 强制升级闸门：低于管理员版本线锁升级页（只拦业务+离线宽限，复用⑬下载器）
 part 'console_web_page.dart'; // ㉖⑯ 网页控制台驾驶舱（内嵌全功能）
 part 'notify_service.dart'; // ⑭系统通知+语音播报
 part 'shortage_report_page.dart'; // ㉖v74 缺料反馈：一键生成生产部格式缺料单，分享微信

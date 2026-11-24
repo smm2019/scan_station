@@ -3038,6 +3038,7 @@ const PARAMS = {
   diagDeadMin:    { grp: '告警阈值', name: '设备账本静默判死', unit: '分钟', min: 0, max: 240, d: 15, tip: '㉖v199d 诊断搭车上报消费阈值：设备流水在推、账本却超此分钟数无成功推送（或心跳静默/世代卡死）→ 点名仓管"设备诊断一句话"（心跳静默→重启APP / 旧版→升级 / 世代→对齐）。0=关。同操作员 7 天只吵一次；正常设备账本推送每30秒一次远低于此阈值，判据零误报' },
   wmasReloginGapS: { grp: '调度节奏', name: 'WMAS重登冷却', unit: '秒', min: 0, max: 300, d: 30, tip: '㉖v160 WMAS 登录失败后的重登冷却秒数（0=不节流）。凭证被挤下线时若不节流，实测 20 次取票=20 次真实登录，WMAS 可能因频繁失败锁定账号；且每次登录成功会把对方会话踢下线，双方互挤成死循环。默认 30 秒＝最长 30 秒内恢复、又不打爆对方。现场在 WMAS 改密后重新保存 WMAS 配置会立即重置本冷却，不受影响' },
   agvAuthYieldMin: { grp: '调度节奏', name: '退出登录让位时长', unit: '分钟', min: 1, max: 180, d: 15, tip: '㉖v161 人工点「退出登录」后，服务器在这段时间内【不自动登录】WMAS/AGV 调度系统，把单账号会话让给现场人员。两套系统都是同一账号后登录者踢掉前者：现场为改密/查数据人工登录 → 服务器会话被踢反复 401；服务器若立刻自动重登 → 又把现场人员的窗口踢掉，双方互挤谁都干不成。让位期内 AGV 叫车不可用（提示会写明剩余时间），到期自动恢复；重新保存 WMAS/RCS 配置=人工宣告已处理完，立即解除让位' },
+  minBuild:       { grp: '数据保留', name: 'PDA最低可用版本', unit: 'build号', min: 0, max: 9999, d: 0, tip: '㉖v243 强制升级闸门（用户拍板：防拖延不更新导致旧版缺陷持续造数据）。登录/心跳下发本值，PDA 本机 build 低于它→锁在全屏升级页（只拦进业务，登录/取包通道照常=不自锁死）。0=关（默认，升级 PDA 前先保持0）；发布新包并验证后手动上调=旧设备下次登录即被要求更新；PDA 离线宽限：拉不到本值且本机曾达标→放行不停工。参数即时生效（P() 现读）' },
   dupFlowAlertOn: { grp: '告警阈值', name: '重复有效流水告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v152 同一标签存在多条未作废采集流水 → 留痕 ops（审计线索）。⚠️v166 判据重构：旧版按"≥2条未作废 + 位置不同"必达点名，把【框挪过位置/先后经过不同台站】当异常刷屏（现网 61 个全是这类噪音；台站只是中转点，同一框先后经 CK-06、CK-07 完全正常，v152 当初的触发案例 N26K100170 本身即误判；实测两次采集跨度 <1分钟 0 例、>10分钟 61 例，不存在毫秒级双写缺陷）。新判据只有【同一排/同列内出现 ≥2 个不同格位】（一个框不可能同时占两个格位）才升 ghost_out 必达点名人工裁决；挪位/跨模式/台站差异只留痕不吵人。判据变更后自动重置旧 7 天去重标记，避免真冲突被旧噪音标记静默一周' },
   invariantAlertOn: { grp: '告警阈值', name: '库存账实自检', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v172 每 5 分钟常驻扫两条账实不变量并 ghost_out 必达点名：②一个格位只放一个托（同格出现≥2不同托号才报；整托多码共用一格=合法放过，现网 43 处；托号缺失只留痕不吵人）③幽灵框=MES 已出库但本地账本仍在架（出库未消账，仅 outConsumeLedger≥1 时判，关档全部出库框会误报故不判）。不变量①「同码同格一条有效流水」由「重复有效流水告警」已覆盖，此处不重复。判据上线前已用真实全库核对：真撞位 0、幽灵框 0，命中即真事。0=关哨兵（不建议，等于关掉账实自动体检）' },
   forceWhyMinLen: { grp: '领料闸门', name: '强过原因最少字数', unit: '字', min: 0, max: 30, d: 6, tip: '㉖v167 重复标签点「强制继续」时原因栏的最低字数（PDA 与服务端双端校验，旧版 PDA 也绕不过）。现网强过原因大量只填「1」「。」甚至「测试」，等于没有留痕——11-12 N26K120114 就是填一个「1」把同一框重复入账，流水翻倍。除字数外还拒绝【整串只有数字/符号】的占位填写。0=关闭门槛（回退旧行为，不建议）' },
@@ -4963,7 +4964,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       save();
       console.log(`[login] ${u.username}(${ROLE_NAMES[u.role]}) 登录成功`);
       pushOps(u,'登录','',u.username);
-      return send(res, 200, { ok: true, token, expiresAt: Date.now() + SESSION_TTL_MS, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id) }, { 'Set-Cookie': `hst_tok=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}` });
+      return send(res, 200, { ok: true, token, expiresAt: Date.now() + SESSION_TTL_MS, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), minBuild: Number(P().minBuild) || 0 }, { 'Set-Cookie': `hst_tok=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}` }); // ㉖v243 最低可用版本下发（强制升级闸门）
     }
 
     // ---- G1 健康端点：无鉴权，供PDA失联检测/运维探测/网页健康分 ----
@@ -5021,7 +5022,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
 
       // 心跳/取当前身份+功能开关（App 前台恢复与定时轮询调用；停用即时生效靠它）
       if (req.method === 'GET' && p === '/api/me') {
-        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, outWhKeys: String(P().outWhKeys || '线边仓'), pdaAgvRefSec: P().pdaAgvRefSec, serverTime: new Date().toISOString() }); // ㉖v100 出库去向关键词下发：PDA 直调提交后按去向提示"出库单/移仓单"；㉖v209 PDA领料AGV刷新秒数下发
+        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, outWhKeys: String(P().outWhKeys || '线边仓'), pdaAgvRefSec: P().pdaAgvRefSec, serverTime: new Date().toISOString(), minBuild: Number(P().minBuild) || 0 }); // ㉖v100 出库去向关键词下发：PDA 直调提交后按去向提示"出库单/移仓单"；㉖v209 PDA领料AGV刷新秒数下发；㉖v243 最低可用版本下发（强制升级闸门）
       }
 
       // ㉖v59 个人中心：我的登录设备/会话（本人可见可踢，不含 admin 拉黑等管理动作）

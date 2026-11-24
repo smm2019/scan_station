@@ -892,7 +892,8 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     } else if (r["net"] == true) {
       // 网络异常 → 离线宽限
       final v = await AuthStore.lastVerifiedMs();
-      if (DateTime.now().millisecondsSinceEpoch - v <
+      final gOk = await UpgradeGate.offlineOk(); // ㉖v243 低于版本线：断网冷启动也绕不过闸门（线已持久化）
+      if (gOk && DateTime.now().millisecondsSinceEpoch - v <
           AuthStore.offlineGraceMs) {
         Auth.user = u;
         Auth.features = await AuthStore.features();
@@ -928,6 +929,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     // ㉖v209 领料AGV刷新秒数（服务器参数 pdaAgvRefSec 下发）：夹 3~300 防脏值；旧服务器无字段=保留上次值
     if (r["pdaAgvRefSec"] is num)
       kPdaAgvRefSec = (r["pdaAgvRefSec"] as num).toInt().clamp(3, 300);
+    UpgradeGate.check((r["minBuild"] as num?)?.toInt() ?? 0); // ㉖v243 强制升级闸门：低于线锁升级页，达标刷宽限凭证（旧服务器无字段=0=关闸）
     Auth.user = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
     Auth.features = Map<String, bool>.from(r["features"] ?? {});
     AuthStore.markVerified();
@@ -1035,6 +1037,7 @@ class _LoginPageState extends State<LoginPage> {
       Future.delayed(const Duration(seconds: 3),
           () => AppUpdater.checkAtLaunch()); // ⑬登录后静默检查APK更新
       widget.onLoggedIn();
+      UpgradeGate.check((r["minBuild"] as num?)?.toInt() ?? 0); // ㉖v243 登录后立即锁闸（压在主页上；旧服务器无字段=0=关闸）
       if (Auth.user!.mustChangePw) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text("首次登录，请尽快在 设置→账号与权限 修改密码"),
