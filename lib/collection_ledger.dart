@@ -1529,7 +1529,7 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
     if (!force && _nowMs - _ledgerPullAtMs < 20000) {
       return {"ok": true, "skipped": 1, "added": 0, "updated": 0, "deleted": 0, "total": -1}; // 20秒内刚拉过：静默跳过
     }
-    final r = await AuthApi.ledgerGet();
+    final r = await AuthApi.ledgerGet(ghost: true); // ㉖v250 带登录态顺拉幽灵行判据集（旧服务器无此字段=空表零行为）
     if (r["ok"] != true)
       return {"ok": false, "msg": (r["msg"] ?? "拉取失败").toString()};
     // ㉖v69 世代对齐：服务器世代变化（账本整表替换）→ 先清空本机旧缓存（含墓碑/已发料缓存）再合并，杜绝新旧叠加
@@ -1552,6 +1552,13 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
     }
     final items = List<Map>.from(r["items"] ?? []);
     final tomb = List<Map>.from(r["tomb"] ?? []);
+    // ㉖v250 幽灵行判据集（服务端 ?ghost=1 且已登录才回；旧服务器无字段=空集=本功能不触发）
+    //   码→出库时刻映射：本机登记晚于出库=退料回流/在途未推（保留），早于出库=拣走未同步的旧幽灵行（删除）。
+    final ghostShip = <String, int>{
+      for (final g in (r["ghost"] as List? ?? const []))
+        (g is Map ? (g["c"] ?? "").toString().toUpperCase() : ""):
+            (g is Map ? (g["at"] as num?)?.toInt() ?? 0 : 0)
+    }..removeWhere((k, _) => k.isEmpty);
     final local = await _globalIsar.shelfPlacements.where().findAll();
     // ㉖v82 清理本机遗留拼接行（"A; B"）：服务器已拆单码且不再存拼接行，这类本地行是导入时代遗留的幽灵数据——
     // 每次推送被服务器拆行命中墓碑，旧版触发"货位登记冲突"弹窗死循环；拉取时直接删除
@@ -1660,6 +1667,25 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
       }
       if ((tombMap[c] ?? 0) < t) tombAdds[c] = t;
     }
+    // ㉖v250 幽灵行自愈：ghostShip 内且本机在架的框 = 服务器"账本无行+已出库+无碑"→ 本机缓存摘不掉的
+    //   幽灵（墓碑通道依赖碑存在，碑被滚动清理后永久失效，各设备在架数不一致，用户 11-25 实锤多 1 框）。
+    //   时间戳比对区分幽灵与回流（与墓碑通道 assignedAt>t 保留同原理，替代固定时间窗）：
+    //   幽灵=本机行登记于出库【之前】（拣走未同步的旧行，登记早于出库）；退料回流=出库【之后】重扫
+    //   （assignedAt>出库时刻，本机行是回流新行）→ 保留。宁漏不错删：本机无该行不动、回流行不删、
+    //   只删 shelfPlacements 行不落碑（该框日后正常重登可复活）。
+    var ghostDel = 0;
+    if (ghostShip.isNotEmpty) {
+      for (final p in local) {
+        final c = p.goodsCode.toUpperCase();
+        final shipAt = ghostShip[c];
+        if (shipAt == null || shipAt == 0) continue;
+        if (rmIds.contains(p.id)) continue; // 本轮已被墓碑通道删
+        if (p.assignedAt > shipAt) continue; // 本机登记晚于出库 = 退料回流/在途新行 → 保留（防误删）
+        rmIds.add(p.id);
+        ghostDel++;
+        LocalLog.op('账本幽灵自愈', '本机幽灵行删除：$c（服务器账本无行+已出库无碑，本机登记 ${p.assignedAt} 早于出库 $shipAt）');
+      }
+    }
     await _globalIsar.writeTxn(() async {
       if (rmIds.isNotEmpty)
         await _globalIsar.shelfPlacements.deleteAll(rmIds.toList());
@@ -1705,6 +1731,7 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
       "added": added,
       "updated": updated,
       "deleted": deleted,
+      "ghostDeleted": ghostDel, // ㉖v250 幽灵行自愈计数（本机缓存与服务器对平的框数，调用方留痕用）
       "total": items.length,
       "rev": (r["rev"] as num?)?.toInt() ?? -1, // ㉖v94u 服务器账本版本留痕（盘点基准快照对账用）
       "srvAt": (r["at"] ?? "").toString(),

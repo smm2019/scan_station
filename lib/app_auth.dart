@@ -392,8 +392,11 @@ class AuthApi {
       _req("POST", "/api/diag/pulse",
           body: {"diag": diag}, token: await AuthStore.token());
 
-  /// 拉取电脑服务器上的账本全量（公开只读；含墓碑，PDA 合并用）
-  static Future<Map> ledgerGet() async => _req("GET", "/api/ledger");
+  /// 拉取电脑服务器上的账本全量（含墓碑，PDA 合并用；㉖v250 ghost=1 带登录态=顺带幽灵行判据集，
+  /// 服务端仅对已登录请求返回，公开页零泄露）
+  static Future<Map> ledgerGet({bool ghost = false}) async => _req("GET",
+      ghost ? "/api/ledger?ghost=1" : "/api/ledger",
+      token: await AuthStore.token());
 
   /// ㉖v99 数据资产计数（含今日出入库全厂口径，库存页 KPI 用）
   static Future<Map> counts() async =>

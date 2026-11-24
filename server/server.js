@@ -4914,6 +4914,30 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       const fc = (url.searchParams.get('c') || '').trim().toUpperCase();
       const fl = (url.searchParams.get('l') || '').trim().toUpperCase();
       const fz = (url.searchParams.get('fz') || '').trim().toUpperCase();
+      // ㉖v250 幽灵行判据集合（?ghost=1 且已登录才回；公开页/未登录不带=零泄露）：
+      //   本机缓存里"服务器账本已无行、但有出库留痕、且墓碑已被滚动清理"的框，靠墓碑删除通道
+      //   永远摘不掉（通道依赖墓碑存在）→ 各设备在架数不一致（用户 11-25 实锤 PDA 多显示 1 框）。
+      // 判据三条全中才算幽灵：①账本无行 ②seenOut 有出库史 ③ledgerTomb 无墓碑；近30天窗口。
+      //   携带出库时刻 at 供 PDA 时间戳比对（本机登记晚于出库=回流/在途未推，保留）——与墓碑通道
+      //   "本机 assignedAt>墓碑t 保留"同原理，从根上区分幽灵（本机行早于出库=拣走未同步的旧行）
+      //   与退料回流（出库后重扫=晚于出库），免固定时间窗口误删离线超窗的回流框。
+      let ghost = null;
+      if ((url.searchParams.get('ghost') || '') === '1') {
+        const _ga = auth(req);
+        if (!_ga.err) {
+          const _led = new Set((db.ledger || []).map((x) => String(x.c || '').toUpperCase()));
+          const _tmb = new Set((db.ledgerTomb || []).map((x) => String(x.c || '').toUpperCase()));
+          const _cut = Date.now() - 30 * 864e5;
+          ghost = [];
+          for (const [k, v] of Object.entries(db.seenOut || {})) {
+            const K = String(k).toUpperCase();
+            if (_led.has(K) || _tmb.has(K)) continue;
+            const _at = Number((v && v.at) || 0);
+            if (_at < _cut) continue;
+            ghost.push({ c: K, at: _at });
+          }
+        }
+      }
       let list = ledgerView(); // ㉖ 统一视图：批次派生 + 旧版PDA推的空零件字段从流水回填（零件号搜索因此能命中回填行）
       if (fz) list = list.filter(x => String(x.c).toUpperCase().includes(fz) || String(x.l).toUpperCase().includes(fz) || String(x.p || '').toUpperCase().includes(fz) || String(x.n || '').toUpperCase().includes(fz));
       if (fc) list = list.filter(x => String(x.c).toUpperCase().startsWith(fc));
@@ -4926,7 +4950,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         if (x.type !== 'transfer' || !['排队', '下发中', '已下发'].includes(x.state)) continue;
         inTf.push({ from: String(x.from || '').toUpperCase(), code: String(x.code || '').toUpperCase() });
       }
-      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, epoch: db.ledgerEpoch || '', items: list, tomb: db.ledgerTomb || [], inTf }); // ㉖v69 世代标记：PDA旧缓存凭此识别清理
+      return send(res, 200, { ok: true, rev: db.ledgerRev, at: db.ledgerAt, by: db.ledgerBy, total: db.ledger.length, count: list.length, epoch: db.ledgerEpoch || '', items: list, tomb: db.ledgerTomb || [], inTf, ...(ghost ? { ghost } : {}) }); // ㉖v69 世代标记：PDA旧缓存凭此识别清理；㉖v250 ghost=幽灵行判据集（仅 ?ghost=1 且已登录才带）
     }
 
     // ---- 货位账本：电脑查询页（表格地图式：按货位排序，同位多标签并排显示）----
