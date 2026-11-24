@@ -4012,7 +4012,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     }
     w.add(Padding(
         padding: const EdgeInsets.only(top: 4, left: 2),
-        child: Text("点框=切发料目标（扫哪框记哪行）· 位号顺排走 · 货架/在途框走AGV不在此列",
+        child: Text("点框=切发料目标（扫哪框记哪行）· 位号顺排走",
             style: TextStyle(fontSize: 9.5, color: Colors.grey))));
     return w;
   }
