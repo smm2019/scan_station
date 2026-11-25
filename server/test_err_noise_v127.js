@@ -57,10 +57,11 @@ T('S3 ETIMEDOUT 已从 code 过滤列表移除', !/socket hang up\|ETIMEDOUT/.te
 
 // ===== P 锚点：PDA 账本合并同码去重自愈（collection_ledger.dart） =====
 const dart = fs.readFileSync(path.join(__dirname, '..', 'lib', 'collection_ledger.dart'), 'utf8');
+const dartC = dart.replace(/\s+/g, ' '); // ㉖v259b 锚点格式化免疫：dart format 把 final _seenCode = <String>{} 拆两行后精确匹配假失败（11-25 CI 实锤）
 T('P1 同码多行自愈块在位', dart.includes('同码多行自愈') && dart.includes('Unique index violated'), true);
 T('P2 保留最新行删其余（按 assignedAt 降序）', dart.includes('g.sort((a, b) => b.assignedAt.compareTo(a.assignedAt))') && dart.includes('for (var i = 1; i < g.length; i++) dupIds.add(g[i].id)'), true);
 T('P3 去重在 localMap 构建之前（否则仍漏删）', (() => { const i = dart.indexOf('同码多行自愈'); const j = dart.indexOf('final localMap = {for (final p in local)'); return i > 0 && j > 0 && i < j; })(), true);
-T('P4 服务器同码重复行兜底去重（_seenCode）', dart.includes('final _seenCode = <String>{}') && dart.includes('if (!_seenCode.add(c)) continue;'), true);
+T('P4 服务器同码重复行兜底去重（_seenCode）', dartC.includes('final _seenCode = <String>{}') && dartC.includes('if (!_seenCode.add(c)) continue;'), true);
 
 console.log('\n===== v127 传输层断连降噪 实例证明 ' + (total - fail) + '/' + total + ' 通过 =====');
 process.exit(fail ? 1 : 0);

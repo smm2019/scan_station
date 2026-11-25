@@ -7,11 +7,12 @@
 const fs = require('fs');
 const path = require('path');
 const dart = fs.readFileSync(path.join(__dirname, '..', 'lib', 'collection_ledger.dart'), 'utf8').replace(/\r\n/g, '\n');
+const dartC = dart.replace(/\s+/g, ' '); // ㉖v259b 锚点格式化免疫：dart format 会把单行 if 拆成多行（11-25 CI 实锤 A1/A2 假失败），压缩空白后新旧形态通吃
 let t = 0, f = 0;
 const chk = (n, c, x) => { t++; if (!c) { f++; console.log('FAIL! [' + n + '] ' + (x || '')); } else console.log('PASS [' + n + ']'); };
 
-chk('A1 服务器在架行索引构建（自愈判据数据源）', dart.includes('final _srvByCode = {for (final x in items)'), '');
-chk('A2 僵尸判定三条件齐（服务器行t>0 + 碑已超600秒宽限）', dart.includes('if (st > 0 && tv < now - 600000) { tombZombie.add(c); }'), '');
+chk('A1 服务器在架行索引构建（自愈判据数据源）', dartC.includes('final _srvByCode = { for (final x in items'), '');
+chk('A2 僵尸判定三条件齐（服务器行t>0 + 碑已超600秒宽限）', dartC.includes('if (st > 0 && tv < now - 600000) { tombZombie.add(c); }'), '');
 chk('A3 复活放行插在"不复活"规则处（墓碑>=行t 且非僵尸才跳过）', dart.includes('if ((tombMap[c] ?? 0) >= t && t > 0) {') && dart.includes('if (!tombZombie.contains(c)) continue;'), '');
 chk('A4 复活留痕走本地审计（可追责可统计）', dart.includes("LocalLog.op('账本墓碑自愈'"), '');
 chk('A5 撤销持久化：僵尸碑从台账真删（下轮不再重复判/重复留痕）', dart.includes('if (tombAdds.isNotEmpty || tombZombie.isNotEmpty)') && dart.includes('m.remove(c);'), '');
