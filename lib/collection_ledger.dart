@@ -50,7 +50,9 @@ extension CollectionLedgerExt on _MainPageState {
       if (lv["ok"] == true && lv["byLoc"] is Map) {
         (lv["byLoc"] as Map).forEach((k, v) {
           final codes = (v as List).map((e) => e.toString()).toList();
-          byLoc.update(k.toString(), (l) => [...l, ...codes.where((c) => !l.contains(c))], ifAbsent: () => codes);
+          byLoc.update(k.toString(),
+              (l) => [...l, ...codes.where((c) => !l.contains(c))],
+              ifAbsent: () => codes);
         });
       }
     } catch (e) {
@@ -73,14 +75,16 @@ extension CollectionLedgerExt on _MainPageState {
   ///AGV 目标货位自动分配：①同零件已占的架内空位（同件同架，AGV整架取放最优）
   ///②同零件所在区的空架空位 ③全局顺序兜底（A-01-1F 起集满靠前）。无可分配返回 null。
   ///㉖v54 首选服务器原子预占（多PDA并发拿不同格，根治5~15秒撞位窗口）；仅网络不通降级本机口径
-  Future<String?> nb02AutoAssign(String partNo, {String code = '', bool reShelf = false}) async {
+  Future<String?> nb02AutoAssign(String partNo,
+      {String code = '', bool reShelf = false}) async {
     if (code.isNotEmpty) {
       try {
         final rv = await AuthApi.ledgerReserve(code, partNo, reShelf: reShelf);
         if (rv["ok"] == true && (rv["loc"] as String?)?.isNotEmpty == true) {
           return (rv["loc"] as String).toUpperCase();
         }
-        if (rv["_status"] == 200) return null; // 服务器明确说没空位：如实返回（404老服务器/异常继续走本机旧口径）
+        if (rv["_status"] == 200)
+          return null; // 服务器明确说没空位：如实返回（404老服务器/异常继续走本机旧口径）
       } catch (e) {
         LocalLog.err('自动分配·服务器预占不可达降级本机', e); // 网络异常：降级旧口径
       }
@@ -101,7 +105,9 @@ extension CollectionLedgerExt on _MainPageState {
     var free = nb02MasterAll().where((l) => !byLoc.containsKey(l)).toList();
     if (free.isEmpty) return null;
     // v80 常用层硬约束（与服务器同款）：同架/同区集中也只在层圈内挑，圈满才上高层
-    final fl = free.where((l) => ((int.tryParse(l[l.length - 2]) ?? 9) <= _lowTier)).toList();
+    final fl = free
+        .where((l) => ((int.tryParse(l[l.length - 2]) ?? 9) <= _lowTier))
+        .toList();
     if (fl.isNotEmpty) free = fl;
     if (partNo.isNotEmpty) {
       final recs =
@@ -222,8 +228,10 @@ extension CollectionLedgerExt on _MainPageState {
                               color: Colors.red.shade900,
                               fontWeight: FontWeight.w600))),
                   InkWell(
-                      onTap: () =>
-                          setState(() { _callFailTip = ""; _callFailCode = ""; }),
+                      onTap: () => setState(() {
+                            _callFailTip = "";
+                            _callFailCode = "";
+                          }),
                       child: Padding(
                           padding: const EdgeInsets.only(left: 6),
                           child: Icon(Icons.close,
@@ -237,14 +245,16 @@ extension CollectionLedgerExt on _MainPageState {
                 width: double.infinity,
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                 decoration: BoxDecoration(
-                    color: (_autoCallTip.startsWith("🚗") || _autoCallTip.startsWith("✅"))
+                    color: (_autoCallTip.startsWith("🚗") ||
+                            _autoCallTip.startsWith("✅"))
                         ? const Color(0xFFE8F5E9)
                         : (_autoCallTip.startsWith("⚠️")
                             ? const Color(0xFFFFF3E0)
                             : const Color(0xFFECEFF1)),
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(
-                        color: (_autoCallTip.startsWith("🚗") || _autoCallTip.startsWith("✅"))
+                        color: (_autoCallTip.startsWith("🚗") ||
+                                _autoCallTip.startsWith("✅"))
                             ? Colors.green.shade200
                             : (_autoCallTip.startsWith("⚠️")
                                 ? Colors.orange.shade200
@@ -252,7 +262,8 @@ extension CollectionLedgerExt on _MainPageState {
                 child: Text(_autoCallTip,
                     style: TextStyle(
                         fontSize: 11.5,
-                        color: (_autoCallTip.startsWith("🚗") || _autoCallTip.startsWith("✅"))
+                        color: (_autoCallTip.startsWith("🚗") ||
+                                _autoCallTip.startsWith("✅"))
                             ? Colors.green.shade800
                             : (_autoCallTip.startsWith("⚠️")
                                 ? Colors.orange.shade900
@@ -315,10 +326,13 @@ extension CollectionLedgerExt on _MainPageState {
         final s = q["state"]?.toString() ?? "?";
         cnt[s] = (cnt[s] ?? 0) + 1;
       }
-      final allQ = List<Map>.from(r["queue"] ?? []); // 全量队列（不限本人）：他人重叫也算丢单已处置（11-11 即宋明明重扫闭环）
+      final allQ = List<Map>.from(
+          r["queue"] ?? []); // 全量队列（不限本人）：他人重叫也算丢单已处置（11-11 即宋明明重扫闭环）
       // ㉖v153 失败红条自动撤销：该框已在服务器队列出现（任意状态，含本人手动提交/他人重叫）→ 丢单已处置
-      if (_callFailTip.isNotEmpty && _callFailCode.isNotEmpty &&
-          allQ.any((q) => (q["code"] ?? "").toString().toUpperCase() == _callFailCode)) {
+      if (_callFailTip.isNotEmpty &&
+          _callFailCode.isNotEmpty &&
+          allQ.any((q) =>
+              (q["code"] ?? "").toString().toUpperCase() == _callFailCode)) {
         _callFailTip = "";
         _callFailCode = "";
       }
@@ -335,7 +349,8 @@ extension CollectionLedgerExt on _MainPageState {
       final _actLocs = mine
           .where((q) => q["state"] != "失败")
           .map((q) {
-            final sm = (q["stationManual"] ?? "").toString().trim().toUpperCase();
+            final sm =
+                (q["stationManual"] ?? "").toString().trim().toUpperCase();
             if (sm.isNotEmpty) return sm;
             return (q["station"] ?? "").toString().trim().toUpperCase();
           })
@@ -461,7 +476,8 @@ extension CollectionLedgerExt on _MainPageState {
                                                     ? "已取消排队 ${q["code"]}"
                                                     : "取消失败：${r["msg"]}")));
                                         await _loadMyQueue();
-                                        if (!mctx2.mounted) return; // ㉖v103 同上：二次 await 后弹层可能已关，setSt 前再守
+                                        if (!mctx2.mounted)
+                                          return; // ㉖v103 同上：二次 await 后弹层可能已关，setSt 前再守
                                         setSt(() {});
                                       },
                                       child: const Text("取消",
@@ -505,23 +521,37 @@ extension CollectionLedgerExt on _MainPageState {
   Future<String?> nb01AutoSlot(String label) async {
     await ledgerPullMerge(force: true); // 与地面同款：先对齐全厂占用再判空，防撞格
     try {
-      final r = await AuthApi.ledgerLocs(recv: true).timeout(const Duration(seconds: 6));
+      final r = await AuthApi.ledgerLocs(recv: true)
+          .timeout(const Duration(seconds: 6));
       if (r["ok"] != true) return null;
-      _recvOn = (r["receivingOn"] as num?)?.toInt(); // ㉖v120b 顺带同步启用开关（旧版服务器无此字段=null 不改行为）
-      if (_recvOn == 0) { _recvOffFlag = true; return null; } // ㉖v120b 服务器已关闭来料区：不放格，保存链据此中止（幽灵流水从源头不发生）
+      _recvOn = (r["receivingOn"] as num?)
+          ?.toInt(); // ㉖v120b 顺带同步启用开关（旧版服务器无此字段=null 不改行为）
+      if (_recvOn == 0) {
+        _recvOffFlag = true;
+        return null;
+      } // ㉖v120b 服务器已关闭来料区：不放格，保存链据此中止（幽灵流水从源头不发生）
       // ㉖v122 新服务器：原子占位分配（锁格防连扫撞位）；403=未启用（竞态窗口）按开关关处理，ok=false=满格
       if ((r["recvReserve"] as num?)?.toInt() == 1) {
-        final rv = await AuthApi.ledgerReserve(label, "", recv: true).timeout(const Duration(seconds: 6));
-        if (rv["_status"] == 403 || rv["receivingOn"] == 0) { _recvOn = 0; _recvOffFlag = true; return null; }
-        if (rv["ok"] == true && rv["loc"].toString().isNotEmpty) return rv["loc"].toString().toUpperCase();
+        final rv = await AuthApi.ledgerReserve(label, "", recv: true)
+            .timeout(const Duration(seconds: 6));
+        if (rv["_status"] == 403 || rv["receivingOn"] == 0) {
+          _recvOn = 0;
+          _recvOffFlag = true;
+          return null;
+        }
+        if (rv["ok"] == true && rv["loc"].toString().isNotEmpty)
+          return rv["loc"].toString().toUpperCase();
         return null; // 满格/异常：调用方提示
       }
       final rows = (r["recvRows"] as num?)?.toInt() ?? 1;
       final cols = (r["recvCols"] as num?)?.toInt() ?? 720;
-      final byLoc = (r["byLoc"] as Map?)?.map((k, v) => MapEntry(k.toString().toUpperCase(), v)) ?? {};
+      final byLoc = (r["byLoc"] as Map?)
+              ?.map((k, v) => MapEntry(k.toString().toUpperCase(), v)) ??
+          {};
       for (var rr = 1; rr <= rows; rr++) {
         for (var cc = 1; cc <= cols; cc++) {
-          final code = 'NB04-A-${rr.toString().padLeft(2, '0')}-${cc.toString().padLeft(3, '0')}';
+          final code =
+              'NB04-A-${rr.toString().padLeft(2, '0')}-${cc.toString().padLeft(3, '0')}';
           if (!byLoc.containsKey(code)) return code;
         }
       }
@@ -551,8 +581,10 @@ extension CollectionLedgerExt on _MainPageState {
             .filter()
             .goodsCodeEqualTo(codeU)
             .findFirst();
-        final rv = await AuthApi.ledgerReserve(codeU, rec?.mesPartNo ?? "", zone: zone.toUpperCase());
-        if (rv["ok"] == true && (rv["loc"] as String?)?.isNotEmpty == true) return [(rv["loc"] as String).toUpperCase(), ''];
+        final rv = await AuthApi.ledgerReserve(codeU, rec?.mesPartNo ?? "",
+            zone: zone.toUpperCase());
+        if (rv["ok"] == true && (rv["loc"] as String?)?.isNotEmpty == true)
+          return [(rv["loc"] as String).toUpperCase(), ''];
         if (rv["_status"] == 200) // 服务器明确答复（满格/停用/格式不符）：如实中止，不降级
           return ['', (rv["msg"] ?? '该排无可分配格位').toString()];
       } catch (e) {
@@ -566,10 +598,13 @@ extension CollectionLedgerExt on _MainPageState {
     final nn = zone.substring(1).padLeft(2, '0');
     final prefix = 'NB03-$g-$nn';
     final maxSlot = nb03SlotMax(prefix);
-    final byLoc = await _liveLocs(); // ㉖v163 实时占用（旧版 _ledgerByLoc 只看本机缓存 → "看着空"）
+    final byLoc =
+        await _liveLocs(); // ㉖v163 实时占用（旧版 _ledgerByLoc 只看本机缓存 → "看着空"）
     for (var s = 1; s <= maxSlot; s++) {
       final code = '$prefix-${s.toString().padLeft(2, '0')}';
-      final occ = (byLoc[code] ?? const <String>[]).where((c) => c.toUpperCase() != codeU).toList();
+      final occ = (byLoc[code] ?? const <String>[])
+          .where((c) => c.toUpperCase() != codeU)
+          .toList();
       if (occ.isNotEmpty) continue; // 格内已有他框即跳过（保守，见函数头说明）
       return [code, ''];
     }
@@ -584,7 +619,8 @@ extension CollectionLedgerExt on _MainPageState {
         .goodsCodeEqualTo(code.toUpperCase())
         .findFirst();
     final partNo = rec?.mesPartNo ?? "";
-    final loc = await nb02AutoAssign(partNo, code: code.toUpperCase(), reShelf: reShelf);
+    final loc = await nb02AutoAssign(partNo,
+        code: code.toUpperCase(), reShelf: reShelf);
     if (!mounted) return;
     if (loc == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -737,9 +773,12 @@ extension CollectionLedgerExt on _MainPageState {
                   "选格位：$prefix（空 ${maxSlot - byLoc.keys.where((k) => k.startsWith('$prefix-')).length}/$maxSlot）"),
               content: SizedBox(
                   width: 300,
-                  height: 420, // ㉖v120d 定高+滚动：旧版裸 Wrap 无界，逐排格数覆盖到 60 格时（15 行×~70px≈1050px）
+                  height:
+                      420, // ㉖v120d 定高+滚动：旧版裸 Wrap 无界，逐排格数覆盖到 60 格时（15 行×~70px≈1050px）
                   child: SingleChildScrollView(
-                      child: Wrap(children: cells))), // 底部格位被屏截断点不到（11/07 现场 E-07 排实锤）；同 NB02 picker 420 高度口径
+                      child: Wrap(
+                          children:
+                              cells))), // 底部格位被屏截断点不到（11/07 现场 E-07 排实锤）；同 NB02 picker 420 高度口径
               actions: [
                 TextButton(
                     onPressed: () => Navigator.pop(dctx),
@@ -765,7 +804,9 @@ extension CollectionLedgerExt on _MainPageState {
     final agv = _workType == 0;
     final fit = rows.where((r) {
       final l = r.loc.toUpperCase();
-      return agv ? (l.startsWith('NB02-') && !l.contains('-CK-')) : l.startsWith('NB03-');
+      return agv
+          ? (l.startsWith('NB02-') && !l.contains('-CK-'))
+          : l.startsWith('NB03-');
     }).toList();
     if (fit.isEmpty) return "";
     fit.sort((a, b) => b.assignedAt.compareTo(a.assignedAt));
@@ -779,6 +820,10 @@ extension CollectionLedgerExt on _MainPageState {
         if (mounted) setState(() => _autoCallTip = "ℹ️ $loc 本会话已叫过车（防重复）");
         return;
       }
+      // ㉖v259 叫车前账本必达：登记后账本走 30 秒防抖推送，叫车请求却即刻发出——
+      // 服务器位货绑定闸读到旧位（NB04/地面）即报"矛盾拒绝下发"（11-25 N26K250034 实锤）。
+      // 有挂起变更就先同步推一把（失败不挡叫车：服务端闸已加 NB04/地面源豁免兜底）。
+      if (ledgerPushPending) await ledgerPushNow();
       final cands = await WmasMaster.containerCodesOf(ctype);
       // ㉖v92e 本机主档反查失败不再挡死叫车：PDA 直连 WMAS 查容器清单受网络/token/缓存影响是瞬时的，
       // 而服务器 carry→dispatchOne 本就会自动选容器号（08:09 同款框即服务器选号成功）——
@@ -832,13 +877,17 @@ extension CollectionLedgerExt on _MainPageState {
           palletType: ctype,
           container: cn); // ㉖⑰ 统一走服务器入队下发：队列/流水线/链路全可见
       if (r["ok"] == true) {
-        final _srvCn = ((r["container"] ?? "").toString().isNotEmpty ? r["container"].toString() : cn); // ㉖v92e 服务器实选容器优先（降级路径 cn 为空）
+        final _srvCn = ((r["container"] ?? "").toString().isNotEmpty
+            ? r["container"].toString()
+            : cn); // ㉖v92e 服务器实选容器优先（降级路径 cn 为空）
         _colCalled.add(loc);
         kAgvQueueTick.value++; // ㉖ 叫车成功→采集页队列统计即时刷新
         LocalLog.op('自动入库叫车', "$st→$loc 容器${_srvCn}");
         if (mounted) {
-          _autoCallCode = (codes0.isNotEmpty ? codes0.first : "").toUpperCase(); // ㉖v69 记录货物码：任务被删/完成时提示条自动撤销
-          setState(() => _autoCallTip = "🚗 自动叫车成功：$st → $loc（容器 $_srvCn）"); // ㉖v92e 显示服务器实选容器号
+          _autoCallCode = (codes0.isNotEmpty ? codes0.first : "")
+              .toUpperCase(); // ㉖v69 记录货物码：任务被删/完成时提示条自动撤销
+          setState(() => _autoCallTip =
+              "🚗 自动叫车成功：$st → $loc（容器 $_srvCn）"); // ㉖v92e 显示服务器实选容器号
         }
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -853,7 +902,8 @@ extension CollectionLedgerExt on _MainPageState {
               ? "⚠️ 自动叫车请求超时：任务可能已下发，请看下方队列条/AGV 任务确认，勿立即重叫"
               : "⚠️ 自动叫车失败：${r["msg"]}｜可手动「提交任务」";
           // ㉖v153 独立红条：明确失败=账本已记"在架"但任务未建，红字"待搬运"逼面对；超时=橙色引导查队列（不武断判死）
-          _callFailCode = (codes0.isNotEmpty ? codes0.first : "").toUpperCase(); // 与成功分支同款取码（本函数无 code 参数）
+          _callFailCode = (codes0.isNotEmpty ? codes0.first : "")
+              .toUpperCase(); // 与成功分支同款取码（本函数无 code 参数）
           _callFailTip = _netFail
               ? "🟠 $loc 叫车请求超时——任务可能已下发，请到下方队列/AGV 任务确认；若无任务请手动「提交任务」"
               : "🔴 ${_callFailCode}（$loc）已入账但叫车失败：${r["msg"]}——账本虽记在架，实物仍在 $st 台上，请手动「提交任务」或到 AGV 页重叫，否则货不会上架";
@@ -867,10 +917,12 @@ extension CollectionLedgerExt on _MainPageState {
       }
     } catch (e) {
       debugPrint('[auto-call] $e');
-      if (mounted) setState(() {
-        _autoCallTip = "⚠️ 自动叫车异常：$e";
-        _callFailTip = "🔴 $loc 自动叫车异常：$e——账本已入账但任务未建，实物仍在台上，请手动「提交任务」"; // ㉖v153 异常同样入红条，防静默丢单
-      });
+      if (mounted)
+        setState(() {
+          _autoCallTip = "⚠️ 自动叫车异常：$e";
+          _callFailTip =
+              "🔴 $loc 自动叫车异常：$e——账本已入账但任务未建，实物仍在台上，请手动「提交任务」"; // ㉖v153 异常同样入红条，防静默丢单
+        });
     }
   }
 
@@ -890,10 +942,11 @@ extension CollectionLedgerExt on _MainPageState {
 
     var st = stPre.isNotEmpty
         ? stPre
-        : (_selectedStation ?? _lastScanStation ?? ""); // ㉖⑬ 扫码后站台选中态已清，回退本框扫码时的站台
-    var loc = locPre.isNotEmpty
-        ? locPre
-        : _ledgerLocCtrl.text.trim().toUpperCase();
+        : (_selectedStation ??
+            _lastScanStation ??
+            ""); // ㉖⑬ 扫码后站台选中态已清，回退本框扫码时的站台
+    var loc =
+        locPre.isNotEmpty ? locPre : _ledgerLocCtrl.text.trim().toUpperCase();
     // ㉖v93e 先取"本框"（最近一次生效扫码）：叫车是为本框叫的，货位回退必须跟着本框走
     final allRecs = await _isar.scanRecords.where().findAll();
     allRecs.sort((a, b) => b.scanTime.compareTo(a.scanTime));
@@ -911,7 +964,10 @@ extension CollectionLedgerExt on _MainPageState {
         final bl = await _ledgerByLoc();
         String _hit = "";
         for (final e in bl.entries) {
-          if (e.value.any((c) => c.toUpperCase() == expect)) { _hit = e.key; break; }
+          if (e.value.any((c) => c.toUpperCase() == expect)) {
+            _hit = e.key;
+            break;
+          }
         }
         if (_hit.isEmpty)
           return warn("框 $expect 还没入账成功——请先扫标签保存入账（选好货位），再点「提交任务」");
@@ -936,8 +992,10 @@ extension CollectionLedgerExt on _MainPageState {
     if (codes.isEmpty) return warn("货位 $loc 还没有扫码入账——请先扫描货物标签，再叫车（防止叫车忘扫码）");
     // ㉖v79c 叫车对象校验（expect 已在上方前置计算）：该码必须在目标货位账本里，否则拒绝并提示重选
     // （事故还原：扫N26J220220入账被占失败→点提交→拿残留位D-16-1F首码SYS000254建任务→AGV按错框名义搬运）
-    if (expect.isNotEmpty && !codes.map((c) => c.toUpperCase()).contains(expect)) {
-      return warn("刚扫的框 $expect 并不在货位 $loc（该位是 ${codes.join('/')}）\n货位框可能残留上一单——请点「选位」重选本次货位，或先扫标签入账再提交");
+    if (expect.isNotEmpty &&
+        !codes.map((c) => c.toUpperCase()).contains(expect)) {
+      return warn(
+          "刚扫的框 $expect 并不在货位 $loc（该位是 ${codes.join('/')}）\n货位框可能残留上一单——请点「选位」重选本次货位，或先扫标签入账再提交");
     }
     if (!mounted) return;
     showDialog(
@@ -988,7 +1046,8 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
         _cands = list;
         _picked = list.length == 1 ? list.first : null;
         if (list.isEmpty)
-          _err = "本机查容器主档无「${widget.containerType}」编码（网络/主档延迟所致）——可直接提交，服务器会自动选容器号";
+          _err =
+              "本机查容器主档无「${widget.containerType}」编码（网络/主档延迟所致）——可直接提交，服务器会自动选容器号";
       });
     } catch (e) {
       if (mounted)
@@ -1117,8 +1176,9 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
               backgroundColor: const Color(0xFF00897B),
               foregroundColor: Colors.white,
               disabledBackgroundColor: Colors.grey.shade300),
-          onPressed:
-              (ready && !_busy && !_loading) ? _submit : null, // ㉖v92e 不再要求本机已选容器：空=服务器自动选号
+          onPressed: (ready && !_busy && !_loading)
+              ? _submit
+              : null, // ㉖v92e 不再要求本机已选容器：空=服务器自动选号
           icon: _busy
               ? const SizedBox(
                   width: 14,
@@ -1147,7 +1207,8 @@ const _kLedgerSplit = "ledger_split_v225";
 String? _ledgerEpochSeen; // 本进程已对齐的世代；null=尚未对齐
 void scheduleLedgerPush({int seconds = 15}) {
   _ledgerPushPending = true;
-  AuthApi.kDiagPulse["pending"] = true; // ㉖v199d 登记即写袋：流水通道搭车时服务器立刻见"有积压"，判死计时有锚点
+  AuthApi.kDiagPulse["pending"] =
+      true; // ㉖v199d 登记即写袋：流水通道搭车时服务器立刻见"有积压"，判死计时有锚点
   // ㉖⑰ 节流不重置：原实现每次登记重置定时器，连续扫码账本永远推不出去（网页"查不到新料"根因）
   if (_pushLedgerTimer?.isActive == true) return;
   _pushLedgerTimer = Timer(Duration(seconds: seconds), ledgerPushNow);
@@ -1173,7 +1234,10 @@ Future<void> _diagFillStatic() async {
     AuthApi.kDiagPulse["epoch"] = sp.getString(_kLedgerEpoch) ?? "";
     // dynamic 调用绕静态检查：shelfPlacements getter 在 Isar 生成码里（CI 生成后存在），
     // 直写会+1条本地 undefined_getter 基线告警；诊断计数值仅参考，异常时保留旧值即可
-    try { AuthApi.kDiagPulse["ledgerCnt"] = await (_globalIsar as dynamic).shelfPlacements.where().count(); } catch (_) {}
+    try {
+      AuthApi.kDiagPulse["ledgerCnt"] =
+          await (_globalIsar as dynamic).shelfPlacements.where().count();
+    } catch (_) {}
     AuthApi.kDiagPulse["host"] = Platform.localHostname;
     AuthApi.kDiagPulse["app"] =
         "${AppUpdater.localVersion}+${AppUpdater.localBuild}";
@@ -1184,6 +1248,7 @@ Future<void> _diagFillStatic() async {
     } catch (_) {}
   } catch (_) {}
 }
+
 /// 心跳：静态补齐 + 动态随带 → POST /api/diag/pulse（失败不重试，sync 通道自然覆盖）
 Future<void> diagPulseNow() async {
   await _diagFillStatic();
@@ -1272,7 +1337,8 @@ Future<Map> ledgerPushNow() async {
       // ㉖v103 数量取值改为【本机最新有效扫码优先】（11/3 现场 8894153871 虚高 80 件：LabelInfo 缓存存的是
       // 10/23 首扫 MES 值 300，本机 11/3 重扫实测 220 被旧缓存压住推上账本；档案页按流水算 920 反而对）。
       // 缓存只作兜底（本机无有效扫码记录时，如别台扫的框/拉取合并来的行）。
-      final qty = (qMap[up] ?? 0) > 0 ? qMap[up]! : (_ok && i.qty > 0 ? i.qty : 0);
+      final qty =
+          (qMap[up] ?? 0) > 0 ? qMap[up]! : (_ok && i.qty > 0 ? i.qty : 0);
       return {
         "c": p.goodsCode,
         "l": p.loc,
@@ -1282,7 +1348,8 @@ Future<Map> ledgerPushNow() async {
         if (src.isNotEmpty) "src": src,
         if (_splitSet.contains(up))
           "pid": "" // ㉖v225 拆框声明：显式空串（服务器认拆出=清托号+不连坐兄弟），非缺字段
-        else if (pid.isNotEmpty) "pid": pid,
+        else if (pid.isNotEmpty)
+          "pid": pid,
         if (pn.isNotEmpty) "p": pn,
         if (nm.isNotEmpty) "n": nm,
         if (qty > 0) "q": qty,
@@ -1291,13 +1358,15 @@ Future<Map> ledgerPushNow() async {
     }).toList();
     final del = await ledgerTombs();
     if (items.isEmpty && del.isEmpty) return {"ok": false, "msg": "账本为空"};
-    final r = await AuthApi.ledgerSync(items, del: del,
+    final r = await AuthApi.ledgerSync(items,
+        del: del,
         epoch: sp0.getString(_kLedgerEpoch) ?? ""); // ㉖v69 带世代：服务器据此拦旧缓存
     // ⑲改位冲突提示：推送被他人更新数据压过的标签=本机登记未生效，弹窗提醒重新登记
     final rej = r["rejected"];
     final rejLoc = r["rejectedLoc"]; // ㉖v100 货位格式防线①：病值货位被拒回，与改位冲突分两类提示
     final rejL = rej is List ? rej.whereType<String>().toList() : <String>[];
-    final rejLocL = rejLoc is List ? rejLoc.whereType<String>().toList() : <String>[];
+    final rejLocL =
+        rejLoc is List ? rejLoc.whereType<String>().toList() : <String>[];
     if (rejL.isNotEmpty || rejLocL.isNotEmpty) {
       debugPrint('[ledger] 拒回: 压回${rejL.length} 格式不符${rejLocL.length}');
       final ctx = _globalNavigatorKey.currentContext;
@@ -1314,11 +1383,11 @@ Future<Map> ledgerPushNow() async {
                       : (rejLocL.isEmpty ? "货位登记冲突" : "部分登记未生效")),
                   content: SingleChildScrollView(
                       child: Text([
-                        if (rejLocL.isNotEmpty)
-                          "${rejLocL.length} 个标签货位编码格式不符、未上账：\n${rejLocL.take(6).join("\n")}${rejLocL.length > 6 ? " …" : ""}\n\n处理：请到「位置登记」重新选择货位——须是 NB02-A-08-2F 这类货架位或 NB03-B-13-07 这类地面格位；站台码（NB02-CK-xx）与粗区码（H09）不能作为在库货位。\n",
-                        if (rejL.isNotEmpty)
-                          "${rejLocL.isNotEmpty ? "————————\n" : ""}${rejL.length} 个标签的登记未生效（被其他设备更新的数据压回）：\n${rejL.take(8).join("\n")}${rejL.length > 8 ? " …" : ""}\n\n处理：条目注明已出库/作废的无需登记（本机拉取一次自动清掉）；框确实还在架上的，请到「位置登记」重新登记实际货位（先拉取对齐），并和同事核对现场。",
-                      ].join())),
+                    if (rejLocL.isNotEmpty)
+                      "${rejLocL.length} 个标签货位编码格式不符、未上账：\n${rejLocL.take(6).join("\n")}${rejLocL.length > 6 ? " …" : ""}\n\n处理：请到「位置登记」重新选择货位——须是 NB02-A-08-2F 这类货架位或 NB03-B-13-07 这类地面格位；站台码（NB02-CK-xx）与粗区码（H09）不能作为在库货位。\n",
+                    if (rejL.isNotEmpty)
+                      "${rejLocL.isNotEmpty ? "————————\n" : ""}${rejL.length} 个标签的登记未生效（被其他设备更新的数据压回）：\n${rejL.take(8).join("\n")}${rejL.length > 8 ? " …" : ""}\n\n处理：条目注明已出库/作废的无需登记（本机拉取一次自动清掉）；框确实还在架上的，请到「位置登记」重新登记实际货位（先拉取对齐），并和同事核对现场。",
+                  ].join())),
                   actions: [
                     FilledButton(
                         onPressed: () => Navigator.pop(dc),
@@ -1335,7 +1404,8 @@ Future<Map> ledgerPushNow() async {
         final _sp3 = await SharedPreferences.getInstance();
         final _rejTxt = rejL.join('\n');
         final _left = _splitSet
-            .where((c) => !items.any((itx) => itx["c"]?.toString().toUpperCase() == c) ||
+            .where((c) =>
+                !items.any((itx) => itx["c"]?.toString().toUpperCase() == c) ||
                 _rejTxt.contains(c))
             .toSet();
         if (_left.length != _splitSet.length) {
@@ -1347,7 +1417,9 @@ Future<Map> ledgerPushNow() async {
           // 且 v99 拉取自愈"只补空值"不会覆盖非空旧值，必须在此显式清零）
           for (final c in _splitSet.difference(_left)) {
             final ex = await _globalIsar.recordExtras
-                .filter().goodsCodeEqualTo(c).findAll();
+                .filter()
+                .goodsCodeEqualTo(c)
+                .findAll();
             for (final e in ex) {
               if (e.palletId.isNotEmpty) {
                 e.palletId = "";
@@ -1355,7 +1427,9 @@ Future<Map> ledgerPushNow() async {
               }
             }
             final li = await _globalIsar.labelInfos
-                .filter().goodsCodeEqualTo(c).findFirst();
+                .filter()
+                .goodsCodeEqualTo(c)
+                .findFirst();
             if (li != null && li.palletId.isNotEmpty) {
               li.palletId = "";
               await _globalIsar.labelInfos.put(li);
@@ -1364,25 +1438,30 @@ Future<Map> ledgerPushNow() async {
         }
       }
       _ledgerPushPending = false; // ㉖⑰ 推送成功清 pending
-      _ledgerEpochSeen = sp0.getString(_kLedgerEpoch) ?? ""; // ㉖v69 推送成功=与当前世代对齐
+      _ledgerEpochSeen =
+          sp0.getString(_kLedgerEpoch) ?? ""; // ㉖v69 推送成功=与当前世代对齐
       _diagRetryN = 0; // ㉖v199d 诊断袋：成功归零计数、记成功时刻与拒回数
       AuthApi.kDiagPulse["lastOkAt"] = DateTime.now().millisecondsSinceEpoch;
       AuthApi.kDiagPulse["lastRejN"] = rejL.length + rejLocL.length;
-      if (rejL.isNotEmpty || rejLocL.isNotEmpty) AuthApi.kDiagPulse["lastErr"] = "拒回${rejL.length}+格式${rejLocL.length}"; // 被拒回=推送通了但条目没进账，与失败分开表述
+      if (rejL.isNotEmpty || rejLocL.isNotEmpty)
+        AuthApi.kDiagPulse["lastErr"] =
+            "拒回${rejL.length}+格式${rejLocL.length}"; // 被拒回=推送通了但条目没进账，与失败分开表述
     } else {
       if (r["code"] == "epochStale") {
         _ledgerEpochSeen = null; // ㉖v69 双保险：被服务器世代闸拦下 → 强制重新对齐清旧缓存
         unawaited(ledgerPullMerge(force: true));
       }
       _diagRetryN++; // ㉖v199d 诊断袋：失败原因与次数随下次搭车上报（服务器 diagWhyFor 直给"末次失败：xxx 重试N次"）
-      AuthApi.kDiagPulse["lastErr"] = "${r["code"] ?? ""} ${r["msg"] ?? "?"}".trim();
+      AuthApi.kDiagPulse["lastErr"] =
+          "${r["code"] ?? ""} ${r["msg"] ?? "?"}".trim();
       AuthApi.kDiagPulse["lastErrAt"] = DateTime.now().millisecondsSinceEpoch;
       _ledgerPushRetry(); // 失败30秒后自动重试
     }
     return r;
   } catch (e) {
     _diagRetryN++; // ㉖v199d 异常入袋（断网/超时等，异常对象转字符串截 140 与服务器字段上限一致）
-    AuthApi.kDiagPulse["lastErr"] = "$e".length > 140 ? "$e".substring(0, 140) : "$e";
+    AuthApi.kDiagPulse["lastErr"] =
+        "$e".length > 140 ? "$e".substring(0, 140) : "$e";
     AuthApi.kDiagPulse["lastErrAt"] = DateTime.now().millisecondsSinceEpoch;
     _ledgerPushRetry(); // ㉖⑰ 异常同样自动重试，防断网期间账本滞留本机
     return {"ok": false, "msg": "$e"};
@@ -1482,12 +1561,15 @@ Future<void> pullGroundSlots() async {
       CollectionLedgerExt._gSlots = Map<String, int>.from((r["slots"] as Map)
           .map((k, v) => MapEntry(k.toString(), (v as num).toInt())));
       final lt = r["lowTier"]; // ㉖v80 常用层上限随配置同步
-      if (lt is num && lt >= 1 && lt <= 4) CollectionLedgerExt._lowTier = lt.toInt();
+      if (lt is num && lt >= 1 && lt <= 4)
+        CollectionLedgerExt._lowTier = lt.toInt();
       // ㉖v163 默认每排格数随配置同步（服务端 def.cols = gndCols 参数），不再写死 12
       final dc = (r["def"] as Map?)?["cols"];
-      if (dc is num && dc >= 1 && dc <= 200) CollectionLedgerExt._gndDefCols = dc.toInt();
+      if (dc is num && dc >= 1 && dc <= 200)
+        CollectionLedgerExt._gndDefCols = dc.toInt();
       final sp = await SharedPreferences.getInstance(); // ㉖v122 持久化：下次启动先恢复再等网络
-      await sp.setString("gnd_slots_v122", jsonEncode(CollectionLedgerExt._gSlots));
+      await sp.setString(
+          "gnd_slots_v122", jsonEncode(CollectionLedgerExt._gSlots));
     }
   } catch (e) {
     LocalLog.err('拉取地面排格数', e); // ㉖ 静默失败留痕
@@ -1499,9 +1581,11 @@ Future<void> gSlotsRestore() async {
   try {
     final sp = await SharedPreferences.getInstance();
     final s = sp.getString("gnd_slots_v122");
-    if (s == null || s.isEmpty || CollectionLedgerExt._gSlots.isNotEmpty) return;
+    if (s == null || s.isEmpty || CollectionLedgerExt._gSlots.isNotEmpty)
+      return;
     final m = Map<String, dynamic>.from(jsonDecode(s) as Map);
-    CollectionLedgerExt._gSlots = m.map((k, v) => MapEntry(k, (v as num).toInt()));
+    CollectionLedgerExt._gSlots =
+        m.map((k, v) => MapEntry(k, (v as num).toInt()));
   } catch (_) {}
 }
 
@@ -1527,9 +1611,17 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
   try {
     final _nowMs = DateTime.now().millisecondsSinceEpoch;
     if (!force && _nowMs - _ledgerPullAtMs < 20000) {
-      return {"ok": true, "skipped": 1, "added": 0, "updated": 0, "deleted": 0, "total": -1}; // 20秒内刚拉过：静默跳过
+      return {
+        "ok": true,
+        "skipped": 1,
+        "added": 0,
+        "updated": 0,
+        "deleted": 0,
+        "total": -1
+      }; // 20秒内刚拉过：静默跳过
     }
-    final r = await AuthApi.ledgerGet(ghost: true); // ㉖v250 带登录态顺拉幽灵行判据集（旧服务器无此字段=空表零行为）
+    final r = await AuthApi.ledgerGet(
+        ghost: true); // ㉖v250 带登录态顺拉幽灵行判据集（旧服务器无此字段=空表零行为）
     if (r["ok"] != true)
       return {"ok": false, "msg": (r["msg"] ?? "拉取失败").toString()};
     // ㉖v69 世代对齐：服务器世代变化（账本整表替换）→ 先清空本机旧缓存（含墓碑/已发料缓存）再合并，杜绝新旧叠加
@@ -1544,7 +1636,8 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
           await _globalIsar.recordExtras.where().deleteAll();
           await _globalIsar.outboundOrders.where().deleteAll();
         });
-        await sp.remove("req_issued_barcodes"); // 领料已发料缓存（与 requisition_page 私有常量同值）
+        await sp.remove(
+            "req_issued_barcodes"); // 领料已发料缓存（与 requisition_page 私有常量同值）
         await _saveTombs({}); // 旧墓碑会挡住新账本行拉入，一并清
         await sp.setString(_kLedgerEpoch, epSrv);
       }
@@ -1562,10 +1655,13 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
     final local = await _globalIsar.shelfPlacements.where().findAll();
     // ㉖v82 清理本机遗留拼接行（"A; B"）：服务器已拆单码且不再存拼接行，这类本地行是导入时代遗留的幽灵数据——
     // 每次推送被服务器拆行命中墓碑，旧版触发"货位登记冲突"弹窗死循环；拉取时直接删除
-    final ghosts = local.where((p) => p.goodsCode.contains(';') || p.goodsCode.contains('；')).toList();
+    final ghosts = local
+        .where((p) => p.goodsCode.contains(';') || p.goodsCode.contains('；'))
+        .toList();
     if (ghosts.isNotEmpty) {
       await _globalIsar.writeTxn(() async {
-        await _globalIsar.shelfPlacements.deleteAll(ghosts.map((e) => e.id).toList());
+        await _globalIsar.shelfPlacements
+            .deleteAll(ghosts.map((e) => e.id).toList());
       });
       local.removeWhere(ghosts.contains);
     }
@@ -1575,7 +1671,8 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
     //   合并前先按码归一：保留 assignedAt 最新的一行，其余删除并从 local 移除，使 localMap 与物理行一致。
     {
       final byCode = <String, List<ShelfPlacement>>{};
-      for (final p in local) (byCode[p.goodsCode.toUpperCase()] ??= <ShelfPlacement>[]).add(p);
+      for (final p in local)
+        (byCode[p.goodsCode.toUpperCase()] ??= <ShelfPlacement>[]).add(p);
       final dupIds = <int>[];
       for (final g in byCode.values) {
         if (g.length < 2) continue;
@@ -1583,7 +1680,8 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
         for (var i = 1; i < g.length; i++) dupIds.add(g[i].id);
       }
       if (dupIds.isNotEmpty) {
-        await _globalIsar.writeTxn(() => _globalIsar.shelfPlacements.deleteAll(dupIds));
+        await _globalIsar
+            .writeTxn(() => _globalIsar.shelfPlacements.deleteAll(dupIds));
         local.removeWhere((p) => dupIds.contains(p.id));
       }
     }
@@ -1591,7 +1689,8 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
     final tombMap = await _loadTombs();
     var added = 0, updated = 0, deleted = 0;
     final upserts = <ShelfPlacement>[];
-    final _seenCode = <String>{}; // ㉖v127 兜底：服务器 items 若同码重复，只入列一次，防 putAll 撞唯一索引
+    final _seenCode =
+        <String>{}; // ㉖v127 兜底：服务器 items 若同码重复，只入列一次，防 putAll 撞唯一索引
     final infoUpserts = <LabelInfo>[];
     final rmIds = <int>{};
     final tombAdds = <String, int>{};
@@ -1603,12 +1702,16 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
     //   都没用"即此病灶（僵尸碑永久挡行=各设备在架数不一致/点名清单缺框的又一根源）。
     //   安全性：真删除的墓碑要等服务器账本重出现该码在架行才会被判僵尸（删了又正常重登=本就该复活），
     //   且 10 分钟宽限期覆盖"删除尚未推上服务器"的断网重推窗口，不会截断正常删除上报。
-    final _srvByCode = {for (final x in items) (x["c"] ?? "").toString().trim().toUpperCase(): x};
+    final _srvByCode = {
+      for (final x in items) (x["c"] ?? "").toString().trim().toUpperCase(): x
+    };
     final tombZombie = <String>{};
     tombMap.forEach((c, tv) {
       final sx = _srvByCode[c];
       final st = sx == null ? 0 : ((sx["t"] as num?)?.toInt() ?? 0);
-      if (st > 0 && tv < now - 600000) { tombZombie.add(c); }
+      if (st > 0 && tv < now - 600000) {
+        tombZombie.add(c);
+      }
     });
     for (final x in items) {
       final c = (x["c"] ?? "").toString().trim().toUpperCase();
@@ -1618,7 +1721,8 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
       if ((tombMap[c] ?? 0) >= t && t > 0) {
         if (!tombZombie.contains(c)) continue; // 本机已删除且更新 → 不复活
         final _bt = DateTime.fromMillisecondsSinceEpoch(tombMap[c] ?? 0);
-        LocalLog.op('账本墓碑自愈', '僵尸墓碑撤除复活：$c（本机碑 ${_bt.month}/${_bt.day} ${_bt.hour}:${_bt.minute.toString().padLeft(2, "0")}，服务器在架行更新且已超10分钟宽限）'); // 复活放行（碑随本轮写回撤销）
+        LocalLog.op('账本墓碑自愈',
+            '僵尸墓碑撤除复活：$c（本机碑 ${_bt.month}/${_bt.day} ${_bt.hour}:${_bt.minute.toString().padLeft(2, "0")}，服务器在架行更新且已超10分钟宽限）'); // 复活放行（碑随本轮写回撤销）
       }
       final me = localMap[c];
       if (me != null && me.assignedAt >= t) {
@@ -1643,7 +1747,10 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
           ..itemName = (x["n"] ?? "").toString()
           ..qty = (x["q"] as num?)?.toDouble() ?? 0
           ..lotNo = (x["b"] ?? "").toString()
-          ..palletId = (x["pid"] ?? "").toString().trim().toUpperCase() // ㉖v99 托号入缓存（框合并键优先按托）
+          ..palletId = (x["pid"] ?? "")
+              .toString()
+              .trim()
+              .toUpperCase() // ㉖v99 托号入缓存（框合并键优先按托）
           ..missing = false
           ..syncedAt = now);
       }
@@ -1683,7 +1790,8 @@ Future<Map> _ledgerPullMergeInner({bool force = false}) async {
         if (p.assignedAt > shipAt) continue; // 本机登记晚于出库 = 退料回流/在途新行 → 保留（防误删）
         rmIds.add(p.id);
         ghostDel++;
-        LocalLog.op('账本幽灵自愈', '本机幽灵行删除：$c（服务器账本无行+已出库无碑，本机登记 ${p.assignedAt} 早于出库 $shipAt）');
+        LocalLog.op('账本幽灵自愈',
+            '本机幽灵行删除：$c（服务器账本无行+已出库无碑，本机登记 ${p.assignedAt} 早于出库 $shipAt）');
       }
     }
     await _globalIsar.writeTxn(() async {
@@ -1845,7 +1953,8 @@ Future<void> scanPushNow() async {
     };
     final items = all.map((r) {
       final x = extras[r.goodsCode.toUpperCase()];
-      final _sk = "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}";
+      final _sk =
+          "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}";
       return {
         "k": _sk,
         "code": r.goodsCode,
@@ -1863,7 +1972,8 @@ Future<void> scanPushNow() async {
         "mk": r.mesCreateTime ?? "",
         "op": x?.operator ?? "",
         "nm": x?.mesItemName ?? "",
-        "mc": x?.mesMitem ?? "", // ㉖v98c 物料号（MES MITEM_CODE），服务器沉淀零件号→物料号字典供全量回补
+        "mc":
+            x?.mesMitem ?? "", // ㉖v98c 物料号（MES MITEM_CODE），服务器沉淀零件号→物料号字典供全量回补
         // ㉖ 批次口径：按 MES 标签打印时间派生，缺失回退原 LOT_NO
         "lot": lotFromPrintDate(r.mesCreateTime ?? "", x?.mesLotNo ?? ""),
         "pid": x?.palletId ?? "",
@@ -1873,7 +1983,8 @@ Future<void> scanPushNow() async {
     if (res["ok"] == true) {
       _scanPushPending = false;
       kScanSync.value = 0; // ㉖⑭ 推送成功：状态归零，网页30秒内可见
-      _cxLocalOpAt.removeWhere((k, _) => items.any((e) => e["k"] == k)); // v122 已上报的主动操作时刻清登记（防下次推送带旧时刻误压服务器更新状态）
+      _cxLocalOpAt.removeWhere((k, _) => items
+          .any((e) => e["k"] == k)); // v122 已上报的主动操作时刻清登记（防下次推送带旧时刻误压服务器更新状态）
       // ㉖v122 服务器权威回写：网页/别端对本机该条流水做过作废或恢复（cxKept=[k,服务器cx]），
       // 本机 Isar 旧状态必须跟服务器对齐——否则 app 列表永远显示"正常"、网页显示"作废"（11-07 18:43 实锤）。
       final kept = res["cxKept"];
@@ -1919,11 +2030,13 @@ Future<void> scanPushNow() async {
 /// ㉖v122 本机主动作废/恢复时刻登记表（键=流水 k=标签|批次|扫码毫秒）：
 /// 随流水推送上报 cxAt，服务器按"新者胜"仲裁——主动操作能生效，旧缓存回灌会被压回（两者不再互相打架）。
 final Map<String, int> _cxLocalOpAt = {};
-String scanlogKeyOf(ScanRecord r) => "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}";
+String scanlogKeyOf(ScanRecord r) =>
+    "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}";
 
 /// 作废一条采集记录：标记 isCancel + 释放站台 + 联动整框消账 + 撤回全局防重 + 立即推流水
 Future<void> scanRecordCancel(Isar isar, ScanRecord r) async {
-  _cxLocalOpAt[scanlogKeyOf(r)] = DateTime.now().millisecondsSinceEpoch; // ㉖v122 登记主动操作时刻
+  _cxLocalOpAt[scanlogKeyOf(r)] =
+      DateTime.now().millisecondsSinceEpoch; // ㉖v122 登记主动操作时刻
   await isar.writeTxn(() async {
     r.isCancel = true;
     await isar.scanRecords
@@ -1949,14 +2062,16 @@ Future<void> scanRecordCancel(Isar isar, ScanRecord r) async {
     // 该标签已无生效采集：整框从账本拣下(墓碑同步服务器) + 撤回 seenIn 防重允许重扫
     await ledgerRemoveBoxAndPush(up);
     unawaited(AuthApi.labelUnsee(up));
-    unawaited(AuthApi.agvQueueCancel([up])); // ㉖v69 作废即撤车：该货物在排队/已下发的AGV任务同步取消，防车白跑一趟
+    unawaited(
+        AuthApi.agvQueueCancel([up])); // ㉖v69 作废即撤车：该货物在排队/已下发的AGV任务同步取消，防车白跑一趟
   }
   unawaited(scanPushNow()); // 作废即刻上墙，网页入库流水秒级变"作废"
 }
 
 /// 恢复一条已作废记录：清标记 + 若账本无此码则按原货位重建登记 + 立即推流水
 Future<void> scanRecordRestore(Isar isar, ScanRecord r) async {
-  _cxLocalOpAt[scanlogKeyOf(r)] = DateTime.now().millisecondsSinceEpoch; // v122 登记主动操作时刻
+  _cxLocalOpAt[scanlogKeyOf(r)] =
+      DateTime.now().millisecondsSinceEpoch; // v122 登记主动操作时刻
   await isar.writeTxn(() async {
     r.isCancel = false;
     await isar.scanRecords.put(r); // ㉖ 同作废：Isar3.x 用 put 更新
@@ -1977,7 +2092,8 @@ Future<void> scanRecordRestore(Isar isar, ScanRecord r) async {
     final loc = (r.workType == 0 ? r.stationNo : r.groundLocation) ?? "";
     if (loc.isNotEmpty &&
         (RegExp(r'^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$').hasMatch(loc) ||
-            RegExp(r'^NB04-[A-H]-\d{2}-\d{3}$').hasMatch(loc))) { // ㉖v120d 来料区结构域（排2位格3位；范围=服务器参数闸）
+            RegExp(r'^NB04-[A-H]-\d{2}-\d{3}$').hasMatch(loc))) {
+      // ㉖v120d 来料区结构域（排2位格3位；范围=服务器参数闸）
       final extra =
           await isar.recordExtras.filter().goodsCodeEqualTo(up).findFirst();
       await isar.writeTxn(() async {

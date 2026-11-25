@@ -11328,9 +11328,12 @@ async function dispatchOne(q, nowMs, runT, assigned, live) {
       // 人工搬到站台后 AGV 模式登记→叫车，起点=台、终点=新货架格，地面位当然"两头都不像"。
       // 这不是矛盾而是设计动线（采集重扫被流水闸拦、消位重扫又会触发"重复有效流水"告警，
       // 现场被迫绕路）——入库腿认地面源：AGV 从台面叉走，账本随后随叫车改到终点，账实一致。
-      const _gndOk = /^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(_l) && q.type === 'inbound';
+      // ㉖v259 一楼转入同款豁免（11-25 N26K250034 实锤）：NB04→二楼 AGV 入库时账本推送有 30 秒防抖
+      //（PDA 叫车即发、账本后到），闸读到的账本还是 NB04 旧位=纯竞态非矛盾；且该码刚被人在站台扫过=实物在场
+      // 人工确认，与地面源同理叉不空。countback（盘点归位）不豁免——盘点期间账本设计上不动，第三位置仍是真矛盾。
+      const _gndOk = (/^NB03-[A-H]-\d{1,2}-\d{1,2}$/.test(_l) || (q.type === 'inbound' && locRecv(_l))) && q.type === 'inbound';
       if (!_gndOk) _bad = '账本显示框 ' + q.code + ' 已在 ' + _l + '，与本' + (q.type === 'countback' ? '盘点归位' : '入库') + '任务（' + _from + '→' + _to + '）矛盾，拒绝下发——请核对框是否在别处/账本是否需要更正';
-      else (q.trace = q.trace || []).push('位货绑定闸：账本在地面格 ' + _l + '，按重新上架动线放行（实物应在 ' + _from + ' 台面）');
+      else (q.trace = q.trace || []).push('位货绑定闸：账本在' + (locRecv(_l) ? '一楼来料区 ' : '地面格 ') + _l + '，按' + (locRecv(_l) ? '一楼转入' : '重新上架') + '动线放行（实物应在 ' + _from + ' 台面）');
     }
     if (_bad) {
       q.state = '失败'; q.err = _bad; q.updAt = nowMs;
