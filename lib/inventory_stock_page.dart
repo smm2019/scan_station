@@ -41,6 +41,11 @@ class _StockAgg {
   // ㉖v119 服务器全厂口径四卡（账本权威，与网页看板同源）：非 null 时 KPI 优先取此值，
   // 消除两台设备本机快照各算各的 588 vs 592 vs 网页 594；null=离线，回退下方本机聚合值
   int? srvBoxes, srvQty, srvParts, srvStale7;
+  // ㉖v270 一楼来料区待转入（"来了多少/还压多少"件数闭环）：srv=counts 全厂口径（框按托去重），
+  // 本机兜底=零件行 recvBoxes 求和（标签级，同托多码时略大于全厂框数，离线态可接受）
+  int? srvRecvBoxes, srvRecvQty;
+  int get localRecvBoxes => parts.values.fold(0, (a, p) => a + p.recvBoxes);
+  double get localRecvQty => parts.values.fold(0.0, (a, p) => a + p.recvQty);
 }
 
 class _StockPartRow {
@@ -49,6 +54,12 @@ class _StockPartRow {
   double opening = 0, inQty = 0, outQty = 0;
   double inStockQty = 0; // 在库标签数量合计（未作废且未出库）
   int inBoxes = 0; // 在库框数
+  // ㉖v269 一楼来料区(NB04)待转入拆桶：账上有货≠现在能发。领料建单/详情据此告知物料员
+  //   "货在楼下、请催仓管转入"，而不是让他看着有库存却发不出料干等（含在 inBoxes/inStockQty 内）。
+  int recvBoxes = 0; // 其中仍在一楼来料区待转入的框数
+  double recvQty = 0; // 其中待转入件数
+  int get readyBoxes => inBoxes - recvBoxes; // 二楼可发框数
+  double get readyQty => inStockQty - recvQty; // 二楼可发件数
   final Map<String, int> byLocDist = {}; // ㉖v52 在库框按货位分布（前缀归并，同网页零件档案）
   int staleBoxes = 0; // ㉖v52 滞留 7 天+ 框数
   double get perBoxQty =>
@@ -293,6 +304,11 @@ Future<_StockAgg> computeStock() async {
     if (!box.inStock) continue;
     row.inBoxes++;
     row.inStockQty += box.inStockQty; // ㉖v59 方案B：在库量=框内未发码之和（半发托只算剩余码）
+    if (box.loc.toUpperCase().startsWith('NB04-')) {
+      // ㉖v269 一楼待转入拆桶（含在上面总数内，仅作子集提示）
+      row.recvBoxes++;
+      row.recvQty += box.inStockQty;
+    }
     if (box.ageH >= 168) {
       row.staleBoxes++;
       agg.staleBoxes++;
@@ -331,6 +347,9 @@ Future<_StockAgg> computeStock() async {
   if ((_srv?["stockQty"] ?? -1) >= 0) agg.srvQty = _srv!["stockQty"];
   if ((_srv?["stockParts"] ?? -1) >= 0) agg.srvParts = _srv!["stockParts"];
   if ((_srv?["stockStale7"] ?? -1) >= 0) agg.srvStale7 = _srv!["stockStale7"];
+  // ㉖v270 来料区待转入全厂口径（-1=旧版服务器/离线→卡走本机兜底）
+  if ((_srv?["recvBoxes"] ?? -1) >= 0) agg.srvRecvBoxes = _srv!["recvBoxes"];
+  if ((_srv?["recvQty"] ?? -1) >= 0) agg.srvRecvQty = _srv!["recvQty"];
 
   // 期初
   for (final op in openings) {
@@ -413,7 +432,10 @@ Future<Map<String, int>?> _todayCountsCached() async {
         "stockBoxes": ((r["stockBoxes"] as num?) ?? -1).toInt(),
         "stockQty": ((r["stockQty"] as num?) ?? -1).toInt(),
         "stockParts": ((r["stockParts"] as num?) ?? -1).toInt(),
-        "stockStale7": ((r["stockStale7"] as num?) ?? -1).toInt()
+        "stockStale7": ((r["stockStale7"] as num?) ?? -1).toInt(),
+        // ㉖v270 来料区待转入（旧版服务器无此字段=-1，视同离线走本机兜底）
+        "recvBoxes": ((r["recvBoxes"] as num?) ?? -1).toInt(),
+        "recvQty": ((r["recvQty"] as num?) ?? -1).toInt()
       };
       _todayCacheAt = now;
       _todayFailAt = 0;
@@ -695,6 +717,9 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
       rows = rows.where((r) => r.staleBoxes > 0).toList();
     } else if (_flt == "zero") {
       rows = rows.where((r) => r.inBoxes == 0 && r.stock <= 0).toList();
+    } else if (_flt == "recv") {
+      // ㉖v270 点「一楼待转入」卡=只看还有货压在来料区的零件（所见即入口，同滞留卡交互）
+      rows = rows.where((r) => r.recvBoxes > 0).toList();
     }
     // ㉖v101 项目筛选：按项目字典本地缓存匹配（多值任一命中；未配的零件在选中项目下不显示）
     if (_proj.isNotEmpty) {
@@ -790,6 +815,51 @@ class _StockSummaryTabState extends State<_StockSummaryTab> {
                   sel: _flt == 'stale'),
             ]);
           })),
+      // ㉖v270 一楼来料区待转入·全宽汇总行（"料来了多少/还压多少"闭环）：
+      // 不进 3+3 卡阵（第7张卡会孤行，v108 治过的布局病）；整行橙底=框+件同显，
+      // 车间语义的"多少"=件数；0 时灰字常驻（健康态一眼可见）；点行=只看压楼下的零件，再点取消。
+      Builder(builder: (ctx) {
+        final rb = agg.srvRecvBoxes ?? agg.localRecvBoxes;
+        final rq = (agg.srvRecvQty ?? agg.localRecvQty).toDouble();
+        final has = rb > 0;
+        final col = has ? const Color(0xFFE65100) : const Color(0xFF9E9E9E);
+        return Container(
+            width: double.infinity,
+            color: Colors.white,
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 6),
+            child: Material(
+                color: has ? const Color(0xFFFFF3E0) : const Color(0xFFF5F5F5),
+                borderRadius: BorderRadius.circular(8),
+                child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: has
+                        ? () =>
+                            setState(() => _flt = _flt == 'recv' ? "" : 'recv')
+                        : null,
+                    child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 7),
+                        child: Row(children: [
+                          Text('🏜 一楼待转入',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: col)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                              child: Text('$rb 框 · ${_fmtInvNum(rq)} 件',
+                                  style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                      color: col))),
+                          Text(
+                              _flt == 'recv'
+                                  ? '已筛选·点取消'
+                                  : (has ? '点看零件 ›' : '楼下无压货'),
+                              style: const TextStyle(
+                                  fontSize: 10.5, color: Color(0xFF78909C))),
+                        ])))));
+      }),
       Padding(
           padding: const EdgeInsets.fromLTRB(10, 4, 10, 0),
           // ㉖v108 布局优化：缺料分享按钮与"项数"从筛选 Wrap 上移到搜索行尾部，

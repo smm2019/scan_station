@@ -206,7 +206,9 @@ function nrowPn(inp){const row=inp.closest('.nrow'),pop=row.querySelector('.npop
 function nrowPick(el,pn){const row=el.closest('.nrow');row.querySelector('.npn').value=pn;const d=(window._dictCache||[]).find(x=>x.pn===pn),nm=row.querySelector('.nnm');if(d&&d.nm){nm.value=d.nm;delete nm.dataset.touched}row.querySelector('.npop').style.display='none';const q=row.querySelector('.nqty');nrowHint(q);q.focus()}
 function nrowMove(btn,dir){const r=btn.closest('.nrow'),sib=dir<0?r.previousElementSibling:r.nextElementSibling;if(!sib||!sib.classList.contains('nrow'))return;r.parentNode.insertBefore(dir<0?r:sib,dir<0?sib:r)}
 async function newReqDlg(prefill){ // ㉖v148 prefill=再来一单（零件号→件数，打开后换算框数预填）；㉖v98c 待签收预检：调服务器统一判定端点（与 POST 兜底闸门同口径；急料豁免/宽限期在服务器算）
- if(U.role=='material'){let block=[];try{const j=await api('/api/requisitions/gate');block=j.block||[]}catch(_){} // 查询失败不拦（POST闸门兜底）
+ if(U.role=='material'){let block=[],fz=null,th=null,_foM=120;try{const j=await api('/api/requisitions/gate');block=j.block||[];fz=j.freeze&&j.freeze.frozen?j.freeze:null;th=j.throttle&&j.throttle.hit?j.throttle:null;_foM=Number(j.freezeOverMin)||window._foM||120}catch(_){} // 查询失败不拦（POST闸门兜底）
+  if(fz){alert('🧊 下单冻结中：您有领料单备齐后超 '+_foM+' 分钟未签收，至 '+new Date(fz.until).toLocaleString('zh-CN',{hour12:false}).slice(5,16)+' 前暂停下单（到期自动解除）。请先到领料列表完成签收。');return} // ㉖v264 冻结=硬拦（自动解，确认也无直通）
+  if(th){const _rm=Math.max(1,Math.ceil((th.releaseAt-Date.now())/60000));if(!confirm('⚠ 连开提醒：限流窗口内您已有 '+th.n+' 张领料单，约 '+_rm+' 分钟后解除。\n\n确属批量补料点「确定」继续填单（提交时仍需再确认一次），否则点「取消」先去处理已有的单。'))return} // ㉖v264 限流=软提示（POST 层 confirmThrottle 直通）
   if(block.length){const names=block.slice(0,3).map(r=>r.no+(block.length>3&&r===block[2]?'…':'')).join('、');
    if(confirm('您有 '+block.length+' 张领料单货到待签收未处理（'+names+'），签收后才能下新单。\n\n点「确定」跳去签收，「取消」关闭新建。')){openReqById(block[0].id)}
    return}}
@@ -275,7 +277,18 @@ async function newReqGo(btn){ // ㉖v128 框数→件数换算（对齐 PDA requ
  const empty=items.filter(i=>!i.avail); // ㉖v134 零在架独立分支（旧版 avail>0 门槛把"彻底没货"整类漏放）：含不在字典的零件=顺带防打错号
  if((over.length||empty.length)&&!confirm((over.length?'⚠ 以下行需求超过当前在架量：\n'+over.map(i=>i.partNo+'：约'+i.qty+'件（'+i.boxes+'框） > 在架约'+(Math.round(i.avail*i.perBox*10)/10)+'件（'+i.avail+'框×'+i.perBox+'件/框）').join('\n')+(empty.length?'\n\n':''):'')+(empty.length?'⚠ 以下零件当前无在架库存，仓管接单时可能无货可发：\n'+empty.map(i=>i.partNo+(i.perBox>0?'':'（不在字典，提交后仓管需人工核对名称）')).join('\n'):'')+'\n\n若物料已在途/补货已安排，点确定仍可提交。'))return;
  btn.disabled=true;
- try{const j=await api('/api/requisitions',{method:'POST',body:{items,remark:$('#nrm').value.trim(),assigneeId:$('#nasg').value,needDate:$('#nnd').value,rush:$('#nrush').checked}});
+ try{let j=await api('/api/requisitions',{method:'POST',body:{items,remark:$('#nrm').value.trim(),assigneeId:$('#nasg').value,needDate:$('#nnd').value,rush:$('#nrush').checked}});
+  // ㉖v264 逾期签收冻结：硬拦无直通（到期自动解除），弹提示引导去签收在手的单
+  if(j&&j.code==='freeze'){btn.disabled=false;alert(j.msg||'下单冻结中，请先完成签收');return}
+  // ㉖v264 连开限流软拦：窗口内连开达阈值 → 确认后带 confirmThrottle 直通（合法批量补料不误伤）
+  if(j&&j.code==='throttle'){
+   btn.disabled=false;
+   if(!confirm((j.msg||'连开限流')+'\n\n确属批量补料请点「确定」再次提交；疑似误操作点「取消」。'))return;
+   btn.disabled=true;
+   const j2=await api('/api/requisitions',{method:'POST',body:{items,remark:$('#nrm').value.trim(),assigneeId:$('#nasg').value,needDate:$('#nnd').value,rush:$('#nrush').checked,confirmThrottle:1}});
+   btn.disabled=false;
+   if(j2.ok){T('✅ 已提交 '+(j2.req&&j2.req.no||'')+'（已按批量补料放行）',1);$('#mask').classList.add('hide');pgReqs()}else T('❌ '+(j2.msg||'失败'));return;
+  }
   // ㉖v235 重复下单软拦：服务器判 10 分钟内同人同零件同数量 → 弹明细让用户确认（确属补料→带 confirmDup 重提）
   if(j&&j.code==='dup_req'&&Array.isArray(j.dups)){
    btn.disabled=false;
@@ -382,8 +395,9 @@ async function pgDash(silent){if(!silent)$('#main').innerHTML='<div class="card 
   const rush=reqs.filter(r=>r.rush&&r.status=='pending').length;
   const late=reqs.filter(r=>r.status=='ready'&&(Date.now()-(Number(r.readyAt)||Date.parse(((r.history||[]).slice(-1)[0]||{}).time||r.createdAt||0)))>30*60000).length; // ㉖⑫ 优先用精确备齐时刻，老数据回退历史尾条
   const _now=Date.now(),_dis=(kk,n)=>DIS[kk]&&DIS[kk].n>=n&&_now-DIS[kk].at<10*60000;
+  const _foM=(k.freezeOverMin||120); // ㉖v264 逾期签收时限（与服务器 freezeOf 同参数，卡片文案/下钻过滤同口径）
   const reds=als.filter((a)=>a.red).length;window._lastRed=reds;navBadge(reds);try{agvNavBadge()}catch(_){} // ㉖v113 保险④角标跟随「异常与复盘」标签
-  const items=[[reds,'红牌急停(30分未处理)',"EVK='';EVUN=1;EVDAY='';go('agv/rev')",'redflag'],[als.length-reds,'未认领告警',"EVK='';EVUN=1;EVDAY='';go('agv/rev')",'alarms'],[jam,'路网点堵',"EVK='堵点';EVW='a';EVLO=1;EVUN=0;EVDAY='';go('agv/rev')",'jam'],[low,'搬运超时',"EVK='超时';EVW='a';EVLO=1;EVUN=0;EVDAY='';go('agv/rev')",'overtime'],[rush,'急料待接',"reqJump('pending',{rush:1})",'rush'],[late,'待签收超30分',"reqJump('ready',{late:1})",'late'],[(k.inspWait||0),'检验待处理(协助/退货)',"go('insp')",'inspwait']];
+  const items=[[reds,'红牌急停(30分未处理)',"EVK='';EVUN=1;EVDAY='';go('agv/rev')",'redflag'],[als.length-reds,'未认领告警',"EVK='';EVUN=1;EVDAY='';go('agv/rev')",'alarms'],[jam,'路网点堵',"EVK='堵点';EVW='a';EVLO=1;EVUN=0;EVDAY='';go('agv/rev')",'jam'],[low,'搬运超时',"EVK='超时';EVW='a';EVLO=1;EVUN=0;EVDAY='';go('agv/rev')",'overtime'],[rush,'急料待接',"reqJump('pending',{rush:1})",'rush'],[late,'待签收超30分',"reqJump('ready',{late:1})",'late'],[(k.overReady||0),`逾期签收超${_foM}分(冻结下单)`,"reqJump('ready',{over:1})",'overready'],[(k.inspWait||0),'检验待处理(协助/退货)',"go('insp')",'inspwait']];
   const live=items.filter((x)=>x[0]&&!_dis(x[3],x[0])),gone=items.filter((x)=>x[0]&&_dis(x[3],x[0]));
   if(live.length||gone.length)ex=`<div class="grid" style="margin-top:12px">${live.map(([n,t,act,key])=>{const rd=key=='redflag';return `<div class="card kpi${rd?' redpk':''}" style="cursor:pointer;position:relative;${rd?'border:2px solid var(--bad);background:rgba(211,47,47,.07)':'border:1px solid var(--warn)'}" onclick="${act}"><div class="n" data-r="${n}" style="color:${rd?'var(--bad)':'var(--warn)'}">${n}</div><div class="t">${rd?'🔴':'⚠'} ${t}</div><button class="pill q kdone" style="position:absolute;top:5px;right:5px" title="处理一条划一条：10分钟内不复现；数量再增加会自动回来" onclick="event.stopPropagation();disEv('${key}',${n})">✓ 已处理</button></div>`}).join('')}${gone.length?`<div class="card" style="grid-column:1/-1;font-size:12px;color:var(--sub);display:flex;align-items:center;gap:10px;padding:8px 14px">✓ 已划销 ${gone.length} 类（处理中）<button class="pill q" style="padding:2px 8px;font-size:11px" onclick="DIS={};try{localStorage.setItem('hst_dis','{}')}catch(_){}pgDash()">撤销</button></div>`:''}</div>`;rollNums();}catch(_){}
  let rc='';try{const q=await api('/api/reconcile');const g=q.ghosts||[],e=q.evap||[],m=q.moved||[],v=q.qtyCh||[];
@@ -396,11 +410,11 @@ async function pgDash(silent){if(!silent)$('#main').innerHTML='<div class="card 
  // ㉖v252 卡片信息升级（融合 Datadog/Grafana stat tile 长处）：零值淡化=一眼扫出"哪里有活"；昨日同期增减=同口径同时刻对比（k.yPrev 服务端算好）。
  // 卡内迷你趋势线已按用户 11-27 指示移除（卡面只留数字+名称+涨跌，趋势看下方大图）。
  // 偏好设置的显隐/排序（v151 隐藏清单制）原样生效：分组条不做——固定分组与"自定义卡片顺序"互斥，且会让隐藏卡回归。
- const _YP={'今日入库(标签)':'inBoxes','今日入库件数':'inQty','今日出库拣下':'outToday','今日AGV搬运':'agvToday'};
- const cell=(n,t,c,fn)=>{const isN=/^\d+$/.test(String(n));const num=Number(n);
+ const _YP={'今日入库(标签)':'inBoxes','今日入库件数':'inQty','今日来料件数':'recvTodayQty','一楼来料登记(标签)':'recvToday','今日出库拣下':'outToday','今日AGV搬运':'agvToday'};
+ const cell=(n,t,c,fn,sub)=>{const isN=/^\d+$/.test(String(n));const num=Number(n);
   let dl='';const _yk=_YP[t];if(_yk&&k.yPrev&&typeof k.yPrev[_yk]==='number'&&isN){const d=num-k.yPrev[_yk];if(d!==0)dl=` <span class="kd" style="color:var(--sub)" title="昨日同期 ${k.yPrev[_yk]}（同一时刻口径）">${d>0?'▲'+d:'▼'+(-d)}</span>`}
-  return `<div class="card kpi${isN&&num===0?' dim':''}" ${fn?`style="cursor:pointer" onclick="${fn}"`:''}><div class="n" ${isN?`data-r="${n}"`:''} style="color:${c||'var(--ink)'}">${n}</div><div class="t">${t}${dl}</div></div>`};
- const KARR=[['今日入库(标签)',k.inBoxes,'',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日入库件数',k.inQty,'var(--ok)',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['一楼来料登记(标签)',k.recvToday||0,'',"go('flow');TF={k:'in',d:todayStr(),q:'NB04'};pgFlow()"],['待入库(来料区)',k.pendRecv||0,(k.pendRecv||0)?'var(--warn)':'var(--ok)',"TM.lq='NB04';go('ledger')"],['今日出库拣下',k.outToday,'var(--warn)',"go('flow');TF={k:'out',d:todayStr()};pgFlow()"],['今日AGV搬运',k.agvToday,'var(--pri)',"TMRPT={from:todayStr(),to:todayStr()};go('rpt')"],['队列中',k.agvQueue,'var(--pri)',"go('agv/q')"],['在库框数',k.stockBoxes,'',"go('ledger')"],['占用货位',k.stockLocs,'',"go('ledger')"],['待接单',k.pending,k.pending?'var(--warn)':'var(--ok)',"reqJump('pending')"],['备料中',k.accepted,'',"reqJump('accepted')"],['待签收',k.ready,'',"reqJump('ready')"],['站台在用',k.stnBusy+'/'+k.stnTotal,'var(--pri)',"go('agv/board')"],['检验待处理',k.inspWait||0,k.inspWait?'var(--warn)':'',"go('insp')"]];
+  return `<div class="card kpi${isN&&num===0?' dim':''}" ${fn?`style="cursor:pointer" onclick="${fn}"`:''}><div class="n" ${isN?`data-r="${n}"`:''} style="color:${c||'var(--ink)'}">${n}</div><div class="t">${t}${dl}</div>${sub?`<div style="font-size:10.5px;color:var(--sub);margin-top:1px">${sub}</div>`:''}</div>`}; // ㉖v270 sub=件数副标（"来了多少"车间语义=件数，标签卡下直给件数不用点进去）
+ const KARR=[['今日入库(标签)',k.inBoxes,'',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日入库件数',k.inQty,'var(--ok)',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['一楼来料登记(标签)',k.recvToday||0,'',"go('flow');TF={k:'in',d:todayStr(),q:'NB04'};pgFlow()",(k.recvTodayQty||0).toLocaleString()+' 件'],['今日来料件数',k.recvTodayQty||0,'var(--ok)',"go('flow');TF={k:'in',d:todayStr(),q:'NB04'};pgFlow()"],['待入库(来料区)',k.pendRecv||0,(k.pendRecv||0)?'var(--warn)':'var(--ok)',"TM.lq='NB04';go('ledger')",(k.pendRecvQty||0).toLocaleString()+' 件'],['待转入件数',k.pendRecvQty||0,(k.pendRecvQty||0)?'var(--warn)':'var(--ok)',"TM.lq='NB04';go('ledger')"],['今日出库拣下',k.outToday,'var(--warn)',"go('flow');TF={k:'out',d:todayStr()};pgFlow()"],['今日AGV搬运',k.agvToday,'var(--pri)',"TMRPT={from:todayStr(),to:todayStr()};go('rpt')"],['队列中',k.agvQueue,'var(--pri)',"go('agv/q')"],['在库框数',k.stockBoxes,'',"go('ledger')"],['占用货位',k.stockLocs,'',"go('ledger')"],['待接单',k.pending,k.pending?'var(--warn)':'var(--ok)',"reqJump('pending')"],['备料中',k.accepted,'',"reqJump('accepted')"],['待签收',k.ready,'',"reqJump('ready')"],['站台在用',k.stnBusy+'/'+k.stnTotal,'var(--pri)',"go('agv/board')"],['检验待处理',k.inspWait||0,k.inspWait?'var(--warn)':'',"go('insp')"]]; // ㉖v270 来料件数闭环：+今日来料件数/待转入件数两卡（与二楼入库件数对称），标签卡带件数副标——"来了多少"件数一眼可见
  // ㉖v151 KPI 显隐改「隐藏清单」制：PF.kpi 只决定顺序，PF.kpiH 才是隐藏项；快照未覆盖的新卡片自动补到末尾。
  // 旧版 PF.kpi 是白名单——管理员 11-06 存快照时「一楼来料登记/待入库(来料区)」尚未上线，此后永久看不到（11-11 现场反馈）
  const _KALL=KARR.map((x)=>x[0]); window._KALL=_KALL; // 偏好弹窗候选清单与此同源，杜绝"下拉里没有→新卡片永远加不回"
@@ -412,7 +426,7 @@ async function pgDash(silent){if(!silent)$('#main').innerHTML='<div class="card 
  // 注：倒计时动态数字需 setInterval+Date，会被 v151 vm 沙箱抽取的纯计算块误执行而报错——放弃动态倒计时，保留静态文案+手动刷新按钮（手动刷新才是真痛点）
  $('#main').innerHTML=`<div class="row" style="margin-bottom:8px"><span style="color:var(--sub)">数据 ${new Date(j.at).toLocaleTimeString('zh-CN')} · 30 秒自动刷新 · <b style="color:var(--pri);cursor:pointer;font-weight:600" onclick="pgDash()">🔄 立即刷新</b> · 点卡片下钻 · <b style="color:var(--pri);cursor:pointer" onclick="kkOpen()">⌘K 快捷搜索</b></span><span class="sp"></span><span id="lamp">${lampHtml()}</span><button class="pill g" style="padding:3px 10px;font-size:12px" onclick="shiftDlg()">📋 交接日报</button></div>
 ${ex}${rc}${pa}
-<div class="grid">${kshow.map((x)=>cell(x[1],x[0],x[2],x[3])).join('')}</div>
+<div class="grid">${kshow.map((x)=>cell(x[1],x[0],x[2],x[3],x[4])).join('')}</div>
 <div class="card" style="margin-top:12px;position:relative">${trendChart(tr)}</div>`}
 // ---- ㉖第3档 #6 KPI 自选排序：有序数组 _kord，上/下移、移除、加入 ----
 // ㉖v151 移除=加入 _khide（显式隐藏），加入=从 _khide 撤回；下拉候选=全部已知卡片未在当前列表的（含被隐藏的，可加回）
@@ -432,7 +446,7 @@ async function chgPw(btn){const o=$('#cp_o').value,n1=$('#cp_n').value,n2=$('#cp
 async function prefDlg(){try{const q=await api('/api/prefs');window._tpls=q.templates||[];if(q.prefs)PF=Object.assign(PF,q.prefs);}catch(_){}
  const N=[['req_new','新领料单'],['req_urge','催单'],['req_arrive','到站催扫'],['req_flow','流转动态(接单/备齐/签收等)'],['watch_in','预约到料'],['stock_out','断料预警']];
  // ㉖v151 候选清单与概览渲染卡同源（旧版此处硬编码13项，漏「检验待处理」→ 该卡被✕移除后再也加不回）
- const K=(window._KALL&&window._KALL.length)?window._KALL:['今日入库(标签)','今日入库件数','一楼来料登记(标签)','待入库(来料区)','今日出库拣下','今日AGV搬运','队列中','在库框数','占用货位','待接单','备料中','待签收','站台在用','检验待处理'];
+ const K=(window._KALL&&window._KALL.length)?window._KALL:['今日入库(标签)','今日入库件数','一楼来料登记(标签)','今日来料件数','待入库(来料区)','待转入件数','今日出库拣下','今日AGV搬运','队列中','在库框数','占用货位','待接单','备料中','待签收','站台在用','检验待处理']; // ㉖v270 兜底清单同步来料件数两卡（正常走 _KALL 同源，此处仅离线兜底）
  const pf=PF.notes||{};
  const _kn=(a)=>(Array.isArray(a)?a:[]).filter((n)=>K.includes(n));
  window._K=K;_khide=new Set(_kn(PF.kpiH));
@@ -472,8 +486,38 @@ async function tplCardLoad(){const box=$('#tplcard');if(!box)return;
  if(!d||!d.ok){box.innerHTML='<div class="card" style="color:var(--sub);font-size:12px">产线模板：接口未响应（服务重启后可用）</div>';return}
  const L=(d.list||[]).slice().sort((a,b)=>(b.use||0)-(a.use||0));
  box.innerHTML=`<div class="card"><div class="row" style="align-items:center"><b style="font-size:13px">📁 产线模板</b><span style="font-size:11.5px;color:var(--sub)">共 ${L.length} 个（我的+同事共享）· 按使用次数排序 · PDA 建单页可一键载入</span></div>
- ${L.length?`<div style="overflow:auto;max-height:34vh;margin-top:6px"><table><thead><tr><th>模板</th><th>归属</th><th>范围</th><th>行数</th><th>用过</th><th>创建</th><th></th></tr></thead><tbody>${L.map(t=>`<tr style="border-top:1px solid var(--line)"><td><b>${_esc(t.name)}</b></td><td style="font-size:12px">${_esc(t.byName||'')}</td><td><span class="tag ${t.shared?'t-r':'t-x'}" style="font-size:10.5px">${t.shared?'共享':'私有'}</span></td><td>${(t.items||[]).length}</td><td>${t.use||0} 次</td><td style="font-size:11px;color:var(--sub)">${(t.at||'').slice(5,10)}</td><td style="white-space:nowrap"><a href="javascript:void 0" onclick="tplRows('${_esc(t.id)}')">看行</a>${(t.by===U.id||U.role==='admin')?` · <a href="javascript:void 0" onclick="tplEdit('${_esc(t.id)}')">编辑</a> · <a href="javascript:void 0" style="color:var(--bad)" onclick="tplDel('${_esc(t.id)}','${_esc(t.name)}')">删</a>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--sub);font-size:12px;margin-top:6px">还没有模板。在 PDA 建单页选好物料后点「存为产线模板」即可创建（可勾选共享给同事）。</div>'}</div>`;
+ ${L.length?`<div style="overflow:auto;max-height:34vh;margin-top:6px"><table><thead><tr><th>模板</th><th>归属</th><th>范围</th><th>行数</th><th>用过</th><th>创建</th><th></th></tr></thead><tbody>${L.map(t=>`<tr style="border-top:1px solid var(--line)"><td><b>${_esc(t.name)}</b></td><td style="font-size:12px">${_esc(t.byName||'')}</td><td><span class="tag ${t.shared?'t-r':'t-x'}" style="font-size:10.5px">${t.shared?'共享':'私有'}</span></td><td>${(t.items||[]).length}</td><td>${t.use||0} 次</td><td style="font-size:11px;color:var(--sub)">${(t.at||'').slice(5,10)}</td><td style="white-space:nowrap"><a href="javascript:void 0" onclick="tplRows('${_esc(t.id)}')">看行</a> · <a href="javascript:void 0" style="color:var(--warn)" onclick="tplShort('${_esc(t.id)}')">缺料分享</a>${(t.by===U.id||U.role==='admin')?` · <a href="javascript:void 0" onclick="tplEdit('${_esc(t.id)}')">编辑</a> · <a href="javascript:void 0" style="color:var(--bad)" onclick="tplDel('${_esc(t.id)}','${_esc(t.name)}')">删</a>`:''}</td></tr>`).join('')}</tbody></table></div>`:'<div style="color:var(--sub);font-size:12px;margin-top:6px">还没有模板。在 PDA 建单页选好物料后点「存为产线模板」即可创建（可勾选共享给同事）。</div>'}</div>`;
  window._tplAll=L;
+}
+// ㉖v273 产线模板·没料一键分享缺料（网页补齐 PDA v177 能力，更人性化）：
+// 载入模板时自动算"全厂无在架"行，一键复制缺料单（微信群催办）+提交缺料反馈（到料自动核销闭环）。
+async function tplShort(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t){T('模板已刷新，请重试');return}
+ const dict=await dictLoad();const byPn={};for(const d of dict)byPn[String(d.pn).toUpperCase()]=d;
+ // ㉖v275 三类：缺料(全厂0在架,可多选分享) / 仅一楼有料(不算缺料,给催转入) / 二楼有货(不显示)
+ const miss=[],recvOnly=[];
+ for(const i of (t.items||[])){const d=byPn[String(i.partNo).toUpperCase()]||{};
+   if(!(d.boxes>0))miss.push(i);
+   else if((d.recvBoxes||0)>=d.boxes)recvOnly.push(Object.assign({},i,{recvBoxes:d.recvBoxes}));}
+ window._tplShortMiss=miss;window._tplShortRecv=recvOnly;window._tplShortName=t.name;window._tplShortByPn=byPn;
+ if(!miss.length&&!recvOnly.length){T('✅ 模板「'+t.name+'」全部物料二楼有在架，无需缺料分享',1);return}
+ const rows=miss.map((i,idx)=>{const d=byPn[String(i.partNo).toUpperCase()]||{};return `<label style="display:flex;gap:6px;align-items:center;padding:3px 0;font-size:12.5px"><input type="checkbox" class="tsChk" data-i="${idx}" checked style="width:auto" onchange="tplShortPaint()"><span class="mono">${_esc(i.partNo)}</span><span style="flex:1">${_esc(i.itemName||d.nm||'')}</span><span style="color:var(--bad)">需${i.qty}框·全厂无在架</span></label>`;}).join('');
+ const recvRows=recvOnly.map(i=>`<div style="padding:2px 0;font-size:12px;color:var(--warn)">🏜 ${_esc(i.partNo)} ${_esc(i.itemName||'')}：${i.recvBoxes}框全在一楼来料区——<b>不算缺料</b>，催仓管转入二楼即可发</div>`).join('');
+ dlg(`<h3>🧯 模板缺料分享</h3><div style="font-size:12px;color:var(--sub);margin-bottom:6px">勾选要分享的缺料行（默认全选），复制发微信群或提交缺料反馈（到料自动核销）。来料区有料的行不算缺料，单独列示催转入。</div>${miss.length?`<div style="max-height:30vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 8px">${rows}</div>`:'<div style="font-size:12px;color:var(--sub)">无全厂缺料行。</div>'}${recvRows?`<div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:6px">${recvRows}</div>`:''}<pre id="tsPrev" style="white-space:pre-wrap;font-size:12px;background:var(--bg,#f5f5f5);padding:8px;border-radius:6px;max-height:30vh;overflow:auto;margin-top:8px"></pre><div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill q" onclick="$('#mask').classList.add('hide')">关闭</button><button class="pill" onclick="tplShortCopy()">📋 复制缺料单</button><button class="pill g" onclick="tplShortSubmit()">提交缺料反馈</button></div>`,1);
+ tplShortPaint();
+}
+function _tsSel(){const out=[];document.querySelectorAll('.tsChk').forEach(c=>{if(c.checked)out.push(window._tplShortMiss[+c.dataset.i]);});return out;}
+function tplShortPaint(){const sel=_tsSel(),recv=window._tplShortRecv||[],byPn=window._tplShortByPn||{};
+ const lines=sel.map(i=>{const d=byPn[String(i.partNo).toUpperCase()]||{};return `${i.partNo} ${i.itemName||d.nm||''} 需${i.qty}框 全厂无在架`;});
+ let txt=sel.length?`【豪斯特缺料单】产线模板「${window._tplShortName}」\n${lines.join('\n')}\n共${sel.length}项全厂无在架，请安排到货。`:'';
+ if(recv.length)txt+=(txt?'\n':'')+`另：${recv.map(i=>`${i.partNo} ${i.recvBoxes}框在一楼来料区待转入（不算缺料，催转入）`).join('；')}`;
+ if(!txt)txt='（未勾选缺料行）';
+ txt+=`\n（${U.name} ${new Date().toLocaleString('zh-CN',{hour12:false}).slice(5,16)}）`;
+ window._tplShortTxt=txt;const p=document.getElementById('tsPrev');if(p)p.textContent=txt;}
+function tplShortCopy(){tplShortPaint();const txt=window._tplShortTxt||'';if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(()=>T('✅ 缺料单已复制，可粘贴到微信群',1)).catch(()=>T('复制失败，请手动选择文本'));}else{const ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');T('✅ 缺料单已复制',1);}catch(_){T('复制失败');}ta.remove();}}
+async function tplShortSubmit(){const miss=_tsSel();if(!miss.length){T('请先勾选要提交的缺料行');return}let ok=0,skip=0;
+ for(const i of miss){const r=await api('/api/shortages',{method:'POST',body:{partNo:i.partNo,itemName:i.itemName||'',note:'产线模板「'+(window._tplShortName||'')+'」所需物料全厂无在架，请安排到货',src:'tpl',forceStock:true}}).catch(()=>null);if(r&&r.ok)ok++;else skip++;}
+ T(ok?`✅ 已提交 ${ok} 项缺料反馈${skip?`（${skip} 项被服务端有货闸拦截=实际有货，催发料即可）`:''}`:'❌ 提交失败',ok?1:2);
+ if(ok)$('#mask').classList.add('hide');
 }
 function tplRows(id){const t=(window._tplAll||[]).find(x=>x.id===id);if(!t){T('模板已刷新，请重试');return}
  dlg(`<h3>📁 ${_esc(t.name)}（${(t.items||[]).length} 行）</h3><div style="overflow:auto;max-height:50vh"><table><thead><tr><th>零件号</th><th>物料名</th><th>默认数量</th></tr></thead><tbody>${(t.items||[]).map(i=>`<tr><td class="mono">${_esc(i.partNo)}</td><td>${_esc(i.itemName||'')}</td><td>${i.qty}</td></tr>`).join('')}</tbody></table></div><div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill" onclick="$('#mask').classList.add('hide')">关闭</button></div>`,1)}
@@ -559,12 +603,13 @@ async function shResolve(id,pn){const way=prompt(`核销缺料零件 ${pn}\n\n�
  const j=await api('/api/shortages/resolve',{method:'POST',body:{id,way:way.trim()}});
  if(j.ok){T('✅ 已核销 '+pn+'，反馈人已收到通知',1);pgShort()}else T('❌ '+(j.msg||'失败'))}
 async function pgReqs(){const q=TM.q||'';
- $('#main').innerHTML=`<div class="card"><div class="row"><input id="rq" placeholder="搜单号/零件/人" value="${q}" style="flex:1;min-width:180px"><select id="rs"><option value="">全部状态</option>${Object.entries(ST).map(([k,v])=>`<option ${TM.s==k?'selected':''} value="${k}">${v[0]}</option>`).join('')}</select><button class="pill" onclick="TM.q=$('#rq').value;TM.s=$('#rs').value;pgReqs()">查询</button><button class="pill q" title="清空关键字/状态/过滤，回到全部" onclick="TM.q='';TM.s='';TM.mine=0;TM.rush=0;TM.late=0;pgReqs()">↺ 重置</button><button class="pill ${TM.mine?'':'q'}" title="只看与我相关的单" onclick="TM.mine=!TM.mine;pgReqs()">👤我的待办</button><button class="pill ${TM.rush?'':'q'}" title="只看急料" onclick="TM.rush=!TM.rush;pgReqs()">🔥急料</button><button class="pill ${TM.late?'':'q'}" title="待签收超30分" onclick="TM.late=!TM.late;pgReqs()">⏰超30分</button><button class="pill ${TM.view=='kanban'?'':'q'}" onclick="TM.view=TM.view=='kanban'?'list':'kanban';pgReqs()">${TM.view=='kanban'?'☰ 列表':'▦ 看板'}</button>${(U.features||{}).requisition?'<button class="pill g" onclick="newReqDlg()">＋ 新建领料单</button>':''}</div><div id="rlist">加载中…</div></div><div id="tplcard" style="margin-top:10px"></div>`;
- const j=await api('/api/requisitions');window._reqs=j.reqs||[];tplCardLoad();let rs=j.reqs||[];
+ $('#main').innerHTML=`<div class="card"><div class="row"><input id="rq" placeholder="搜单号/零件/人" value="${q}" style="flex:1;min-width:180px"><select id="rs"><option value="">全部状态</option>${Object.entries(ST).map(([k,v])=>`<option ${TM.s==k?'selected':''} value="${k}">${v[0]}</option>`).join('')}</select><button class="pill" onclick="TM.q=$('#rq').value;TM.s=$('#rs').value;pgReqs()">查询</button><button class="pill q" title="清空关键字/状态/过滤，回到全部" onclick="TM.q='';TM.s='';TM.mine=0;TM.rush=0;TM.late=0;TM.over=0;pgReqs()">↺ 重置</button><button class="pill ${TM.mine?'':'q'}" title="只看与我相关的单" onclick="TM.mine=!TM.mine;pgReqs()">👤我的待办</button><button class="pill ${TM.rush?'':'q'}" title="只看急料" onclick="TM.rush=!TM.rush;pgReqs()">🔥急料</button><button class="pill ${TM.late?'':'q'}" title="待签收超30分" onclick="TM.late=!TM.late;pgReqs()">⏰超30分</button><button class="pill ${TM.over?'':'q'}" title="备齐后超时限未签收（触发下单冻结的口径）" onclick="TM.over=!TM.over;pgReqs()">🧊逾期签收</button><button class="pill ${TM.view=='kanban'?'':'q'}" onclick="TM.view=TM.view=='kanban'?'list':'kanban';pgReqs()">${TM.view=='kanban'?'☰ 列表':'▦ 看板'}</button>${(U.features||{}).requisition?'<button class="pill g" onclick="newReqDlg()">＋ 新建领料单</button>':''}</div><div id="rlist">加载中…</div></div><div id="tplcard" style="margin-top:10px"></div>`;
+ const j=await api('/api/requisitions');window._reqs=j.reqs||[];window._foM=Number(j.freezeOverMin)||120;tplCardLoad();let rs=j.reqs||[]; // ㉖v264 逾期时限随列表下发（与冻结闸/概览同源参数）
  if(TM.s&&TM.view!='kanban')rs=rs.filter(r=>r.status==TM.s); // ㉖v207 看板视图不按状态过滤(否则另两列被筛空致恒显示空)；改高亮选中列
  if(TM.rush)rs=rs.filter(r=>r.rush);
 
  if(TM.late)rs=rs.filter(r=>r.status=='ready'&&(Date.now()-(Number(r.readyAt)||Date.parse(((r.history||[]).slice(-1)[0]||{}).time||r.createdAt||0)))>30*60000); // ㉖⑫ 精确备齐时刻优先
+ if(TM.over){const _lim=Date.now()-window._foM*60000;rs=rs.filter(r=>r.status=='ready'&&(Number(r.readyAt)||Date.parse(((r.history||[]).slice(-1)[0]||{}).time||r.createdAt||0)||0)<_lim)} // ㉖v264 逾期签收过滤（freezeOverMin 同源，无 readyAt 旧单回退历史尾条/createdAt=同 freezeOf 口径）
 
  if(TM.mine)rs=rs.filter(r=>(r.status=='pending'&&(!r.assigneeId||r.assigneeId===U.id))||(r.status=='accepted'&&r.acceptedBy===U.name)||(r.status=='ready'&&r.by===U.id)||(['done','rejected','cancelled'].includes(r.status)&&(r.by===U.id||r.acceptedBy===U.name))); // ㉕B5 我的待办
  if(q){const k=q.toLowerCase();rs=rs.filter(r=>(r.no+' '+(r.byName||'')+(r.items||[]).map(i=>i.partNo+i.itemName).join(' ')).toLowerCase().includes(k))}
@@ -954,7 +999,7 @@ async function traceBox(codeRaw){const code=String(codeRaw||'').trim().toUpperCa
  if(j.milestones&&j.milestones.length){const _mt=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{hour12:false}).slice(5,16):'';
   _mh=`<div style="display:flex;align-items:flex-start;margin:8px 0 12px">${j.milestones.map((m,i)=>{const st=m.t?'ok':(m.need?'miss':'na');const col=st==='ok'?'#2E7D32':st==='miss'?'#C62828':'#B0BEC5';return `${i?`<div style="flex:1;height:2px;margin-top:10px;background:${j.milestones[i-1].t&&m.t?'#2E7D32':'#CFD8DC'}"></div>`:''}<div style="display:flex;flex-direction:column;align-items:center;min-width:52px"><div style="width:20px;height:20px;border-radius:50%;background:${col};color:#fff;font-size:12px;line-height:20px;text-align:center">${st==='ok'?'✓':st==='miss'?'!':'·'}</div><div style="font-size:10.5px;color:${col};font-weight:600;margin-top:2px">${m.n}</div>${m.t?`<div style="font-size:9.5px;color:var(--sub)">${_mt(m.t)}</div>`:''}</div>`}).join('')}</div>`}
  const _fb=j.final?`<div style="border-radius:8px;padding:8px 12px;margin:6px 0 2px;font-size:13.5px;font-weight:700;color:#fff;background:${j.finalCol||'#607D8B'}">${_esc(j.final)}</div>`:'';
- let h=_fb+_mh+(evs.length?`<div class="tl" style="margin:4px 0 14px">${evs.map((e,i)=>{const line=[e.detail,e.actor].filter(Boolean).map((s)=>_esc(s)).join(' · ');return `<div class="tl-i${i===evs.length-1?' cur':''}"><div style="font-size:12.5px;color:${KC[e.kind]||'var(--ink)'}">${_esc(e.title||'')}</div>${line?`<div style="font-size:11px;color:var(--sub)">${_lk(line)}</div>`:''}<div style="font-size:11px;color:var(--sub)">${_t(e.t||0)}</div></div>`}).join('')}</div>`:'<div style="color:var(--sub);font-size:12.5px;padding:8px 0">该标签在采集/账本/AGV/领料/出库/检验各域均无当前记录——可能属更早归档数据（导出中心勾「含归档」核查）。</div>');
+ let h=_fb+_mh+(evs.length?`<div class="tl" style="margin:4px 0 14px">${evs.map((e,i)=>{const line=[e.detail,e.actor].filter(Boolean).map((s)=>_esc(s)).join(' · ');return `<div class="tl-i${i===evs.length-1?' cur':''}"><div style="font-size:12.5px;color:${KC[e.kind]||'var(--ink)'}">${_esc(e.title||'')}</div>${line?`<div style="font-size:11px;color:var(--sub)">${_lk(line)}</div>`:''}<div style="font-size:11px;color:var(--sub)">${e.tBad||!e.t?'<span title="上游未给可信时刻，已排在末尾，不参与时序判断">时刻未知</span>':_t(e.t)}</div></div>`}).join('')}</div>`:'<div style="color:var(--sub);font-size:12.5px;padding:8px 0">该标签在采集/账本/AGV/领料/出库/检验各域均无当前记录——可能属更早归档数据（导出中心勾「含归档」核查）。</div>'); // ㉖v265 坏时刻显示"时刻未知"（原 1/1 00:00:0 穿越到1970且被排到最前）
  h+=`<div style="font-size:11.5px;color:var(--sub);line-height:1.8;border-top:1px solid var(--line);padding-top:8px">口径：服务端全链路单源聚合（采集/撤销/覆盖史♻/一楼登记/二楼转入/领料履历/出库/检验工单与收口/队列与调度决策/AGV节点/在架快照）共 ${j.count||0} 事件 · 同托兄弟码自动整框追踪 · 时间均为服务器时钟；如需文件留证 → 导出中心 D2/D3/D4/D5/D8/D9 均带血缘与指纹。</div>`;
  const _sq = code.replace(/["']/g, ''); // 标签号仅含字母数字，剥离引号后安全内联（旧坑：JSON.stringify 双引号截断 onclick）
  h+=`<div class="row" style="margin-top:12px"><button class="pill" onclick="go('ledger');TM.lq='${_sq}';pgLedger()">在账本中查</button><button class="pill" onclick="go('flow');TF={k:'in',q:'${_sq}'};pgFlow()">在入库流水中查</button><button class="pill" onclick="go('flow');TF={k:'out',q:'${_sq}'};pgFlow()">在出库流水中查</button><button class="pill" onclick="closeDrawer()">关闭</button></div>`;
@@ -1044,9 +1089,49 @@ async function gndSave(btn){if(!GC)return;const Z='ABCDEFGH';
   if(j.ok){T('✅ 地面排配置已保存',1);GC.rev=j.cfgRev||GC.rev;gndCfg()}else{T('❌ '+(j.msg||'保存失败'),1);if(j.code==='conflict')setTimeout(()=>gndCfg(),1200)}}catch(_){btn.disabled=false;T('保存失败')}}
 
 let _ledT=null;
+let _lvw='list'; // ㉖v266 账本页视图：list=货位清单 / stock3=三方对账（子页不增顶层页签，照容器页 ctSeg 段切范式）
+function ledSeg(v){_lvw=v;pgLedger()}
 async function pgLedger(){const q=TM.lq||'';
- $('#main').innerHTML=`<div class="card"><div class="row"><input id="lq" placeholder="零件号/物料名/标签号，或货位前缀（如 NB03-A-13）" value="${q}" style="flex:1;min-width:200px"><button class="pill" onclick="TM.lq=$('#lq').value;pgLedger()">查询</button><button class="pill q" title="清空关键字，看全部货位" onclick="TM.lq='';pgLedger()">↺ 重置</button><span id="lc" style="color:var(--sub);font-size:12px"></span></div><div id="llist">加载中…</div></div>`;
- ledList();if(_ledT)clearInterval(_ledT);_ledT=setInterval(()=>{if(TAB=='ledger')srLed()},30000)}
+ const seg=`<button class="pill" style="${_lvw==='list'?'':'background:#78909c'}" title="本系统货位账本逐行清单" onclick="ledSeg('list')">📋 货位清单</button><button class="pill" style="${_lvw==='stock3'?'':'background:#78909c'}" title="本系统 × MES × SAP 三方现有量对比" onclick="ledSeg('stock3')">⚖️ 三方对账</button>`;
+ if(_lvw==='stock3'){$('#main').innerHTML=`<div class="card"><div class="row">${seg}<span class="sp"></span><span id="s3c" style="color:var(--sub);font-size:12px"></span></div><div id="s3bar"></div><div id="s3body" style="margin-top:8px">加载中…</div></div>`;if(_ledT)clearInterval(_ledT);stock3Load();return}
+ $('#main').innerHTML=`<div class="card"><div class="row">${seg}<input id="lq" placeholder="零件号/物料名/标签号，或货位前缀（如 NB03-A-13）" value="${q}" style="flex:1;min-width:200px"><button class="pill" onclick="TM.lq=$('#lq').value;pgLedger()">查询</button><button class="pill q" title="清空关键字，看全部货位" onclick="TM.lq='';pgLedger()">↺ 重置</button><span id="lc" style="color:var(--sub);font-size:12px"></span></div><div id="llist">加载中…</div></div>`;
+ ledList();if(_ledT)clearInterval(_ledT);_ledT=setInterval(()=>{if(TAB=='ledger'&&_lvw==='list')srLed()},30000)}
+// ===== ㉖v266 三方库存对账子页（本系统账本 × MES现有量 × SAP现有量）=====
+// 默认全量分页（不预设物料号，仓管打开即见全景）；「仅看差异」一键筛红行；SAP未同步行灰显不计差异（防满屏假红）
+let S3={pg:1,sz:50,q:'',onlyDiff:false,total:0,list:[],cred:null};
+async function stock3Load(){
+ const bar=$('#s3bar'),body=$('#s3body');if(!body)return;
+ try{S3.cred=await api('/api/mes/cred')}catch(_){S3.cred=null}
+ const c=S3.cred||{};
+ bar.innerHTML=`<div class="row" style="margin-top:6px"><input id="s3q" placeholder="物料编码 / 零件号 / 物料名（留空=全部物料）" value="${S3.q||''}" style="flex:1;min-width:200px" onkeydown="if(event.key==='Enter'){S3.q=this.value.trim();S3.pg=1;stock3Load()}"><button class="pill" onclick="S3.q=$('#s3q').value.trim();S3.pg=1;stock3Load()">查询</button><button class="pill ${S3.onlyDiff?'':'q'}" title="只看三方对不上的行" onclick="S3.onlyDiff=!S3.onlyDiff;stock3Load()">⚠ 仅看差异</button>${U.role==='admin'?'<button class="pill o" title="向 MES 触发 SAP 取数，刷新 SAP 现有量（写操作）" onclick="stock3Sync()">🔄 同步SAP</button>':''}<button class="pill g" title="下载三方对账全量表（Excel，含口径说明）" onclick="stock3Export()">⬇ 导出对账表</button><span class="sp"></span><span style="font-size:11.5px;color:${c.has?'var(--ok)':'var(--warn)'}">${c.has?'✓ MES凭证已配置（'+_esc(c.by||'')+' 上报）':'⚠ 未配置 MES 凭证'}</span>${c.has&&U.role==='admin'?'<button class="pill q" style="padding:2px 8px;font-size:11px" onclick="stock3CredClear()">清除凭证</button>':''}</div>`;
+ if(!c.has){body.innerHTML=`<div class="card" style="border:1px solid var(--warn);font-size:13px;line-height:1.9">⚠ <b>服务器还没有 MES 凭证</b>，无法查 MES/SAP 现有量。<br>请在任意 PDA 打开「设置 → MES(AGV)设置」，点 <b>「上报凭证到服务器」</b>（只上报连接令牌，不含账号密码），然后回本页刷新。<br><span style="color:var(--sub);font-size:12px">本系统库存不依赖凭证，但三方对比需要 MES 侧数据。</span></div>`;return}
+ body.innerHTML='<div class="skl" style="height:120px"></div>';
+ let j;try{j=await api('/api/stock3?start='+((S3.pg-1)*S3.sz)+'&length='+S3.sz+'&mitemCode='+encodeURIComponent(S3.q||''))}catch(_){body.innerHTML='<div style="color:var(--warn)">查询失败（服务需重启加载新代码）</div>';return}
+ if(!j.ok){body.innerHTML=`<div class="card" style="border:1px solid var(--warn);font-size:13px">${_esc(j.msg||'查询失败')}${j.code==='mes_auth'?'<br><span style="color:var(--sub);font-size:12px">PDA 重新登录 MES 后再点「上报凭证到服务器」即可。</span>':''}</div>`;return}
+ S3.list=j.list||[];S3.total=Number(j.total)||0;
+ const rows=S3.onlyDiff?S3.list.filter(r=>r.myDiff!==0||(r.sapDiff!==null&&r.sapDiff!==0)):S3.list;
+ const nMy=S3.list.filter(r=>r.myDiff!==0).length,nSap=S3.list.filter(r=>r.sapDiff!==null&&r.sapDiff!==0).length,nStale=S3.list.filter(r=>r.sapStale).length;
+ $('#s3c').innerHTML=`共 ${S3.total} 个物料 · 本页 ${S3.list.length} 行 · <b style="color:${nMy?'var(--bad)':'var(--ok)'}">本系统≠MES ${nMy}</b> · <b style="color:${nSap?'var(--bad)':'var(--ok)'}">MES≠SAP ${nSap}</b>${nStale?` · <span style="color:var(--sub)">SAP未同步 ${nStale}（不计差异）</span>`:''}`;
+ const df=(v,stale)=>stale?'<span style="color:#b0bec5" title="SAP 侧无新鲜数据（未同步或超7天），不判差异">未同步</span>':(v===0?'<span style="color:var(--ok)">0</span>':`<b style="color:var(--bad)">${v>0?'+':''}${v}</b>`);
+ body.innerHTML=`<div style="overflow:auto;max-height:64vh"><table class="nw"><thead><tr><th>物料编码</th><th>物料名称</th><th>零件号</th><th>仓库</th><th>本系统(件)</th><th>本系统框</th><th>MES现有量</th><th>本系统−MES</th><th>SAP现有量</th><th>MES−SAP</th><th>SAP更新时间</th></tr></thead><tbody>${rows.map(r=>`<tr><td class="mono" style="font-size:11.5px">${_esc(r.mc)}</td><td class="wrap" style="font-size:11.5px;max-width:240px">${_esc(r.nm)}</td><td class="mono" style="font-size:11.5px">${r.pn?`<a href="javascript:void 0" style="color:var(--pri)" onclick="go('parts');setTimeout(()=>ppOpen&&ppOpen('${_esc(r.pn)}'),300)">${_esc(r.pn)}</a>`:''}</td><td style="font-size:11px">${_esc(r.wh)}</td><td style="text-align:right;font-family:Consolas,monospace;font-weight:600">${r.myQty||0}${r.myRecv?`<span style="color:var(--warn);font-size:10px" title="其中 ${r.myRecv} 框仍在一楼来料区待转入"> (含待转入${r.myRecv}框)</span>`:''}</td><td style="text-align:right">${r.myBoxes||0}</td><td style="text-align:right;font-family:Consolas,monospace">${r.mesQty}</td><td style="text-align:right">${df(r.myDiff,false)}</td><td style="text-align:right;font-family:Consolas,monospace;color:${r.sapStale?'#b0bec5':'inherit'}">${r.sapStale?'—':r.sapQty}</td><td style="text-align:right">${df(r.sapDiff,r.sapStale)}</td><td style="font-size:11px;color:var(--sub)">${r.sapAt?new Date(r.sapAt).toLocaleString('zh-CN',{hour12:false}).slice(5,16):'—'}</td></tr>`).join('')||'<tr><td colspan=11 style="color:var(--sub)">'+(S3.onlyDiff?'本页没有对不上的行 ✓':'无数据')+'</td></tr>'}</tbody></table></div><div class="row" style="margin-top:6px;font-size:12px"><button class="pill q" ${S3.pg<=1?'disabled':''} onclick="S3.pg--;stock3Load()">‹ 上一页</button><span>第 ${S3.pg} 页 / 共 ${Math.max(1,Math.ceil(S3.total/S3.sz))} 页</span><button class="pill q" ${S3.pg*S3.sz>=S3.total?'disabled':''} onclick="S3.pg++;stock3Load()">下一页 ›</button><span class="sp"></span><span style="color:var(--sub);font-size:11px">口径：本系统=账本按物料号聚合(流水mc映射)；MES/SAP=MES库存明细表同源；SAP超7天未更新记「未同步」不判差异</span></div>`;
+}
+async function stock3Sync(){
+ const codes=S3.list.map(r=>r.mc).filter(Boolean);
+ if(!codes.length){T('本页无物料可同步');return}
+ if(!confirm('向 MES 触发 SAP 取数，刷新本页 '+codes.length+' 个物料的 SAP 现有量？\n\n（会在 MES/ERP 侧发起同步任务，通常数秒~数十秒）'))return;
+ try{const j=await api('/api/stock3/sync',{method:'POST',body:{mitemList:codes}});T(j.ok?'✅ 已触发同步，稍候刷新查看':'❌ '+(j.msg||'同步失败'),j.ok?1:2);if(j.ok)setTimeout(()=>stock3Load(),4000)}catch(_){T('同步请求失败')}
+}
+async function stock3CredClear(){if(!confirm('清除服务器上的 MES 凭证？清除后三方对账不可用，需 PDA 重新上报。'))return;try{const j=await api('/api/mes/cred',{method:'POST',body:{clear:true}});T(j.ok?'✅ 已清除':'❌ 失败',j.ok?1:2);stock3Load()}catch(_){T('操作失败')}}
+// ㉖v267 对账页一键导出：走导出中心 D11 同一通道（带血缘/指纹/快照登记，可在导出中心重下同一份）
+async function stock3Export(){
+ T('生成中…（正在向 MES 拉全量库存）');
+ try{const r=await fetch('/api/export?ds=D11&fmt=xls',{headers:{Authorization:'Bearer '+TK}});
+  if(!r.ok){const j=await r.json().catch(()=>({}));T('❌ '+(j.msg||('HTTP '+r.status)));return}
+  const cd=r.headers.get('Content-Disposition')||'';let nm='三方库存对账.xls';
+  const m=/filename\*=UTF-8''([^;]+)/i.exec(cd);if(m)nm=decodeURIComponent(m[1]);else{const m2=/filename="([^"]+)"/.exec(cd);if(m2)nm=m2[1]}
+  const u=URL.createObjectURL(await r.blob());const a=document.createElement('a');a.href=u;a.download=nm;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),4000);
+  T('✅ 已下载 '+nm+'（导出中心可重下同一份）',1)}catch(e){T('下载失败：'+e)}
+}
 async function ledList(silent){const q=(TM.lq||'').trim();
  if(!TM.ls)TM.ls={k:'t',d:-1,sz:100,pg:1};
  const j=await api('/api/ledger'+(q?(q.includes('-')?'?l='+encodeURIComponent(q):'?fz='+encodeURIComponent(q)):''));
@@ -1738,8 +1823,8 @@ function anaRender(j){const c=j.cur||{},p=j.prev;
  `<div style="font-size:11px;color:var(--sub);margin-top:10px">范围 ${j.range} · 快照 ${j.days} 天${j.prev?' · 环比基期 '+j.prevDays+' 天':' · 无环比基期数据'} · 生成于 ${new Date().toLocaleString('zh-CN',{hour12:false})}</div>`}
 async function anaBackfill(){const b=prompt('回填起止日期（YYYY-MM-DD ~ YYYY-MM-DD）：','2026-10-01 ~ '+ANA.end);if(!b)return;const [f,t]=b.split(/[~～]/).map((x)=>x.trim());if(!f||!t){T('格式不对');return}
  try{const j=await api('/api/report/backfill',{method:'POST',body:{from:f,to:t}});T(j.ok?`✅ 回填完成：新增 ${j.created}/${j.total} 天`:'❌ '+(j.msg||'失败'));anaGo()}catch(_){T('回填失败（需管理员）')}}
-const DSLS=[['D1','库位表（货位账本快照）'],['D2','库存汇总（按框口径，可勾零库存）'],['D3','入库流水（全厂采集）'],['D4','出库流水（领料+直调）'],['D5','AGV任务（近30天六节点）'],['D6','AGV异常事件（180天持久表）'],['D7','工作量报表（按人/按日/按车）'],['D8','领料台账（全节点时刻）'],['D9','活动流审计（180天留痕+每日断链）'],['D10','盘点结果（差异三表）'],['PACK','月度对账包（四表+口径sheet）']];
-const dsVisible=(k)=>U.role=='admin'?true:k=='D9'?false:U.role=='warehouse'?true:!(k=='D8'||k=='D10'); // ㉕A1 与服务器expRoleOk同口径
+const DSLS=[['D1','库位表（货位账本快照）'],['D2','库存汇总（按框口径，可勾零库存/附加MES·SAP）'],['D3','入库流水（全厂采集）'],['D4','出库流水（领料+直调）'],['D5','AGV任务（近30天六节点）'],['D6','AGV异常事件（180天持久表）'],['D7','工作量报表（按人/按日/按车）'],['D8','领料台账（全节点时刻）'],['D9','活动流审计（180天留痕+每日断链）'],['D10','盘点结果（差异三表）'],['D11','三方库存对账（本系统×MES×SAP）'],['PACK','月度对账包（四表+口径sheet）']];
+const dsVisible=(k)=>U.role=='admin'?true:k=='D9'?false:U.role=='warehouse'?true:!(k=='D8'||k=='D10'||k=='D11'); // ㉕A1 与服务器expRoleOk同口径；㉖v267 D11三方对账限仓管/管理员
 // ===== ㉕批次四 控制后台：活动流 / 用户管理 / 权限矩阵 / 系统健康 / 发布台 =====
 // ---- ㉖v56 登录设备管理面板 ----
 let _devData=null;
@@ -1850,18 +1935,19 @@ async function pubFile(f){if(!f)return;const v=$('#pv').value.trim(),b=$('#pb').
   xh.upload.onprogress=(e)=>{if(e.lengthComputable)pb.textContent='上传中 '+Math.round(e.loaded/e.total*100)+'%（'+(e.loaded/1048576).toFixed(1)+' / '+(e.total/1048576).toFixed(1)+' MB）'};
   xh.onload=()=>{let j={};try{j=JSON.parse(xh.responseText)}catch(_){}if(xh.status==200&&j.ok){pb.textContent='';T('✅ '+j.msg,1);adTab('pub')}else pb.textContent='❌ '+(j.msg||('HTTP '+xh.status))};
   xh.onerror=()=>{pb.textContent='❌ 上传中断：网络异常或文件超出服务器上限（200MB），可重试；持续失败请核对服务器已重启到最新版'};xh.send(f)}catch(e){pb.textContent='上传失败：'+e}}
-function ezTgl(){const w=document.getElementById('ezWrap'),ds=document.getElementById('eds');if(w&&ds)w.style.display=(ds.value=='D2'||ds.value=='PACK')?'inline-flex':'none'}
+function ezTgl(){const w=document.getElementById('ezWrap'),ds=document.getElementById('eds');if(w&&ds)w.style.display=(ds.value=='D2'||ds.value=='PACK')?'inline-flex':'none';
+ const x=document.getElementById('extWrap');if(x&&ds)x.style.display=(ds.value=='D2')?'inline-flex':'none'} // ㉖v267 MES/SAP增强列仅D2可选（D11本身就是三方表）
 function pgExp(){
  $('#main').innerHTML=`<div class="card"><h3 style="margin-bottom:4px">📤 导出中心</h3><p style="color:var(--sub);font-size:12.5px;margin-bottom:10px">每次导出登记快照（谁/何时/条件/行数/内容指纹），文件自带口径说明——对账拿文件说话，不用问"这数哪来的"。</p>
 <div class="row"><select id="eds" onchange="ezTgl()">${DSLS.filter(([k])=>dsVisible(k)).map(([k,n])=>`<option value="${k}">${k} ${n}</option>`).join('')}</select>
 <input id="ef" type="date" title="起始日期（流水类可选）"><input id="et" type="date" title="结束日期">
-<button class="pill" onclick="dl('csv')">⬇ CSV</button><button class="pill g" onclick="dl('xls')">⬇ Excel(含口径sheet)</button><button class="pill q" onclick="dl('json')">⬇ JSON(系统对接)</button><label style="font-size:12px;color:var(--sub);display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="ear" style="width:auto">含归档（历史月流水）</label><label id="ezWrap" style="display:none;font-size:12px;color:var(--sub);align-items:center;gap:4px" title="曾有出入记录但现在不在架的零件，框数/数量列为0"><input type="checkbox" id="ez" style="width:auto">含零库存</label></div>
+<button class="pill" onclick="dl('csv')">⬇ CSV</button><button class="pill g" onclick="dl('xls')">⬇ Excel(含口径sheet)</button><button class="pill q" onclick="dl('json')">⬇ JSON(系统对接)</button><label style="font-size:12px;color:var(--sub);display:inline-flex;align-items:center;gap:4px"><input type="checkbox" id="ear" style="width:auto">含归档（历史月流水）</label><label id="ezWrap" style="display:none;font-size:12px;color:var(--sub);align-items:center;gap:4px" title="曾有出入记录但现在不在架的零件，框数/数量列为0"><input type="checkbox" id="ez" style="width:auto">含零库存</label><label id="extWrap" style="display:none;font-size:12px;color:var(--sub);align-items:center;gap:4px" title="附加 物料号/MES现有量/SAP现有量/MES−SAP/SAP更新时间 五列（需已上报MES凭证；取不到则留「未取到」，不影响本系统数据）"><input type="checkbox" id="eext" style="width:auto">附加MES·SAP对比列</label></div>
 <div id="ehist" style="margin-top:10px;color:var(--sub);font-size:12.5px">最近导出：加载中…</div></div>`;ezTgl();
  api('/api/exports?limit=30').then(j=>{$('#ehist').innerHTML=`<table><thead><tr><th>编号</th><th>数据集</th><th>格式</th><th>行数</th><th>条件</th><th>操作人</th><th>时间</th><th>指纹</th><th>操作</th></tr></thead><tbody>${(j.list||[]).map(e=>`<tr><td class="mono">${e.id}</td><td>${e.ds}</td><td>${e.fmt}</td><td>${e.rows}</td><td class="mono" style="font-size:11px">${Object.entries(e.f||{}).filter(([k,v])=>v).map(([k,v])=>k+'='+v).join(' ')||'全量'}</td><td>${e.by}</td><td style="font-size:11px;color:var(--sub)">${e.at}</td><td class="mono" style="font-size:11px">${e.sha}</td><td><button class="pill" style="padding:2px 8px;font-size:11px" onclick="reDl('${e.id}')">⬇重下</button></td></tr>`).join('')||'<tr><td colspan=9>暂无</td></tr>'}</tbody></table>`}).catch(()=>{$('#ehist').textContent='历史加载失败'})}
 let PV=null;
 async function dl(fmt){const ds=$('#eds').value,f=$('#ef').value,t=$('#et').value;
  if((ds=='D3'||ds=='D4'||ds=='PACK'||ds=='D5'||ds=='D7'||ds=='D8')&&f&&t&&f>t){T('起始日期晚于结束');return}
- PV={ds,fmt,f,t};const _ar=($('#ear')&&$('#ear').checked)?'&arch=1':'';const _ez=($('#ez')&&$('#ez').checked&&(ds=='D2'||ds=='PACK'))?'&zero=1':'';const q='?ds='+ds+'&fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:'')+_ar+_ez+'&preview=1';
+ PV={ds,fmt,f,t};const _ar=($('#ear')&&$('#ear').checked)?'&arch=1':'';const _ez=($('#ez')&&$('#ez').checked&&(ds=='D2'||ds=='PACK'))?'&zero=1':'';const _ext=($('#eext')&&$('#eext').checked&&ds=='D2')?'&ext=1':'';const q='?ds='+ds+'&fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:'')+_ar+_ez+_ext+'&preview=1';
  T('预览生成中…');
  try{const r=await fetch('/api/export'+q,{headers:{'Authorization':'Bearer '+TK}});
   if(!r.ok){const j=await r.json().catch(()=>({}));T('❌ '+(j.msg||('HTTP '+r.status)));return}
@@ -1876,7 +1962,7 @@ async function dl(fmt){const ds=$('#eds').value,f=$('#ef').value,t=$('#et').valu
 function pvFs(){const d=$('#dlg');if(!d)return;const b=$('#pvbody'),t=$('#pvfs');
  if(d.dataset.fs=='1'){d.dataset.fs='';d.style.width=d.style.maxWidth=d.style.height=d.style.maxHeight='';if(b)b.style.maxHeight='46vh';if(t)t.textContent='⛶ 全屏'}
  else{d.dataset.fs='1';d.style.width='96vw';d.style.maxWidth='96vw';d.style.height='92vh';d.style.maxHeight='92vh';if(b)b.style.maxHeight='calc(92vh - 150px)';if(t)t.textContent='⤓ 还原'}}
-async function dlGo(){$('#mask').classList.add('hide');const{ds,fmt,f,t}=PV;const _ar=($('#ear')&&$('#ear').checked)?'&arch=1':'';const _ez=($('#ez')&&$('#ez').checked&&(ds=='D2'||ds=='PACK'))?'&zero=1':'';const q='?ds='+ds+'&fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:'')+_ar+_ez;
+async function dlGo(){$('#mask').classList.add('hide');const{ds,fmt,f,t}=PV;const _ar=($('#ear')&&$('#ear').checked)?'&arch=1':'';const _ez=($('#ez')&&$('#ez').checked&&(ds=='D2'||ds=='PACK'))?'&zero=1':'';const _ext=($('#eext')&&$('#eext').checked&&ds=='D2')?'&ext=1':'';const q='?ds='+ds+'&fmt='+fmt+(f?'&from='+f:'')+(t?'&to='+t:'')+_ar+_ez+_ext;
  T('生成中…');
  try{const r=await fetch('/api/export'+q,{headers:{'Authorization':'Bearer '+TK}});
   if(!r.ok){const j=await r.json().catch(()=>({}));T('❌ '+(j.msg||('HTTP '+r.status)));return}

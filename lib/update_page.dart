@@ -3,7 +3,7 @@ part of 'main.dart';
 // ===================== ⑬ APK 自动更新：版本检查 + 下载进度 + 调起系统安装 =====================
 class AppUpdater {
   static const localVersion = "1.0.0"; // 与 pubspec version 一致，发版同步改
-  static const localBuild = 219; // 与 pubspec +N 一致，发版同步改
+  static const localBuild = 220; // 与 pubspec +N 一致，发版同步改
   static const _ch = MethodChannel("app.installer");
   static bool _asked = false;
   static void _m(String m, {bool err = true}) {
@@ -161,7 +161,7 @@ class AppUpdater {
       }
       final total = int.tryParse(resp.headers["content-length"] ?? "") ?? 0;
       final sink = save.openWrite();
-      var got = 0;
+      int got = 0; // ㉖v220 显式int：var got=0 被流式累加推断double致编译错（既有基线，发版顺修）
       await for (final chunk in resp.stream) {
         sink.add(chunk);
         got += chunk.length;

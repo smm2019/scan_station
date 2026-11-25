@@ -15,7 +15,7 @@ const NL = String.fromCharCode(10);
 let fail = 0, total = 0;
 const T = (n, a, b) => { total++; const ok = JSON.stringify(a) === JSON.stringify(b); if (!ok) { fail++; console.log('FAIL ' + n + '\n  实际=' + JSON.stringify(a) + '\n  期望=' + JSON.stringify(b)); } else console.log('PASS ' + n); };
 
-const KARR14 = ['今日入库(标签)', '今日入库件数', '一楼来料登记(标签)', '待入库(来料区)', '今日出库拣下', '今日AGV搬运', '队列中', '在库框数', '占用货位', '待接单', '备料中', '待签收', '站台在用', '检验待处理'];
+const KARR14 = ['今日入库(标签)', '今日入库件数', '一楼来料登记(标签)', '今日来料件数', '待入库(来料区)', '待转入件数', '今日出库拣下', '今日AGV搬运', '队列中', '在库框数', '占用货位', '待接单', '备料中', '待签收', '站台在用', '检验待处理']; // ㉖v270 +来料件数两卡=16（变量名沿用，断言数同步）
 
 // 抽取真实代码块：const KARR=... 到 kshow 计算结束、渲染 $('#main').innerHTML 之前（v252 渲染辅助 _spark/cell 在 KARR 之前不落入块内，块只含 _KALL/_hid/kshow 显隐逻辑）
 const s0 = h.indexOf(' const KARR=[');
@@ -25,7 +25,7 @@ const block = h.slice(s0, s1);
 if (!block.includes('_KALL') || !block.includes('_hid')) { console.log('FATAL: 抽取块不含 v151 新逻辑'); process.exit(2); }
 
 // 真实 KPI 数据桩（值本身不参与显隐判定，给全字段防 KARR 取值 undefined）
-const kAll = {}; for (const n of ['inBoxes', 'inQty', 'recvToday', 'pendRecv', 'outToday', 'agvToday', 'agvQueue', 'stockBoxes', 'stockLocs', 'pending', 'accepted', 'ready']) kAll[n] = 5;
+const kAll = {}; for (const n of ['inBoxes', 'inQty', 'recvToday', 'recvTodayQty', 'pendRecv', 'pendRecvQty', 'outToday', 'agvToday', 'agvQueue', 'stockBoxes', 'stockLocs', 'pending', 'accepted', 'ready']) kAll[n] = 5;
 kAll.stnTotal = 12; kAll.stnBusy = 3; kAll.inspWait = 2;
 
 // 跑真实块，返回显示卡名序
@@ -56,29 +56,30 @@ T('X1 旧逻辑用历史快照=丢3张卡（缺陷复现）', oldShown.length, 1
 T('X1b 旧逻辑确实看不到「一楼来料登记」', oldShown.includes('一楼来料登记(标签)'), false);
 
 const newShown = runNew({ kpi: admKpi, kpiH: admKpiH });
-T('V1 新逻辑用同一份历史快照=14张全显（修复生效）', newShown.length, 14);
+T('V1 新逻辑用同一份历史快照=16张全显（修复生效）', newShown.length, 16);
 T('V1b 一楼来料登记 已可见', newShown.includes('一楼来料登记(标签)'), true);
 T('V1c 待入库(来料区) 已可见', newShown.includes('待入库(来料区)'), true);
 T('V1d 检验待处理 已可见', newShown.includes('检验待处理'), true);
 T('V1e 原有快照顺序保持不变（前3张）', newShown.slice(0, 3), ['今日入库(标签)', '今日入库件数', '今日出库拣下']);
 T('V1f 新卡补在末尾不打乱老顺序', newShown.slice(3, 11), ['今日AGV搬运', '队列中', '在库框数', '占用货位', '待接单', '备料中', '待签收', '站台在用']);
+T('V1g 快照未覆盖的5张新卡按KARR序补尾（含来料件数两卡）', newShown.slice(11), ['一楼来料登记(标签)', '今日来料件数', '待入库(来料区)', '待转入件数', '检验待处理']);
 
 // ===== 2. 无偏好/空偏好 =====
-T('V2 完全无偏好=14张全显', runNew({}).length, 14);
-T('V2b kpi空数组=14张全显', runNew({ kpi: [], kpiH: [] }).length, 14);
+T('V2 完全无偏好=16张全显', runNew({}).length, 16);
+T('V2b kpi空数组=16张全显', runNew({ kpi: [], kpiH: [] }).length, 16);
 // 真实仓管员（截图里能看到两张来料卡的人）：其 prefs 无 kpi 快照 ⇒ 走全显，与管理员形成对照
 { const whU = (db.users || []).find((u) => u.role === 'warehouse' && !Object.prototype.hasOwnProperty.call((db.prefs || {})[u.id] || {}, 'kpi'));
   const whP = (db.prefs || {})[(whU || {}).id] || {};
   T('V2c 存在无KPI快照的仓管员（对照成立）', !!whU, true);
-  T('V2d 该仓管员（' + ((whU || {}).name || '?') + '）真实偏好=14张全显', runNew({ kpi: Array.isArray(whP.kpi) ? whP.kpi : [], kpiH: Array.isArray(whP.kpiH) ? whP.kpiH : [] }).length, 14); }
+  T('V2d 该仓管员（' + ((whU || {}).name || '?') + '）真实偏好=16张全显', runNew({ kpi: Array.isArray(whP.kpi) ? whP.kpi : [], kpiH: Array.isArray(whP.kpiH) ? whP.kpiH : [] }).length, 16); }
 
 // ===== 3. 隐藏清单真正生效（✕ 移除语义未丢）=====
 const hid = ['待入库(来料区)', '检验待处理'];
 const hShown = runNew({ kpi: admKpi, kpiH: hid });
-T('V3 隐藏2张=剩12张', hShown.length, 12);
+T('V3 隐藏2张=剩14张', hShown.length, 14);
 T('V3b 被隐藏的不再显示', hShown.filter((n) => hid.includes(n)), []);
 T('V3c 隐藏不影响其余顺序', hShown.slice(0, 3), ['今日入库(标签)', '今日入库件数', '今日出库拣下']);
-T('V3d 隐藏清单里的未知卡名被忽略（版本升级安全）', runNew({ kpi: [], kpiH: ['不存在的卡'] }).length, 14);
+T('V3d 隐藏清单里的未知卡名被忽略（版本升级安全）', runNew({ kpi: [], kpiH: ['不存在的卡'] }).length, 16);
 
 // ===== 4. 偏好弹窗候选清单与渲染卡同源（新卡可加回）=====
 const s2 = h.indexOf('const N=[[', 0);
@@ -92,11 +93,11 @@ const prefBlk = h.slice(h.indexOf('const K=', s2), h.indexOf(NL, h.indexOf('_kor
   vm.createContext(ctx);
   try { vm.runInContext('let _kord=[];let _khide=new Set();' + NL + prefBlk + NL + 'globalThis.__r={K:window._K,ord:_kord,hide:[..._khide].sort()};', ctx); } catch (e) { console.log('弹窗块执行异常:', e.message); }
   const r = ctx.__r || {};
-  T('V4 候选清单=全部14张已知卡（含检验待处理，旧版硬编码13项缺它）', (r.K || []).length, 14);
+  T('V4 候选清单=全部16张已知卡（含检验待处理与来料件数卡）', (r.K || []).length, 16);
   T('V4b 候选清单含检验待处理', (r.K || []).includes('检验待处理'), true);
   T('V4c 弹窗按 kpiH 初始化隐藏集', r.hide, hid);
   T('V4d 弹窗列表不含被隐藏卡（✕=隐藏语义正确）', (r.ord || []).filter((n) => hid.includes(n)), []);
-  T('V4e 弹窗列表=新逻辑显示集一致（12张）', (r.ord || []).length, 12);
+  T('V4e 弹窗列表=新逻辑显示集一致（14张）', (r.ord || []).length, 14);
 }
 
 // ===== 5. 服务端 prefsFor：kpiH 下发 + 超长 if/else 链未被注释吞分支 =====
@@ -177,7 +178,7 @@ const rq = (p, tok, body) => new Promise((resolve, reject) => {
     const g0 = await rq('/api/prefs', VT);
     T('E2a 下发含历史快照 11 项', (g0.prefs.kpi || []).length, admKpi.length);
     T('E2b 尚未有 kpiH（老数据无该键）', g0.prefs.kpiH, undefined);
-    T('E2c 管理员概览恢复 14 张（两张来料卡找回）', runNew(g0.prefs).length, 14);
+    T('E2c 管理员概览恢复 16 张（来料卡与件数卡找回）', runNew(g0.prefs).length, 16);
     T('E2d 其中含一楼来料登记', runNew(g0.prefs).includes('一楼来料登记(标签)'), true);
 
     // E3 保存隐藏清单 ⇒ 落库 ⇒ 再下发 ⇒ 前端显示 12 张（✕ 移除语义仍有效，未被改坏）
@@ -185,13 +186,13 @@ const rq = (p, tok, body) => new Promise((resolve, reject) => {
     const sp = await rq('/api/prefs', VT, { kpi: admKpi, kpiH: HID2 });
     T('E3a 保存成功', sp.ok, true);
     T('E3b 再下发带回 kpiH', sp.prefs.kpiH, HID2);
-    T('E3c 显示降为 12 张', runNew(sp.prefs).length, 12);
+    T('E3c 显示降为 14 张', runNew(sp.prefs).length, 14);
     T('E3d 隐藏的两张确不显示', runNew(sp.prefs).filter((n) => HID2.includes(n)), []);
 
     // E4 清空隐藏（＋加入全部加回）⇒ 回到 14 张；空数组须被正确落库而非当成"未设置"
     const sp2 = await rq('/api/prefs', VT, { kpi: admKpi, kpiH: [] });
     T('E4a 空隐藏清单落库为数组（非 undefined）', JSON.stringify(sp2.prefs.kpiH), '[]');
-    T('E4b 全部加回=14 张', runNew(sp2.prefs).length, 14);
+    T('E4b 全部加回=16 张', runNew(sp2.prefs).length, 16);
 
     // E5 恶意/异常值不得污染（非数组必须被拒，与 kpi 同口径）
     await rq('/api/prefs', VT, { kpiH: '待入库(来料区)' });
@@ -202,7 +203,7 @@ const rq = (p, tok, body) => new Promise((resolve, reject) => {
     const junk = Array.from({ length: 40 }, (_, i) => '卡名超长测试卡名超长测试卡名' + i);
     const g6 = await rq('/api/prefs', VT, { kpiH: junk });
     T('E6 隐藏清单截断到 30 项', (g6.prefs.kpiH || []).length, 30);
-    T('E6b 未知卡名被前端忽略（不影响显示）', runNew({ kpi: admKpi, kpiH: g6.prefs.kpiH }).length, 14);
+    T('E6b 未知卡名被前端忽略（不影响显示）', runNew({ kpi: admKpi, kpiH: g6.prefs.kpiH }).length, 16);
   } catch (e) {
     T('E0 端到端异常', String(e && e.message || e), '无异常');
   } finally {

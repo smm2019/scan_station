@@ -11,6 +11,18 @@ const db0 = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
 const salt = crypto.randomBytes(8).toString('hex'), hp = (p, s) => crypto.scryptSync(p, s, 32).toString('hex');
 db0.users = db0.users || [];
 db0.users.push({ username: 'v257_t', id: 'u_v257', name: 'V257测试', role: 'warehouse', enabled: true, salt, passHash: hp('E2e#T7!pw', salt) });
+// ㉖v265 自造样本（现场数据会随作业漂移：11-25 全厂已无"仅在一楼待转入"的框，T0 曾因此假失败）
+// V257RECV01：只有一楼登记流水+账本在 NB04 → 测"压在一楼"结论；V257MOVED1：一楼流水被转入取代作废+二楼有效流水 → 测 v265 出生证明不被抹
+{ const now = Date.now();
+  db0.scanlog = db0.scanlog || {};
+  db0.scanlog['V257RECV01|B257|' + (now - 3600e3)] = { code: 'V257RECV01', wt: 2, gl: 'NB04-A-08-101', st: '', cx: false, t: now - 3600e3, q: 60, pn: 'V257PN01', op: 'V257一楼', batch: 'B257' };
+  db0.ledger = (db0.ledger || []).filter((x) => String(x.c).toUpperCase() !== 'V257RECV01');
+  db0.ledger.push({ c: 'V257RECV01', l: 'NB04-A-08-101', p: 'V257PN01', q: 60, t: now - 3600e3 });
+  db0.scanlog['V257MOVED1|B257|' + (now - 7200e3)] = { code: 'V257MOVED1', wt: 2, gl: 'NB04-A-08-102', st: '', cx: true, cxB: '系统自动取代（账本现格 NB02-Z-01-1F，本行为入账前旧证据）', t: now - 7200e3, q: 80, pn: 'V257PN02', op: 'V257一楼', batch: 'B257' };
+  db0.scanlog['V257MOVED1|B257|' + (now - 1800e3)] = { code: 'V257MOVED1', wt: 0, st: 'NB02-CK-06', gl: '', cx: false, t: now - 1800e3, q: 80, pn: 'V257PN02', op: 'V257二楼', batch: 'B257' };
+  db0.ledger = db0.ledger.filter((x) => String(x.c).toUpperCase() !== 'V257MOVED1');
+  db0.ledger.push({ c: 'V257MOVED1', l: 'NB02-Z-01-1F', p: 'V257PN02', q: 80, t: now - 1800e3 });
+}
 fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let fail = 0, total = 0;
@@ -19,7 +31,7 @@ const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS'
 const byC = {}; for (const s of Object.values(db0.scanlog || {})) { if (!s.code) continue; (byC[s.code.toUpperCase()] = byC[s.code.toUpperCase()] || []).push(s); }
 let FULL = '', RECV = '', NATIVE = '';
 for (const [c, rows] of Object.entries(byC)) {
-  const r2 = rows.filter((x) => x.wt === 2 && !x.cx), r1 = rows.filter((x) => (x.wt === 0 || x.wt === 1) && !x.cx);
+  const r2 = rows.filter((x) => x.wt === 2), r1 = rows.filter((x) => (x.wt === 0 || x.wt === 1) && !x.cx); // ㉖v265 一楼行含作废（转入时被系统取代=正常，出生证明永远算）
   const tomb = (db0.ledgerTomb || []).find((t) => t.c.toUpperCase() === c);
   const ob = Object.values(db0.outbound || {}).find((o) => (o.items || []).some((i) => String(i.barcode || '').toUpperCase() === c));
   if (!FULL && r2.length && ob) FULL = c;
@@ -48,6 +60,13 @@ for (const x of db0.ledger || []) { const c = String(x.c).toUpperCase(); if (!NA
       chkT('T3a 原生入库框 final=在架带库位', /在架/.test(j.final || ''), j.final);
       const M = j.milestones || [];
       chkT('T3b 原生框一楼=不适用（need=false 不背锅）', M[0] && M[0].need === false, JSON.stringify(M[0])); }
+    // ===== ㉖v265 转入后一楼出生证明不被作废抹掉（N26K250046 实锤）=====
+    { const j = await tr('V257MOVED1'); const M = j.milestones || [];
+      chkT('★T4a 一楼流水被取代作废后「一楼登记」仍打勾', M[0] && M[0].t > 0, JSON.stringify(M[0]));
+      chkT('★T4b 二楼入库站也达成（转入事件不被降级）', M[1] && M[1].t > 0, JSON.stringify(M[1]));
+      const evs = j.events || [];
+      chkT('★T4c 一楼历史行措辞中性=已转入二楼（不再❌已撤销采集）', evs.some((e) => /一楼登记（已转入二楼/.test(e.title || '')) && !evs.some((e) => /已撤销采集/.test(e.title || '')), JSON.stringify(evs.map((e) => e.title).slice(0, 4)));
+      chkT('T4d 无 1970 穿越事件（坏时刻归零或标记）', !evs.some((e) => e.t > 0 && e.t < Date.parse('2020-01-01')), JSON.stringify(evs.filter((e) => e.t > 0 && e.t < Date.parse('2020-01-01')).map((e) => e.t))); }
     console.log(`\n结果：${total - fail}/${total} 通过` + (fail ? ` —— FAIL! ${fail}` : ' ✅'));
     process.exitCode = fail ? 1 : 0;
   } catch (e) { console.log('FAIL! 异常', e); process.exitCode = 1; } finally { srv.kill(); fs.rmSync(TDIR, { recursive: true, force: true }); }

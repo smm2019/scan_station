@@ -1197,6 +1197,15 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
 Timer? _pushLedgerTimer;
 bool _ledgerPushPending = false; // ㉖⑰ 有未推送的账本变更
 bool get ledgerPushPending => _ledgerPushPending;
+// ㉖v272 增量推送：只推"上次成功推送后变更"的行（基线=成功推送的items指纹），删除仍走显式墓碑(del)。
+// 安全前提：服务端 ledger/sync 只 upsert 不删缺失行；scanlog/sync 对账仅针对本批变更行(_chgKeys)。
+// 兜底：每5分钟一次全量对账推送（防基线漂移/漏推），首次推送=全量建基线。旧APK仍全量，服务端兼容。
+Map<String, String> _ledgerPushBase = {};
+Map<String, String> _scanPushBase = {};
+DateTime _lastFullLedgerPush = DateTime.fromMillisecondsSinceEpoch(0);
+DateTime _lastFullScanPush = DateTime.fromMillisecondsSinceEpoch(0);
+const _fullPushEvery = Duration(minutes: 5);
+String _rowSig(Map m) => jsonEncode(m);
 // ㉖v69 账本世代：服务器整表替换（数据迁移）会盖世代章；本机世代不符先清旧缓存再同步，防旧账本残留本机/推回服务器
 const _kLedgerEpoch = "ledger_epoch_v69";
 // ㉖v225 拆框声明待推队列（11-23 N26J220047 实锤：整托登记后现场拆框分位被三层焊点锁死）。
@@ -1319,7 +1328,7 @@ Future<Map> ledgerPushNow() async {
         lotMap[up] = lotFromPrintDate(_ml, ex?.mesLotNo ?? "");
       }
     }
-    final items = all.map((p) {
+    final allItems = all.map((p) {
       final up = p.goodsCode.toUpperCase();
       final i = infos[up];
       final pid = pids[up] ?? "";
@@ -1356,8 +1365,20 @@ Future<Map> ledgerPushNow() async {
         if (lot.isNotEmpty) "b": lot,
       };
     }).toList();
+    // ㉖v272 增量推送：首次/每5分钟全量对账，其余只推基线后变更行（删除走del墓碑，不受增量影响）。
+    final _fullL =
+        DateTime.now().difference(_lastFullLedgerPush) >= _fullPushEvery;
+    final items = _fullL
+        ? allItems
+        : allItems.where((m) {
+            final c = (m["c"] ?? "").toString();
+            return _ledgerPushBase[c] != _rowSig(m);
+          }).toList();
     final del = await ledgerTombs();
-    if (items.isEmpty && del.isEmpty) return {"ok": false, "msg": "账本为空"};
+    if (items.isEmpty && del.isEmpty) {
+      if (_fullL) _lastFullLedgerPush = DateTime.now();
+      return {"ok": true, "msg": "无变更"};
+    }
     final r = await AuthApi.ledgerSync(items,
         del: del,
         epoch: sp0.getString(_kLedgerEpoch) ?? ""); // ㉖v69 带世代：服务器据此拦旧缓存
@@ -1397,6 +1418,13 @@ Future<Map> ledgerPushNow() async {
       }
     }
     if (r["ok"] == true) {
+      // ㉖v272 更新增量基线=本次成功推送的行（拒回行不记基线→下次仍推，绝不静默丢）
+      for (final m in items) {
+        final c = (m["c"] ?? "").toString();
+        if (!rejL.any((x) => x.contains(c)) &&
+            !rejLocL.any((x) => x.contains(c))) _ledgerPushBase[c] = _rowSig(m);
+      }
+      if (_fullL) _lastFullLedgerPush = DateTime.now();
       await ledgerClearSentTombs(del); // 服务器已合并，本地释放已上报墓碑
       // ㉖v225 拆框声明出队：本次推送被服务器受理（未进拒回名单）的声明码=拆出已落账。
       // 拒回=本轮没进账（货位冲突等），声明保留待下次推送重试，绝不静默丢。
@@ -1951,7 +1979,7 @@ Future<void> scanPushNow() async {
       for (final e in await _globalIsar.recordExtras.where().findAll())
         e.goodsCode: e
     };
-    final items = all.map((r) {
+    final allItems = all.map((r) {
       final x = extras[r.goodsCode.toUpperCase()];
       final _sk =
           "${r.goodsCode}|${r.batchId}|${r.scanTime.millisecondsSinceEpoch}";
@@ -1979,8 +2007,26 @@ Future<void> scanPushNow() async {
         "pid": x?.palletId ?? "",
       };
     }).toList();
+    // ㉖v272 增量推送：首次/每5分钟全量对账，其余只推基线后变更行（服务端只upsert不删缺失行，安全）。
+    final _fullS =
+        DateTime.now().difference(_lastFullScanPush) >= _fullPushEvery;
+    final items = _fullS
+        ? allItems
+        : allItems.where((m) {
+            final k = (m["k"] ?? "").toString();
+            return _scanPushBase[k] != _rowSig(m);
+          }).toList();
+    if (items.isEmpty) {
+      if (_fullS) _lastFullScanPush = DateTime.now();
+      _scanPushPending = false;
+      return;
+    }
     final res = await AuthApi.scanlogSync(items);
     if (res["ok"] == true) {
+      for (final m in items) {
+        _scanPushBase[(m["k"] ?? "").toString()] = _rowSig(m);
+      }
+      if (_fullS) _lastFullScanPush = DateTime.now();
       _scanPushPending = false;
       kScanSync.value = 0; // ㉖⑭ 推送成功：状态归零，网页30秒内可见
       _cxLocalOpAt.removeWhere((k, _) => items

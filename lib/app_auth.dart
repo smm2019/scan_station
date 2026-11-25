@@ -240,7 +240,8 @@ class AuthApi {
           {String assigneeId = "",
           bool rush = false,
           String needDate = "",
-          bool confirmDup = false}) async =>
+          bool confirmDup = false,
+          bool confirmThrottle = false}) async =>
       _req("POST", "/api/requisitions",
           body: {
             "items": items,
@@ -248,7 +249,8 @@ class AuthApi {
             "assigneeId": assigneeId,
             "rush": rush,
             if (needDate.isNotEmpty) "needDate": needDate,
-            if (confirmDup) "confirmDup": 1
+            if (confirmDup) "confirmDup": 1,
+            if (confirmThrottle) "confirmThrottle": 1 // ㉖v264 连开限流确认直通
           },
           token: await AuthStore.token());
 
@@ -256,6 +258,11 @@ class AuthApi {
   static Future<Map> reqWarehouseUsers() async =>
       _req("GET", "/api/requisitions/warehouse-users",
           token: await AuthStore.token());
+
+  /// ㉖v266 上报 MES 连接凭证到服务器（三方库存对账用）：只传 host/port/token/moduleId/orgId，
+  /// 绝不传账号密码；服务器只存不回显、不入活动流。限仓管/管理员。
+  static Future<Map> mesCredPush(Map<String, String> cred) async =>
+      _req("POST", "/api/mes/cred", body: cred, token: await AuthStore.token());
 
   /// ㉖v98c 领料闸门预检：返回 {mode, pend[], block[]}（服务器统一判定，含宽限期与急料豁免）
   static Future<Map> reqGate() async =>
@@ -394,9 +401,9 @@ class AuthApi {
 
   /// 拉取电脑服务器上的账本全量（含墓碑，PDA 合并用；㉖v250 ghost=1 带登录态=顺带幽灵行判据集，
   /// 服务端仅对已登录请求返回，公开页零泄露）
-  static Future<Map> ledgerGet({bool ghost = false}) async => _req("GET",
-      ghost ? "/api/ledger?ghost=1" : "/api/ledger",
-      token: await AuthStore.token());
+  static Future<Map> ledgerGet({bool ghost = false}) async =>
+      _req("GET", ghost ? "/api/ledger?ghost=1" : "/api/ledger",
+          token: await AuthStore.token());
 
   /// ㉖v99 数据资产计数（含今日出入库全厂口径，库存页 KPI 用）
   static Future<Map> counts() async =>
@@ -902,9 +909,11 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     } else if (r["net"] == true) {
       // 网络异常 → 离线宽限
       final v = await AuthStore.lastVerifiedMs();
-      final gOk = await UpgradeGate.offlineOk(); // ㉖v243 低于版本线：断网冷启动也绕不过闸门（线已持久化）
-      if (gOk && DateTime.now().millisecondsSinceEpoch - v <
-          AuthStore.offlineGraceMs) {
+      final gOk =
+          await UpgradeGate.offlineOk(); // ㉖v243 低于版本线：断网冷启动也绕不过闸门（线已持久化）
+      if (gOk &&
+          DateTime.now().millisecondsSinceEpoch - v <
+              AuthStore.offlineGraceMs) {
         Auth.user = u;
         Auth.features = await AuthStore.features();
         setState(() => _stage = 2);
@@ -939,7 +948,8 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
     // ㉖v209 领料AGV刷新秒数（服务器参数 pdaAgvRefSec 下发）：夹 3~300 防脏值；旧服务器无字段=保留上次值
     if (r["pdaAgvRefSec"] is num)
       kPdaAgvRefSec = (r["pdaAgvRefSec"] as num).toInt().clamp(3, 300);
-    UpgradeGate.check((r["minBuild"] as num?)?.toInt() ?? 0); // ㉖v243 强制升级闸门：低于线锁升级页，达标刷宽限凭证（旧服务器无字段=0=关闸）
+    UpgradeGate.check((r["minBuild"] as num?)?.toInt() ??
+        0); // ㉖v243 强制升级闸门：低于线锁升级页，达标刷宽限凭证（旧服务器无字段=0=关闸）
     Auth.user = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
     Auth.features = Map<String, bool>.from(r["features"] ?? {});
     AuthStore.markVerified();
@@ -1047,7 +1057,8 @@ class _LoginPageState extends State<LoginPage> {
       Future.delayed(const Duration(seconds: 3),
           () => AppUpdater.checkAtLaunch()); // ⑬登录后静默检查APK更新
       widget.onLoggedIn();
-      UpgradeGate.check((r["minBuild"] as num?)?.toInt() ?? 0); // ㉖v243 登录后立即锁闸（压在主页上；旧服务器无字段=0=关闸）
+      UpgradeGate.check((r["minBuild"] as num?)?.toInt() ??
+          0); // ㉖v243 登录后立即锁闸（压在主页上；旧服务器无字段=0=关闸）
       if (Auth.user!.mustChangePw) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text("首次登录，请尽快在 设置→账号与权限 修改密码"),

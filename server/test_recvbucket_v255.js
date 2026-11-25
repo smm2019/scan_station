@@ -12,7 +12,15 @@ const hashPw = (pw, s) => crypto.scryptSync(String(pw), s, 32).toString('hex');
 db0.users = db0.users || [];
 db0.users.push({ username: 'v255_wh', id: 'u_v255', name: 'V255仓管', role: 'warehouse', enabled: true, salt, passHash: hashPw('E2e#R5!pw', salt) });
 db0.shortages = (db0.shortages || []).slice();
-// 保证短名单里至少有一个"楼下有货"的零件：取生产快照 NB04 存量零件补一条 open 反馈（测试码前缀 V255SH 可清）
+// ㉖v269 夹具自造楼下样本（现场作业会推进：11-25 全厂已无"仅在NB04"零件，R0/R3 曾因此假失败）
+// 造 3 个零件的 NB04 存量（含同托双码验去重），断言不再依赖生产快照恰好有此类数据
+{ const now = Date.now();
+  db0.ledger = (db0.ledger || []).filter((x) => !String(x.c).startsWith('V255'));
+  db0.ledger.push({ c: 'V255R01', l: 'NB04-A-09-201', p: 'V255PN01', n: 'V255样本甲', q: 100, t: now - 600e3, b: '2026-11-25', pid: 'V255T1' });
+  db0.ledger.push({ c: 'V255R02', l: 'NB04-A-09-201', p: 'V255PN01', n: 'V255样本甲', q: 100, t: now - 590e3, b: '2026-11-25', pid: 'V255T1' }); // 同托兄弟码=1框
+  db0.ledger.push({ c: 'V255R03', l: 'NB04-A-09-202', p: 'V255PN02', n: 'V255样本乙', q: 60, t: now - 500e3, b: '2026-11-25' });
+  db0.ledger.push({ c: 'V255R04', l: 'NB04-A-09-203', p: 'V255PN03', n: 'V255样本丙', q: 40, t: now - 400e3, b: '2026-11-25' });
+}
 const recvPns = [...new Set((db0.ledger || []).filter((x) => /^NB04-/.test(String(x.l || ''))).map((x) => String(x.p || '').toUpperCase()).filter(Boolean))];
 if (recvPns.length) db0.shortages.push({ id: 'V255SH1', pn: recvPns[0], nm: 'V255样本件', note: '取证反馈', src: 'e2e', n: 1, byList: [{ id: 'u_v255', name: 'V255仓管', at: Date.now() }], status: 'open', firstAt: Date.now(), at: Date.now(), seen: [] });
 fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(db0));
@@ -28,7 +36,7 @@ const boxKeyOf = (x) => { const pid = String(x.pid || '').toUpperCase(); if (pid
   try {
     const tk = (await (await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'v255_wh', password: 'E2e#R5!pw' }) })).json()).token;
     const H = { Authorization: 'Bearer ' + tk };
-    chkT('R0 生产快照存在楼下存量零件（测试前提）', recvPns.length >= 5, '楼下零件=' + recvPns.length);
+    chkT('R0 夹具存在楼下存量零件（测试前提，v269 改自造不依赖现场）', recvPns.length >= 3, '楼下零件=' + recvPns.length);
     // R1 档案 recv 桶 = 手工复算（框按托去重、件数行累加、格位清单剥前缀）
     for (const pn of recvPns.slice(0, 3)) {
       const j = await (await fetch(BASE + '/api/part/profile?pn=' + pn, { headers: H })).json();

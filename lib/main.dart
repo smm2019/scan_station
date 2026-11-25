@@ -1142,6 +1142,41 @@ Future<Map<String, String>> mesPerformLogin({
   };
 }
 
+/// ㉖v266 MES 凭证自动上报（三方库存对账用）：把本机 MES 连接令牌同步给服务器，
+/// 让网页控制台「货位账本 → 三方对账」能查 MES/SAP 现有量。
+/// 只传 host/port/token/moduleId/orgId——**绝不传账号密码**；失败静默（对账是辅助功能，
+/// 不能因它挡住采集主流程）；同一 Token 10 分钟内不重复推（节流防连扫重登刷屏）。
+String _mesCredPushed = "";
+int _mesCredPushedAt = 0;
+Future<bool> mesCredAutoPush({bool force = false}) async {
+  try {
+    if (!(Auth.user?.role == 'warehouse' || Auth.user?.role == 'admin'))
+      return false; // 服务端同口径限权，本机先跳过省一次往返
+    final cfg = await MesConfig.getConfig();
+    final token = (cfg["token"] ?? "").toString();
+    final host = (cfg["host"] ?? "").toString();
+    if (token.isEmpty || host.isEmpty) return false;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (!force && token == _mesCredPushed && now - _mesCredPushedAt < 600000)
+      return true;
+    final r = await AuthApi.mesCredPush({
+      "host": host,
+      "port": (cfg["port"] ?? "").toString(),
+      "token": token,
+      "moduleId": (cfg["moduleId"] ?? "").toString(),
+      "orgId": (cfg["orgId"] ?? "").toString(),
+    }).timeout(const Duration(seconds: 8));
+    if (r["ok"] == true) {
+      _mesCredPushed = token;
+      _mesCredPushedAt = now;
+      return true;
+    }
+    return false;
+  } catch (_) {
+    return false; // 静默：网络/权限问题不打扰采集
+  }
+}
+
 /// 静默重登：用已存账号密码重走三阶段登录并刷新token。成功true；任何失败false（不弹窗不抛出）
 Future<bool> mesSilentLogin() async {
   try {
@@ -1166,6 +1201,7 @@ Future<bool> mesSilentLogin() async {
       moduleId: r["moduleId"]!,
     );
     debugPrint("MES静默重登成功");
+    unawaited(mesCredAutoPush()); // ㉖v266 搭车自动上报：重登拿到新 Token 即同步服务器，三方对账不因过期断供
     return true;
   } catch (e) {
     debugPrint("MES静默重登失败：$e");
@@ -7580,6 +7616,8 @@ class _MesSettingPageState extends State<MesSettingPage> {
                       bool loginOk = await _testMesLogin();
                       if (!mounted) return;
                       if (loginOk) {
+                        unawaited(mesCredAutoPush(
+                            force: true)); // ㉖v266 登录成功顺带上报，三方对账即刻可用
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text("✅ MES登录成功，Token已保存")),
                         );
@@ -7594,6 +7632,25 @@ class _MesSettingPageState extends State<MesSettingPage> {
                 )
               ],
             ),
+            const SizedBox(height: 10),
+            // ㉖v266 上报 MES 凭证到服务器：网页控制台「货位账本 → ⚖️三方对账」据此查 MES/SAP 现有量。
+            // 只上报连接令牌（不含账号密码）；限仓管/管理员；平时登录/重登会自动上报，此按钮为兜底。
+            if (Auth.user?.role == 'warehouse' || Auth.user?.role == 'admin')
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.cloud_upload_outlined, size: 18),
+                  label: const Text("上报凭证到服务器（网页三方对账用）"),
+                  onPressed: () async {
+                    final ok = await mesCredAutoPush(force: true);
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(ok
+                            ? "✅ 已上报，网页「货位账本 → ⚖️三方对账」可查 MES/SAP 库存"
+                            : "❌ 上报失败：请先登录 MES 拿到 Token，或确认本账号为仓管/管理员")));
+                  },
+                ),
+              ),
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
