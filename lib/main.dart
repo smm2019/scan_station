@@ -2425,12 +2425,14 @@ class _MainPageState extends State<MainPage>
         wt ?? _workType; // ㉖v253 转入判据：优先用调用方模式快照（R154 铁律：保存链禁读实时值），缺省回退实时值
     // ㉖v253 一楼→二楼转入=正常动线，零弹窗（用户 11-26 定性：服务端 v118 对 NB04→二楼本就放行=blockIn=false+recvLoc；
     // 整托模式本为"一筐多标签"设计，逐标签扫=逐标签取代一楼记录，动作与单框一致，不该弹"已登记"拦人）。
-    // 命中【二楼入库模式(AGV站台/人工地面) ∧ 旧记录在一楼来料区】→ 静默作废一楼采集流水（服务器同步 cx 作废、
+    // 命中【二楼入库模式(AGV站台/人工地面) ∧ 旧记录是一楼来料登记流水】→ 静默作废一楼采集流水（服务器同步 cx 作废、
     // 账本原行改位不翻倍）、直接放行按当前模式录入，只留一条不打断连扫的短提示；
     // 其余重复形态（货架位真重复/出库复用）仍走下方三按钮弹窗，本机防重一分不松。
-    final _oldInRecv = exist.workType == 2 ||
-        (exist.groundLocation ?? "").toUpperCase().startsWith("NB04-") ||
-        posInfo.contains("NB04"); // groundLocation 可空（AGV 站台旧记录=null），必须空安全处理
+    // ㉖v260 判据收紧（11-25 N26K250023 连环自咬实锤）：一楼旧记录唯一正源=来料区登记模式流水（workType==2）。
+    // 旧版宽判据把 gl=NB04 的 wt=1 行、账本现值含 NB04 也算——撞上"地面模式手填 NB04 位"（v120d 兼容路径）
+    // 产物或货位串值泄漏行时，操作员重扫第二下会把【自己刚扫的那条 wt=1 行】当一楼记录静默作废（同码自咬链）。
+    // 形似 NB04 的 wt=1 行不是转入源，退回三按钮弹窗人工确认：防误杀一楼流水，更防自己咬自己。
+    final _oldInRecv = exist.workType == 2;
     if ((_wtNow == 0 || _wtNow == 1) && _oldInRecv) {
       _cxLocalOpAt[scanlogKeyOf(exist)] = DateTime.now()
           .millisecondsSinceEpoch; // ㉖v253 登记主动作废时刻（v122 新者胜仲裁）：服务器据此记 cxA 权威作废，该码旧缓存日后回灌一律压回，杜绝流水复活成双计
@@ -3066,6 +3068,17 @@ class _MainPageState extends State<MainPage>
                   "货位编码「$loc」格式不符（例 NB02-A-08-2F / NB03-B-13-07 / NB04-A-01-003），本筐未入账本"),
               backgroundColor: Colors.orange));
         return; //保留输入内容，改正后可直接重扫标签再保存
+      }
+      // ㉖v260 地面模式登记 NB04=按一楼来料入账（v120d 兼容路径保留），但必须显性提示：
+      // 11-25 N26K250023 实锤此路径静默走过会产生 wt=1+gl=NB04 形似记录+账本原地不动（货位复用到账本现值=
+      // "原地不动"入账），操作员全程无感、重扫还会触发连环作废——不堵路，但亮灯指路。
+      if (wtSnap == 1 && loc.startsWith('NB04-')) {
+        if (mounted)
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text(
+                  "ℹ️ 货位是 NB04 来料区格——本筐按【一楼来料库存】入账（不是二楼入库）。若目的是转入二楼，请改选/输入二楼目标货位后重存"),
+              backgroundColor: Color(0xFF00897B),
+              duration: Duration(seconds: 5)));
       }
       // ㉖v69c 模式与货位一致性闸：AGV站台模式目的地只能是 NB02 高架（AGV跑不到地面区），
       // 残留/误填的 NB03 地面码在此拦下，从源头杜绝"库位不在WMAS主档"叫车失败 + 账本污染

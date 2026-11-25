@@ -5468,12 +5468,21 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         //   真覆盖（同键 t/q/gl/st/wt/cx 任一变化）才把旧行摘要存进新行 hist（cap 3）——正常周期
         //   回灌同内容不产 hist（防噪声）；必须写在 Object.assign 之前：assign 后 _sl[k] 就是新行
         //   引用本身，取不到旧行（首版插在 assign 后 old===v 恒真，hist 永不产生——自查踩中）。
+        // ㉖v262 审计四要素补齐（11-25 两机竞态案复盘：流水只有 PDA 时钟 t 与 op 姓名，"谁·哪台设备·
+        //   哪个IP·服务器何时收到"全无留痕，事后靠 hist 摘要+diagPulse 猜）——每次真覆盖/新流入在行上
+        //   记 recvEv 接收事件（操作人/设备/服务器IP/服务器到达毫秒，cap 5）：PDA 时钟可漂移，recvEv.at 是
+        //   服务器权威时序；hist 旧摘要供"改了什么"，recvEv 供"是谁哪台机什么时候传的"。
+        const _rIp = (opsCtx.getStore() || {}).ip || '', _rDev = (opsCtx.getStore() || {}).dev || '', _rU = String(u.name || '-');
         { const _sl0 = db.scanlog || {};
           for (const [k, v] of Object.entries(snap)) {
             const old = _sl0[k];
-            if (!old || old === v) continue;
+            const _ev = { by: _rU, dev: _rDev, ip: _rIp, at: Date.now() };
+            const _hist = (Array.isArray(v.recvEv) ? v.recvEv : (Array.isArray(old && old.recvEv) ? old.recvEv.slice() : [])).filter(Boolean);
+            _hist.unshift(_ev); v.recvEv = _hist.slice(0, 5);
+            if (!old) continue;
+            if (old === v) continue;
             const _same = Number(old.t) === Number(v.t) && Number(old.q) === Number(v.q) && String(old.gl || '') === String(v.gl || '') && !!old.cx === !!v.cx && String(old.st || '') === String(v.st || '') && Number(old.wt) === Number(v.wt);
-            if (_same) continue;
+            if (_same) { if (Array.isArray(old.hist) && old.hist.length && !Array.isArray(v.hist)) v.hist = old.hist.slice(); continue; } // ㉖v262 同内容回灌不再抹掉既有 hist（Object.assign 整行替换下 undefined=覆盖丢失——v205 防丢设计在同键重推下自相矛盾的预存量缺口，本案 ③ 断言抓出）
             const h = (Array.isArray(v.hist) ? v.hist : (Array.isArray(old.hist) ? old.hist.slice() : [])).filter(Boolean);
             h.unshift({ t: Number(old.t) || 0, q: Number(old.q) || 0, gl: String(old.gl || ''), st: String(old.st || ''), wt: Number(old.wt) || 0, cx: !!old.cx, op: String(old.op || '') });
             v.hist = h.slice(0, 3);
@@ -5514,6 +5523,9 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (_fsSamp.length < 5) _fsSamp.push(String(v.code || '?') + (Number(v.wt) === 0 ? '·AGV st=' : '·地面 gl=') + String(Number(v.wt) === 0 ? v.st : v.gl));
         }
         if (_flowSick) { console.log(`[flow-loc] ⚠ ${u.name} 本批流水 ${_flowSick} 条跨模式货位错配：${_fsSamp.join(' ; ')}`); try { pushOps(u, '货位格式体检', _flowSick + ' 条错配', _fsSamp.join(' ; ')); } catch (_) {} }
+        // ㉖v260 地面模式登记 NB04（v120d 合法兼容路径）计数留痕：11-25 N26K250023 泄漏排查钩子——
+        // 该路径会产生 wt=1+gl=NB04 形似记录（PDA 已加显性提示），日志计数便于观察使用频率与串值是否复发
+        { const _w1n = Object.values(snap).filter((v) => Number(v.wt) === 1 && /^NB04-/.test(String(v.gl || '').toUpperCase())).length; if (_w1n) console.log(`[flow-w1nb04] ${u.name} 本批 ${_w1n} 条地面模式NB04登记（v120d 兼容路径·账本按来料区入账）：${Object.values(snap).filter((v) => Number(v.wt) === 1 && /^NB04-/.test(String(v.gl || '').toUpperCase())).slice(0, 5).map((v) => v.code + '@' + v.gl).join(' ; ')}`); }
         // ㉖v120b 来料区停用期误扫体检（流水层·只留痕不回改）：receivingOn=0 时 gl=NB04-* 的采集流水照常入库
         // （流水=现场原始证据铁律），但账本源头闸已拒其上账——留痕点名设备与操作人，供追查"开关关了怎么还扫上"的幽灵流水；
         // PDA 侧已同步从入口闸住（locs?recv=1 下发开关+未启用即中止保存），本条为旧版 PDA/竞态窗口的兜底可见性。
@@ -5744,6 +5756,11 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         const usedLoc = new Set(); for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (/^NB02-/.test(l) && !/-CK-/.test(l)) usedLoc.add(l); }
         for (const l of Object.keys(R)) { // 幂等：同标签未过期且位置未被占→复用原格
           if (String(R[l].code || '') !== code) continue;
+          // ㉖v261 NB04 预占永不回吐（11-25 N26K250023 实锤）：v118 只防"账本已在来料区回现位"，
+          // 漏了本循环——一楼刚放格其 NB04 预占（5分钟）仍在时，账本未推达的 30 秒窗内二楼 AUTO
+          // 会拿回一楼格（usedLoc 只收 NB02 不含 NB04=盲点），产生"地面模式+NB04"畸形记录+连环作废。
+          // 不删预占——一楼幂等重扫仍复用同格（v122 语义不破坏）；本请求继续往下正常分 NB02。
+          if (/^NB04-/.test(l)) { console.log(`[reserve-guard] ${u.name} 标签 ${code} 存在一楼 NB04 预占 ${l}（账本未推达窗），AUTO 不回吐，改正常分配货架位`); try { pushOps(u, 'AUTO预占防护', code, `一楼 NB04 预占 ${l} 不回吐（账本未推达窗竞态防护 v261），本请求改正常分配`); } catch (_) {} continue; }
           if (!usedLoc.has(l)) { R[l].at = Date.now(); R[l].by = u.name; save(); return send(res, 200, { ok: true, loc: l, kept: true }); }
           delete R[l];
         }

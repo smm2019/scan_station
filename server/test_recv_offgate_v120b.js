@@ -93,15 +93,16 @@ async function get(p2, tk) { const r = await fetch(BASE + p2, { headers: tk ? { 
   const mMain = fs.readFileSync(path.join(__dirname, '..', 'lib', 'main.dart'), 'utf8');
   const mLed = fs.readFileSync(path.join(__dirname, '..', 'lib', 'collection_ledger.dart'), 'utf8');
   const mSrv = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+  const _ws = (s) => s.replace(/\s+/g, ' '); // ㉖v259b 锚点格式化免疫：dart format 把单行 if/闭包拆多行，精确匹配假失败（11-25 两轮实锤，R5 三条同族）
   const anchors = {
-    'locs下发开关': mSrv.includes('receivingOn: receivingOn() ? 1 : 0'),
+    'locs下发开关': _ws(mSrv).includes('receivingOn: receivingOn() ? 1 : 0'),
     '流水层停用期留痕': mSrv.includes('来料区停用期误扫'),
-    'PDA探测方法': mMain.includes('Future<void> _probeReceivingOn()'),
-    '探测先于恢复(时序)': mMain.includes('_probeReceivingOn().then((_) => _restoreWorkMode());'),
-    '模式卡受开关': mMain.includes('Auth.can("receiving_reg") && _recvOn != 0'),
-    '恢复受开关降级': mMain.includes('_recvOn != 0 && mounted) setState(() => _workType = 2)'),
-    '查重403硬拦': mMain.includes('recv && r["_status"] == 403'),
-    '放格读开关': mLed.includes('if (_recvOn == 0) { _recvOffFlag = true; return null; }'),
+    'PDA探测方法': _ws(mMain).includes('Future<void> _probeReceivingOn()'),
+    '探测先于恢复(时序)': (() => { const a = _ws(mMain).indexOf('_probeReceivingOn().then('), b = _ws(mMain).indexOf('_restoreWorkMode())'); return a > 0 && b > a; })(), // format 会在 .then( 与 (_) 间插换行，故只比两片段先后不断言相邻
+    '模式卡受开关': _ws(mMain).includes('Auth.can("receiving_reg") && _recvOn != 0'),
+    '恢复受开关降级': _ws(mMain).includes('_recvOn != 0 && mounted) setState(() => _workType = 2)'),
+    '查重403硬拦': _ws(mMain).includes('recv && r["_status"] == 403'),
+    '放格读开关': _ws(mLed).includes('if (_recvOn == 0) { _recvOffFlag = true; return null; }'),
     '保存链区分未启用中止': mMain.includes('来料区已被管理员关闭'),
   };
   Object.entries(anchors).forEach(([k, v]) => chkT('R5 锚点·' + k, v));
