@@ -1197,6 +1197,38 @@ class _WmasCardDialogState extends State<_WmasCardDialog> {
 Timer? _pushLedgerTimer;
 bool _ledgerPushPending = false; // ㉖⑰ 有未推送的账本变更
 bool get ledgerPushPending => _ledgerPushPending;
+// ===== ㉖v281 推送留痕+守门犬（用户需求："有办法，两处对症"落地；数据安全铁律：不改任何
+// 载荷构造/upsert/基线/墓碑路径，只加观察与调度干预）=====
+// 病灶复盘（11-26 三连告警）：服务器看到"推送中·重试0次"挂 4~9 分钟——卡点若在"尝试发出之前"
+// （安卓冻结定时器/世代前卡住），HTTP 层超时与失败重试都鞭长莫及，且服务器只能瞎猜。
+// 从此：①每个排期/真实发起/成败都记环形时间线（随诊断包回服务器，下次复发看全景不猜）
+// ②pushSeqAt=最近一次排期或真实发起时刻（服务器降噪三闸之"调度器活着"判据）
+// ③守门犬：pending 挂着但推进戳停走>3分钟且无在途请求 → 心跳周期强制拉起一次推送（治"定时器死了"）
+// 戳规则（v281 自纠定稿）：新登记排期/守门犬触发/真实发出 ledgerSync 才打戳；
+// 30秒重试排期与世代闸失败【不】打戳——世代死循环的特征恰是"排期活着但推不出"，
+// 若重试也打戳会把卡死洗成健康误降噪。
+final List<String> _lpTrace = [];
+bool _lpInflight = false; // 账本 sync 在途标志（单线程安全；守门犬不叠加在途请求）
+void _lpMark(String m) {
+  final dt = DateTime.now();
+  final s = "${dt.hour.toString().padLeft(2, "0")}:${dt.minute.toString().padLeft(2, "0")}:${dt.second.toString().padLeft(2, "0")}|$m";
+  _lpTrace.add(s);
+  if (_lpTrace.length > 40) _lpTrace.removeAt(0); // 本地环形留40条
+  final _tail = _lpTrace.length > 8 ? _lpTrace.sublist(_lpTrace.length - 8) : _lpTrace; // 入袋只带尾部8条（~240B，服务器截200）
+  AuthApi.kDiagPulse["trace"] = _tail.join(";");
+}
+
+/// 守门犬（挂 60 秒诊断心跳，零新增定时器）：pending>3分钟 & 推进戳停走 & 无在途 → 强制拉起推送。
+/// 世代未对齐时 ledgerPushNow 内部自走对齐分支（不白刷网络）；网络断时与既有30秒重试同节奏，不放大风暴。
+void _lpWatchdog() {
+  if (!_ledgerPushPending || _lpInflight) return;
+  final seq = (AuthApi.kDiagPulse["pushSeqAt"] as num?)?.toInt() ?? 0;
+  final nowMs = DateTime.now().millisecondsSinceEpoch;
+  if (seq > 0 && nowMs - seq < 180000) return; // 推进戳新鲜=调度器活着，不干预
+  _lpMark("守门犬拉起(戳停${seq == 0 ? "?" : ((nowMs - seq) ~/ 1000)}s)");
+  AuthApi.kDiagPulse["pushSeqAt"] = nowMs; // 守门犬触发=一次真实尝试计推进
+  unawaited(ledgerPushNow());
+}
 // ㉖v272 增量推送：只推"上次成功推送后变更"的行（基线=成功推送的items指纹），删除仍走显式墓碑(del)。
 // 安全前提：服务端 ledger/sync 只 upsert 不删缺失行；scanlog/sync 对账仅针对本批变更行(_chgKeys)。
 // 兜底：每5分钟一次全量对账推送（防基线漂移/漏推），首次推送=全量建基线。旧APK仍全量，服务端兼容。
@@ -1220,11 +1252,14 @@ void scheduleLedgerPush({int seconds = 15}) {
       true; // ㉖v199d 登记即写袋：流水通道搭车时服务器立刻见"有积压"，判死计时有锚点
   // ㉖⑰ 节流不重置：原实现每次登记重置定时器，连续扫码账本永远推不出去（网页"查不到新料"根因）
   if (_pushLedgerTimer?.isActive == true) return;
+  _lpMark("排期${seconds}s"); // ㉖v281 新登记排期=调度器活着（打戳规则见 _lpMark 头注释）
+  AuthApi.kDiagPulse["pushSeqAt"] = DateTime.now().millisecondsSinceEpoch;
   _pushLedgerTimer = Timer(Duration(seconds: seconds), ledgerPushNow);
 }
 
 void _ledgerPushRetry() {
   _pushLedgerTimer?.cancel();
+  _lpMark("30s重试排期"); // ㉖v281 只留痕不打推进戳：失败循环洗白=降噪误判（v281自纠，规则见上）
   _pushLedgerTimer = Timer(const Duration(seconds: 30), ledgerPushNow);
 }
 
@@ -1260,6 +1295,7 @@ Future<void> _diagFillStatic() async {
 
 /// 心跳：静态补齐 + 动态随带 → POST /api/diag/pulse（失败不重试，sync 通道自然覆盖）
 Future<void> diagPulseNow() async {
+  _lpWatchdog(); // ㉖v281 守门犬搭 60 秒心跳顺风车（零新增定时器）：pending卡+推进戳停走+无在途→强制拉起
   await _diagFillStatic();
   AuthApi.kDiagPulse["pending"] = _ledgerPushPending;
   AuthApi.kDiagPulse["retryN"] = _diagRetryN;
@@ -1377,11 +1413,25 @@ Future<Map> ledgerPushNow() async {
     final del = await ledgerTombs();
     if (items.isEmpty && del.isEmpty) {
       if (_fullL) _lastFullLedgerPush = DateTime.now();
+      // ㉖v281 空载=无待推变更（items空=全部已在成功基线、del空=无待报墓碑）→ 清 pending：
+      // 否则标志永真误导诊断"推送中"+守门犬每3分钟空拉循环（不改数据，纯标志纠正）
+      _ledgerPushPending = false;
+      AuthApi.kDiagPulse["pending"] = false;
+      _lpMark("空载跳过(${_fullL ? "全量" : "增量"})"); // ㉖v281 增量下"无变更"变常见，留痕防误读为卡死
       return {"ok": true, "msg": "无变更"};
     }
+    // ㉖v281 真实发起=最强推进证据：打推进戳+在途标记+留痕（守门犬据此不叠加请求）
+    _lpInflight = true;
+    AuthApi.kDiagPulse["pushSeqAt"] = DateTime.now().millisecondsSinceEpoch;
+    _lpMark("发起sync(全量=${_fullL ? "Y" : "N"} ${items.length}行/${del.length}删)");
     final r = await AuthApi.ledgerSync(items,
         del: del,
         epoch: sp0.getString(_kLedgerEpoch) ?? ""); // ㉖v69 带世代：服务器据此拦旧缓存
+    _lpInflight = false;
+    {
+      final _e = "${r["ok"] == true ? "" : " " + (r["msg"] ?? r["code"] ?? "?")}";
+      _lpMark("sync回(ok=${r["ok"] == true ? "Y" : "N"}${_e.length > 25 ? _e.substring(0, 25) : _e})"); // ㉖v281 v281自纠：旧链式substring对短/非串消息有越界崩溃风险
+    }
     // ⑲改位冲突提示：推送被他人更新数据压过的标签=本机登记未生效，弹窗提醒重新登记
     final rej = r["rejected"];
     final rejLoc = r["rejectedLoc"]; // ㉖v100 货位格式防线①：病值货位被拒回，与改位冲突分两类提示

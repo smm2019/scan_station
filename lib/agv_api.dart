@@ -317,6 +317,14 @@ class AgvApi {
       "tip": "恢复该车运行",
       "danger": false
     },
+    // ㉖v280 重定位：车与实车位置对不上（被推走/人工挪动）时让车重报坐标。
+    // 实测 RCS 端点=PUT /agv/relocationAgv?ip=；本方法走 RCS 直连（与去充电等同款），网页端走服务器代理，指令同源。
+    "reloc": {
+      "path": "/agv/relocationAgv",
+      "label": "重定位",
+      "tip": "让车重新自报位置。请确认实车没叉着货再执行；车短暂自检，不影响任务队列",
+      "danger": false
+    },
   };
   static Future<Map<String, dynamic>> carAction(
       String action, String ip) async {
@@ -391,6 +399,56 @@ class AgvApi {
         return "错误";
       default:
         return c["carState"]?.toString() ?? "未知";
+    }
+  }
+
+  /// ㉖v280 车辆细态（镜像服务器 carPhaseTxt，优先级/判据同源，注释同步改）：
+  /// 急停>人工停>被交管>离线>告警>充电>业务阶段(去取货/去放架/放架收尾/排队待接)>自主导航(去充电/返航待命)>车体状态>空闲
+  /// rt=该车当前运行任务原始行(_tasks 里 exeAgvId 匹配)，可 null；节点戳用现成 nodeTimesOf
+  static String carPhase(Map c, Map? rt, bool blocked, bool hasAlarm) {
+    if (c["emergencyButton"] == true) return "急停";
+    if (c["manualStop"] == true) return "人工停";
+    if (blocked) return "被交管";
+    if (c["communicationBreak"] == true || c["enable"] != 1) return "离线";
+    if (hasAlarm) return "告警";
+    if (c["charging"] == true) return c["fullCharged"] == true ? "充满" : "充电";
+    final no = (rt?["dispatchNo"] ?? c["execTaskNo"] ?? c["executeTaskNo"] ?? "").toString();
+    if (no.isEmpty) {
+      switch (c["carState"]?.toString()) {
+        case "pause": return "暂停";
+        case "error": return "故障";
+        default: return "空闲";
+      }
+    }
+    final tt = (rt?["taskType"] ?? "").toString().toUpperCase();
+    // 自主导航（回待命/去充电）：UUID调度号或任务类型直判（低电=去充电，RCS lowPower 权威，兜底电量25%）
+    if (tt == "CHARGE" || tt == "STANDBY" || RegExp(r"^[0-9a-fA-F]{8}-").hasMatch(no)) {
+      final low = c["lowPower"] == true || ((AgvApi.asNum(c["power"]) ?? 0) > 0 && (AgvApi.asNum(c["power"]) ?? 100) <= 25);
+      return tt == "CHARGE" || low ? "去充电" : "返航待命";
+    }
+    final st = int.tryParse("${rt?["taskState"] ?? 1}") ?? 1;
+    if (st == 2) return "放架收尾";
+    if (st == 0) return "排队待接";
+    if (rt == null) return "去取货"; // 车自报任务号但运行任务表暂无此车行（15秒刷新竞态窗）→ 粗判取货段，rt! 会空引用崩溃（自纠）
+    final nt = AgvApi.nodeTimesOf(rt);
+    if (nt[0] > 0 && nt[1] == 0) return "去放架"; // 货已在车上
+    return "去取货";
+  }
+
+  /// 细态配色（与网页 stColOf 同系：出事红/交管橙/充电黄/导航青/业务蓝/空闲绿）
+  static Color carPhaseColor(String p, bool online) {
+    if (!online) return Colors.grey;
+    switch (p) {
+      case "急停": case "人工停": case "故障": return Colors.red;
+      case "被交管": return Colors.deepOrange;
+      case "告警": return const Color(0xFFAD1457);
+      case "充电": case "去充电": case "充满": return const Color(0xFFF9A825);
+      case "返航待命": return const Color(0xFF26A69A);
+      case "去放架": case "放架收尾": return const Color(0xFF00ACC1);
+      case "排队待接": return const Color(0xFF7E57C2);
+      case "去取货": return const Color(0xFF1E88E5);
+      case "暂停": return const Color(0xFF8E24AA);
+      default: return online ? Colors.teal : Colors.grey;
     }
   }
 
@@ -809,18 +867,22 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
     final a = AgvApi.carActions[act]!, danger = a["danger"] == true;
     final color = danger
         ? Colors.red
-        : (act == "charge" ? Colors.teal : const Color(0xFF1565C0));
+        : (act == "charge"
+            ? Colors.teal
+            : (act == "reloc" ? const Color(0xFF3949AB) : const Color(0xFF1565C0)));
     return ActionChip(
         avatar: Icon(
             danger
                 ? Icons.dangerous_outlined
                 : (act == "charge"
                     ? Icons.bolt
-                    : (act == "start"
-                        ? Icons.play_arrow
-                        : (act == "stop"
-                            ? Icons.stop_circle_outlined
-                            : Icons.home_outlined))),
+                    : (act == "reloc"
+                        ? Icons.my_location_outlined
+                        : (act == "start"
+                            ? Icons.play_arrow
+                            : (act == "stop"
+                                ? Icons.stop_circle_outlined
+                                : Icons.home_outlined)))),
             size: 15,
             color: color),
         label: Text(a["label"].toString(),
@@ -1236,6 +1298,12 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
           final x = AgvApi.asNum(c["x"]), y = AgvApi.asNum(c["y"]);
           final lockLands = (c["routeLockLands"] as List?)?.join(", ") ?? "";
           final err = (c["errorMessage"] ?? "").toString();
+          // ㉖v280 该车当前运行任务原始行（exeAgvId 匹配，与地图/服务器同源判据），供细态推导
+          final Map? _rt = _tasks.cast<Map?>().firstWhere(
+              (t) => t != null && "${t["exeAgvId"]}" == "$id" && (t["taskState"] == 0 || t["taskState"] == 1),
+              orElse: () => null);
+          final _hasAl = _alarms.any((a) => "${a["id"]}" == "$id");
+          final phase = AgvApi.carPhase(c, _rt, blocked.contains(id), _hasAl);
           // 执行状态：急停/人工停止 > 充电 > 执行任务 > 空闲
           String exe;
           if (c["emergencyButton"] == true)
@@ -1292,13 +1360,7 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                       if (c["lock"] == true) _tag("已锁定", Colors.red),
                       _tag(online ? "在线" : "离线",
                           online ? Colors.green : Colors.grey),
-                      _tag(
-                          AgvApi.carStateOf(c),
-                          online
-                              ? (c["carState"] == "running"
-                                  ? Colors.lightBlue
-                                  : Colors.teal)
-                              : Colors.grey),
+                      _tag(phase, AgvApi.carPhaseColor(phase, online)), // ㉖v280 阶段级细态（去取货/去放架/返航待命…），旧版只有"空闲/执行中"粗态
                     ]),
                     const SizedBox(height: 4),
                     Row(children: [
@@ -1411,7 +1473,8 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
                               "standby",
                               "reset",
                               "stop",
-                              "start"
+                              "start",
+                              "reloc"
                             ])
                               _ctrlBtn(c, act),
                           ])),

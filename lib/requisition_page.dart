@@ -2103,41 +2103,334 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                   ]),
                   onTap: () {
                     Navigator.pop(mctx);
-                    final miss = <String>[];
+                    // ㉖v283 对齐网页版分享面板（用户拍板"载入模板后直接显示哪些缺料、可多选分享"）：
+                    // 旧版只发一条10秒 SnackBar 一闪而过、按钮还会崩（v282案）；盘点后直接弹面板。
+                    // 两类分流同网页：全厂零在架=缺料行（勾选分享）；货全在一楼来料区=催转入行（不算缺料）
+                    final miss = <Map>[], recv = <Map>[];
                     for (final it in items) {
                       final pn = it["partNo"].toString();
-                      if (!widget.parts.any((p) => p.partNo == pn)) {
-                        miss.add(pn);
+                      final q = (it["qty"] as num?)?.toInt() ?? 1;
+                      final rows = widget.parts.where((p) => p.partNo == pn).toList();
+                      final pr = rows.isEmpty ? null : rows.first;
+                      if (pr == null) {
+                        miss.add({"pn": pn, "nm": it["itemName"]?.toString() ?? "", "q": q});
                         continue;
                       }
+                      if (pr.readyBoxes <= 0 && pr.recvBoxes > 0)
+                        recv.add({"pn": pn, "nm": (it["itemName"]?.toString().isNotEmpty ?? false) ? it["itemName"].toString() : pr.itemName, "rb": pr.recvBoxes});
                       if (_order.contains(pn)) continue;
-                      final q = (it["qty"] as num?)?.toInt() ?? 1;
                       _qtyCtrl[pn] = TextEditingController(text: "$q");
                       _syncChosen(pn);
                     }
-                    setState(() {});
+                    setState(() {}); // 缺料行照旧不进单，其余照常载入
                     AuthApi.tplUse(t["id"].toString());
-                    if (miss.isNotEmpty) {
-                      // ㉖v177 缺料行不再只提示后丢弃：给一键反馈出口（算完全厂缺口再分享，物料员不用换页重来）
-                      final tn = t["name"].toString();
-                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                          duration: const Duration(seconds: 10),
-                          backgroundColor: const Color(0xFF455A64),
-                          content: Text(
-                              "模板「$tn」中 ${miss.length} 行当前无在架，已跳过：${miss.take(3).join("、")}${miss.length > 3 ? "…" : ""}",
-                              style: const TextStyle(fontSize: 12.5)),
-                          action: SnackBarAction(
-                              label: "反馈缺料",
-                              textColor: const Color(0xFFFFCC80),
-                              onPressed: () => shortageFeedback(context, miss,
-                                  title: "模板缺料反馈（${miss.length} 项）",
-                                  defaultDesc: "产线模板「$tn」所需物料当前全厂无在架，请安排到货",
-                                  hint: "来自产线模板 · 已自动附全厂在架与在途需求"))));
+                    final tn = t["name"].toString();
+                    if (miss.isEmpty && recv.isEmpty) {
+                      final rc = _globalNavigatorKey.currentContext;
+                      if (rc != null && rc.mounted)
+                        ScaffoldMessenger.of(rc).showSnackBar(SnackBar(
+                            backgroundColor: Colors.green,
+                            content: Text("✅ 模板「$tn」全部物料二楼有在架",
+                                style: const TextStyle(fontSize: 13))));
+                      return;
                     }
+                    _showShortShareSheet(tn, miss, recv); // v282铁律：面板用根context弹，绝不吃已销毁弹层的context
                   },
                 );
               }),
             ])));
+  }
+
+  /// ㉖v283 缺料分享面板（对齐网页版 tplShort 浮层，观感按 PDA 既有弹窗习惯）：
+  /// 载入模板后盘点出「全厂零在架」行默认全勾可多选，实时预览=复制所见；
+  /// 「货全在一楼来料区」类目单独橙色列示催转入（不算缺料，v275 口径）；
+  /// 提交走 /api/shortages 与网页同一后端闭环（到料自动核销），forceStock 同网页语义。
+  /// v282 铁律：面板与提示一律根 context 现取现用，绝不吃已销毁弹层的捕获 context。
+  void _showShortShareSheet(String tn, List<Map> miss, List<Map> recv) {
+    final root = _globalNavigatorKey.currentContext;
+    if (root == null || !root.mounted) return;
+    final sel = <int>{for (var i = 0; i < miss.length; i++) i}; // 默认全选（同网页）
+    var submitting = false;
+    // ㉖v283 自纠（用户截图实锤）：分享文案必须=系统标准【缺料反馈】模板（shortFeedText：
+    // 反馈日期/零件号/物料名称/全厂零在架/在途需求/上次领用/异常描述/反馈单位/责任单位/
+    // 确认人/确认日期/@人，字段读缺料页「缺料单默认字段」sr_* 自定义键）——旧版自造简化
+    // 【豪斯特缺料单】两行体=群里老同事认出的标准格式被我们自己破坏了，现改回同源。
+    final gapByIdx = <int, _ShortGap>{}; // 行→全厂缺口快照（异步核算，标准文案数据源）
+    String preview = "正在核算全厂缺口…"; // 面板灰框实时预览；文案异步生成
+    var gapDone = false, gapFail = false; // 快照加载态：失败=降级裸模板（shortFeedText 支持 noData 行）
+    int pvSeq = 0; // 预览异步令牌（v283 自纠：局部变量必须先声明后引用，旧版闭包引用后声明的 _pvSeq 编译不过）
+    void Function()? rebuild; // builder 挂载的重绘钩子（快照异步回来时用）
+    Future<void>? loadTask; // 快照核算在途任务（buildFeed 极速点击时 await 它，防未核算完写假数据）
+    String descOf() => "生产急需，请安排采购/到货"; // 兜底描述（下方 shortDefDesc 读自定义后覆盖）
+    var desc = descOf();
+
+    Future<String> buildFeed(List<int> idx) async {
+      // 勾选行 → 标准【缺料反馈】文案（与缺料反馈页/搜不到卡片完全同源同键）
+      if (!gapDone && loadTask != null) await loadTask; // 极速点击防未核算完就出文案（零在架未经确认=不能写）
+      final rows = idx.map((i) {
+        final g = gapByIdx[i];
+        if (g != null) return g;
+        final m = miss[i];
+        return _ShortGap(m["pn"].toString(), m["nm"].toString(), 0, 0, 0, 0, 0,
+            true, // backed=档案认得此号（模板自带行）
+            noData: gapFail); // 快照拉失败=如实标注数据不可用，绝不写假0
+      }).toList();
+      return await shortFeedText(rows, desc);
+    }
+
+    void refreshPreview() {
+      // 勾选变化→重算预览（异步，防旧请求回来后覆盖新选择：seq 令牌）
+      final idx = sel.toList()..sort();
+      if (idx.isEmpty) {
+        preview = "（未勾选缺料行）";
+        return;
+      }
+      if (!gapDone) return; // 快照未就绪先等核算统一刷
+      final mySeq = ++pvSeq;
+      buildFeed(idx).then((t) {
+        if (pvSeq == mySeq) preview = t;
+      });
+    }
+    // 开面板即并发核算：①全厂缺口快照 ②末次领用并入（shortGapLoad 内部已带） ③自定义描述
+    loadTask = () async {
+      desc = await shortDefDesc(descOf());
+      final gaps = await shortGapLoad(miss.map((m) => m["pn"].toString()).toList());
+      if (gaps == null) {
+        gapFail = true;
+      } else {
+        for (var i = 0; i < miss.length; i++) {
+          final g = gaps[miss[i]["pn"].toString().toUpperCase()];
+          if (g != null) gapByIdx[i] = g;
+        }
+      }
+      gapDone = true;
+      rebuild?.call(); // 快照就绪→刷面板
+      refreshPreview();
+    }();
+
+    void rootToast(String m, Color bg) {
+      final c = _globalNavigatorKey.currentContext;
+      if (c != null && c.mounted)
+        ScaffoldMessenger.of(c).showSnackBar(SnackBar(
+            backgroundColor: bg, content: Text(m, style: const TextStyle(fontSize: 13))));
+    }
+
+    showModalBottomSheet(
+        context: root,
+        isScrollControlled: true,
+        backgroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+        builder: (sc) => StatefulBuilder(builder: (c2, setS) {
+          rebuild = () => setS(() {}); // 挂重绘钩子：快照异步核算完成后刷预览
+          if (gapDone && preview == "正在核算全厂缺口…") refreshPreview();
+          return SafeArea(
+              child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(c2).size.height * 0.86),
+                  child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+                      child: SingleChildScrollView(
+                          child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                        Row(children: [
+                          const Text("🧯", style: TextStyle(fontSize: 18)),
+                          const SizedBox(width: 6),
+                          Expanded(
+                              child: Text("缺料分享 · 模板「$tn」",
+                                  style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold))),
+                          if (miss.isNotEmpty)
+                            Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 2),
+                                decoration: BoxDecoration(
+                                    color: const Color(0xFFFFEBEE),
+                                    borderRadius: BorderRadius.circular(10)),
+                                child: Text("缺 ${miss.length} 项",
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFFC62828)))),
+                        ]),
+                        const SizedBox(height: 4),
+                        const Text("勾选要分享的缺料行（默认全选）：复制发微信群催货，或提交缺料反馈（到料自动核销）。来料区有料的行不算缺料，单独列示催转入。",
+                            style: TextStyle(
+                                fontSize: 11.5, color: Color(0xFF6B7A8D))),
+                        if (miss.isNotEmpty)
+                          Container(
+                              margin: const EdgeInsets.only(top: 8),
+                              decoration: BoxDecoration(
+                                  border: Border.all(color: const Color(0xFFE3E8F0)),
+                                  borderRadius: BorderRadius.circular(10)),
+                              child: Column(
+                                  children: List.generate(miss.length, (i) {
+                                final m = miss[i];
+                                return CheckboxListTile(
+                                    contentPadding:
+                                        const EdgeInsets.symmetric(
+                                            horizontal: 8),
+                                    visualDensity: VisualDensity.compact,
+                                    materialTapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                    controlAffinity:
+                                        ListTileControlAffinity.leading,
+                                    activeColor: const Color(0xFF515BD4),
+                                    value: sel.contains(i),
+                                    onChanged: (v) => setS(() {
+                                      if (v == true)
+                                        sel.add(i);
+                                      else
+                                        sel.remove(i);
+                                      refreshPreview(); // ㉖v283 勾选变化→标准【缺料反馈】文案重算
+                                    }),
+                                    title: Row(children: [
+                                      Text(m["pn"].toString(),
+                                          style: const TextStyle(
+                                              fontSize: 12.5,
+                                              fontFamily: "monospace",
+                                              fontWeight: FontWeight.w600)),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                          child: Text(
+                                              m["nm"].toString().isEmpty
+                                                  ? "（无物料名）"
+                                                  : m["nm"].toString(),
+                                              maxLines: 2,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                  fontSize: 11.5,
+                                                  color: Color(0xFF455A64)))),
+                                      // 全厂零在架=分流前提恒真；需框数仅模板行有
+                                      Text(gapByIdx[i] != null || m["q"] == null
+                                          ? "全厂零在架"
+                                          : "需${m["q"]}框·全厂零在架",
+                                          style: const TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.bold,
+                                              color: Color(0xFFC62828))),
+                                    ]));
+                              }))),
+                        if (recv.isNotEmpty)
+                          Container(
+                              width: double.infinity,
+                              margin: const EdgeInsets.only(top: 8),
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                  color: const Color(0xFFFFF7E6),
+                                  borderRadius: BorderRadius.circular(8)),
+                              child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: recv
+                                      .map((r) => Text(
+                                          "🏜 ${r["pn"]} ${r["nm"]}：${r["rb"]}框全在一楼来料区——不算缺料，催仓管转入二楼即可发",
+                                          style: const TextStyle(
+                                              fontSize: 11.5,
+                                              height: 1.6,
+                                              color: Color(0xFFB26A00))))
+                                      .toList())),
+                        Container(
+                            width: double.infinity,
+                            margin: const EdgeInsets.only(top: 10),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                                color: const Color(0xFFF4F6FA),
+                                borderRadius: BorderRadius.circular(8)),
+                            constraints: const BoxConstraints(maxHeight: 150),
+                            child: SingleChildScrollView(
+                                child: SelectableText(preview,
+                                    style: const TextStyle(
+                                        fontSize: 12, height: 1.5)))),
+                        const SizedBox(height: 10),
+                        Row(
+                            mainAxisAlignment: MainAxisAlignment.end,
+                            children: [
+                              TextButton(
+                                  onPressed: () => Navigator.pop(c2),
+                                  child: const Text("关闭",
+                                      style: TextStyle(fontSize: 14))),
+                              const SizedBox(width: 6),
+                              FilledButton.tonalIcon(
+                                  onPressed: () async {
+                                    // ㉖v283 直接现生成标准【缺料反馈】文案再复制（不吃可能过期的预览）
+                                    final idx = sel.toList()..sort();
+                                    if (idx.isEmpty) {
+                                      rootToast("请先勾选要分享的缺料行",
+                                          const Color(0xFFE65100));
+                                      return;
+                                    }
+                                    final t = await buildFeed(idx);
+                                    await Clipboard.setData(ClipboardData(text: t));
+                                    rootToast("✅ 标准缺料反馈已复制，去粘贴到微信群",
+                                        const Color(0xFF2E7D32));
+                                  },
+                                  icon: const Icon(Icons.content_copy,
+                                      size: 17),
+                                  label: const Text("复制缺料反馈",
+                                      style: TextStyle(fontSize: 13.5))),
+                              const SizedBox(width: 6),
+                              FilledButton.icon(
+                                  style: FilledButton.styleFrom(
+                                      backgroundColor:
+                                          const Color(0xFF2E7D32)),
+                                  onPressed: submitting
+                                      ? null
+                                      : () async {
+                                          if (sel.isEmpty) {
+                                            rootToast("请先勾选要分享的缺料行",
+                                                const Color(0xFFE65100));
+                                            return;
+                                          }
+                                          submitting = true;
+                                          setS(() {});
+                                          var ok = 0, blocked = 0;
+                                          for (final i in sel) {
+                                            final m = miss[i];
+                                            try {
+                                              final r =
+                                                  await AuthApi.shortSubmit(
+                                                      m["pn"].toString(),
+                                                      m["nm"].toString(),
+                                                      '所需物料（产线模板「$tn」）全厂无在架，请安排到货',
+                                                      'tpl',
+                                                      forceStock: true);
+                                              if (r["ok"] == true)
+                                                ok++;
+                                              else
+                                                blocked++;
+                                            } catch (_) {
+                                              blocked++;
+                                            }
+                                          }
+                                          submitting = false;
+                                          if (c2.mounted) Navigator.pop(c2);
+                                          rootToast(
+                                              ok > 0
+                                                  ? "✅ 已提交 $ok 项缺料反馈${blocked > 0 ? "（$blocked 项被服务端有货闸拦截=实际有货，催发料即可）" : ""}"
+                                                  : "❌ 提交失败，请稍后重试或改用复制",
+                                              ok > 0
+                                                  ? const Color(0xFF2E7D32)
+                                                  : const Color(0xFFC62828));
+                                        },
+                                  icon: submitting
+                                      ? const SizedBox(
+                                          width: 15,
+                                          height: 15,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Colors.white))
+                                      : const Icon(Icons.send_outlined,
+                                          size: 17),
+                                  label: Text(
+                                      submitting ? "提交中…" : "提交缺料反馈",
+                                      style:
+                                          const TextStyle(fontSize: 13.5))),
+                            ]),
+                      ]))));
+        }));
   }
 
   /// 第3档 开「默认沿用上次指定」且上次的人仍有效时自动带上（网络与本地偏好都就绪才决断）

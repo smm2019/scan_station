@@ -156,10 +156,39 @@ class _MapPainter extends CustomPainter {
       }
       p.close();
       final online = c["online"] == true;
-      canvas.drawPath(p, Paint()..color = online ? (c["state"] == "running" ? const Color(0xFF42A5F5) : const Color(0xFF26A69A)) : Colors.grey);
+      // ㉖v280 车体颜色+文字标签都跟随细态（stx=服务器单源推导：去取货/去放架/返航待命/充电/被交管/急停…）
+      // 旧版只有"蓝=running/青=其他"两档，看不出车在干什么；红描边只留给离线，出事(急停/告警)加粗红圈
+      final stx = (c["stx"] ?? "").toString();
+      final carCol = !online
+          ? Colors.grey
+          : (stx == '急停' || stx == '人工停' || stx == '故障'
+              ? const Color(0xFFE53935)
+              : stx == '被交管'
+                  ? const Color(0xFFFF6D00)
+                  : stx == '告警'
+                      ? const Color(0xFFAD1457)
+                      : stx == '充电' || stx == '去充电' || stx == '充满'
+                          ? const Color(0xFFF9A825)
+                          : stx == '返航待命'
+                              ? const Color(0xFF26A69A)
+                              : stx == '去放架' || stx == '放架收尾'
+                                  ? const Color(0xFF00ACC1)
+                                  : stx == '排队待接'
+                                      ? const Color(0xFF7E57C2)
+                                      : stx == '去取货' || stx == '执行中'
+                                          ? const Color(0xFF1E88E5)
+                                          : const Color(0xFF26A69A));
+      canvas.drawPath(p, Paint()..color = carCol);
+      if (stx == '急停' || stx == '告警' || stx == '故障') {
+        canvas.drawCircle(ctr, 11, Paint()
+          ..color = const Color(0xFFE53935)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2);
+      }
       _txt(canvas, ctr + const Offset(9, 3), "${c["name"] ?? c["id"]}", 9, online ? Colors.white : Colors.grey);
+      if (stx.isNotEmpty) _txt(canvas, ctr + const Offset(9, 13), stx, 7.5, carCol); // 第一行位给状态（最想知道的）
       final site = c["site"]?.toString() ?? "";
-      if (site.isNotEmpty) _txt(canvas, ctr + const Offset(9, 13), site, 7.5, const Color(0xFF90A4AE));
+      if (site.isNotEmpty) _txt(canvas, ctr + const Offset(9, 22), site, 7, const Color(0xFF90A4AE));
     }
     canvas.restore();
     // 图例

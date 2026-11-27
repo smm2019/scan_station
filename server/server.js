@@ -109,7 +109,7 @@ const KEY_FILE = path.join(DATA_DIR, 'secret.key');
 function secretKey() { try { if (fs.existsSync(KEY_FILE)) return Buffer.from(fs.readFileSync(KEY_FILE, 'utf8').trim(), 'hex'); } catch (_) {} const k = crypto.randomBytes(32); try { fs.writeFileSync(KEY_FILE, k.toString('hex')); } catch (_) {} return k; }
 function encSec(s) { if (!s || String(s).indexOf('enc1:') === 0) return s; try { const iv = crypto.randomBytes(12); const c = crypto.createCipheriv('aes-256-gcm', secretKey(), iv); const e = Buffer.concat([c.update(String(s), 'utf8'), c.final()]); return 'enc1:' + iv.toString('base64') + ':' + c.getAuthTag().toString('base64') + ':' + e.toString('base64'); } catch (_) { return s; } }
 function decSec(s) { if (!s || String(s).indexOf('enc1:') !== 0) return s; try { const q = String(s).split(':'); const d = crypto.createDecipheriv('aes-256-gcm', secretKey(), Buffer.from(q[1], 'base64')); d.setAuthTag(Buffer.from(q[2], 'base64')); return Buffer.concat([d.update(Buffer.from(q[3], 'base64')), d.final()]).toString('utf8'); } catch (_) { console.log('[sec] secret.key 与 db.json 不匹配：RCS/WMAS 密码需在设置页重录一次'); return ''; } }
-function walkSec(o, fn) { for (const k of ['rcsConfig', 'wmasConfig']) { const c = o[k]; if (c && c.pwd) fn(c, 'pwd'); } if (o.rcsToken) fn(o, 'rcsToken'); }
+function walkSec(o, fn) { for (const k of ['rcsConfig', 'wmasConfig', 'mesAccConfig']) { const c = o[k]; if (c && c.pwd) fn(c, 'pwd'); } if (o.rcsToken) fn(o, 'rcsToken'); } // ㉖v278 MES专用账号密码同享AES静态加密
 function clientFp(req) { let ip = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, ''); const seg = ip.indexOf(':') >= 0 ? ip.split(':').slice(0, 2).join(':') : ip.split('.').slice(0, 2).join('.'); return crypto.createHash('sha1').update(seg + '|' + String(req.headers['user-agent'] || '')).digest('hex').slice(0, 12); }
 function prefsFor(uid) { const o = (db.prefs && db.prefs[uid]) || {}; const r = {}; for (const k in o) { if (k === 'notes') r[k] = o[k].v; else if (k === 'kpi') r[k] = Array.isArray(o[k].v) ? o[k].v : []; else if (k === 'kpiH') r[k] = Array.isArray(o[k].v) ? o[k].v.slice(0, 30) : []; /* ㉖v151 KPI 显式隐藏清单：旧版 kpi 是白名单，快照之后的新卡片对老用户永久隐身（11-11 管理员看不到「一楼来料登记/待入库(来料区)」）；改判「隐藏清单里没有=显示」。必须用块注释——本行是超长 if/else 链，行尾注释会吞掉后续 else if 分支 */ else if (k === 'pd_tabs' || k === 'pd_tabuse' || k === 'ck_use' || k === 'ck_tabs' || k === 'ck_tabuse') r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, (k === 'ck_use') ? 8000 : 4000); // v56 网页页签配置/驻留统计透传
     else if (k === 'pd_tab_auto' || k === 'ck_tab_auto') r[k] = o[k].v === true; else if (k === 'ck_accent' || k === 'ck_darkmode' || k === 'ck_density' || k === 'ck_zoom') r[k] = String(o[k].v || ''); else if (k === 'pd_tab_auto') r[k] = o[k].v === true; else if (k === 'work') r[k] = Number(o[k].v) === 1 ? 1 : 0; else if (k === 'rate') r[k] = Math.min(0.9, Math.max(0.3, Number(o[k].v) || 0.55)); else if (k === 'voice') r[k] = o[k].v !== false; else if (k === 'pd_focus' || k === 'pd_defAssignee') r[k] = o[k].v !== false; else if (k === 'pd_font') r[k] = ['std','lg','xl'].includes(String(o[k].v)) ? String(o[k].v) : 'std'; else if (k === 'pd_dateOffset') r[k] = Math.min(90, Math.max(0, Number(o[k].v) || 0)); else if (k === 'pd_defPallet') r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); else r[k] = String(o[k].v == null ? '' : o[k].v).slice(0, 20); } return r; }
@@ -660,6 +660,7 @@ async function backupDb() {
     (_bk.users || []).forEach((x) => { delete x.salt; delete x.passHash; });
     if (_bk.rcsConfig) delete _bk.rcsConfig.pwd;
     if (_bk.wmasConfig) delete _bk.wmasConfig.pwd;
+    if (_bk.mesAccConfig) delete _bk.mesAccConfig.pwd; // ㉖v278 备份脱敏同边界
     delete _bk.rcsToken; delete _bk.rcsTokenExp; delete _bk.sessions;
     await enqueueWrite(p, JSON.stringify(_bk)); // ㉖v111 备份文件独立写序队列（断电四步不变，磁盘等待不占主线程）
     const all = fs.readdirSync(dir).filter((f) => /^db-.*\.json$/.test(f)).sort();
@@ -1586,31 +1587,127 @@ function srcDisp(s) { const v = String(s == null ? '' : s).trim().toUpperCase();
 function opNameOf(s) { return String(s == null ? '' : s).replace(/\s*\((?:[^()]*)\)\s*$/, '').trim(); }
 // ㉖v267 MES 代理（模块级：三方对账页与导出 D11/D2增强列共用，鉴权头与 PDA 同套）
 // 凭证失效如实回 code=mes_auth 引导重新上报；不可达如实报错，绝不伪造数据。
-async function mesProxyFn(path, query, method, body) {
-  const c = db.mesCred;
-  if (!c || !c.token) return { ok: false, code: 'no_cred', msg: '服务器尚无 MES 凭证——请在任意 PDA「设置 → MES 设置」点「上报凭证到服务器」' };
+// ㉖v278 专用账号直登（用户拍板：PDA 借号会被互踢，给网页单开 MES 专用账号）：
+// 配置了 db.mesAccConfig 就走服务器自动登录（鼎捷三步：getvalidatekey2 拿公钥 → RSA-PKCS1 加密密码
+// → signin2 拿 token/头moduleid，与 PDA 实测链路逐字对齐），被踢/过期自动重登重试一次；
+// 专用账号不可用（未配置/登录冷却/双重 auth 失败）时回退 db.mesCred（PDA 上报）作兜底。
+let _mesTk = '', _mesTkAt = 0, _mesTkFp = '', _mesModuleId = '', _mesOrgId = '', _mesLoginFailAt = 0, _mesOkAt = 0, _mesLastErr = '';
+const _mesAccOn = () => !!(db.mesAccConfig && db.mesAccConfig.account && db.mesAccConfig.pwd);
+function _mesAccFp() { const c = db.mesAccConfig || {}; return String(c.host || '') + '|' + String(c.port || '') + '|' + String(c.account || '') + '|' + String(c.pwd || '').slice(0, 24); }
+// 鼎捷公钥清洗（与 PDA 同款容错）：base64 DER、可能双重 base64；DER 类型 spki/pkcs1 自动探测
+function _mesPubKey(raw) {
+  let s = String(raw || '').replace(/-----[a-zA-Z0-9 ]+-----/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
+  while (s.length % 4) s += '=';
+  let der = Buffer.from(s, 'base64');
+  if (der.length && der[0] === 0x2d) { // 解出来仍是 PEM 文本（0x2d='-'）→ 双重 base64，剥头再解一次
+    let s2 = der.toString('latin1').replace(/-----[a-zA-Z0-9 ]+-----/g, '').replace(/[^A-Za-z0-9+/=]/g, '');
+    while (s2.length % 4) s2 += '=';
+    der = Buffer.from(s2, 'base64');
+  }
+  for (const type of ['spki', 'pkcs1']) { try { return crypto.createPublicKey({ key: der, format: 'der', type }); } catch (_) {} }
+  throw new Error('公钥DER解析失败(长度' + der.length + ')');
+}
+async function mesAccLogin() { // 服务器直登 MES；成功刷 _mesTk/_mesModuleId/_mesOrgId，失败回 msg（密码全程不出本机内存，仅 RSA 后上送）
+  const cfg = db.mesAccConfig; if (!_mesAccOn()) return { ok: false, msg: '未配置专用账号' };
+  const base = 'http://' + cfg.host + ':' + (cfg.port || '80');
+  let r1 = null;
+  try { r1 = await (await fetch(base + '/platform/sign/getvalidatekey2?u=' + encodeURIComponent(cfg.account) + '&isweb=Y', { headers: { Accept: '*/*', Culture: 'zh-CN' }, signal: AbortSignal.timeout(15000) })).json(); } catch (_) {}
+  if (!r1 || r1.success !== true || !r1.data || !r1.data.PublicKey) return { ok: false, msg: '取公钥失败（账号或 MES 地址不通）' };
+  let enc; try { enc = crypto.publicEncrypt({ key: _mesPubKey(r1.data.PublicKey), padding: crypto.constants.RSA_PKCS1_PADDING }, Buffer.from(cfg.pwd, 'utf8')).toString('base64'); } catch (e) { return { ok: false, msg: '密码RSA加密失败：' + String(e && e.message || e).slice(0, 70) }; }
+  let r2, j2 = null;
+  try {
+    r2 = await fetch(base + '/platform/sign/signin2', { method: 'POST', headers: { 'Content-Type': 'application/json;charset=utf-8', Accept: '*/*', Culture: 'zh-CN', EnterpriseId: '*', 'X-TZ-Offset': '-480', Origin: base, Referer: base + '/h5/login.html', 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, body: JSON.stringify([cfg.account, enc, r1.data.KeyToken]), signal: AbortSignal.timeout(15000) });
+    j2 = await r2.json().catch(() => null);
+  } catch (e) { return { ok: false, msg: '登录请求失败：' + String(e && e.message || e).slice(0, 80) }; }
+  if (!j2 || j2.success !== true) return { ok: false, msg: 'MES 拒绝登录：' + JSON.stringify((j2 && j2.message) || ('HTTP ' + (r2 ? r2.status : '?'))).slice(0, 110) };
+  const d = j2.data || {};
+  let tk = String(r2.headers.get('token') || r2.headers.get('access-token') || r2.headers.get('authorization') || '').trim().replace(/^Bearer\s+/i, ''); // 实测鼎捷把 token 放响应头
+  if (!tk) tk = String(d.token || d.Token || d.access_token || d.accessToken || '').trim();
+  if (!tk) return { ok: false, msg: '登录成功但响应头/体均无 token' };
+  let orgId = String(d.orgId || d.org_id || '').trim();
+  if (!orgId && Array.isArray(d.organizations)) { for (const o of d.organizations) { if (o && (o.is_default === true || String(o.str_default) === 'Y')) { orgId = String(o.id || ''); break; } } if (!orgId && d.organizations[0]) orgId = String((d.organizations[0] || {}).id || ''); }
+  _mesTk = tk; _mesTkAt = Date.now(); _mesTkFp = _mesAccFp(); _mesModuleId = (r2.headers.get('moduleid') || '').trim() || 'CE7F61BD526C424996CF6CE00211B86A'; _mesOrgId = orgId;
+  _mesLoginFailAt = 0; _mesOkAt = Date.now(); _mesLastErr = '';
+  return { ok: true };
+}
+// 取票：缓存 10h+配置指纹（改密即弃旧票）；【上次登录失败后 3 分钟冷却】——专用账号若也被人共用，
+// 无冷却会登录风暴互踢+触发 MES 账号锁定保护（WMAS v160 同款教训）。force=被踢后强制重登，不受冷却。
+async function mesAccToken(force) {
+  if (!_mesAccOn()) return '';
+  const fp = _mesAccFp();
+  if (!force && _mesTk && _mesTkFp === fp && Date.now() - _mesTkAt < 10 * 3600e3) return _mesTk;
+  if (!force && _mesLoginFailAt && Date.now() - _mesLoginFailAt < 3 * 60000) return '';
+  const r = await mesAccLogin();
+  if (!r.ok) { _mesLoginFailAt = Date.now(); _mesLastErr = r.msg; console.log('[mes-acc] 登录失败：' + r.msg); return ''; }
+  return _mesTk;
+}
+// 纯请求层：拿票+发起 MES 查询（v267 原逻辑平移，口径不动）
+async function _mesCall(c, path, query, method, body) {
   const qs = new URLSearchParams(Object.entries(query || {}).filter(([, v]) => v !== undefined && v !== null).map(([k, v]) => [k, String(v)])).toString();
   const url = 'http://' + c.host + ':' + (c.port || '80') + path + (qs ? '?' + qs : '');
   try {
     const r = await fetch(url, { method: method || 'GET', headers: { Token: c.token, ModuleId: c.moduleId || 'CE7F61BD526C424996CF6CE00211B86A', OrgId: c.orgId || '', EnterpriseId: '*', Culture: 'zh-CN', 'X-TZ-Offset': '-480', Accept: '*/*', 'Content-Type': 'application/json; charset=utf-8' }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15000) });
     const j = await r.json().catch(() => null);
-    if (r.status === 401 || r.status === 403 || (j && j.success === false && /登录|token|会话|超时|非法客户端/i.test(JSON.stringify(j.message || '')))) return { ok: false, code: 'mes_auth', msg: 'MES 凭证已失效——请在 PDA 重新登录 MES 后再点「上报凭证到服务器」' };
+    if (r.status === 401 || r.status === 403 || (j && j.success === false && /登录|token|会话|超时|非法客户端/i.test(JSON.stringify(j.message || '')))) return { ok: false, code: 'mes_auth', msg: 'MES 凭证已失效（被其他登录挤下线或会话超时）' };
     if (!j || j.success !== true) return { ok: false, msg: 'MES 返回异常：' + JSON.stringify((j && j.message) || {}).slice(0, 160) };
-    return { ok: true, data: j.data, total: j.recordsTotal };
+    // ㉖v278b 总数层级兼容：鼎捷把 recordsTotal 包在 data 内层（实测内层=1974、顶层无此键），
+    // 旧代码只读顶层→undefined→前端 total 回退成"本页行数50"→只显示50个/1页（用户 11-26 质疑坐实）。两处都取。
+    return { ok: true, data: j.data, total: (j.recordsTotal != null ? j.recordsTotal : (j.data && j.data.recordsTotal)) };
   } catch (e) { return { ok: false, msg: 'MES 不可达：' + String(e && e.message || e).slice(0, 120) }; }
 }
-// 全量预取 MES 库存明细（导出用）：分页拉取封顶 5000 行防压垮 MES；任何失败如实回 ok:false 由调用方降级
-async function mesStockAll() {
-  const out = []; let start = 0; const SZ = 500;
-  for (let i = 0; i < 10; i++) {
-    const r = await mesProxyFn('/api/logistics/inv/GetOnhandQtyPage', { start, length: SZ });
-    if (!r.ok) return { ok: false, msg: r.msg, code: r.code, rows: out };
+async function mesProxyFn(path, query, method, body) {
+  // 首选专用账号：取票→调用；auth 失败=被踢/过期 → 强制重登再试一次（防"废票在10h新鲜窗内复用"，
+  // 必须经 force 清缓存，WMAS wmasTokenFresh 同款坑位）。仍 auth 失败或登录不出票 → 落 PDA 上报兜底。
+  if (_mesAccOn()) {
+    const accCred = () => ({ host: db.mesAccConfig.host, port: db.mesAccConfig.port, token: _mesTk, moduleId: _mesModuleId, orgId: _mesOrgId });
+    const tk = await mesAccToken(false);
+    if (tk) { // 拿到专用账号票：auth 失败=被踢 → force 重登重试一次；双败如实报不落兜底（票在 MES 层已死，回退旧票大概率同废且加剧互踢）
+      let r = await _mesCall(accCred(), path, query, method, body);
+      if (r.code === 'mes_auth') {
+        let r2 = null;
+        if (await mesAccToken(true)) r2 = await _mesCall(accCred(), path, query, method, body);
+        if (!r2 || r2.code === 'mes_auth') { _mesLastErr = '登录后查询仍被拒（该专用账号也可能被他人登录共用）'; return { ok: false, code: 'no_cred', msg: 'MES 专用账号凭证失效：' + _mesLastErr + '；请管理员检查账号，或在 PDA 重新登录 MES 上报凭证' }; }
+        r = r2;
+      }
+      if (!r.ok) { _mesLastErr = String(r.msg || '').slice(0, 120); return r; } // 业务/网络错：如实报，不换票重撞
+      _mesOkAt = Date.now(); r.src = 'acc'; return r;
+    }
+    // 拿不到票（登录失败/3分钟冷却）：MES 层状态未知 → 落 PDA 上报兜底，查询不断供
+  }
+  const c = db.mesCred;
+  if (!c || !c.token) return { ok: false, code: 'no_cred', msg: _mesAccOn() ? 'MES 专用账号暂不可用（' + (_mesLastErr || '登录冷却中') + '），且服务器无 PDA 上报凭证可兜底' : '服务器尚无 MES 凭证——请在任意 PDA「设置 → MES 设置」点「上报凭证到服务器」，或由管理员录入 MES 专用账号（控制后台→WMAS 凭证页）' };
+  const r = await _mesCall(c, path, query, method, body);
+  if (r.code === 'mes_auth') r.msg = 'MES 凭证已失效——请在 PDA 重新登录 MES 后再点「上报凭证到服务器」';
+  if (r.ok) r.src = 'pda';
+  return r;
+}
+// 全量预取 MES 库存明细（导出与三方对账共用）：㉖v279 升级为带 5 分钟缓存的 mesRows——
+// 实测单页 1000 行仅 267ms、全库 1974 行 2 页<1秒；而 MES 接口不支持按项目筛选（实测忽略项目参数）、
+// 仓库只认代码精确匹配（A101 生效，成品仓/中文名均 0 行）→ 项目/组合筛选只能全量拉回本地做。
+// 缓存拉平重复查询；抓取失败 5 分钟内旧缓存降级（stale 如实标注，对账页不断供）。
+let _mesRows = null; // {rows,at,src}
+function mesRowsInvalidate() { _mesRows = null; } // MES 写操作（SAP同步/账号变更）后强制下次重拉
+// ㉖v284 SAP 全量同步进度与互斥态（模块级：后台跑批跨请求持续，同刻只容一个同步任务防叠加轰炸 ERP）
+const _sapSync = { run: false, total: 0, done: 0 };
+async function mesRows(force) {
+  const TTL = 5 * 60000;
+  if (!force && _mesRows && Date.now() - _mesRows.at < TTL) return { ok: true, rows: _mesRows.rows, at: _mesRows.at, src: _mesRows.src, cached: true };
+  const out = []; let start = 0; const SZ = 1000; let src = '';
+  for (let i = 0; i < 6; i++) { // 6页×1000 封顶=5000 行防压垮 MES（现库 1974 行，2 页收齐）
+    const r = await mesProxyFn('/api/logistics/inv/GetOnhandQtyPage', { start, length: SZ, wareHouse: '', mitemCode: '', mitemName: '', partCode: '', itemCode: '' });
+    if (!r.ok) return (_mesRows && Date.now() - _mesRows.at < TTL) ? { ok: true, rows: _mesRows.rows, at: _mesRows.at, src: _mesRows.src, stale: true } : { ok: false, msg: r.msg, code: r.code, rows: [] };
+    src = r.src || src;
     const rows = Array.isArray(r.data) ? r.data : (r.data && Array.isArray(r.data.data) ? r.data.data : []);
     out.push(...rows);
     if (rows.length < SZ || out.length >= 5000) break;
     start += SZ;
   }
-  return { ok: true, rows: out.slice(0, 5000) };
+  _mesRows = { rows: out.slice(0, 5000), at: Date.now(), src };
+  return { ok: true, rows: _mesRows.rows, at: _mesRows.at, src, cached: false };
+}
+async function mesStockAll() {
+  const r = await mesRows(false);
+  return r.ok ? { ok: true, rows: r.rows } : { ok: false, msg: r.msg, code: r.code, rows: r.rows };
 }
 // ㉖v267 ext=预取的外部数据（MES/SAP 库存行）。buildExport 保持同步：MES 拉取在端点侧 await 完成后注入，
 //   拉不到时 ext=null → D11 如实报"未取到"、D2 增强列留空，主表照常导出（绝不让外部依赖阻断核心报表）。
@@ -2040,9 +2137,22 @@ function fullFlowAlert() {
     }
     const hits = [...byCode.values()];
     if (!hits.length) return;
+    // ㉖v281 条件降噪（三闸缺一不可，任一失守/超宽限窗→必达，真异常零漏报）：
+    // 判龄已过但在宽限窗内 [ageMin, graceMin) 且设备"推送中且健康"→本轮静默、★不写 seen 去重标记
+    // （写了=7天静默=漏报洞），下轮 5 分钟复查；出窗（滞留≥graceMin）自然落入必达分支照吼。
+    const grace = Math.max(0, Number(P().fullAlertGraceMin) || 0);
+    const noisy = [];
+    let _quietN = 0;
+    for (const h of hits) {
+      const ageMs = nowMs - h.t;
+      if (grace > 0 && ageMs < grace * 60000 && ageMs >= ageMin * 60000 && _grHealthy(h.op, h.t, nowMs)) { _quietN++; continue; }
+      noisy.push(h);
+    }
+    if (_quietN) console.log(`[full-alert] 降噪静默 ${_quietN} 框（推送中且三闸健康，宽限窗内复查）`);
+    if (!noisy.length) return;
     const seen = (db.fullAlert = db.fullAlert || {});
-    const fresh = hits.filter((h) => { if (nowMs - (Number(seen[h.c]) || 0) < 7 * 864e5) return false; seen[h.c] = nowMs; return true; });
-    if (!fresh.length) { save(); return; } // 老问题不重复吵，去重标记仍落盘
+    const fresh = noisy.filter((h) => { if (nowMs - (Number(seen[h.c]) || 0) < 7 * 864e5) return false; seen[h.c] = nowMs; return true; });
+    if (!fresh.length) { save(); return; } // 老问题不重复吵，去重标记仍落盘（仅真实告警才走到这里）
     const lst = fresh.slice(0, 6).map((h) => h.c + '@' + h.g + '（滞留 ' + Math.round((nowMs - h.t) / 60000) + ' 分钟' + (h.op ? '·' + h.op : '') + '）').join('、');
     let _diagTxt = ''; // ㉖v199d 附设备诊断（搭车体检包直给根因：世代/心跳/积压原因，不再靠截图猜）
     try { const _ops = [...new Set(fresh.map((h) => h.op).filter(Boolean))]; _diagTxt = _ops.length ? '｜设备诊断：' + _ops.slice(0, 3).map((op) => op + '→' + diagWhyFor(op, nowMs)).join('；') : ''; } catch (_) { }
@@ -2075,11 +2185,28 @@ function noteDiagPulse(u, dp) {
       pending: !!dp.pending, retryN: Math.max(0, Number(dp.retryN) || 0),
       lastOkAt: Number(dp.lastOkAt) || 0, lastErr: s2(dp.lastErr, 140),
       lastErrAt: Number(dp.lastErrAt) || 0, lastRejN: Math.max(0, Number(dp.lastRejN) || 0),
+      pushSeqAt: Number(dp.pushSeqAt) || 0, // ㉖v281 账本推送最近一次排期/真实发起时刻（降噪闸3+失速归因）；旧版APP无此字段=0
+      trace: s2(dp.trace, 200), // ㉖v281 推送时间线尾部留痕（排期/尝试/结果/失败），哑死现场不再靠猜
     };
     if (Date.now() - _pulseSaveAt > 60000) { _pulseSaveAt = Date.now(); save(); } // sync 高频调用，落盘每60秒节流
   } catch (_) { }
 }
 // 操作员名 → 设备诊断一句话（fullFlowAlert 与 diagDeadSweep 共用口径）
+// ㉖v281 降噪健康三闸（v281 自纠定稿：单次采样可判，5分钟巡检周期撑不起"两次采样对比seq"的窗）：
+// ①心跳≤2分钟新鲜（快照冻结=通道静默，旧值不可信，11-26"重试0次"教训）
+// ②扫码后无新增失败（retryN>0 且 lastErrAt 晚于扫码时刻=有失败痕迹→不健康）
+// ③pushSeqAt（PDA 最近一次"账本推送被排期或真实发起"的时刻）≤4分钟=推送调度器活着在推进。
+//   安卓冻结定时器/请求前卡死→seqAt 变旧→不健康→必达；正常在途=15秒内必有排期+尝试双刷。
+// 任一闸失守或字段缺失（旧版 APP 无 pushSeqAt）一律不健康=保守必达，宽限只给"完全健康"。
+function _grHealthy(op, scanAt, nowMs) {
+  const d = (db.diagPulse || {})[String(op || '').trim()];
+  if (!d) return false;
+  if (nowMs - (d.at || 0) > 2 * 60000) return false; // 闸1 心跳新鲜
+  if ((Number(d.retryN) || 0) > 0 && (Number(d.lastErrAt) || 0) > scanAt) return false; // 闸2 扫码后有新失败
+  const sq = Number(d.pushSeqAt) || 0;
+  if (!sq || nowMs - sq > 4 * 60000) return false; // 闸3 调度器在推进（旧版无此字段=0→必达）
+  return true;
+}
 function diagWhyFor(op, nowMs) {
   const d = (db.diagPulse || {})[String(op || '').trim()];
   if (!d) return '未收到设备心跳（旧版APP未升级，或设备离线）';
@@ -3118,6 +3245,11 @@ const PARAMS = {
   coarseAlertAgeMin: { grp: '告警阈值', name: '粗码滞留告警判龄', unit: '分钟', min: 1, max: 1440, d: 5, tip: '㉖v165 粗码流水存在【正常中间态】：14:43:14 扫入即写 gl=区码（H9）→ 自动分格回填完整格位 → 账本经 30 秒防抖才推达；旧版 sync 当场判定"账本无此码即告警"，正好扫在这个窗口里（11-12 实测一天误报 7 次，含 N26K120113→H9，该框 14:45:31 被告警、随后自行上账 H-09-03）。全库 28 条粗码流水【28/28 全部自愈】，证实粗码即中间态。新口径：流水年龄 ≥ 本值【且】账本无此框【且】无出库留痕（已出库=当时已补全格位并发走，非滞留）才告警；由每 5 分钟周期兜底扫描发现（现场扫完就放弃、不再重扫的框也能报出来，不会漏）' },
   fullAlertOn:    { grp: '告警阈值', name: '格位未上账告警', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v173f 流水已带 NB02/NB03 完整格位但持续未进账本（账本无+无出库留痕+无墓碑）→ ops 留痕+必达点名仓管"让该设备触发同步或重扫补登"。动因：v93 世代卡死拖 5分41秒、v154 快照竞态这类"扫了但账本推不上"全靠人盯网页发现；判据经真实全库核对现状 0 命中，上线第一天零误报' },
   fullAlertAgeMin: { grp: '告警阈值', name: '格位未上账判龄', unit: '分钟', min: 1, max: 240, d: 2, tip: '㉖v173f 正常链=扫码即写流水→账本 ≤30 秒防抖推达，默认 2 分钟已含 4 倍余量（再长现场就会先于系统看见橙标"未上账"）。排除项缺一不可：账本已有=已上账 / seenOut 有出库史=正常流转走掉 / ledgerTomb 有墓碑=PDA 已消位（实测不排除墓碑会把 2 个正常拣下架框当滞留报出）；NB04 来料区不判（账本无该区）' },
+  // ㉖v281 条件降噪宽限（用户 11-26 拍板"降噪但不许漏报"）：判龄到点后，若设备诊断显示
+  // "推送中(无失败)+心跳新鲜+尝试序号仍在推进"（三闸缺一不可，见 fullFlowAlert），把必达宽限
+  // 延到此分钟数再吼——治 11-26 三连"推送中·重试0次"式吵（每次都是自愈成功）。
+  // ★三闸失守（心跳冻结/尝试序号停走/出现失败）或超此窗 → 立即必达，真异常零漏报；0=关闭降噪回 v173f 行为。
+  fullAlertGraceMin: { grp: '告警阈值', name: '未上账降噪宽限', unit: '分钟', min: 0, max: 60, d: 6, tip: '㉖v281 设备"推送中且健康"（心跳≤2分钟新鲜 + 账本推送尝试序号仍在推进 + 无失败记录）时，未上账告警从判龄(默认2分)延宽到此分钟数必达（默认6=覆盖半开连接1~5分钟自愈窗）；心跳冻结/尝试停走/有失败任一出现或超此窗→照常必达。0=关（回2分钟必达）' },
   diagDeadMin:    { grp: '告警阈值', name: '设备账本静默判死', unit: '分钟', min: 0, max: 240, d: 15, tip: '㉖v199d 诊断搭车上报消费阈值：设备流水在推、账本却超此分钟数无成功推送（或心跳静默/世代卡死）→ 点名仓管"设备诊断一句话"（心跳静默→重启APP / 旧版→升级 / 世代→对齐）。0=关。同操作员 7 天只吵一次；正常设备账本推送每30秒一次远低于此阈值，判据零误报' },
   wmasReloginGapS: { grp: '调度节奏', name: 'WMAS重登冷却', unit: '秒', min: 0, max: 300, d: 30, tip: '㉖v160 WMAS 登录失败后的重登冷却秒数（0=不节流）。凭证被挤下线时若不节流，实测 20 次取票=20 次真实登录，WMAS 可能因频繁失败锁定账号；且每次登录成功会把对方会话踢下线，双方互挤成死循环。默认 30 秒＝最长 30 秒内恢复、又不打爆对方。现场在 WMAS 改密后重新保存 WMAS 配置会立即重置本冷却，不受影响' },
   agvAuthYieldMin: { grp: '调度节奏', name: '退出登录让位时长', unit: '分钟', min: 1, max: 180, d: 15, tip: '㉖v161 人工点「退出登录」后，服务器在这段时间内【不自动登录】WMAS/AGV 调度系统，把单账号会话让给现场人员。两套系统都是同一账号后登录者踢掉前者：现场为改密/查数据人工登录 → 服务器会话被踢反复 401；服务器若立刻自动重登 → 又把现场人员的窗口踢掉，双方互挤谁都干不成。让位期内 AGV 叫车不可用（提示会写明剩余时间），到期自动恢复；重新保存 WMAS/RCS 配置=人工宣告已处理完，立即解除让位' },
@@ -3172,8 +3304,9 @@ const PARAMS = {
   gateGraceMin:   { grp: '领料闸门', name: '待签收宽限期', unit: '分钟', min: 0, max: 240, d: 30, tip: '模式1生效：待签收单从"备齐到站"（readyAt）起算，超过此时长仍未签收才拦新单；0=有待签收立即拦。给物料员留出去线边送货/回车间的正常时间' },
   gateRushMaxMin: { grp: '领料闸门', name: '急料豁免上限', unit: '分钟', min: 0, max: 1440, d: 120, tip: '㉖v98c 急料待签收单享受豁免的最长滞留（从备齐到站readyAt起算）：超上限照常拦——防"每单都勾急"把闸门变免死金牌、急料单囤两天不领（10/29 现场：某物料员22张急料待签收畅通下单）。0=急料永远豁免（旧行为）' },
   // ㉖v264 逾期签收冻结 + 连开限流（用户 11-25 拍板：张建旺 3 分钟连开 5 张不同零件号单钻 v235/v98c 双闸盲区）
-  freezeOn:       { grp: '领料闸门', name: '逾期签收冻结', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v264 1=启用（默认）：本人有"备齐到站(readyAt)起算超「逾期签收时限」仍未签收"的单 → 再次下单被冻结拦止（懒触发：拦的那一刻才起算并通知）。到期自动解除，无需签收才解；急料单不豁免（囤而不领=不急）。0=关闭回旧行为' },
+  freezeOn:       { grp: '领料闸门', name: '逾期签收冻结', unit: '开关', min: 0, max: 1, d: 1, tip: '㉖v264 1=启用（默认）：本人有"备齐到站(readyAt)起算超「逾期签收时限」仍未签收"的单，或「迟签回溯窗口」内签收太慢的单 → 再次下单被冻结拦止（懒触发：拦的那一刻才起算并通知）。到期自动解除，无需签收才解；急料单不豁免（囤而不领=不急）。㉖v277 0=关闭：不再判冻，且已在冻结中的人下次下单即时解除放行（旧版关了仍被拦到罚时走完），解除写审计留痕' },
   freezeOverMin:  { grp: '领料闸门', name: '逾期签收时限', unit: '分钟', min: 30, max: 1440, d: 120, tip: '㉖v264 备齐到站(readyAt)起算多少分钟未签收算逾期（默认120=2小时）。该值同时决定「逾期签收」统计与概览下钻口径' },
+  freezeLateH:    { grp: '领料闸门', name: '迟签回溯窗口', unit: '小时', min: 0, max: 72, d: 24, tip: '㉖v277 回溯多久以内「已签收但签收太慢」的单也计入冻结（默认24小时）：签收时长=备齐到站→本人签收，超「逾期签收时限」即算迟签。堵"先把超期单集中签掉、马上下新单"绕过闸门（11-25 陈明、11-26 蒋波/张金飞/金先发实锤）。0=关闭回溯，只罚手里仍未签收的超期单（v264 旧语义）；调小=只追究最近的迟签，调大=追溯更久。改动立即生效，不影响已在冻结中的罚时' },
   freezeMin:      { grp: '领料闸门', name: '冻结基数(每单递增)', unit: '分钟', min: 10, max: 720, d: 120, tip: '㉖v264 罚时公式=基数×(1+逾期张数)，默认基数120分即"冻结时长=2小时+2小时×逾期张数"（用户 11-25 定案：每单都要自己的罚时，第1次冻满各单罚时，之后整体冷却、冷却后仍逾期继续逐单罚，该拦就拦）。1张逾期=4小时、2张=6小时…封顶24小时；解冻后 60 分钟冷却内到期的不重复起算' },
   throttleN:      { grp: '领料闸门', name: '连开限流张数', unit: '张', min: 0, max: 20, d: 3, tip: '㉖v264 「连开限流窗口」内活跃单（非取消/非拒）累计达 N-1 张时，下一张拦（默认3=窗口内第3张拦，可确认直通）。急料豁免；0=关闭' },
   throttleWinMin: { grp: '领料闸门', name: '连开限流窗口', unit: '分钟', min: 1, max: 60, d: 5, tip: '㉖v264 连开限流滑动窗口分钟数（默认5）。解除时刻=窗口内最早一张单+窗口时长；确属批量补料弹层确认后带 confirmThrottle 直通' },
@@ -3270,10 +3403,29 @@ function freezeOf(userId) {
   const P0 = P();
   const nowMs = Date.now(), out = { frozen: false, until: 0, over: [] };
   const ent = (db.reqFreeze || {})[userId];
+  // ㉖v277 关闭开关=立即解除已在冻结中的人（用户 11-26 拍板：旧版先判 ent.until 再看开关，
+  // 关掉后已冻的人仍被拦到罚时走完——"关了却下不了单"。改为开关优先：0 时清掉本人冻结记录并放行，
+  // 落盘防重启复活；留痕便于审计"谁在罚时中途被开关放行"。只清本人，不动其他人的冻结。）
+  if (!P0.freezeOn) {
+    if (ent) {
+      try {
+        // ㉖v279 人性化修复(张金飞11-26一上午被同一批单冻3次实锤)：解除不再整条删除——保留冷却锚点，
+        // 重开开关后 60 分钟冷却照常生效（旧版删除锚点→测试开关=给所有人重置冷却→连环冻）。
+        // 自纠×2：锚点必须【整体】钳制到解除时刻——先取 max(until,旧lastUntil) 再 min(nowMs)，
+        // 分开钳会被对侧未来值捞回（v279 冻结写入 lastUntil=until=未来值，分开写法实测失效）
+        db.reqFreeze[userId] = { until: 0, lastUntil: Math.min(Math.max(Number(ent.until) || 0, Number(ent.lastUntil) || 0), nowMs) };
+        const _u = db.users.find((x) => x.id === userId);
+        pushOps(_u || { id: userId, name: userId }, '冻结开关关闭解除', (_u && _u.name) || userId, '原冻结至 ' + new Date(Number(ent.until) || nowMs).toISOString() + '（开关关闭即时放行，保留冷却锚点）');
+        save();
+      } catch (_) {}
+    }
+    return out;
+  }
   if (ent && Number(ent.until) > nowMs) { out.frozen = true; out.until = Number(ent.until); out.reason = ent.reason || 'overdue'; return out; }
-  if (!P0.freezeOn || (db.users.find((x) => x.id === userId) || {}).role !== 'material') return out;
-  const overMin = P0.freezeOverMin * 60000, lastUntil = ent ? Number(ent.until) || 0 : 0;
+  if ((db.users.find((x) => x.id === userId) || {}).role !== 'material') return out;
+  const overMin = P0.freezeOverMin * 60000, lastUntil = ent ? Math.max(Number(ent.until) || 0, Number(ent.lastUntil) || 0) : 0; // ㉖v279 锚点独立于until：开关解除后until归零但lastUntil保命
   const seenNo = new Set();
+  const _lp = db.latePunished || {}; // ㉖v279 人性化(张金飞11-26一上午被同一批迟签单冻3次实锤)：已签收的迟签单是"无法改正的既成事实"，追罚一次即翻篇；手里未签收的照旧持续拦（那才是没改正）
   for (const r of db.requisitions || []) {
     if (r.by !== userId || r.status !== 'ready') continue;
     const readyAt = Number(r.readyAt) || Date.parse(((r.history || []).slice(-1)[0] || {}).time || r.createdAt || 0) || 0;
@@ -3281,20 +3433,28 @@ function freezeOf(userId) {
     seenNo.add(r.no); out.over.push({ no: r.no, mins: readyAt ? Math.round((nowMs - readyAt) / 60000) : 0 });
   }
   // ㉖v274 回溯迟签也冻（用户拍板堵"先签收超期单再下新单"绕过，陈明11-25实锤）：
-  // 近24h内已签收但「签收时长>阈值」的单=迟签，同样计入冻结。只罚"签收晚"，不罚"签收快"。
-  const lateWin = 24 * 3600e3;
-  for (const r of db.requisitions || []) {
-    if (r.by !== userId || !r.confirmedAt || !r.readyAt || seenNo.has(r.no)) continue;
+  // 窗口内已签收但「签收时长>阈值」的单=迟签，同样计入冻结。只罚"签收晚"，不罚"签收快"。
+  // ㉖v277 窗口进面板（freezeLateH 小时，默认24；0=关闭回溯只罚手里未签收的超期单）。
+  const lateWin = Math.max(0, Number(P0.freezeLateH) || 0) * 3600e3;
+  if (lateWin > 0) for (const r of db.requisitions || []) {
+    if (r.by !== userId || !r.confirmedAt || !r.readyAt || seenNo.has(r.no) || _lp[r.no]) continue; // ㉖v279 罚过的迟签单不再追罚
     const cf = Date.parse(r.confirmedAt); if (!cf || nowMs - cf > lateWin) continue;
     const durMin = Math.round((cf - Number(r.readyAt)) / 60000);
     if (durMin > P0.freezeOverMin) { seenNo.add(r.no); out.over.push({ no: r.no, mins: durMin, late: true }); }
   }
   if (!out.over.length) return out;
-  // 冷却防螺旋：上次冻结到期时刻仍未过 → 本次不再重新起算（否则每单一次冻结会无限累加）
-  if (lastUntil > nowMs - 60 * 60000) { out.cooling = true; return out; }
+  // 冷却防螺旋（㉖v279 语义收窄）：只对"纯迟签追罚"生效（戳丢失时的双保险）；
+  // 手里有未签收超期单=进行时违规、改正机会还在，冷却不得豁免（v264 设计本意"该拦就拦"，
+  // 旧版冷却连它一起挡=测试开关后 60 分钟内囤单者畅通下单的漏洞）
+  const _hasHold = out.over.some((o) => !o.late);
+  if (!_hasHold && lastUntil > nowMs - 60 * 60000) { out.cooling = true; return out; }
   const dur = Math.min(24 * 3600e3, P0.freezeMin * 60000 * (1 + out.over.length));
   db.reqFreeze = db.reqFreeze || {};
-  db.reqFreeze[userId] = { until: nowMs + dur, at: nowMs, reason: out.over.some((o) => o.late) ? 'late' : 'overdue', overs: out.over.map((o) => o.no).slice(0, 10) };
+  db.reqFreeze[userId] = { until: nowMs + dur, lastUntil: nowMs + dur, at: nowMs, reason: out.over.some((o) => o.late) ? 'late' : 'overdue', overs: out.over.map((o) => o.no).slice(0, 10) };
+  // ㉖v279 迟签单打罚戳（只打本轮被追的迟签单；未签收的不打——解冻后仍不签会继续罚，那是改正机会还在）；顺手修剪超96h的旧戳（>最大窗口72h，戳必覆盖其窗口生命）
+  db.latePunished = db.latePunished || {};
+  for (const o of out.over) if (o.late) db.latePunished[o.no] = nowMs;
+  for (const k in db.latePunished) if (nowMs - Number(db.latePunished[k] || 0) > 96 * 3600e3) delete db.latePunished[k];
   out.frozen = true; out.until = nowMs + dur;
   return out;
 }
@@ -3303,8 +3463,25 @@ function notifyFreeze(u, until, overs) {
   const _late = (overs || []).some((o) => o.late);
   const txt = '🧊 领料下单已冻结：你有 ' + (overs || []).length + ' 张单' + (_late ? '签收超期（备齐后超 ' + (P().freezeOverMin || 120) + ' 分钟才签收，近24h迟签记录计入）' : '备齐后超 ' + (P().freezeOverMin || 120) + ' 分钟未签收') + '（' + (overs || []).slice(0, 3).map((o) => o.no).join('、') + ((overs || []).length > 3 ? '…' : '') + '），' + '至 ' + new Date(until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) + ' 前暂停下单（到期自动解除）。请按时签收在手的单；确有特殊原因可请管理员在「控制后台·领料闸门」调整时限';
   try { notify(u.id, 'freeze_out', txt, '', { solo: true }); } catch (_) {}
-  try { (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'freeze_out', '🧊 ' + u.name + ' 触发逾期签收冻结（至 ' + new Date(until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) + '），其 ' + (overs || []).length + ' 张待签收单滞留，请现场提醒', '', { solo: true })); } catch (_) {}
+  try { (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'freeze_out', '🧊 ' + u.name + ' 触发逾期签收冻结（至 ' + new Date(until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) + '），其 ' + (overs || []).length + (_late ? ' 张单签收严重超期，请现场提醒按时签收' : ' 张待签收单滞留，请现场提醒') + '', '', { solo: true })); } catch (_) {} // ㉖v277 迟签单其实已签收，旧文案"待签收单滞留"让仓管催签收扑空
   try { pushOps(u, '逾期签收冻结', u.name, '冻结至 ' + new Date(until).toISOString() + ' 逾期单：' + (overs || []).map((o) => o.no).join('/')); save(); } catch (_) {} // ㉖v264 自查修：留痕带操作者（null 会写 by='-' 审计无痕）；补 save——reqFreeze 懒写入必须落盘，防重启丢冻结
+}
+// ㉖v279 启动迁移：存量冻结记录里已签收的追罚单补"已罚"戳（v279 前的冻结没有此戳，不补→解冻瞬间
+// 同一批迟签单会被第四次追罚——张金飞14:34到期在即，本迁移必须赶在其下次下单前生效）
+function latePunishMigrateV279() {
+  let n = 0;
+  const nowMs = Date.now();
+  for (const [uid, ent] of Object.entries(db.reqFreeze || {})) {
+    const at = Number(ent.at) || nowMs;
+    for (const no of ent.overs || []) {
+      if (db.latePunished && db.latePunished[no]) continue;
+      const r = (db.requisitions || []).find((x) => x.no === no);
+      if (r && r.confirmedAt) { db.latePunished = db.latePunished || {}; db.latePunished[no] = at; n++; }
+    }
+    if (ent.until && !ent.lastUntil) ent.lastUntil = ent.until; // 锚点字段补齐（v279 语义统一）
+  }
+  if (n) { save(); console.log('[freeze-fix] 存量迟签追罚单补已罚戳 ' + n + ' 张（防解冻后连环第四冻）'); }
+  return n;
 }
 // ㉖v264 连开限流（张建旺 3 分钟连开 5 张不同零件号钻 v235 同码检测盲区）：
 // 滑动窗口内活跃单（非取消/非拒）达 N-1 张 → 第 N 张拦（409 throttle）；解除时刻=窗口内最早一张+窗口时长。
@@ -6230,7 +6407,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         const _dirTx = { outbound: '出库', inbound: '入库', insp: '检验下架', inspback: '检验归位', count: '盘点下架', countback: '盘点归位', transfer: '移库' };
 return send(res, 200, {
           ok: true, at: new Date().toISOString(), netReady: NetMap.ready(), msg: !tk ? 'RCS 连接失败（登录无响应）' : (!NetMap.ready() ? '路网构建中（RCS 接口抖动，约1分钟内自愈）' : ''), // ㉖v92i 失败原因回传前端展示
-          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0, alarm: _alarmOf(c.agvId), cargo: (() => { // ㉖v92b 线上实测 rcsRun.wms 恒空（v56 关联从未命中）；RCS调度号 no 即 WMAS 任务号（AGV-/LL 单号），按 no 反查队列项
+          cars: cars.map((c) => ({ id: c.agvId, name: c.carName, x: c.x, y: c.y, yaw: c.yaw, state: c.carState, task: c.executeTaskNo || '', site: locOf(c.currentSite) || String(c.currentSite || ''), online: c.communicationBreak !== true && c.enable === 1, emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, err: String(c.errorMessage || '').slice(0, 80), blocked: mapBlocked.has(Number(c.agvId)), power: Number(c.power) || 0, alarm: _alarmOf(c.agvId), stx: carPhaseTxt(c, _runObjByCar[Number(c.agvId)], mapBlocked.has(Number(c.agvId)), _alarmOf(c.agvId)), lowPower: c.lowPower === true, cargo: (() => { // ㉖v280 stx=细态（取货/放架/返航待命…与车辆页/原生UI同心智，单源推导）；㉖v92b 线上实测 rcsRun.wms 恒空（v56 关联从未命中）；RCS调度号 no 即 WMAS 任务号（AGV-/LL 单号），按 no 反查队列项
         const _cid = Number(c.agvId); const _rt = _runObjByCar[_cid]; if (!_rt) return null; if (/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-/.test(String(_rt.no || ''))) return null; // ㉖v92c UUID调度号=自主导航(充电/回待命)非业务搬运
         const q = _qByWms[String(_rt.no || '').toUpperCase()] || (_rt.wms ? _qByWms[String(_rt.wms).toUpperCase()] : null);
         const _isCk = (x) => /-CK-/.test(String(x || ''));
@@ -6263,7 +6440,8 @@ return send(res, 200, {
         const site = {}; if (b.ok) for (const e of parse(b)) site[e.agvId] = e;
         const blocked = new Set();
         if (tr.ok) { try { const t = typeof tr.data === 'string' ? JSON.parse(tr.data) : (tr.data || {}); for (const z of (((t.zoneLocks || {}).zoneList) || [])) for (const x of (z.blockedCars || [])) blocked.add(Number(x)); } catch (_) {} }
-        const cars = a.ok ? parse(a).map((c) => { const s = site[c.agvId] || {}; return { id: c.agvId, name: c.carName || ('AGV' + c.agvId), ip: String(c.carIp || ''), online: c.communicationBreak !== true && c.enable === 1, state: c.carState, auto: c.autoMode === true, model: c.carModel || '-', fork: Number(c.forkHeight) || 0, power: Number(c.power) || 0, speed: Number(c.speed) || 0, x: c.x, y: c.y, site: s.currentSite != null ? String(s.currentSite) : (c.currentSite != null ? String(c.currentSite) : ''), task: String(s.executeTaskNo || c.executeTaskNo || ''), locks: (c.routeLockLands || []).slice(0, 16), emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, lock: c.lock === true, err: String(c.errorMessage || ''), blocked: blocked.has(Number(c.agvId)), alarm: (() => { const r = (db.rcsCarAlarm || {})[c.agvId]; return r ? String(r.fp || '').slice(0, 46) : ''; })() }; }) : []; // ㉖v92 活动告警随车辆下发（与地图/车辆页统一口径）
+        const _runByCar = {}; for (const t of db.rcsRun || []) { const _cd = Number(t.car); if (_cd && !_runByCar[_cd]) _runByCar[_cd] = t; } // ㉖v280 车辆页细态数据源（与地图端点同源同函数）
+        const cars = a.ok ? parse(a).map((c) => { const s = site[c.agvId] || {}; const _al = (db.rcsCarAlarm || {})[c.agvId]; return { id: c.agvId, name: c.carName || ('AGV' + c.agvId), ip: String(c.carIp || ''), online: c.communicationBreak !== true && c.enable === 1, state: c.carState, auto: c.autoMode === true, model: c.carModel || '-', fork: Number(c.forkHeight) || 0, power: Number(c.power) || 0, lowPower: c.lowPower === true, speed: Number(c.speed) || 0, x: c.x, y: c.y, site: s.currentSite != null ? String(s.currentSite) : (c.currentSite != null ? String(c.currentSite) : ''), task: String(s.executeTaskNo || c.executeTaskNo || ''), locks: (c.routeLockLands || []).slice(0, 16), emerg: c.emergencyButton === true, mstop: c.manualStop === true, charging: c.charging === true, full: c.fullCharged === true, lock: c.lock === true, err: String(c.errorMessage || ''), blocked: blocked.has(Number(c.agvId)), stx: carPhaseTxt(c, _runByCar[Number(c.agvId)], blocked.has(Number(c.agvId)), _al ? String(_al.fp || '') : ''), alarm: _al ? String(_al.fp || '').slice(0, 46) : '' }; }) : []; // ㉖v280 stx=细态（取货/放架/返航待命…）；㉖v92 活动告警随车辆下发（与地图/车辆页统一口径）
         return send(res, 200, { ok: a.ok, err: a.ok ? '' : a.msg, cars, stale: _staleAt < Date.now() - 1, staleAt: new Date(_staleAt).toISOString(), at: new Date().toISOString() }); // ㉖v108 故障陈旧兜底标记
       }
       if (req.method === 'GET' && p === '/api/rcs/traffic') { // 交管：拦停车辆+点位占用+交管区配置
@@ -6316,12 +6494,14 @@ return send(res, 200, {
         pushOps(u, 'RCS任务操作', no, op + (r.ok ? ' ✅' : ' ❌' + r.msg));
         return send(res, 200, r);
       }
-      if (req.method === 'POST' && p === '/api/rcs/carAct') { // 车辆操作：charge/standby/reset/stop/start（参数=车辆IP）
+      if (req.method === 'POST' && p === '/api/rcs/carAct') { // 车辆操作：charge/standby/reset/stop/start/reloc（参数=车辆IP）
         if (!canFeature(u, 'agv_control')) return send(res, 403, { ok: false, msg: '当前角色未开通「AGV车辆控制」权限' });
         const b = await readBody(req);
         const act = String(b.action || ''), ip = String(b.ip || '').trim();
         if (!ip) return send(res, 400, { ok: false, msg: '缺少车辆IP' });
-        const P = { charge: '/agv/carToCharge', standby: '/agv/carToStandby', reset: '/agv/resetCar', stop: '/agv/stopAgv', start: '/agv/startAgv' };
+        // ㉖v280 重定位：RCS 端点实测=PUT /agv/relocationAgv?ip=（假IP报"车辆信息不存在"=路由真实存在，参数只需ip）。
+        // 用途：车"位置飘了"（推了货/被人挪动，RCS 还按旧坐标找它）时，命令车自报家新坐标。无货时做，安全。
+        const P = { charge: '/agv/carToCharge', standby: '/agv/carToStandby', reset: '/agv/resetCar', stop: '/agv/stopAgv', start: '/agv/startAgv', reloc: '/agv/relocationAgv' };
         const path = P[act]; if (!path) return send(res, 400, { ok: false, msg: '未知操作' });
         const r = await rcsReq2(path + '?ip=' + encodeURIComponent(ip), 'PUT');
         pushOps(u, 'RCS车辆操作', ip, act + (r.ok ? ' ✅' : ' ❌' + r.msg));
@@ -7463,10 +7643,10 @@ return send(res, 200, {
       //   只存不回显、不入活动流（凭据不入流铁律）；上报/清除限仓管+管理员。
       if (p === '/api/mes/cred') {
         if (u.role !== 'warehouse' && u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅仓管员/管理员可管理 MES 凭证' });
-        if (req.method === 'GET') { const c = db.mesCred; return send(res, 200, { ok: true, has: !!(c && c.token), host: c ? String(c.host || '') + ':' + String(c.port || '') : '', by: c ? c.by : '', at: c ? c.at : 0 }); } // 绝不回显 token
+        if (req.method === 'GET') { const c = db.mesCred, _ac = db.mesAccConfig; return send(res, 200, { ok: true, has: !!(c && c.token), host: c ? String(c.host || '') + ':' + String(c.port || '') : '', by: c ? c.by : '', at: c ? c.at : 0, acc: _mesAccOn() ? { on: true, host: String(_ac.host || '') + ':' + String(_ac.port || '80'), account: String(_ac.account || ''), tkAgeMin: (_mesTk && _mesTkFp === _mesAccFp()) ? Math.round((Date.now() - _mesTkAt) / 60000) : -1, okAt: _mesOkAt, loginFailGapS: (_mesLoginFailAt && Date.now() - _mesLoginFailAt < 180000) ? Math.ceil((180000 - (Date.now() - _mesLoginFailAt)) / 1000) : 0, lastErr: _mesLastErr } : { on: false } }); } // 绝不回显 token
         if (req.method === 'POST') {
           const b = await readBody(req);
-          if (b.clear === true) { delete db.mesCred; save(); try { pushOps(u, 'MES凭证清除', 'mes', '三方对账凭证已清除（Token 不入库外泄）'); } catch (_) {} return send(res, 200, { ok: true, has: false }); }
+          if (b.clear === true) { delete db.mesCred; mesRowsInvalidate(); save(); try { pushOps(u, 'MES凭证清除', 'mes', '三方对账凭证已清除（Token 不入库外泄）'); } catch (_) {} return send(res, 200, { ok: true, has: false }); } // ㉖v279 清凭证作废缓存：否则清了仍读缓存5分钟=误判"无凭证也能查"
           const host = String(b.host || '').trim().slice(0, 60), port = String(b.port || '').trim().slice(0, 8), token = String(b.token || '').trim().slice(0, 400);
           if (!host || !token) return send(res, 400, { ok: false, msg: '缺少 host 或 token（PDA 设置页「上报 MES 凭证」自动带齐）' });
           db.mesCred = { host, port: port || '80', token, moduleId: String(b.moduleId || '').slice(0, 60), orgId: String(b.orgId || '').slice(0, 60), by: u.name, at: Date.now() };
@@ -7475,15 +7655,43 @@ return send(res, 200, {
           return send(res, 200, { ok: true, has: true });
         }
       }
+      // ㉖v278 MES 专用账号（用户拍板：网页三方对账不再借 PDA 人员的号，独立账号免互踢）
+      // 密码与 RCS/WMAS 同走 walkSec AES 静态加密落盘、备份脱敏剥离；保存即清废票+清登录冷却并立即回测登录。
+      if (req.method === 'POST' && p === '/api/mes/acc-config') {
+        if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '仅管理员可配置 MES 专用账号' });
+        const b = await readBody(req);
+        const _cg = cfgGuard(b); if (_cg) return send(res, 409, { ok: false, code: 'conflict', cfgRev: _cg.cur, msg: _cg.msg });
+        if (b.clear === true) { delete db.mesAccConfig; _mesTk = ''; _mesTkAt = 0; _mesTkFp = ''; _mesLoginFailAt = 0; _mesLastErr = ''; mesRowsInvalidate(); const _cr0 = cfgBump(); save(); try { pushOps(u, 'MES专用账号清除', 'mes', '网页代查回退 PDA 上报凭证'); } catch (_) {} return send(res, 200, { ok: true, msg: '已清除专用账号，回退 PDA 上报凭证', cfgRev: _cr0 }); }
+        const host = String(b.host || '').trim().slice(0, 60), port = (String(b.port || '').trim().slice(0, 8) || '80'), account = String(b.account || '').trim().slice(0, 60), pwd = String(b.pwd || '');
+        if (!host || !/^\d{1,5}$/.test(port) || !account || !pwd) return send(res, 400, { ok: false, msg: '主机 / 端口 / 账号 / 密码 四项都必填（整条覆盖保存，留空会破坏配置）' });
+        db.mesAccConfig = { host, port, account, pwd }; // save() 时 walkSec 自动把 pwd 转 enc1: 密文落盘，内存留明文
+        _mesTk = ''; _mesTkAt = 0; _mesTkFp = ''; _mesLoginFailAt = 0; _mesLastErr = ''; mesRowsInvalidate(); // ㉖v279 换账号=数据源变，行缓存必须作废
+        const _cr = cfgBump(); save();
+        try { pushOps(u, 'MES专用账号保存', host + ':' + port, '账号:' + account + '（密码不落留痕）'); } catch (_) {}
+        const t = await mesAccLogin(); // 保存即回测：把"到底登不登得进去"当场如实回给录入人
+        console.log('[mes-acc] ' + u.name + ' 保存专用账号 ' + account + '@' + host + ':' + port + ' → ' + (t.ok ? '登录回测通过' : '登录回测失败：' + t.msg));
+        return send(res, 200, { ok: true, cfgRev: _cr, login: t.ok ? 'ok' : 'fail', msg: t.ok ? '已保存，登录回测通过（网页三方对账起直接走专用账号查询）' : '已保存，但 MES 登录回测失败：' + t.msg + '（请核对地址/账号/密码后重存；不影响 PDA 上报凭证兜底）' });
+      }
       // MES 代理请求 → ㉖v267 提为模块级 mesProxy（导出端点 D11/D2增强列复用同一通道，口径永不漂移）
       const mesProxy = mesProxyFn;
-      // 三方对账列表：默认全量分页（不预设物料号）；本系统侧按物料号聚合账本框/件（含 NB04 待转入拆桶）
+      // 三方对账列表：㉖v279 全量拉取+本地筛选+服务器端分页。MES 实测（11-26）：不支持项目参数筛选、
+      // 仓库只认代码精确匹配（"A101"生效；中文仓名/模糊词均 0 行）→ 项目/仓库/关键字三合一改为本地筛。
+      // 全库 1974 行 2 页<1秒+5分钟缓存，本地筛毫秒级，比让 MES 筛更快且口径统一。
+      // 关键字=物料编码/零件号/物料名 三列包含匹配（旧版是 MES 精确匹配物料号，现口径更宽松）。
       if (req.method === 'GET' && p === '/api/stock3') {
-        const start = Math.max(0, Number(url.searchParams.get('start')) || 0), length = Math.min(200, Math.max(1, Number(url.searchParams.get('length')) || 50));
-        const q = { start, length, wareHouse: String(url.searchParams.get('wareHouse') || ''), mitemCode: String(url.searchParams.get('mitemCode') || ''), mitemName: String(url.searchParams.get('mitemName') || ''), partCode: String(url.searchParams.get('partCode') || ''), itemCode: String(url.searchParams.get('itemCode') || '') };
-        const r = await mesProxy('/api/logistics/inv/GetOnhandQtyPage', q);
+        const start = Math.max(0, Number(url.searchParams.get('start')) || 0), length = Math.min(5000, Math.max(1, Number(url.searchParams.get('length')) || 50)); // ㉖v279c 上限200→5000：分页条对齐通用组件"全部"档（数据源封顶=mesRows 的 5000 行）
+        const k = String(url.searchParams.get('mitemCode') || '').trim().toUpperCase();
+        const whSel = String(url.searchParams.get('wareHouse') || ''), prSel = String(url.searchParams.get('proj') || '');
+        const r = await mesRows(url.searchParams.get('refresh') === '1');
         if (!r.ok) return send(res, 200, r);
-        const rows = Array.isArray(r.data) ? r.data : (r.data && Array.isArray(r.data.data) ? r.data.data : []);
+        // 下拉候选（facet）恒按全量算，筛完不消失
+        const whs = [...new Set(r.rows.map((x) => String(x.WAREHOUSE || '')).filter(Boolean))].sort();
+        const projs = [...new Set(r.rows.map((x) => String(x.PartItemCode || '').trim()))].sort();
+        let frows = r.rows;
+        if (whSel) frows = frows.filter((x) => String(x.WAREHOUSE || '') === whSel);
+        if (prSel === '_none') frows = frows.filter((x) => !String(x.PartItemCode || '').trim());
+        else if (prSel) frows = frows.filter((x) => String(x.PartItemCode || '').trim() === prSel);
+        if (k) frows = frows.filter((x) => (String(x.MITEM_CODE || '') + '|' + String(x.PartCode || '') + '|' + String(x.MITEM_NAME || '')).toUpperCase().indexOf(k) >= 0);
         // 本系统聚合：物料号(mc/MITEM_CODE) 与 零件号(p) 双键索引——MES 行给的是物料编码，账本行存零件号，两侧都建索引才不漏配。
         // ㉖v266 物料号映射权威源=采集流水 mc（MES 直读，实测覆盖账本 93%）；mitemFix 人工补录优先级最高（标签级实测修正）；
         //   itemDict 只有名称无物料号（实测），不可作映射源——首版误用致大面积配不上，已改。
@@ -7499,7 +7707,7 @@ return send(res, 200, {
           for (const [k, bag] of [[mc, mine], [pn, mineByPn]]) { if (!k) continue; const e = (bag[k] = bag[k] || { qty: 0, boxes: 0, recv: 0, _seen: {} }); e.qty += qn; const bk = boxKeyOf(x); if (!e._seen[bk]) { e._seen[bk] = 1; e.boxes++; if (recv) e.recv++; } }
         }
         const now = Date.now(), STALE = 7 * 864e5;
-        const list = rows.map((x) => {
+        const all = frows.map((x) => {
           const mc = String(x.MITEM_CODE || '').toUpperCase(), pn = String(x.PartCode || '').toUpperCase();
           const m = mine[mc] || mineByPn[pn] || { qty: 0, boxes: 0, recv: 0 };
           const mesQ = Number(x.MES_QTY) || 0, sapQ = Number(x.SAP_QTY) || 0;
@@ -7508,17 +7716,61 @@ return send(res, 200, {
           const sapStale = !sapAt || (now - sapAt) > STALE;
           return { mc: x.MITEM_CODE || '', nm: x.MITEM_NAME || '', pn: x.PartCode || '', proj: x.PartItemCode || '', wh: x.WAREHOUSE || '', lot: x.BATCH_NO || '', uom: x.UOM || '', mesQty: mesQ, sapQty: sapQ, sapAt, sapStale, sapDiff: sapStale ? null : mesQ - sapQ, myQty: m.qty, myBoxes: m.boxes, myRecv: m.recv, myDiff: m.qty - mesQ };
         });
-        return send(res, 200, { ok: true, list, total: Number(r.total) || list.length, start, length });
+        // 同物料多仓/多项目行并存 → 按「物料编码+仓库+项目」聚合后再分页（口径与 v278 前 MES 侧行为一致）
+        const agg = {}, aorder = [];
+        for (const it of all) { const kk = it.mc + '\u0001' + it.wh + '\u0001' + it.proj; if (!agg[kk]) { agg[kk] = Object.assign({}, it, { mesQty: 0, sapQty: 0, sapAt: 0, sapStale: true }); aorder.push(kk); } const e = agg[kk]; e.mesQty += it.mesQty; if (!it.sapStale) { e.sapStale = false; e.sapQty += it.sapQty; } if (it.sapAt > e.sapAt) e.sapAt = it.sapAt; } // ㉖v279 自纠×2：mesQty/sapQty 初值必须 0（Object.assign 带来首行原值再累加=首行双计，22/24 实测抓出）；sapStale 初值 true 任一行新鲜才转新鲜
+        const full = aorder.map((kk) => { const e = agg[kk]; e.sapDiff = e.sapStale ? null : e.mesQty - e.sapQty; e.myDiff = e.myQty - e.mesQty; return e; }); // myDiff/sapDiff 按聚合后口径重算（旧逐行值带进来会失真）
+        // ㉖v279 「仅看差异」上移服务端：对全量筛后集生效（旧版只筛当前页50行→差异行翻不出）；计数口径=当前仓库/项目范围内全量
+        const nMy = full.filter((e) => e.myDiff !== 0).length, nSap = full.filter((e) => e.sapDiff !== null && e.sapDiff !== 0).length, nStale = full.filter((e) => e.sapStale).length;
+        const scoped = String(url.searchParams.get('diff')) === '1' ? full.filter((e) => e.myDiff !== 0 || (e.sapDiff !== null && e.sapDiff !== 0)) : full;
+        // ㉖v285 表头排序（用户 11-27 需求：三方对账要能排序）：服务端对全量筛后集排（非只排本页50行）
+        // 点"MES−SAP"一次即可把 177 个未同步行全沉底。缺失沉底仅限【显示"—"的列】(sapDiff/sapQty：
+        // 未同步无实数，没数就不该和有名有实的行争位置，升降都垫底)；sapAt 列显示真实时间(非"—")
+        // →按时间值正常排（升序=最久未更新在前，恰是催同步要看的）。sort=列键 dir=1/-1。
+        const SK = { mc: 't', nm: 't', pn: 't', wh: 't', proj: 't', myQty: 'n', myBoxes: 'n', mesQty: 'n', myDiff: 'n', sapQty: 'n', sapDiff: 'n', sapAt: 'd' };
+        const sK = String(url.searchParams.get('sort') || ''), sD = Number(url.searchParams.get('dir')) < 0 ? -1 : 1;
+        let shown = scoped;
+        if (SK[sK]) {
+          const dashMiss = (e) => (sK === 'sapDiff' || sK === 'sapQty') && e.sapDiff === null; // 仅"显示—(未同步)"列沉底（v285自纠：时间列有真实值不沉底）
+          shown = scoped.slice().sort((a, b) => {
+            const ma = dashMiss(a), mb = dashMiss(b);
+            if (ma !== mb) return ma ? 1 : -1;
+            if (SK[sK] === 't') { const xa = String(a[sK] || '').toUpperCase(), xb = String(b[sK] || '').toUpperCase(); return xa < xb ? -sD : xa > xb ? sD : 0; }
+            return ((Number(a[sK]) || 0) - (Number(b[sK]) || 0)) * sD;
+          });
+        }
+        const list = shown.slice(start, start + length);
+        return send(res, 200, { ok: true, list, total: scoped.length, start, length, src: r.src || '', dataAt: r.at, cached: !!r.cached, stale: !!r.stale, whs, projs, nMy, nSap, nStale }); // ㉖v278 凭证来源：acc=专用账号直登 pda=PDA上报兜底；v279 附筛选候选+数据时刻+范围差异计数
       }
       // 触发 SAP→MES 同步（写操作：限管理员；MES 侧 SyncOnhandQty 会去 SAP 取数刷新 SAP_QTY）
+      // ㉖v284 修"只同步最前面一部分"（用户 11-27 实锤：1889 个只刷了前 50）：旧版双重截断
+      // =前端只发当前页(分页改50行/页后跟着缩)+服务端 slice(0,200) 静默砍且不告知（今日留痕
+      // 50/2/100/200/84/200 全对上）。现改：全量受理→后台分批(200/批)循环触发→立即如实回执"已受理N个"，
+      // 批间 2 秒间歇温和对待 ERP 侧；批次成败记 ops 留痕可审计；同刻只允许一个同步任务防叠加轰炸 MES。
       if (req.method === 'POST' && p === '/api/stock3/sync') {
         if (u.role !== 'admin') return send(res, 403, { ok: false, msg: '触发 SAP 同步限管理员（会向 MES/ERP 发起取数）' });
         const b = await readBody(req);
-        const codes = (Array.isArray(b.mitemList) ? b.mitemList : []).map((x) => String(x || '').trim()).filter(Boolean).slice(0, 200);
+        const codes = [...new Set((Array.isArray(b.mitemList) ? b.mitemList : []).map((x) => String(x || '').trim()).filter(Boolean))]; // 去重防前端重复行
         if (!codes.length) return send(res, 400, { ok: false, msg: '缺少 mitemList（物料编码数组）' });
-        const r = await mesProxy('/api/logistics/inv/SyncOnhandQty', null, 'POST', { mitemList: codes });
-        try { pushOps(u, 'SAP库存同步', codes.length + ' 个物料', codes.slice(0, 8).join('/') + (r.ok ? ' 已触发' : ' 失败:' + String(r.msg || '').slice(0, 60))); } catch (_) {}
-        return send(res, 200, r);
+        if (_sapSync.run) return send(res, 200, { ok: false, msg: `上一批 SAP 同步仍在进行（已受理 ${_sapSync.done}/${_sapSync.total}），请稍候` });
+        _sapSync.run = true; _sapSync.total = codes.length; _sapSync.done = 0;
+        mesRowsInvalidate(); // 同步改了 MES 侧数量，缓存作废（开头先废一次，完成后 8 秒再废一次接新鲜数据）
+        const by = u.name;
+        (async () => {
+          const B = 200; let okN = 0, badN = 0, failMsg = '';
+          for (let i = 0; i < codes.length; i += B) {
+            const chunk = codes.slice(i, i + B);
+            const r = await mesProxy('/api/logistics/inv/SyncOnhandQty', null, 'POST', { mitemList: chunk });
+            if (r && r.ok) okN += chunk.length; else { badN += chunk.length; failMsg = String((r && r.msg) || '无响应').slice(0, 80); }
+            _sapSync.done = Math.min(i + B, codes.length);
+            mesRowsInvalidate();
+            if (i + B < codes.length) await new Promise((rs) => setTimeout(rs, 2000)); // 批间温和间歇
+          }
+          try { pushOps(u, 'SAP库存同步', codes.length + ' 个物料', `成功${okN}${badN ? ` 失败${badN}(${failMsg})` : ''}（分批${Math.ceil(codes.length / B)}批·${by}发起）`); } catch (_) {}
+          console.log(`[sap-sync] ${by} 全量${codes.length}：成功${okN} 失败${badN}${failMsg ? ' 末错:' + failMsg : ''}`);
+          _sapSync.run = false;
+        })(); // 后台跑批不占请求（1889个≈9批×(MES数秒+2s)≈半分钟，同步等待会顶穿HTTP超时）
+        return send(res, 200, { ok: true, msg: `已受理 ${codes.length} 个物料，后台分批同步中（约 ${Math.ceil(codes.length / 200)} 批×数秒），完成后点「↻ 重取」看最新 SAP 数` });
       }
       // ===== ㉖ 容器类型可配置：GET 登录即可读（采集页按钮数据源）；POST 仓管/管理员整表保存（留痕） =====
       if (req.method === 'GET' && p === '/api/containers') {
@@ -9264,7 +9516,11 @@ return send(res, 200, {
             const fz = freezeOf(u.id);
             if (fz.frozen) {
               if (fz.over && fz.over.length) notifyFreeze(u, fz.until, fz.over); // 首次懒触发才通知（冷却/已冻结不重复）
-              return send(res, 409, { ok: false, code: 'freeze', until: fz.until, msg: `您有领料单备齐后超 ${P().freezeOverMin} 分钟未签收，已触发下单冻结，至 ${new Date(fz.until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16)} 前暂停下单（到期自动解除）。请尽快签收在手的单` });
+              // ㉖v277 文案按真实成因分流：迟签(已签收但太慢)不再谎称"未签收"——现场照着去催签收会扑空
+              const _late = fz.reason === 'late';
+              return send(res, 409, { ok: false, code: 'freeze', until: fz.until, msg: _late
+                ? `您有领料单签收超期（备齐后超 ${P().freezeOverMin} 分钟才签收），已触发下单冻结，至 ${new Date(fz.until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16)} 前暂停下单（到期自动解除）。后续请备齐后及时签收`
+                : `您有领料单备齐后超 ${P().freezeOverMin} 分钟未签收，已触发下单冻结，至 ${new Date(fz.until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16)} 前暂停下单（到期自动解除）。请尽快签收在手的单` });
             }
             if (b.confirmThrottle !== 1 && b.confirmThrottle !== true && b.confirmDup !== 1 && b.confirmDup !== true) {
               // ㉖v264 闸协同（v235 回归实锤）：带 confirmDup=用户已就"刚提交过相同需求"当面确认过=合法补料意图已表达，
@@ -10897,6 +11153,29 @@ function rcsTs(s) { s = String(s || ''); if (s.length < 14) return 0; return new
 function dstr(ms) { const d = new Date(ms); return `${d.getMonth() + 1}/${d.getDate()}`; } // 报表/驾驶舱共用
 // 任务节点时间：取货点(operType=0)完成=离开起始库位，放货点(operType=1)完成=到达目标库位
 function nodeTimes(t) { let pickAt = 0, putAt = 0; for (const d of (t.taskDetailList || [])) { if (Number(d.state) === 2) { if (Number(d.operType) === 0) pickAt = rcsTs(d.finishTime) || pickAt; else if (Number(d.operType) === 1) putAt = rcsTs(d.finishTime) || putAt; } } return { pickAt, putAt, startAt: rcsTs(t.exeTime), buildAt: rcsTs(t.buildTime) }; }
+// ㉖v280 车辆细态推导（用户需求：地图/车辆卡要显示 RCS 原生那种"取货中/卸货中/返回待命中"级状态）
+// 实测 RCS 接口【不提供】状态文本（carStateDesc 恒 null，原生 UI 的中文是它前端自己推的）；
+// 我方 rcsRun 轮询已沉淀 pick/put 完成戳+调度号形态 → 能推得比原生更细（带货物情报），两端同一函数零漂移。
+// 纯函数无副作用，可被 vm 抽取直测（test_carstx_v280.js 逐态断言）。rt=db.rcsRun 该车当前行，可 undefined。
+// 优先级（用户体感：出事优先看见）：急停>人工停>被交管>离线>告警>充电>业务阶段>车体状态>空闲
+function carPhaseTxt(c, rt, isBlocked, alarmTxt) {
+  if (c.emerg === true || c.emergencyButton === true) return '急停';
+  if (c.mstop === true || c.manualStop === true) return '人工停';
+  if (isBlocked) return '被交管';
+  if (c.online === false || c.communicationBreak === true || c.enable !== 1) return '离线';
+  if (alarmTxt) return '告警';
+  if (c.charging === true) return c.full === true || c.fullCharged === true ? '充满' : '充电';
+  const no = String((rt && rt.no) || c.task || c.executeTaskNo || '');
+  if (!no) return ({ pause: '暂停', error: '故障' })[c.state || c.carState] || '空闲';
+  // UUID 调度号 = 车辆自主导航（去向二判：低电=去充电(RCS lowPower 权威)，否则=回待命点）
+  if (/^[0-9a-fA-F]{8}-/.test(no)) return (c.lowPower === true || (Number(c.power) > 0 && Number(c.power) <= 25)) ? '去充电' : '返航待命';
+  const st = rt ? Number(rt.state) : 1;
+  if (st === 2) return '放架收尾'; // 任务完成行未出快照的收尾窗
+  if (st === 0) return '排队待接'; // 已建单未派车执行
+  // db.rcsRun 行字段=nodeTimes展开：pickAt(叉起完成戳)/putAt(放架完成戳)——非 pick/put（vm取证锁死此口径）
+  if (rt && rt.pickAt && !rt.putAt) return '去放架'; // 货已在车上
+  return '去取货';
+}
 
 // ================= 路网模块（地图/最近距离分配共用）：地标坐标+路径边+货位映射，每日刷新 =================
 const NetMap = {
@@ -12255,4 +12534,4 @@ server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); try { selfHealCount('outboundLedgerFix', n) } catch (_hc) {} if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} try { lostCallSweep(); } catch (_) {} try { dictFfdCleanV158(); } catch (_) {} try { scanKeyUpperV242(); } catch (_) {} /* ㉖v242 小写键归一+三要素回填：同放 8 秒链=当日备份已落盘，改前原件可回滚 */ /* ㉖v158 字典乱码键清理：放 8 秒链内=当日备份(backupDb)必已落盘，清理前原件在备份里可回滚 */ }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目；㉖v152 启动跑一轮丢单巡检（去重映射持久库内，重启不重复轰炸）
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); latePunishMigrateV279(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); try { selfHealCount('outboundLedgerFix', n) } catch (_hc) {} if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} try { lostCallSweep(); } catch (_) {} try { dictFfdCleanV158(); } catch (_) {} try { scanKeyUpperV242(); } catch (_) {} /* ㉖v242 小写键归一+三要素回填：同放 8 秒链=当日备份已落盘，改前原件可回滚 */ /* ㉖v158 字典乱码键清理：放 8 秒链内=当日备份(backupDb)必已落盘，清理前原件在备份里可回滚 */ }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目；㉖v152 启动跑一轮丢单巡检（去重映射持久库内，重启不重复轰炸）

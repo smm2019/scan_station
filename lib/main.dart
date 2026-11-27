@@ -1830,8 +1830,13 @@ class _MainPageState extends State<MainPage>
   }
 
   Future<void> _openHub() async {
+    // ㉖v282 根context兜底（郭彦超PDA-68683崩溃同源修法）：本函数被 SnackBar 延迟按钮回调调用时，
+    // 首页 State 可能已 detach，捕获的 context 访问 State.context 即 Null 崩；根 Navigator 恒在，
+    // 消息中枢全屏跳转本就挂根更合理。直接点击场景同样有效（根context永远包含当前页）。
+    final ctx = _globalNavigatorKey.currentContext;
+    if (ctx == null || !ctx.mounted) return; // App 已退→静默放弃，绝不崩
     await Navigator.push(
-        context,
+        ctx,
         MaterialPageRoute(
             builder: (_) => MessageHubPage(
                   onOpenReq: () => _openTabFrom("req"),
