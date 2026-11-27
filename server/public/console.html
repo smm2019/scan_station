@@ -153,11 +153,12 @@ let TK=localStorage.getItem('ck_tok')||'',U=JSON.parse(localStorage.getItem('ck_
 const RFT=()=>Math.max(1,Number(URS)||30)*1000, RFTXT=()=>Math.max(1,Number(URS)||30)+'秒自动刷新';
 async function api(p,o={}){o.headers=Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+TK},o.headers||{});if(o.body&&typeof o.body!=='string')o.body=JSON.stringify(o.body);
  const r=await fetch(p,o);if(r.status==401||r.status==403){out();throw 0}
+ if(r.status==503){let sh=null;try{const b=await r.clone().json();if(b&&b.code=='selfheal')sh=b}catch(_){} if(sh){shApply(sh.boot||null);throw new Error(sh.msg||'系统自愈中，请稍候')}} // ㉖v283 自愈硬闸：服务器就绪前业务接口一律503(selfheal)，触发全屏遮罩；非selfheal的503落到下方通用5xx分支。探活(_shProbe)不经本函数
  if(r.status>=500){let m='HTTP '+r.status;try{const b=await r.clone().json();if(b&&b.msg)m=b.msg}catch(_){}throw new Error(m)} // ㉖ 仅服务器5xx抛出真因（4xx业务错误仍返回j供if(j.ok)处理，不破坏操作类调用点）
  return r.json()}
 async function doLogin(){const u=$('#lu').value.trim(),p=$('#lp').value;$('#le').textContent='';
  try{if(!localStorage.getItem('ck_dev'))localStorage.setItem('ck_dev','WEB-'+Math.random().toString(36).slice(2,8).toUpperCase());const _lgo=async()=>{const rr=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p,dev:localStorage.getItem('ck_dev'),kind:'web'})});return await rr.json();};let j;try{j=await _lgo();}catch(e0){await new Promise(s0=>setTimeout(s0,600));j=await _lgo();}
- if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=Object.assign({},j.user,{features:j.features||{}});PF=j.prefs||{};kkUseLoad();UiTune.serverPull();UiTune.apply();if(j.uiRefreshSec)URS=j.uiRefreshSec;if('theme' in PF)applyTheme(PF.theme);localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));showApp();esSSE();go((location.hash||'').slice(1)||PF.landing||'')}catch(e){$('#le').textContent='网络错误：连不上服务（'+(e&&e.message?e.message:'连接被中断')+'），已自动重试仍失败——请稍后再试或确认服务已启动'}}
+ if(!j.ok){$('#le').textContent=j.msg||'登录失败';return}TK=j.token;U=Object.assign({},j.user,{features:j.features||{}});PF=j.prefs||{};kkUseLoad();UiTune.serverPull();UiTune.apply();if(j.uiRefreshSec)URS=j.uiRefreshSec;if('theme' in PF)applyTheme(PF.theme);window._pushCfg=j.pushCfg||null;try{localStorage.setItem('ck_push',JSON.stringify(window._pushCfg))}catch(_){}localStorage.setItem('ck_tok',TK);localStorage.setItem('ck_u',JSON.stringify(U));showApp();esSSE();go((location.hash||'').slice(1)||PF.landing||'')}catch(e){$('#le').textContent='网络错误：连不上服务（'+(e&&e.message?e.message:'连接被中断')+'），已自动重试仍失败——请稍后再试或确认服务已启动'}}
 function todayStr(){const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
 function reqJump(s,extra){TM=Object.assign({s:s||'',q:'',mine:0,rush:0,late:0},extra||{});go('reqs')}
 // ===== ㉖ 两端互移：网页侧 新建领料单 / 账本叫车 / 流水作废恢复 =====
@@ -301,8 +302,53 @@ async function newReqGo(btn){ // ㉖v128 框数→件数换算（对齐 PDA requ
   if(j.ok){T('✅ 已提交 '+(j.req&&j.req.no||'')+(Array.isArray(j.dupWarn)?'（⚠ 与近期单据同需求，已按急料放行）':''),1);$('#mask').classList.add('hide');pgReqs()}else T('❌ '+(j.msg||'失败'))}catch(_){T('提交失败')}btn.disabled=false}
 async function webCancel(k,cx,code){if(!confirm(cx?('作废流水 '+code+'？将同步整框消账并允许重新扫码录入'):('恢复流水 '+code+'？将按原货位重登账本')))return;
  try{const j=await api('/api/scanlog/cancel',{method:'POST',body:{k,cx}});T(j.ok?('✅ '+(j.msg||'完成')):('❌ '+(j.msg||'失败')),2);if(j.ok)flowGo()}catch(_){T('操作失败')}} // ㉖⑫ 概览下钻统一入口：全量重置筛选(含搜索词/我的待办/急料/超时/视图)，杜绝"点进去空白"
-function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.remove('lgmode');if(U&&U.mustChangePw&&!document.getElementById('cpmust')){const d=document.createElement('div');d.id='cpmust';d.style.cssText='background:#fff3e0;border-bottom:2px solid #e65100;color:#bf360c;padding:7px 16px;font-size:13px;font-weight:600';d.innerHTML='⚠ 首次登录：请尽快修改初始密码 —— 点右上「⚙ 偏好」→「修改密码」区；改完此提示消失。';document.getElementById('app').insertBefore(d,document.querySelector('#app header').nextSibling||null);}try{probeSys();setInterval(probeSys,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();setInterval(notifPoll,45000)}catch(_){}}
+function showApp(){UiTune.serverPull();UiTune.apply();document.body.classList.remove('lgmode');if(U&&U.mustChangePw&&!document.getElementById('cpmust')){const d=document.createElement('div');d.id='cpmust';d.style.cssText='background:#fff3e0;border-bottom:2px solid #e65100;color:#bf360c;padding:7px 16px;font-size:13px;font-weight:600';d.innerHTML='⚠ 首次登录：请尽快修改初始密码 —— 点右上「⚙ 偏好」→「修改密码」区；改完此提示消失。';document.getElementById('app').insertBefore(d,document.querySelector('#app header').nextSibling||null);}try{probeSys();setInterval(probeSys,60000)}catch(_){}try{pushCfgSync();setInterval(pushCfgSync,60000)}catch(_){}$('#login').classList.add('hide');$('#app').classList.remove('hide');$('#who').textContent=`${U.name}（${U.role=='admin'?'管理员':U.role=='warehouse'?'仓管员':U.role=='inspector'?'检验员':'物料员'}）`;try{notifPoll();window._notifPollT=setInterval(notifPoll,45000)}catch(_){}shStart();pushHubStart();}
 function out(){localStorage.removeItem('ck_tok');localStorage.removeItem('ck_u');location.reload()}
+// ===== ㉖v283 系统自愈遮罩（网页端）：崩溃/断网/断电重启期间全屏锁禁操作，服务端 boot 就绪状态机为权威判据 =====
+// 触发三条：①任意业务请求收到 503 selfheal（api() 内 shApply）②每 3 秒探活 /api/health 读 boot ③SSE 断开且探活连续失败。
+// 分级：boot.ready=true 但 RCS 通道断(rcs.down) → 不全锁，改顶部橙条（仅提示 AGV 动作暂停，登记/查询照常）。
+// 解锁：ready 连续 2 次 → 遮罩淡出 + location.reload() 一次（洗掉半加载状态）。零按钮、事件驱动，与 PDA 同口径。
+let _shMode='ok',_shLockSince=0,_shReadyStreak=0,_shFailStreak=0,_shTimer=null,_shAge=0,_shBase=0,_shEverOk=false;
+const _SH_STEPS=['数据库加载与启动自愈','当日备份与安全副本','出库台账补建与键名归一','粗码滞留巡检','全量巡检','账实不变量自检','失联设备清扫']; // 与服务端 BOOT_STEPS 一致
+function _shFmt(sec){sec=Math.max(0,sec|0);const m=(sec/60)|0,s=sec%60;return m>0?(m+' 分 '+s+' 秒'):(s+' 秒')}
+function shStart(){if(_shTimer)return;_shProbe();_shTimer=setInterval(_shProbe,3000);setInterval(()=>{if(_shMode!='ok')_shRender()},1000)} // 3秒探活 + 1秒刷新计时
+async function _shProbe(){let boot=null,ok=false,legacy=false;try{const r=await fetch('/api/health',{cache:'no-store'});if(r.ok){const j=await r.json();if(j&&j.ok===true){ok=true;if(j.boot)boot=j.boot;else legacy=true}}}catch(_){}
+ if(ok){_shEverOk=true;_shFailStreak=0;shApply(legacy?{legacy:true}:boot)}else{_shReadyStreak=0;_shFailStreak++;if(!_shEverOk||_shFailStreak>=5)shApply(null)} // 冷启动即失联=立即锁(不留首屏空窗)；探活成功过后的短抖动才用连续5次(约15秒)阈值防误锁
+}
+function shApply(boot){
+ if(boot===null||boot===undefined){_shReadyStreak=0;_shSetLock('waiting');return} // 连不上服务器：等待服务恢复
+ // ㉖v283 修正（11-27 现场误锁实锤）：服务器【应答正常(j.ok=true)但无 boot 字段】=旧版服务器
+ //   （v283 之前，无自愈硬闸，业务完全可用）→ 视为就绪、不锁。旧逻辑把这种"200 无 boot"当连不上，
+ //   5 次探活后弹"等待服务恢复中"全屏锁——正是"网页被锁、App 正常"的根因：console.html 每次请求从磁盘
+ //   现读（server.js readFileSync）网页先更新，而服务进程未重启仍是旧代码，版本错位窗口里网页自锁。
+ const legacy=boot.legacy===true;
+ const ready=legacy||boot.ready===true;
+ _shAge=(boot.ageSec|0);_shBase=Date.now();
+ window.__agvDown=!!(boot.rcs&&boot.rcs.down); // 全局标志：AGV 动作可据此禁用
+ if(ready){_shReadyStreak++;_shRenderAgvBar(window.__agvDown);if(_shMode!='ok'&&_shReadyStreak>=2){_shUnlock()}} // ready 后连续2次确认才解锁+reload；RCS 断挂顶部橙条
+ else{_shReadyStreak=0;_shRenderAgvBar(false);_shSetLock('healing',boot)}
+}
+function _shSetLock(mode,boot){const was=_shMode;if(_shMode=='ok'){_shLockSince=Date.now()}_shMode=mode;if(boot)window._shBoot=boot;else if(window._shBoot===undefined)window._shBoot=null;_shRender()}
+function _shUnlock(){_shMode='ok';_shReadyStreak=0;_shFailStreak=0;_shLockSince=0;const m=document.getElementById('selfheal-mask');if(m)m.remove();location.reload()} // 解锁即刷新，洗掉自愈期的半加载状态
+function _shMaskEl(){let m=document.getElementById('selfheal-mask');if(!m){m=document.createElement('div');m.id='selfheal-mask';m.style.cssText='position:fixed;inset:0;z-index:99999;background:#F3F4FB;display:flex;align-items:center;justify-content:center;padding:24px;overflow:auto';document.body.appendChild(m)}return m}
+function _shRender(){if(_shMode=='ok')return;const m=_shMaskEl();const waiting=_shMode=='waiting';const boot=window._shBoot||{};
+ const sec=_shMode=='healing'&&_shAge>0?(_shAge+Math.round((Date.now()-_shBase)/1000)):Math.round((Date.now()-_shLockSince)/1000);
+ const pend=Array.isArray(boot.pending)?boot.pending:[];const total=boot.total||_SH_STEPS.length;const done=total-pend.length;
+ const rec=boot.recovered||null;const limited=!!(boot.rescue&&boot.rescue.limited);
+ let steps='';if(!waiting&&total){steps='<div style="text-align:left;margin-top:14px;max-width:340px">'+_SH_STEPS.map(l=>{const ok=!pend.includes(l);return '<div style="display:flex;align-items:center;gap:8px;padding:3px 0;color:'+(ok?'#5A6478':'#232B4A')+';font-size:13px"><span style="color:'+(ok?'#2E9E4F':'#B9BFD6')+'">'+(ok?'✔':'○')+'</span>'+l+'</div>'}).join('')+'</div>'}
+ let recHtml='';if(rec){const empty=rec.emptyDb;recHtml='<div style="margin-top:16px;padding:12px;border-radius:10px;max-width:360px;text-align:left;font-size:12px;line-height:1.5;background:'+(empty?'#FDECEA':'#FFF4E5')+';color:'+(empty?'#C0392B':'#8A6D1F')+'"><b>'+(empty?'⚠ 未找到可用备份，已创建空库':'🔄 检测到上次异常关闭，数据已自动回滚')+'</b><br>'+(empty?'请立即从外部备份恢复数据后再继续使用！':('回滚自：'+(rec.from||'（未知）')+(rec.reason?'<br>原因：'+rec.reason:'')))+'</div>'}
+ let hint='';if(sec>=180||limited){const red=limited||sec>=600;hint='<div style="margin-top:16px;padding:12px;border-radius:10px;max-width:380px;font-size:12.5px;line-height:1.55;background:'+(red?'#FDECEA':'#EAF0FE')+';color:'+(red?'#C0392B':'#33518F')+'">'+(limited?'⛔ 自动救援已暂停：1小时内已重启2次仍异常。请联系管理员人工处理——services.msc → HSAuthServer；日志见服务器 data\\logs\\service-error.log。':(red?'⚠ 自愈时间偏长，看门狗自动救援可能已介入。若长时间无进展请联系管理员。':'看门狗自动救援进行中（每5分钟一轮），请稍候。'))+'</div>'}
+ m.innerHTML='<div style="text-align:center"><div>'+(waiting?'<div style="font-size:56px;line-height:1">☁️</div>':'<div style="width:56px;height:56px;margin:0 auto;border:6px solid #C3CFF7;border-top-color:#515BD4;border-radius:50%;animation:shrot 1s linear infinite"></div>')+'</div>'
+  +'<div style="margin-top:20px;font-size:22px;font-weight:800;color:#232B4A">'+(waiting?'等待服务恢复中':'系统自愈中')+'</div>'
+  +'<div style="margin-top:10px;font-size:13.5px;line-height:1.6;color:#5A6478;max-width:340px">'+(waiting?'连不上服务器，正在等待服务恢复。<br>此期间已暂停所有操作，请勿关闭页面。':'服务器正在启动自检与数据自愈，请稍候。<br>此期间已暂停所有操作，完成后自动恢复。')+'</div>'
+  +'<div style="margin-top:16px;display:inline-block;padding:8px 16px;background:#fff;border:1px solid #E3E6F2;border-radius:10px;font-size:15px;font-weight:700;color:#232B4A">已等待 '+_shFmt(sec)+'</div>'
+  +(waiting?'':'<div style="margin-top:14px;font-size:13px;font-weight:700;color:#5A6478">自愈进度 '+done+'/'+total+'</div>')+steps+recHtml+hint+'</div>';
+ if(!document.getElementById('sh-style')){const st=document.createElement('style');st.id='sh-style';st.textContent='@keyframes shrot{to{transform:rotate(360deg)}}';document.head.appendChild(st)}
+}
+function _shRenderAgvBar(down){let b=document.getElementById('selfheal-agvbar');
+ if(down){if(!b){b=document.createElement('div');b.id='selfheal-agvbar';b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99998;background:#FFF4E5;color:#8A6D1F;border-bottom:2px solid #F0D9A8;padding:8px 16px;font-size:13px;font-weight:600;text-align:center';document.body.appendChild(b)}b.textContent='⚠ AGV 调度通道暂不可用：叫车/出库等 AGV 动作已暂停，登记与查询可继续。恢复后本提示自动消失。'}
+ else if(b){b.remove()}
+}
 function th(){const d=document.documentElement.dataset.theme=='dark'?'':'dark';document.documentElement.dataset.theme=d;localStorage.setItem('ck_th',d);$('#thb').textContent=d=='dark'?'☀️':'';PF.theme=d;if(TK)api('/api/prefs',{method:'POST',body:{theme:d}}).catch(()=>{})}
 function applyTheme(t){document.documentElement.dataset.theme=t||'';localStorage.setItem('ck_th',t||'');const b=$('#thb');if(b)b.textContent=t=='dark'?'☀️':''}
 const TABS=[['dash','📊 概览'],['reqs','📋 领料单'],['short','🧯 缺料反馈'],['queue','🚦 备料看板'],['ledger','📦 货位账本'],['ctn','🗃 容器管理'],['parts','🧩 零件档案'],['proj','📦 项目'],['flow','🌊 流水在线'],['inv','🧮 盘点'],['fix','🛠 修正与返架'],['insp','🔎 检验工单'],['agv','🤖 指挥舱'],['ana','📊 分析报告'],['exp','📤 导出中心'],['dict','🔤 字典'],['trace','🔗 追溯'],['fool','🛡 防呆'],['admin','⚙️ 控制后台']]; // ㉖v125 顶层「工作量」并入分析报告子页（go('rpt') 别名兼容）
@@ -410,11 +456,11 @@ async function pgDash(silent){if(!silent)$('#main').innerHTML='<div class="card 
  // ㉖v252 卡片信息升级（融合 Datadog/Grafana stat tile 长处）：零值淡化=一眼扫出"哪里有活"；昨日同期增减=同口径同时刻对比（k.yPrev 服务端算好）。
  // 卡内迷你趋势线已按用户 11-27 指示移除（卡面只留数字+名称+涨跌，趋势看下方大图）。
  // 偏好设置的显隐/排序（v151 隐藏清单制）原样生效：分组条不做——固定分组与"自定义卡片顺序"互斥，且会让隐藏卡回归。
- const _YP={'今日入库(标签)':'inBoxes','今日入库件数':'inQty','今日来料件数':'recvTodayQty','一楼来料登记(标签)':'recvToday','今日出库拣下':'outToday','今日AGV搬运':'agvToday'};
+ const _YP={'今日入库(标签)':'inBoxes','今日入库件数':'inQty','一楼来料登记(标签)':'recvToday','今日出库拣下':'outToday','今日AGV搬运':'agvToday'}; // ㉖v287 删卡后同步去掉「今日来料件数」死项（其字段 recvTodayQty 仍由「一楼来料登记(标签)」副标展示）
  const cell=(n,t,c,fn,sub)=>{const isN=/^\d+$/.test(String(n));const num=Number(n);
   let dl='';const _yk=_YP[t];if(_yk&&k.yPrev&&typeof k.yPrev[_yk]==='number'&&isN){const d=num-k.yPrev[_yk];if(d!==0)dl=` <span class="kd" style="color:var(--sub)" title="昨日同期 ${k.yPrev[_yk]}（同一时刻口径）">${d>0?'▲'+d:'▼'+(-d)}</span>`}
   return `<div class="card kpi${isN&&num===0?' dim':''}" ${fn?`style="cursor:pointer" onclick="${fn}"`:''}><div class="n" ${isN?`data-r="${n}"`:''} style="color:${c||'var(--ink)'}">${n}</div><div class="t">${t}${dl}</div>${sub?`<div style="font-size:10.5px;color:var(--sub);margin-top:1px">${sub}</div>`:''}</div>`}; // ㉖v270 sub=件数副标（"来了多少"车间语义=件数，标签卡下直给件数不用点进去）
- const KARR=[['今日入库(标签)',k.inBoxes,'',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日入库件数',k.inQty,'var(--ok)',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['一楼来料登记(标签)',k.recvToday||0,'',"go('flow');TF={k:'in',d:todayStr(),q:'NB04'};pgFlow()",(k.recvTodayQty||0).toLocaleString()+' 件'],['今日来料件数',k.recvTodayQty||0,'var(--ok)',"go('flow');TF={k:'in',d:todayStr(),q:'NB04'};pgFlow()"],['待入库(来料区)',k.pendRecv||0,(k.pendRecv||0)?'var(--warn)':'var(--ok)',"TM.lq='NB04';go('ledger')",(k.pendRecvQty||0).toLocaleString()+' 件'],['待转入件数',k.pendRecvQty||0,(k.pendRecvQty||0)?'var(--warn)':'var(--ok)',"TM.lq='NB04';go('ledger')"],['今日出库拣下',k.outToday,'var(--warn)',"go('flow');TF={k:'out',d:todayStr()};pgFlow()"],['今日AGV搬运',k.agvToday,'var(--pri)',"TMRPT={from:todayStr(),to:todayStr()};go('rpt')"],['队列中',k.agvQueue,'var(--pri)',"go('agv/q')"],['在库框数',k.stockBoxes,'',"go('ledger')"],['占用货位',k.stockLocs,'',"go('ledger')"],['待接单',k.pending,k.pending?'var(--warn)':'var(--ok)',"reqJump('pending')"],['备料中',k.accepted,'',"reqJump('accepted')"],['待签收',k.ready,'',"reqJump('ready')"],['站台在用',k.stnBusy+'/'+k.stnTotal,'var(--pri)',"go('agv/board')"],['检验待处理',k.inspWait||0,k.inspWait?'var(--warn)':'',"go('insp')"]]; // ㉖v270 来料件数闭环：+今日来料件数/待转入件数两卡（与二楼入库件数对称），标签卡带件数副标——"来了多少"件数一眼可见
+ const KARR=[['今日入库(标签)',k.inBoxes,'',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['今日入库件数',k.inQty,'var(--ok)',"go('flow');TF={k:'in',d:todayStr()};pgFlow()"],['一楼来料登记(标签)',k.recvToday||0,'',"go('flow');TF={k:'in',d:todayStr(),q:'NB04'};pgFlow()",(k.recvTodayQty||0).toLocaleString()+' 件'],['待入库(来料区)',k.pendRecv||0,(k.pendRecv||0)?'var(--warn)':'var(--ok)',"TM.lq='NB04';go('ledger')",(k.pendRecvQty||0).toLocaleString()+' 件'],['今日出库拣下',k.outToday,'var(--warn)',"go('flow');TF={k:'out',d:todayStr()};pgFlow()"],['今日AGV搬运',k.agvToday,'var(--pri)',"TMRPT={from:todayStr(),to:todayStr()};go('rpt')"],['队列中',k.agvQueue,'var(--pri)',"go('agv/q')"],['在库框数',k.stockBoxes,'',"go('ledger')"],['占用货位',k.stockLocs,'',"go('ledger')"],['待接单',k.pending,k.pending?'var(--warn)':'var(--ok)',"reqJump('pending')"],['备料中',k.accepted,'',"reqJump('accepted')"],['待签收',k.ready,'',"reqJump('ready')"],['站台在用',k.stnBusy+'/'+k.stnTotal,'var(--pri)',"go('agv/board')"],['检验待处理',k.inspWait||0,k.inspWait?'var(--warn)':'',"go('insp')"]]; // ㉖v287 去重（用户点破）：删「今日来料件数」「待转入件数」两卡——它们读的 recvTodayQty/pendRecvQty 与「一楼来料登记(标签)」「待入库(来料区)」的件数副标是同一字段同一计算，件数在概览页出现两遍。保留二楼「今日入库件数」（其标签卡无件数副标，不属重复）。v270 原意"件数闭环"由标签卡副标承担，信息不减、省两个卡位
  // ㉖v151 KPI 显隐改「隐藏清单」制：PF.kpi 只决定顺序，PF.kpiH 才是隐藏项；快照未覆盖的新卡片自动补到末尾。
  // 旧版 PF.kpi 是白名单——管理员 11-06 存快照时「一楼来料登记/待入库(来料区)」尚未上线，此后永久看不到（11-11 现场反馈）
  const _KALL=KARR.map((x)=>x[0]); window._KALL=_KALL; // 偏好弹窗候选清单与此同源，杜绝"下拉里没有→新卡片永远加不回"
@@ -446,7 +492,7 @@ async function chgPw(btn){const o=$('#cp_o').value,n1=$('#cp_n').value,n2=$('#cp
 async function prefDlg(){try{const q=await api('/api/prefs');window._tpls=q.templates||[];if(q.prefs)PF=Object.assign(PF,q.prefs);}catch(_){}
  const N=[['req_new','新领料单'],['req_urge','催单'],['req_arrive','到站催扫'],['req_flow','流转动态(接单/备齐/签收等)'],['watch_in','预约到料'],['stock_out','断料预警']];
  // ㉖v151 候选清单与概览渲染卡同源（旧版此处硬编码13项，漏「检验待处理」→ 该卡被✕移除后再也加不回）
- const K=(window._KALL&&window._KALL.length)?window._KALL:['今日入库(标签)','今日入库件数','一楼来料登记(标签)','今日来料件数','待入库(来料区)','待转入件数','今日出库拣下','今日AGV搬运','队列中','在库框数','占用货位','待接单','备料中','待签收','站台在用','检验待处理']; // ㉖v270 兜底清单同步来料件数两卡（正常走 _KALL 同源，此处仅离线兜底）
+ const K=(window._KALL&&window._KALL.length)?window._KALL:['今日入库(标签)','今日入库件数','一楼来料登记(标签)','待入库(来料区)','今日出库拣下','今日AGV搬运','队列中','在库框数','占用货位','待接单','备料中','待签收','站台在用','检验待处理']; // ㉖v287 兜底清单同步去掉「今日来料件数」「待转入件数」（正常走 _KALL 同源，此处仅离线兜底）
  const pf=PF.notes||{};
  const _kn=(a)=>(Array.isArray(a)?a:[]).filter((n)=>K.includes(n));
  window._K=K;_khide=new Set(_kn(PF.kpiH));
@@ -523,17 +569,86 @@ function _tplShortCore(miss,recvOnly,o){
  const recvRows=recvOnly.map(i=>`<div style="padding:2px 0;font-size:12px;color:var(--warn)">🏜 ${_esc(i.partNo)} ${_esc(i.itemName||'')}：${i.recvBoxes}框全在一楼来料区——<b>不算缺料</b>，催仓管转入二楼即可发</div>`).join('');
  const html=`<h3>${o.title}</h3><div style="font-size:12px;color:var(--sub);margin-bottom:6px">勾选要分享的缺料行（默认全选），复制发微信群或提交缺料反馈（到料自动核销）。来料区有料的行不算缺料，单独列示催转入。</div>${miss.length?`<div style="max-height:30vh;overflow:auto;border:1px solid var(--line);border-radius:6px;padding:4px 8px">${rows}</div>`:'<div style="font-size:12px;color:var(--sub)">无全厂缺料行。</div>'}${recvRows?`<div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:6px">${recvRows}</div>`:''}<pre id="tsPrev" style="white-space:pre-wrap;font-size:12px;background:var(--bg,#f5f5f5);padding:8px;border-radius:6px;max-height:30vh;overflow:auto;margin-top:8px"></pre><div class="row" style="margin-top:10px;justify-content:flex-end"><button class="pill q" onclick="${window._tsMask}.classList.add('hide')">关闭</button><button class="pill" onclick="tplShortCopy()">📋 复制缺料单</button><button class="pill g" onclick="tplShortSubmit()">提交缺料反馈</button></div>`;
  if(o.float)dlgFloat(html);else dlg(html,1);
+ _tsGapPromise=_tsGapLoad(miss.map(i=>i.partNo)); // ㉖v284 开面板即异步核算全厂缺口（同 PDA：预览先是"核算中"，快照回来后统一刷）
  tplShortPaint();
 }
 function _tsSel(){const out=[];document.querySelectorAll('.tsChk').forEach(c=>{if(c.checked)out.push(window._tplShortMiss[+c.dataset.i]);});return out;}
-function tplShortPaint(){const sel=_tsSel(),recv=window._tplShortRecv||[],byPn=window._tplShortByPn||{},src=window._tsSrc||'';
- const lines=sel.map(i=>{const d=byPn[String(i.partNo).toUpperCase()]||{};return `${i.partNo} ${i.itemName||d.nm||''} 需${i.qty}框 全厂无在架`;});
- let txt=sel.length?`【豪斯特缺料单】${src}\n${lines.join('\n')}\n共${sel.length}项全厂无在架，请安排到货。`:'';
- if(recv.length)txt+=(txt?'\n':'')+`另：${recv.map(i=>`${i.partNo} ${i.recvBoxes}框在一楼来料区待转入（不算缺料，催转入）`).join('；')}`;
- if(!txt)txt='（未勾选缺料行）';
- txt+=`\n（${U.name} ${new Date().toLocaleString('zh-CN',{hour12:false}).slice(5,16)}）`;
- window._tplShortTxt=txt;const p=document.getElementById('tsPrev');if(p)p.textContent=txt;}
-function tplShortCopy(){tplShortPaint();const txt=window._tplShortTxt||'';if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(()=>T('✅ 缺料单已复制，可粘贴到微信群',1)).catch(()=>T('复制失败，请手动选择文本'));}else{const ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');T('✅ 缺料单已复制',1);}catch(_){T('复制失败');}ta.remove();}}
+// ===== ㉖v284 网页缺料分享文案=系统标准【缺料反馈】模板（用户截图实锤：旧版自造简化【豪斯特缺料单】两行体，
+// 与 PDA v283 已自纠的标准模板不一致，群里出现两种格式）。字段与 PDA shortFeedText 完全同源：
+// 反馈日期/零件号/物料名称/全厂在架(零在架)/在途领料需求/建议补框四分支/上次领用/异常描述/反馈单位/反馈人/责任单位/确认人/确认日期/@人。
+// 数据源同 PDA shortGapLoad：/api/ledger 全厂在架(框键 pid→loc|pn→code 归并) + /api/req/last 全厂在途需求+末次领用 + 字典均值/背书。
+// sr_* 自定义键（反馈单位等）存 PDA 本机未上云，网页用与 PDA 相同的默认值。拉数失败=noData 降级，绝不写"0框"假数。
+let _tsGaps=null,_tsGapWin=365,_tsGapPromise=null,_tsGapFail=false;
+function _tsFmt(q){q=Number(q)||0;return q===Math.round(q)?String(Math.round(q)):q.toFixed(2)} // 与 PDA _fmtInvNum 同口径
+async function _tsGapLoad(pns){
+ const want=[...new Set((pns||[]).map(s=>String(s).trim().toUpperCase()).filter(Boolean))];
+ _tsGaps=null;_tsGapFail=false;
+ if(!want.length){_tsGaps={};tplShortPaint();return}
+ const byPn=window._tplShortByPn||{};
+ try{
+  const led=await api('/api/ledger');
+  if(!led||!led.ok)throw new Error('ledger 拉取失败');
+  const gBox={},gQty={};
+  for(const r of (led.items||[])){
+   const p=String(r.p||'').trim().toUpperCase();if(!want.includes(p))continue;
+   const pid=String(r.pid||'').toUpperCase(),loc=String(r.l||'').toUpperCase(),code=String(r.c||'').toUpperCase();
+   (gBox[p]=gBox[p]||new Set()).add(pid?('P|'+pid):(loc?('L|'+loc+'|'+p):('C|'+code)));
+   gQty[p]=(gQty[p]||0)+(Number(r.q)||0);
+  }
+  let lastMap={},dem={},lastOk=false;
+  try{const lj=await api('/api/req/last?items='+encodeURIComponent(want.join(',')));
+   if(lj&&lj.ok){lastOk=true;lastMap=lj.map||{};dem=lj.demand||{};_tsGapWin=Number(lj.windowDays)||365}}catch(_){} // 末次领用接口失败=该行整行不出现（lastT=-1 未知态），不谎报"无人领过"
+  const out={};
+  for(const p of want){
+   const boxes=(gBox[p]?gBox[p].size:0),qty=gQty[p]||0,d=byPn[p]||{},histPer=Number(d.perBoxQty)||0,dm=dem[p]||{};
+   const g={pn:p,nm:String(d.nm||''),boxes,qty,perBox:(boxes>0&&qty>0)?qty/boxes:(histPer>0?histPer:0),
+    demand:Number(dm.qty)||0,demandDocs:Number(dm.docs)||0,backed:(p in byPn),noData:false,lastT:-1,lastQty:0,lastBy:'',lastNo:''};
+   if(lastOk){const m=lastMap[p];if(m&&m.t){g.lastT=Number(m.t)||0;g.lastQty=Number(m.qty)||0;g.lastBy=String(m.by||'');g.lastNo=String(m.no||'')}else g.lastT=0} // 服务端确认查过：无记录=0，有记录填值
+   out[p]=g;
+  }
+  _tsGaps=out;
+ }catch(_){
+  _tsGapFail=true; // 与 PDA 同：拉数失败降级 noData，展示与文案都不得写"0 框"假数
+  const out={};for(const p of want)out[p]={pn:p,nm:String((byPn[p]||{}).nm||''),boxes:0,qty:0,perBox:0,demand:0,demandDocs:0,backed:(p in byPn),noData:true,lastT:-1,lastQty:0,lastBy:'',lastNo:''};
+  _tsGaps=out;
+ }
+ tplShortPaint();
+}
+function _tsGapTxt(g){ // "建议补"四分支，与 PDA suggestTxt 同规则（零在架无均值绝不折框，防"缺5000件建议1框"）
+ if(g.noData)return '发送时缺口数据不可用，仅基础字段';
+ const gap=Math.max(0,(Number(g.demand)||0)-(Number(g.qty)||0));
+ if(gap>0){
+  const s=(g.perBox>0)?Math.min(999,Math.max(1,Math.ceil(gap/g.perBox))):0;
+  return s>0?(`缺 ${_tsFmt(gap)} 件 · 建议补 ≥${s} 框（均值 ${_tsFmt(g.perBox)} 件/框）`):(`缺 ${_tsFmt(gap)} 件（当前无每框均值，不折框数以免误导）`);
+ }
+ if(g.boxes>0&&g.demand>0)return '在架够本次需求，不缺货——请催仓管发料';
+ return ''; // 无缺口无需求：整行不出现（沉默胜过错说）
+}
+function tplShortPaint(){const sel=_tsSel();
+ const p=document.getElementById('tsPrev');
+ const setTxt=t=>{window._tplShortTxt=t;if(p)p.textContent=t};
+ if(!sel.length){setTxt('（未勾选缺料行）');return}
+ if(!_tsGaps){setTxt('正在核算全厂缺口…');return} // 快照未就绪：先等核算统一刷（同 PDA refreshPreview）
+ const now=new Date(),day=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+ const unit='鄞州豪斯特生产部',duty='鄞州豪斯特运营部',conf='宋明明'; // 与 PDA sr_* 默认值逐字一致
+ const at=['Eleven','星光熠熠','雪哥儿'].map(s=>'@'+s).join(' ');
+ const desc='生产急需，请安排采购/到货';
+ const blocks=sel.map(i=>{
+  const pn=String(i.partNo).trim().toUpperCase();
+  const g=_tsGaps[pn]||{pn,nm:'',boxes:0,qty:0,perBox:0,demand:0,demandDocs:0,backed:false,noData:true,lastT:-1,lastQty:0,lastBy:'',lastNo:''};
+  const nm=(g.nm||i.itemName||'')||'（档案无名称）';
+  const stock=g.noData?'缺口数据未核算（服务器暂不可用）':(g.boxes>0?(`全厂在架 ${_tsFmt(g.boxes)} 框 · ${_tsFmt(g.qty)} 件`):(`全厂零在架${g.backed?'':'（系统档案查无此号，可能新项目/新零件）'}`));
+  const lines=['【缺料反馈】','反馈日期：'+day,'零件号：'+pn,'物料名称：'+nm,stock];
+  if(!g.noData&&g.demand>0)lines.push(`在途领料需求：${_tsFmt(g.demand)} 件（${g.demandDocs} 单在等）`);
+  const sg=_tsGapTxt(g);if(sg)lines.push(sg);
+  if(!g.noData&&g.lastT===0)lines.push(`上次领用：近${_tsGapWin}天内无人领过`); // 未知(-1)/noData 整行不出现：绝不把"没查到"写成"无人领过"
+  else if(!g.noData&&g.lastT>0){const d=new Date(g.lastT);lines.push(`上次领用：${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} ${_tsFmt(g.lastQty)} 件（${g.lastBy}${g.lastNo?' '+g.lastNo:''}）`)}
+  lines.push('异常描述：'+desc,'反馈单位：'+unit,'反馈人：'+((U&&U.name)||''),'责任单位：'+duty,'确认人：'+conf,'确认日期：'+day,at);
+  return lines.join('\n');
+ });
+ setTxt(blocks.join('\n\n')); // 多行之间空行分隔，与 PDA rows.join("\n\n") 一致；recv 催转入行不入分享文案（同 PDA，面板单独列示）
+}
+async function tplShortCopy(){if(_tsGapPromise)await _tsGapPromise;tplShortPaint();const txt=window._tplShortTxt||'';if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(()=>T('✅ 缺料反馈已复制，可粘贴到微信群',1)).catch(()=>T('复制失败，请手动选择文本'));}else{const ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');T('✅ 缺料反馈已复制',1);}catch(_){T('复制失败');}ta.remove();}} // 极速点击先 await 核算完成（同 PDA buildFeed await loadTask），不复制"核算中"占位文本
 async function tplShortSubmit(){const miss=_tsSel();if(!miss.length){T('请先勾选要提交的缺料行');return}let ok=0,skip=0;
  for(const i of miss){const r=await api('/api/shortages',{method:'POST',body:{partNo:i.partNo,itemName:i.itemName||'',note:'所需物料（'+(window._tsSrc||'')+'）全厂无在架，请安排到货',src:'tpl',forceStock:true}}).catch(()=>null);if(r&&r.ok)ok++;else skip++;}
  T(ok?`✅ 已提交 ${ok} 项缺料反馈${skip?`（${skip} 项被服务端有货闸拦截=实际有货，催发料即可）`:''}`:'❌ 提交失败',ok?1:2);
@@ -666,6 +781,41 @@ function closeDrawer(){$('#drawer').classList.remove('dw-on');$('#drawer').class
 const NGRP=[['work','📋','派单与超时',['req_new','req_timeout','req_reassign'],'#515BD4'],['urge','⏰','催单',['req_urge'],'#E65100'],['flow','🚚','接单与进度',['req_accept','req_ready','req_ready_wh','req_done','req_confirm','req_reject','req_cancel','req_flow'],'#00897B'],['arrive','📥','到站与移库',['req_arrive','transfer_done'],'#FF8F00'],['car','⚠️','车辆告警',['car_alarm','wmas_auth'],'#D32F2F'],['insp','🔎','检验协助',['inspect'],'#7B1FA2'],['stock','📦','断料与预约',['stock_out','watch_in','shortage','shortage_done'],'#546E7A'],['audit','🧾','账实核对',['ghost_out'],'#B71C1C'],['other','🔔','其他与系统',['sys_err','night_digest'],'#9E9E9E']]; // ㉖v151 新增"账实核对"组：幽灵出库（MES已出库、本地无入库记录）独立归类，不与断料预警混在一起。㉖v173f sys_err(PDA异常上报，此前借道 car_alarm 被车辆告警红框置顶=分类错位)与 night_digest(夜间汇总，原落空组)收编入"其他与系统"
 function ngrpOf(t){for(const g of NGRP)if(g[3].includes(t))return g[0];return 'other'}
 async function notifPoll(){try{const j=await api('/api/notifications/unread');const n=j.unread||0;const b=$('#nbdg');if(b){b.textContent=n>99?'99+':n;b.classList.toggle('hide',!n)}window._notifUnread=n;if(n&&window._msgOpen)openMsgs()}catch(_){}}
+// ===== ㉖v291 消息推送中心（SSE）接入：推送开=秒级收消息；关/连不上=自动回退既有轮询 =====
+// 消息与 App 系统通知同源（scan_station db.notifications 原样转发），三端一致；
+// 推送中心带环形缓冲，重连按 since 补漏，晚开不丢消息。
+let _pushES=null,_pushSeq=0,_pushOn=false;
+function pushHubStart(){
+ try{if(_pushES){_pushES.close();_pushES=null}}catch(_){}
+ const cfg=window._pushCfg||(function(){try{return JSON.parse(localStorage.getItem('ck_push')||'null')}catch(_){return null}})();
+ _pushOn=!!(cfg&&cfg.on&&cfg.url);
+ if(!_pushOn){ // 推送关（或地址空）：确保轮询通道在（showApp 已起则不重复起），SSE 已关
+   try{if(!window._notifPollT&&!window._pushPollFb){window._notifPollT=setInterval(notifPoll,45000)}}catch(_){}
+   return;
+ }
+ // 推送开：停掉固定轮询，消息走 SSE；SSE 断开期间由 onerror 起回退轮询——任何状态恰一条通道
+ try{if(window._notifPollT){clearInterval(window._notifPollT);window._notifPollT=null}}catch(_){}
+ try{if(window._pushPollFb){clearInterval(window._pushPollFb);window._pushPollFb=null}}catch(_){}
+ const u=cfg.url+'/sse?user='+encodeURIComponent(U.id||'')+'&since='+_pushSeq+(cfg.key?'&key='+encodeURIComponent(cfg.key):'');
+ _pushES=new EventSource(u);
+ _pushES.onmessage=(e)=>{try{
+   const d=JSON.parse(e.data);
+   if(d.t==='hello'){_pushSeq=Number(d.seq)||0;return}
+   if(d.t==='msg'){const m=d.msg||{};_pushSeq=Math.max(_pushSeq,Number(d.seq)||0);
+     if(m.to&&m.to!=='all'&&m.to!==U.id)return; // 只收发给本人或全员的
+     notifPoll(); // 刷未读角标（权威计数仍以 scan_station 为准）
+     if(window._msgOpen)openMsgs(); // 抽屉开着=实时补一条
+     if(!document.hidden&&m.text)T('🔔 '+String(m.text).slice(0,28),1);
+   }
+ }catch(_){}};
+ _pushES.onerror=()=>{ // 连不上/断了：回退轮询（45s），EventSource 5 秒后自动重连并按 since 补漏
+   if(!_pushOn)return;
+   try{if(!window._pushPollFb){window._pushPollFb=setInterval(notifPoll,45000);notifPoll()}}catch(_){}
+ };
+ _pushES.onopen=()=>{try{if(window._pushPollFb){clearInterval(window._pushPollFb);window._pushPollFb=null}}catch(_){}};
+}
+// ㉖v291 推送配置 60 秒同步：管理员在参数面板切开关后，两端无需重新登录即生效（on→连SSE/停轮询；off→关SSE/回轮询）
+function pushCfgSync(){if(!TK)return;api('/api/me').then((j)=>{const a=JSON.stringify(j.pushCfg||null),b=JSON.stringify(window._pushCfg||null);if(a!==b){window._pushCfg=j.pushCfg||null;try{localStorage.setItem('ck_push',a)}catch(_){}pushHubStart()}}).catch(()=>{})}
 function openReqById(id){(async()=>{try{if(!(window._reqs||[]).some(x=>x.id==id)){const j=await api('/api/requisitions');window._reqs=j.reqs||[]}reqDrawer(id)}catch(_){T('单据加载失败')}})()}
 function notifRoute(n,dry){const id=n.reqId||'',ty=n.type||'';const J=(f)=>{if(!dry)f()}; // ㉖v232 dry=只探测有无落点(返回true/false)不执行跳转、不关抽屉，供详情按钮显隐
  if(id){J(()=>{closeDrawer();go('reqs');openReqById(id)});return true}
@@ -2059,7 +2209,7 @@ function renderAgvNav(){const bar=$('#agvnav');if(!bar)return;
  sub.style.display=kids.length?'flex':'none';
  sub.innerHTML=kids.map((k)=>`<button class="pill${k===AGVTAB?'':' q'}" data-k="${k}">${AGVSUB[k]||k}</button>`).join('')}
 function agvNavBadge(){if(TAB==='agv')renderAgvNav()} // 红牌数变化时刷新角标（仅当前正看着指挥舱时）
-function esSSE(){if(SSE)return;try{SSE=new EventSource('/api/sse?token='+encodeURIComponent(TK));SSE.onmessage=e=>{try{_sseOk=Date.now();const d=JSON.parse(e.data);if(d.t==='snap'){LAMP=d;if(TAB==='dash'&&!document.hidden){const lb=$('#lamp');if(lb)lb.innerHTML=lampHtml();}if(AGVTAB==='map'&&!document.hidden)loadMap();}if(d.t==='notif'&&d.to==U.id){notifPoll();if(window._msgOpen)openMsgs();if(!document.hidden&&d.text)T('🔔 '+(d.text||'').slice(0,28),1)}}catch(_){}};}catch(_){}}
+function esSSE(){if(SSE)return;try{SSE=new EventSource('/api/sse?token='+encodeURIComponent(TK));SSE.onmessage=e=>{try{_sseOk=Date.now();const d=JSON.parse(e.data);if(d.t==='snap'){LAMP=d;if(TAB==='dash'&&!document.hidden){const lb=$('#lamp');if(lb)lb.innerHTML=lampHtml();}if(AGVTAB==='map'&&!document.hidden)loadMap();}if(d.t==='notif'&&d.to==U.id&&!_pushOn){notifPoll();if(window._msgOpen)openMsgs();if(!document.hidden&&d.text)T('🔔 '+(d.text||'').slice(0,28),1)}}catch(_){}};}catch(_){}}
 let LAMP={},_sseOk=0,SYSST=null,_wmProbe=false;
 async function probeSys(){_wmProbe=true;try{SYSST=await api("/api/sysstatus")}catch(_){} _wmProbe=false;if(TAB=="dash"){const lb=document.getElementById("lamp");if(lb)lb.innerHTML=lampHtml()}}
 let FLASHCAR='',DIS={};try{const _d=JSON.parse(localStorage.getItem('hst_dis')||'{}');const _n=Date.now();for(const k in _d){if(_n-(Number(_d[k].at)||0)<10*60000)DIS[k]=_d[k]}}catch(_){} // ㉖v54 打勾静默持久化：刷新不再复现，10分钟自然失效

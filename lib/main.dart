@@ -55,6 +55,7 @@ part 'agv_map_page.dart'; // ①2D实时地图
 part 'agv_report_page.dart'; // ⑦AGV效率报表
 part 'update_page.dart'; // ⑬APK自动更新
 part 'upgrade_gate.dart'; // ㉖v243 强制升级闸门：低于管理员版本线锁升级页（只拦业务+离线宽限，复用⑬下载器）
+part 'self_heal_gate.dart'; // ㉖v283 系统自愈门禁：崩溃/断网/断电重启期间全屏锁禁操作，服务端 boot 就绪状态机为权威判据
 part 'console_web_page.dart'; // ㉖⑯ 网页控制台驾驶舱（内嵌全功能）
 part 'notify_service.dart'; // ⑭系统通知+语音播报
 part 'shortage_report_page.dart'; // ㉖v74 缺料反馈：一键生成生产部格式缺料单，分享微信
@@ -276,6 +277,21 @@ class AppSettings {
     final sp = await SharedPreferences.getInstance();
     await sp.setBool(keyVibration, v);
   }
+}
+
+/// ㉖v288 扫码成功统一震动（遵守设置页「扫码成功震动」开关）。
+/// 背景（用户实锤）：设置开了扫码震动，但【领料发料】和【直调扫码】成功时不震——
+///   根因是这两页的成功路径从未写震动：直调页整页无 Vibration 调用；领料页仅"扫重"异常有长震、
+///   发料成功无反馈。采集页(_scanSuccessAction)/出库页(_feedback)各自实现了成功震动=正常。
+/// 统一收敛到本 helper，四页成功反馈同口径：开关关→不震；无马达→不震；异常静默不阻断扫码流。
+Future<void> scanSuccessBuzz() async {
+  try {
+    if (await AppSettings.getVibrationEnabled()) {
+      if ((await Vibration.hasVibrator()) ?? false) {
+        await Vibration.vibrate(duration: 80);
+      }
+    }
+  } catch (_) {}
 }
 
 // ===================== Isar数据库模型 =====================
@@ -1720,6 +1736,7 @@ class _MainPageState extends State<MainPage>
     TabCustom.enter(_tabKeys.first); // ㉖v53 起始页开始计时
     TabCustom.restore().then((_) => _applyCustomTabs()); // ㉖v53 应用自定义顺序/显隐
     kNotifTap.addListener(_onNotifTap); // ⑭点系统通知直达领料页
+    kDashNav.addListener(_onDashNav); // ㉖v289 数据驾驶舱点击下钻：切到目标页签
     _startNotifPolling();
     _probeReceivingOn().then(
         (_) => _restoreWorkMode()); // ②先探来料区启用开关再恢复工作模式（㉖v120b 时序保证：关闭态不恢复来料档）
@@ -1736,6 +1753,13 @@ class _MainPageState extends State<MainPage>
     unawaited(diagPulseNow());
     _diagPulseTimer = Timer.periodic(
         const Duration(seconds: 60), (_) => unawaited(diagPulseNow()));
+    // ㉖v283 自愈门禁：5秒探活服务端 boot 就绪状态机，自愈/失联期间全屏锁禁一切录入提交
+    SelfHealGate.start();
+    kSelfHealUnlocked.addListener(_onSelfHealUnlocked);
+    // ㉖v291 消息推送中心：登录配置已在 _bootstrap 的 me 里下发，进主页即尝试连 SSE；
+    // 心跳(me)发现配置变化 → kPushCfgChanged → 重连。连不上/开关关=30秒轮询兜底（_notifTimer 照常）
+    kPushCfgChanged.addListener(_onPushCfgChanged);
+    unawaited(_pushConnect());
     PrefsSync.changed.addListener(_onPrefsChanged); // ㉖B14 服务器偏好回写后刷新工作模式
     //【修复BUG：重启后统计为0】原写法 _loadLastBatch 与 _refreshRecord 并发执行，
     //刷新时批次号还没恢复，直接return导致看板0/0/0、记录共0条；改为串行初始化
@@ -1812,6 +1836,32 @@ class _MainPageState extends State<MainPage>
       _tabController.animateTo(_tabKeys.indexOf("req"));
     if (rid.isNotEmpty && kind.startsWith("req"))
       kReqJump.value = "${rid}@${DateTime.now().millisecondsSinceEpoch}";
+  }
+
+  /// ㉖v289 数据驾驶舱点击下钻：驾驶舱 pop 回主页后写 kDashNav，这里切到目标页签。
+  /// 目标 tab 键与 _tabKeys 同集（stock/req/agv/insp/collect/inv/direct）；页签被隐藏(角色/自定义)时不跳。
+  void _onDashNav() {
+    final v = kDashNav.value;
+    if (v.isEmpty || !mounted) return;
+    kDashNav.value = "";
+    final tab = v.split("@").first;
+    final i = _tabKeys.indexOf(tab);
+    if (i >= 0) _tabController.animateTo(i);
+  }
+
+  /// ㉖v283 自愈解锁回调：服务器就绪并放行后，刷新批次与看板数据，
+  /// 避免用户对着断网/自愈前的旧界面继续操作（拉权威数据后再放行）。
+  void _onSelfHealUnlocked() {
+    if (!mounted) return;
+    try {
+      unawaited(_initLoadData()); // 重拉批次/看板（与 initState 同源，清掉可能过期的行）
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text("✅ 系统已恢复，可继续操作"),
+            backgroundColor: Color(0xFF2E9E4F),
+            duration: Duration(seconds: 3)));
+      }
+    } catch (_) {}
   }
 
   /// ㉖v199e 消息中心→主页页签精准直达：本函数只管切页签，"弹掉消息中心/线程页"
@@ -2026,14 +2076,118 @@ class _MainPageState extends State<MainPage>
     ));
   }
 
+  // ===== ㉖v291 消息推送中心 SSE（PDA 端）=====
+  // 推送开=消息秒级到达：推送流只做【触发信号】，收到发给本人的 msg 即调权威轮询 _pollNotifications
+  //   （角标/横幅/语音/系统通知全在那条既有路径里处理，与 App 系统通知完全同源，不会两套数据打架）；
+  // 推送关/连不上=回退既有 30 秒轮询（_notifTimer 照常跑，行为同旧版）。断开 5 秒自动重连，
+  //   推送中心环形缓冲按 since 补漏，重连不丢消息。
+  HttpClient? _pushClient;
+  Timer? _pushReconnT;
+  bool _pushAlive = false;
+  int _pushSeq = 0;
+  bool _notifBusy = false; // 防推送触发与 30 秒轮询并发重入
+
+  Future<void> _pollNotificationsGuarded() async {
+    if (_notifBusy) return;
+    _notifBusy = true;
+    try {
+      await _pollNotifications();
+    } catch (_) {} finally {
+      _notifBusy = false;
+    }
+  }
+
+  Future<void> _pushConnect() async {
+    _pushTeardown();
+    final on = kPushCfg["on"] == true || kPushCfg["on"] == 1;
+    final url = (kPushCfg["url"] ?? "").toString().trim();
+    if (!on || url.isEmpty || Auth.user == null) return; // 推送关：30 秒轮询兜底（既有行为）
+    final key = (kPushCfg["key"] ?? "").toString();
+    final uid = Uri.encodeComponent(Auth.user!.id);
+    final u = Uri.parse("$url/sse?user=$uid&since=$_pushSeq${key.isNotEmpty ? "&key=${Uri.encodeComponent(key)}" : ""}");
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    _pushClient = client;
+    try {
+      final req = await client.getUrl(u);
+      req.headers.set("Accept", "text/event-stream");
+      final resp = await req.close();
+      if (resp.statusCode != 200) {
+        // 403=密钥不符/404=路径错：不能直接 return（会跳过下方重连退避，PDA 永不重试）
+        _pushAlive = false;
+        if (mounted && _pushClient == client) _pushScheduleReconnect();
+        return;
+      }
+      _pushAlive = true;
+      final buf = StringBuffer();
+      await for (final chunk in resp.transform(utf8.decoder)) {
+        if (!mounted || _pushClient != client) break;
+        buf.write(chunk);
+        var s = buf.toString();
+        int i;
+        while ((i = s.indexOf("\n\n")) >= 0) {
+          final frame = s.substring(0, i);
+          s = s.substring(i + 2);
+          for (final line in frame.split("\n")) {
+            if (!line.startsWith("data: ")) continue;
+            try {
+              final d = jsonDecode(line.substring(6));
+              if (d is! Map) continue;
+              if (d["t"] == "hello") {
+                _pushSeq = (d["seq"] as num?)?.toInt() ?? _pushSeq;
+              } else if (d["t"] == "msg") {
+                _pushSeq = math.max(_pushSeq, (d["seq"] as num?)?.toInt() ?? 0);
+                final m = d["msg"];
+                final to = m is Map ? (m["to"] ?? "").toString() : "";
+                if (to.isNotEmpty && to != "all" && to != Auth.user!.id) continue;
+                unawaited(_pollNotificationsGuarded()); // 只触发，不解析正文
+              }
+            } catch (_) {}
+          }
+        }
+        buf
+          ..clear()
+          ..write(s);
+        }
+    } catch (_) {}
+    _pushAlive = false;
+    if (mounted && _pushClient == client) _pushScheduleReconnect();
+  }
+
+  void _pushScheduleReconnect() {
+    _pushReconnT?.cancel();
+    _pushReconnT = Timer(const Duration(seconds: 5), () {
+      if (mounted) unawaited(_pushConnect());
+    });
+  }
+
+  void _pushTeardown() {
+    _pushReconnT?.cancel();
+    _pushReconnT = null;
+    _pushAlive = false;
+    try {
+      _pushClient?.close(force: true);
+    } catch (_) {}
+    _pushClient = null;
+  }
+
+  void _onPushCfgChanged() {
+    if (!mounted) return;
+    unawaited(_pushConnect()); // 管理员切开关/改地址：心跳发现即重连，无需重登
+  }
+
   @override
   void dispose() {
     TabCustom.flush(); // ㉖v53 退页结算驻留时长上云
     kNotifTap.removeListener(_onNotifTap);
+    kDashNav.removeListener(_onDashNav); // ㉖v289 驾驶舱下钻监听释放
+    kPushCfgChanged.removeListener(_onPushCfgChanged); // ㉖v291 推送配置监听释放
+    _pushTeardown(); // ㉖v291 推送 SSE 连接与重连定时器释放（泄漏红线）
     PrefsSync.changed.removeListener(_onPrefsChanged); // ㉖B14
     kAgvQueueTick.removeListener(_loadMyQueue); // ㉖ 队列刷新监听释放
     _myQueueTimer?.cancel();
     _diagPulseTimer?.cancel(); // ㉖v199d 诊断心跳随页销毁（定时器泄漏红线）
+    SelfHealGate.stop(); // ㉖v283 自愈探活随页销毁（定时器泄漏红线）
+    kSelfHealUnlocked.removeListener(_onSelfHealUnlocked);
     _notifTimer?.cancel();
     _tabController.removeListener(_onTabSettled); // ㉖v53
     _tabController.dispose();
@@ -2602,6 +2756,22 @@ class _MainPageState extends State<MainPage>
 
   Future<void> _saveRecord(String code) async {
     if (_isSaving) return;
+    // ㉖v283 自愈硬拦截（第三道防护）：崩溃/断网/断电重启期间禁一切录入提交。
+    // 为什么不能只靠全屏覆盖页：扫码枪可直触本保存入口不经 UI，视觉锁挡不住物理扫码；
+    // 且离线扫码本就无效（服务器原子占位分不了格、MES 交不上、跨设备查重降级只查本机）。
+    // 服务端 503 是真正的数据闸，这里是客户端第二道——挡住本地 Isar 写入，杜绝半状态数据。
+    if (SelfHealGate.blocked) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(SelfHealGate.mode == 'waiting'
+                ? "⛔ 服务器连接中断，已暂停录入——本框未保存，恢复后请重扫"
+                : "⛔ 系统自愈中，已暂停录入——本框未保存，自愈完成后请重扫"),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 4)));
+        unawaited(NotifyService.speak("系统维护中，请稍后再试"));
+      }
+      return; // 不落库、不写 Isar、不建流水——宁可重扫一框，不产半状态数据
+    }
     // ㉖v241 标签号入口统一大写（用户 11-24 实锤：手输小写 n26k230111 同框裂双键——
     //   scanlog/scanRecords/recordExtras 存扫码原样，详情页/本机查询按大写键，扩展表查空
     //   →物料名/批次/采集人/托盘号整段消失；账本推送与MES本就大写口径，MES对小写也命中
@@ -2872,16 +3042,31 @@ class _MainPageState extends State<MainPage>
             _goodsFocusNode.requestFocus();
           }
           return;
-        } else if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text("MES查询失败：${mesResult["msg"]}，仅保存本地采集信息")));
+        } else {
+          // ㉖v283 数据安全红线：MES 不可达（登录失效/Token空/接口异常）一律阻断保存。
+          // 旧行为"仅保存本地采集信息"会静默写入无零件号/无名称的账本行——账实不符与乱码回填的源头之一。
+          // 宁可现场重扫一框，不让一框无名数据进账本。（found==false 的"查无此码"上面已专门拦截，不在此列）
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text("⛔ MES 不可达，本框未录入：${mesResult["msg"]}——请检查网络/MES 登录后重扫"),
+                backgroundColor: Colors.redAccent,
+                duration: const Duration(seconds: 5)));
+            _goodsInputCtrl.clear();
+            _goodsFocusNode.requestFocus();
+          }
+          return; // 不落库、不写 Isar、不建流水（finally 会重置 _isSaving）
         }
       } catch (mesErr) {
+        // ㉖v283 同上：查询抛异常（网络中断/超时）也阻断保存，绝不写无名数据
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text("MES查询失败：${mesErr.toString()}，仅保存本地采集信息")));
+              content: Text("⛔ MES 查询异常，本框未录入：${mesErr.toString()}——请稍后重扫"),
+              backgroundColor: Colors.redAccent,
+              duration: const Duration(seconds: 5)));
+          _goodsInputCtrl.clear();
+          _goodsFocusNode.requestFocus();
         }
-        //MES查询失败，字段保留null，不阻断保存流程
+        return; // 不落库、不写 Isar、不建流水（finally 会重置 _isSaving）
       }
       if (pallet0 &&
           _currentPalletId != null &&

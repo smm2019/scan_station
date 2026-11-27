@@ -81,5 +81,34 @@ void main() {
   ck('★ 空单返回空路线', buildPickRoute([]).isEmpty && buildPickRoute([{'partNo': 'X', 'suggest': {'flatBoxes': []}}]).isEmpty);
   ck('★ 无 partNo/无 suggest 脏行不崩', buildPickRoute([{'foo': 1}, '不是map', {'partNo': ''}]).isEmpty);
 
+  // ===== ㉖v286 同托多码物理框口径（用户截图实锤：A16排一筐两标签 N26K260031/N26K260022
+  // 同格位 NB03-A-16-03 各500件=1筐，旧版标签级计数显示"2框"，现场以为要搬两筐）=====
+  final palletItems = <Map<String, dynamic>>[
+    {
+      'partNo': '6608491430', 'itemName': '右后纵梁连接板', 'issued': [],
+      'suggest': {
+        'flatBoxes': [
+          {'c': 'N26K260031', 'l': 'NB03-A-16-03', 'q': 500, 'agv': ''},
+          {'c': 'N26K260022', 'l': 'NB03-A-16-03', 'q': 500, 'agv': ''}, // 同托兄弟码同货位
+        ]
+      }
+    },
+    {
+      'partNo': '6608515536', 'itemName': '下横梁左连接板', 'issued': [],
+      'suggest': {
+        'flatBoxes': [
+          {'c': 'N26K270130', 'l': 'NB03-A-16-05', 'q': 1000, 'agv': ''}, // 同排另一筐（不同货位）
+        ]
+      }
+    },
+  ];
+  final pr = buildPickRoute(palletItems);
+  final a16 = pr.rows.firstWhere((r) => r.key == 'A-16');
+  ck('★★★ 同托多码合并：A-16 物理框=2（16-03 一筐两标签算1框 + 16-05 一筐），不是标签数3', a16.boxCount == 2, 'boxCount=${a16.boxCount}');
+  ck('★★★ 同托多码：待扫码=3（逐码发料要扫3次），框<码证明合并生效', a16.codeCount == 3 && a16.boxCount < a16.codeCount, 'codeCount=${a16.codeCount}');
+  ck('★★ 同托多码：件数=各码之和（500+500+1000=2000）', a16.qtySum == 2000, 'qty=${a16.qtySum}');
+  ck('★★ 路线总数：totalBoxes=物理框2、totalCodes=标签3', pr.totalBoxes == 2 && pr.totalCodes == 3, 'boxes=${pr.totalBoxes} codes=${pr.totalCodes}');
+  ck('★ 同托两码都保留在清单里（逐码扫码不能丢码）', a16.items.where((x) => x.loc == 'NB03-A-16-03').length == 2);
+
   print('\n结果: ${_total - _fail} 通过 / $_fail 失败');
 }

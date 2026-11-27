@@ -13,6 +13,20 @@ final ValueNotifier<String> kReqJump =
 final ValueNotifier<String> kReqAgain =
     ValueNotifier<String>(''); // ㉖v76 一键续领：零件号|件数|时间戳 → 领料页监听开建单弹层预填
 
+// ㉖v289 数据驾驶舱下钻（对齐网页概览点击跳转）：驾驶舱是 push 出来的独立路由，不在 TabBarView 内，
+// 点击卡片 → 写 kDashNav(目标tab@时间戳) → 主页监听切 tab → pop 驾驶舱；领料类另写 kReqFilter 带状态筛选。
+final ValueNotifier<String> kDashNav =
+    ValueNotifier<String>(''); // 目标 tab 键（stock/req/agv/insp…）@时间戳 → 主页监听切页签
+final ValueNotifier<String> kReqFilter =
+    ValueNotifier<String>(''); // 领料页状态筛选码（pending/accepted/ready…）@时间戳 → 领料页监听设置 _fltSt
+
+// ㉖v291 消息推送中心配置（服务端 me/login 下发 pushCfg：{on,url,key}）。
+// on=1 且 url 非空 → 消息中心走推送中心 SSE 秒级收；否则回退既有 30 秒轮询（行为同旧版）。
+Map<String, dynamic> kPushCfg = {};
+
+// 推送配置变化（心跳发现 on/url 变了）→ MainPage 重连 SSE。值=变化时刻戳
+final ValueNotifier<int> kPushCfgChanged = ValueNotifier<int>(0);
+
 class NotifyService {
   static final FlutterLocalNotificationsPlugin _n =
       FlutterLocalNotificationsPlugin();

@@ -163,6 +163,7 @@ class _DirectTransferPageState extends State<DirectTransferPage> with AutomaticK
           });
         }
       });
+      scanSuccessBuzz(); // ㉖v288 扫码成功震动（遵守设置开关；此前直调页整页无震动反馈）
     } catch (e) {
       _toast("标签查询失败：${e.toString().replaceFirst("Exception: ", "")}");
     } finally {

@@ -130,6 +130,51 @@ function depMark(sys, ok, err) { // 依赖打点：成功→刷时刻清计数�
   const d = _dep[sys]; if (!d) return;
   if (ok) { d.okAt = Date.now(); d.fail = 0; } else { d.fail++; if (err) d.lastErr = String(err).slice(0, 120); }
 }
+
+// ===== ㉖v283 启动就绪状态机（自愈期锁定的唯一权威判据）=====
+// 需求：崩溃/断网/断电重启期间 PDA 与网页必须显示"自愈中"并禁止一切操作，自愈成功才放行。
+// 设计三条硬约束（每条都对应一个会把现场锁死的真实陷阱）：
+// ① ready 只由【本地自愈链】决定，绝不含 RCS/WMAS 通联——RCS 配了但恰好不通时，若把它当判据
+//    则 ready 永不满足=全仓永久锁死。AGV 通道单独出 agvDown 降级信号（只禁叫车/出库，登记照常）。
+// ② 判据必须【单调前进】：每步只做置 true，任何一步失败都不回退已完成的步骤——否则一次抖动
+//    会让已放行的终端重新被锁，现场反复中断。
+// ③ 未配置 AGV（db.rcsConfig.host 为空）时 agvDown 恒 false，纯人工仓不受任何影响。
+// 消费方：/api/health 的 boot 字段（PDA 自愈锁页、网页遮罩）+ 503 自愈硬闸（防旧版 APK 绕过客户端锁）。
+const BOOT_STEPS = [
+  ['load', '数据库加载与启动自愈'],
+  ['backup', '当日备份与安全副本'],
+  ['fix8s', '出库台账补建与键名归一'],
+  ['coarse', '粗码滞留巡检'],
+  ['fullSweep', '全量巡检'],
+  ['invariant', '账实不变量自检'],
+  ['deadSweep', '失联设备清扫'],
+];
+const _boot = { steps: {}, recovered: null, rescue: { lastAct: '', at: 0, limited: false } };
+for (const [_bk] of BOOT_STEPS) _boot.steps[_bk] = false;
+function bootDone(k) { // 步骤打勾：只前进不回退（约束②）；首次置位留一行日志便于事后取证启动耗时
+  if (!(k in _boot.steps) || _boot.steps[k]) return;
+  _boot.steps[k] = true;
+  console.log('[boot] ✔ ' + k + '（启动后 ' + Math.round((Date.now() - SERVER_STARTED_AT) / 1000) + ' 秒）');
+}
+function bootRcsRequired() { try { return !!(db && db.rcsConfig && db.rcsConfig.host); } catch (_) { return false; } }
+function bootInfo() { // 终端唯一放行判据：pending 为空即 ready；agvDown 供分级禁用 AGV 动作
+  const nowMs = Date.now();
+  const pending = [];
+  for (const [k, label] of BOOT_STEPS) if (!_boot.steps[k]) pending.push(label);
+  const rcsAge = _dep.rcs.okAt ? Math.round((nowMs - _dep.rcs.okAt) / 1000) : -1;
+  // 通联口径与健康分同源（server.js:10519 的 pollSec*3+20）：抖动不判死，且未配 AGV 时恒 false
+  const rcsReq = bootRcsRequired();
+  const agvDown = rcsReq && (rcsAge < 0 || rcsAge >= Math.max(120, (Number(P().pollSec) || 20) * 3 + 20));
+  return {
+    ready: pending.length === 0, pending,
+    total: BOOT_STEPS.length,
+    phase: pending.length ? 'sweep' : 'ready',
+    since: new Date(SERVER_STARTED_AT).toISOString(),
+    ageSec: Math.round((nowMs - SERVER_STARTED_AT) / 1000),
+    rcs: { required: rcsReq, ageSec: rcsAge, down: agvDown },
+    recovered: _boot.recovered, rescue: _boot.rescue,
+  };
+}
 function reqMark(ms, code) { // 请求打点（send 出口统一调用，零侵入）：按分钟聚合请求数/5xx/慢请求(>2s)/最慢耗时
   const m = Math.floor(Date.now() / 60000);
   if (m !== _reqAgg.m) { if (_reqAgg.m) _reqHist.push(Object.assign({}, _reqAgg)); while (_reqHist.length > 60) _reqHist.shift(); _reqAgg = { m, n: 0, err: 0, slow: 0, maxMs: 0 }; }
@@ -289,11 +334,12 @@ function loadDb() {
     if (!chk.ok) {
       console.log('[recover] 主数据文件损坏：' + chk.reason + '，尝试自动恢复…');
       archiveCorrupt(chk.reason);
-      let recovered = false;
-      if (fs.existsSync(SAFE_FILE) && dbIntact(SAFE_FILE).ok) recovered = restoreFrom(SAFE_FILE, '安全副本 db.safe.json');
-      if (!recovered) { const bk = latestGoodBackup(); if (bk) recovered = restoreFrom(bk, '备份 ' + path.basename(bk)); }
-      if (recovered) { _dbHealth.lastRecover = Date.now(); _dbHealth.recoverCount++; }
-      else { console.log('[recover] 无可用安全副本/备份，将创建空库（请立即从外部备份恢复！）'); }
+      let recovered = false, recSrc = '';
+      if (fs.existsSync(SAFE_FILE) && dbIntact(SAFE_FILE).ok) { recovered = restoreFrom(SAFE_FILE, '安全副本 db.safe.json'); if (recovered) recSrc = '安全副本 db.safe.json'; }
+      if (!recovered) { const bk = latestGoodBackup(); if (bk) { recovered = restoreFrom(bk, '备份 ' + path.basename(bk)); if (recovered) recSrc = '备份 ' + path.basename(bk); } }
+      // ㉖v283 回滚取证：数据被动过就必须看得见（不能悄悄换库）。锁页与系统错误页同时展示"回滚自哪个文件、什么原因"
+      if (recovered) { _dbHealth.lastRecover = Date.now(); _dbHealth.recoverCount++; try { _boot.recovered = { from: recSrc, reason: String(chk.reason || '').slice(0, 120), at: Date.now() }; } catch (_) {} }
+      else { try { _boot.recovered = { from: '', reason: '无可用安全副本/备份，已创建空库', at: Date.now(), emptyDb: true }; } catch (_) {} console.log('[recover] 无可用安全副本/备份，将创建空库（请立即从外部备份恢复！）'); }
     } else { _dbHealth.lastOk = Date.now(); }
   }
   if (!fs.existsSync(DB_FILE)) { const d = defaultDb(); saveDb(d); console.log('[init] 已创建初始账号 admin / admin123（首次登录需改密）'); return d; }
@@ -2095,6 +2141,7 @@ function coarseFlowAlert(snap) {
 // （sync 路径由 ledgerSync/scanlogSync 自己落盘，sweep 路径没有任何人落盘）——不补则标记只活在内存，
 // 服务一重启标记全丢，同一批滞留框每次重启都被重新轰炸一遍。
 function coarseSweep() {
+  bootDone('coarse'); // ㉖v283 入口打勾：幂等且只前进不回退，周期调用不重复记日志
   try {
     const before = Object.keys(db.coarseAlert || {}).length;
     coarseFlowAlert(null);
@@ -2163,7 +2210,7 @@ function fullFlowAlert() {
     save(); // 去重标记必须落盘（同 coarseSweep 教训：notify 不含 save，不补则重启后重轰）
   } catch (e) { console.log('[full-alert] 失败：', e.message); logErr('fullFlowAlert', e); }
 }
-function fullSweep() { try { fullFlowAlert(); } catch (_) { } }
+function fullSweep() { bootDone('fullSweep'); try { fullFlowAlert(); } catch (_) { } } // ㉖v283 入口打勾
 setTimeout(fullSweep, 13000).unref(); // 与 coarse(10s)/invariant(14s) 错开 tick，启动三个全库扫不同时挤盘
 setInterval(fullSweep, 5 * 60 * 1000).unref();
 // ---- ㉖v199d 诊断搭车上报（用户点题："为什么有异常不能自动上传服务器"）----
@@ -2219,6 +2266,7 @@ function diagWhyFor(op, nowMs) {
 }
 function diagDeadSweep() {
   try {
+    bootDone('deadSweep'); // ㉖v283 打在开关早退之前：0=关表示该步无需执行，同样是就绪（放早退后会永久锁死）
     if (!Number(P().diagDeadMin)) return; // 0=关
     const nowMs = Date.now();
     const FULL = /^NB0[23]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$/; // 与 fullFlowAlert 同口径（不含 NB04）
@@ -2401,6 +2449,7 @@ setInterval(dupSweep, 5 * 60 * 1000).unref();
 //   真·不同托号撞位 0 处；③ 幽灵框 0 个。即上线第一天不误报，命中即真事（哨兵平时无声）。
 function invariantSweep() {
   try {
+    bootDone('invariant'); // ㉖v283 打在开关早退之前：关闭不变量告警=该步无需执行，同样是就绪（放早退后会永久锁死）
     if (!Number(P().invariantAlertOn)) return;
     const up = (s) => String(s || '').trim().toUpperCase();
     const isCell = (l) => /^NB0[234]-[A-H]-\d{1,2}-(\d{1,2}|[1-4]F)$/.test(up(l)); // 只认完整格位，台站/粗码不参与
@@ -3324,7 +3373,11 @@ const PARAMS = {
   // ㉖v108 看门狗配置（用户要求：判活阈值进面板；经 /api/health-ping 下发给 watchdog.ps1，服务不通时脚本用本地默认兜底）
   wdHbStaleSec:   { grp: '看门狗', name: '心跳假死阈值', unit: '秒', min: 60, max: 600, d: 180, tip: 'RCS轮询心跳停跳超此秒数判"进程假死"计一次异常。实际生效值=max(本值, RCS轮询间隔×2+60)——防轮询调大后误杀正常服务。连续异常达「重启触发阈值」次才重启服务' },
   wdFailThreshold: { grp: '看门狗', name: '重启触发阈值', unit: '次', min: 2, max: 10, d: 3, tip: '看门狗连续判异常达此次数才重启 HSAuthServer（防单次网络抖动误杀）。下限2=禁止1次即重启。另有硬限速：1小时内最多重启2次，超限停止自动救援转人工。看门狗每5分钟检查一次（间隔由计划任务控制，改后需重注册）' },
+  ffHbStaleSec:   { grp: '看门狗', name: '假死自退阈值', unit: '秒', min: 0, max: 600, d: 0, tip: '㉖v283 进程内 fail-fast：RCS轮询循环自检，心跳停超此秒数即 gracefulExit 落盘后自退，靠 nssm 2秒拉起——把看门狗最长15分钟盲区压到分钟级，且退出前必落盘（不丢数据）。双保险防误杀：仅 uptime>300秒 且 RCS曾连通(_dep.rcs.okAt>0) 才判；RCS地址未配则恒不触发。0=关（默认，观察期后由管理员开到180~300）。与外部看门狗互补，不替代' },
   asyncSave:      { grp: '存储引擎', name: '异步落盘', unit: '开关', min: 0, max: 1, d: 0, tip: '㉖v111 小卡根治灰度阀。1=常规 save 走异步落盘（磁盘 fsync 等待挪 libuv 线程池，主线程只承担 ~34ms 序列化；断电 write→fsync→rename→目录fsync 四步一步不减；同文件写序队列防旧快照覆盖；退出/备份路径恒走同步写不受本开关影响）。0=现行同步落盘（默认，观察期后切1）。切换即时生效无需重启；切回0=秒级回退' },
+  pushOn:         { grp: '消息推送', name: '消息推送中心开关', unit: '开关', min: 0, max: 1, d: 0, tip: '㉖v291 启用局域网独立消息推送中心（push_server.js，部署见 deploy/push-server/README）。1=通知产生时同步转发推送中心，网页/PDA 消息中心走 SSE 秒级推送；0=关（两端回退既有轮询，行为同旧版）。开关即时生效无需重启；推送中心不可达时自动静默降级轮询，不影响业务' },
+  pushUrl:        { grp: '消息推送', str: 1, name: '推送中心地址', unit: '文本', min: 0, max: 0, d: '', tip: '㉖v291 推送中心完整基址，如 http://10.96.7.200:8100（局域网内运行 push_server.js 的机器）。留空=即开关打开也不转发。下发给网页/PDA 供其连接 SSE' },
+  pushKey:        { grp: '消息推送', str: 1, name: '推送中心密钥', unit: '文本', min: 0, max: 0, d: '', tip: '㉖v291 与推送中心 PUSH_KEY 环境变量一致时转发/订阅才鉴权通过；推送中心未设 KEY 则留空。随 pushCfg 下发给已登录端（SSE 订阅需带），仅登录态可见' },
   outWhKeys:      { grp: '统计口径', str: 1, name: '出库去向关键词', unit: '文本', min: 0, max: 0, d: '线边仓,成品仓', tip: '㉖v100 判定"真出库"的 MES 仓名关键词（多个用逗号分隔）。直调单去向含任一关键词=出库；全不含=移仓（如冷冲件仓/热压单件仓/代发仓）——移仓单照常可查可审计，但不计今日出库/工作量出库/周转分/呆滞判定、不盖标签"已出库"防复用戳，报表标注"移仓"。㉖v108 默认补入成品仓（用户口径：线边仓与成品仓均为真实出库）。留空=全部按出库算（回退旧口径）' },
 };
 function P() { const o = {}; for (const [k, d] of Object.entries(PARAMS)) { const v = (db.params || {})[k]; if (d.str) { o[k] = (typeof v === 'string') ? v : d.d; } else { o[k] = (typeof v === 'number' && Number.isFinite(v)) ? v : d.d; } } return o; }
@@ -3603,7 +3656,34 @@ function notify(toUserId, type, text, reqId, opts) {
     if (_nq.size > 300) _nq.delete(_nq.keys().next().value); // ㉖v98c 车辆告警键含随机后缀，滚动清理防内存缓涨
     if (db.notifications.length > P().notifKeep) db.notifications = db.notifications.slice(-P().notifKeep); // ㉖ 保留条数可调（原硬编码500）
     try { const uu = db.users.find((x) => x.id === toUserId); sseSend({ t: 'notif', to: toUserId, who: uu ? uu.name : toUserId, type, text, reqId: reqId || '' }); } catch (_) {}
+    pushHubForward({ id, to: toUserId, type, text, reqId: reqId || '', time: new Date().toISOString(), read: false }); // ㉖v291 转发推送中心（开关关/不可达=静默跳过）
   } catch (_) {}
+}
+// ㉖v291 消息推送中心转发：通知落库后异步转发到局域网 push_server.js（SSE 扇出给网页/PDA）。
+// 失败一律静默吞掉+限频留痕（推送是增强通道，绝不能因它挂业务/刷屏）；开关 pushOn=0 或 pushUrl 空=直接跳过。
+let _pushFailLogAt = 0;
+function pushHubForward(msg) {
+  try {
+    if (!P().pushOn) return;
+    const base = String(P().pushUrl || '').replace(/\/+$/, '');
+    if (!base) return;
+    const key = String(P().pushKey || '').trim();
+    const u = base + '/ingest' + (key ? '?key=' + encodeURIComponent(key) : '');
+    const body = JSON.stringify({ msg });
+    const req = http.request(u, { method: 'POST', headers: { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) }, timeout: 2500 }, (res) => { res.resume(); });
+    req.on('error', (e) => { const t = Date.now(); if (t - _pushFailLogAt > 300000) { _pushFailLogAt = t; try { logErr('pushHub', { message: '推送中心转发失败（5分钟限频）：' + (e && e.message) }); } catch (_) {} } });
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} });
+    req.end(body);
+  } catch (_) {}
+}
+// ㉖v291 推送配置下发体：on=开关，url=推送中心基址，key=订阅密钥（两端连 SSE 需带）。
+// 仅登录态接口（me/login）下发；参数面板不展示 pushKey 明文之外的额外泄露面（面板本就只管理员可见）。
+function pushCfgOf() {
+  try {
+    const on = !!P().pushOn;
+    const url = on ? String(P().pushUrl || '').replace(/\/+$/, '') : '';
+    return { on, url: url || '', key: url ? String(P().pushKey || '') : '' };
+  } catch (_) { return { on: false, url: '', key: '' }; }
 }
 // 夜间缓冲日出汇总：每人一条（只含本人昨夜通知，带原reqId可跳转；night_digest不在PDA白名单=不弹系统通知，站内/网页可见，不破坏旧APK）
 function nightDigest() {
@@ -4451,10 +4531,17 @@ function queueBoardOf(nowReq) {
     for (const b of db.schedBlock || []) if (b.hr === _h) { n += Number(b.n) || 0; sec += Number(b.sec) || 0; }
     _trend.push({ hr: _h, n, min: Math.round(sec / 60) });
   }
-  // 好转判定：本小时(未完,仅参考) vs 上一完整小时 的被挡总时长（分钟）
-  const _cur = _trend[_trend.length - 1] || { min: 0 }, _prev = _trend[_trend.length - 2] || { min: 0 };
-  const _delta = Math.round(_cur.min - _prev.min);
-  const _dir = _delta <= -Math.max(3, _prev.min * 0.2) ? 'improving' : (_delta >= Math.max(3, _prev.min * 0.2) ? 'worsening' : 'flat');
+  // ㉖v290 好转判定改【完整小时 vs 完整小时】（上一完整小时 vs 上上一完整小时）。
+  // 旧版拿"本小时(未完) vs 上一完整小时"比，是系统性周期误判（11-27 16:06 现场截图实锤）：
+  //   桶只记【已消化】的被挡段，16:06 时本小时才走了 6 分钟进度(约98分)，对比 15 点完整小时 277 分
+  //   → 显示"↓在好转(少179分)"；而 16 点整小时最终消化 379 分 > 277 分，那小时其实在变堵。
+  //   每小时初必报"好转"、小时末必报"变堵"，与真实走势反着来。
+  // 另补 liveMin=【当前正在被挡】的未消化分钟合计（在队被挡段不入任何小时桶，旧版完全看不见），
+  //   现场问"现在堵不堵"由这个实时值回答，趋势方向只由完整小时负责。
+  const _prevFull = _trend[_trend.length - 2] || { min: 0 }, _prev2Full = _trend[_trend.length - 3] || { min: 0 };
+  const _delta = Math.round(_prevFull.min - _prev2Full.min);
+  const _dir = _delta <= -Math.max(3, _prev2Full.min * 0.2) ? 'improving' : (_delta >= Math.max(3, _prev2Full.min * 0.2) ? 'worsening' : 'flat');
+  const _liveMin = _bd.reduce((s, x) => s + (Number(x.min) || 0), 0); // 当前在队被挡的实时分钟合计
   const _redMin = Number(P().agvBlockRedMin) || 15;
   const _light = agvBlocked === 0 ? 'green' : (agvBlockedMaxMin >= _redMin ? 'red' : 'yellow');
   const _worst = _bd[0] || null;
@@ -4520,6 +4607,8 @@ function queueBoardOf(nowReq) {
   const agvBoard = {
     light: _light, redMin: _redMin,
     detail: _bd.slice(0, 40), byRsn: _byRsn, trend: _trend, trendDeltaMin: _delta, trendDir: _dir,
+    liveMin: _liveMin, // ㉖v290 当前正在被挡的实时分钟合计（未消化段，不入小时桶）
+    trendBasis: 'fullHours', // ㉖v290 口径标记：方向=上一完整小时 vs 上上完整小时（旧版用不完整本小时，周期误判）
     worst: _worst ? { code: _worst.code, dest: _worst.dest, rsn: _worst.rsn, min: _worst.min, by: _worst.by } : null,
     redFlag: _light === 'red' && _worst ? { code: _worst.code, dest: _worst.dest, rsn: _worst.rsn, min: _worst.min, reqNo: _worst.reqNo } : null,
     carPool, // ㉖v238 车队根因：活跃故障(红,实时增长)/最近恢复(灰,定格)/挡活联动/一句话根因 hint
@@ -4939,6 +5028,7 @@ loadAll();setInterval(loadAll,30000);
 }
 
 let db = loadDb();
+bootDone('load'); // ㉖v283 就绪链首环：库已加载且启动迁移自愈（loadDb 内）已跑完。监听在此之后才开放，端口通=load 必已完成
 // ㉖v56 落盘合并：save() 只标脏，120ms 窗口内的多次变更合并为一次全量写（89 个调用点高频触发，同步写 3MB 会卡事件循环）
 // 审计加固：_dirty 在写成功后才清（原实现先清后写，磁盘瞬时故障会静默丢掉重试触发）；失败 2 秒自动重试一次，仍败等下次 save 再试（全量快照写，成功一次即覆盖全部积压）
 let _dirty = false, _saveT = null, _saving = false, _dirtySeq = 0, _writtenSeq = 0; // ㉖v111 seq 双计数：_dirtySeq=变更次数，_writtenSeq=最近成功写覆盖到的序号
@@ -5261,6 +5351,27 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
     // ---- 健康检查 ----
     if (req.method === 'GET' && p === '/health') return send(res, 200, { ok: true, time: new Date().toISOString() });
 
+    // ---- ㉖v283 自愈硬闸（统一入口：覆盖无鉴权只读接口 + 鉴权业务接口）----
+    // 位置关键：必须在【所有 /api/ 路由之前】。无鉴权区的 /api/scanlog /api/outbound /api/ledger
+    //   等只读接口若只靠鉴权区闸门，自愈期会漏拦并返回旧快照，误导用户"系统正常"继续操作。
+    // 放行白名单（绝不自锁死，与 v243 升级闸门同哲学）：
+    //   health/health-ping=探活；watchdog/report=看门狗上报；app/version、app/download=升级通道；
+    //   me=身份心跳（拦了会把已登录端踢下线）；logout=登出；sse=实时状态流（只推不写）。
+    //   登录 /api/login 不放行：自愈期禁新登录操作，已登录端靠放行的 me 维持会话；login 被拦会
+    //   返回 code:'selfheal' 文案，同时客户端探活已弹自愈锁页覆盖，用户看到的是锁页而非登录失败。
+    // 未 ready 时其余 /api/ 一律 503 code:'selfheal'——旧版 APK/缓存网页/直连接口物理上写不进业务数据。
+    // 静态页(/console /agvmap /board 等)不以 /api/ 开头，不受影响，自愈期仍可加载页面显示遮罩。
+    if (p.startsWith('/api/')) {
+      const _SH_ALLOW = { '/api/health': 1, '/api/health-ping': 1, '/api/watchdog/report': 1, '/api/app/version': 1, '/api/app/download': 1, '/api/me': 1, '/api/logout': 1, '/api/sse': 1 };
+      if (!_SH_ALLOW[p]) {
+        const _bi = bootInfo();
+        if (!_bi.ready) {
+          const _done = BOOT_STEPS.length - _bi.pending.length;
+          return send(res, 503, { ok: false, code: 'selfheal', msg: '系统自愈中，请稍候（已完成 ' + _done + '/' + BOOT_STEPS.length + ' 项：' + _bi.pending.join('、') + '）', boot: _bi });
+        }
+      }
+    }
+
     // ---- ㉒仓库管理控制台（单页应用；HTML公开，数据接口全部要token）----
     if (req.method === 'GET' && (p === '/console' || p === '/ui' || p === '/console/')) {
       try { res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(fs.readFileSync(path.join(__dirname, 'public', 'console.html'))); }
@@ -5415,7 +5526,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       save();
       console.log(`[login] ${u.username}(${ROLE_NAMES[u.role]}) 登录成功`);
       pushOps(u,'登录','',u.username);
-      return send(res, 200, { ok: true, token, expiresAt: Date.now() + SESSION_TTL_MS, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), minBuild: Number(P().minBuild) || 0 }, { 'Set-Cookie': `hst_tok=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}` }); // ㉖v243 最低可用版本下发（强制升级闸门）
+      return send(res, 200, { ok: true, token, expiresAt: Date.now() + SESSION_TTL_MS, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), minBuild: Number(P().minBuild) || 0, pushCfg: pushCfgOf() }, { 'Set-Cookie': `hst_tok=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}` }); // ㉖v243 最低可用版本下发（强制升级闸门）；㉖v291 推送配置随登录下发（网页登录后即可连 SSE）
     }
 
     // ---- G1 健康端点：无鉴权，供PDA失联检测/运维探测/网页健康分 ----
@@ -5424,7 +5535,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
     //   codeSha=启动时冻结的自身哈希；codeMismatch=已判好的"改了代码没重启"布尔旗，
     //   运维不必再心算 sha 是否相同。见顶部 codeFingerprint/codeMismatch。
     if (req.method === 'GET' && p === '/api/health') {
-      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), code: Object.assign({ startedAt: new Date(SERVER_STARTED_AT).toISOString() }, CODE_FP, codeMismatch(Date.now())), netmap: { lands: Object.keys(NetMap.lands).length, edges: Object.keys(NetMap.adj).length, ready: NetMap.ready(), builtAgo: NetMap.builtAt ? Math.round((Date.now() - NetMap.builtAt) / 1000) : -1 }, counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length }, invariant: db.lastInvariantCheck ? Object.assign({ ageSec: Math.round((Date.now() - db.lastInvariantCheck.at) / 1000) }, db.lastInvariantCheck) : null }); // ㉖v172 哨兵在岗可观测：最近一次账实自检的时刻/距今/命中数（null=启动未满14秒尚未首跑）
+      return send(res, 200, { ok: true, uptime: Math.round(process.uptime()), serverTime: new Date().toISOString(), memMB: Math.round(process.memoryUsage().rss / 1048576), code: Object.assign({ startedAt: new Date(SERVER_STARTED_AT).toISOString() }, CODE_FP, codeMismatch(Date.now())), netmap: { lands: Object.keys(NetMap.lands).length, edges: Object.keys(NetMap.adj).length, ready: NetMap.ready(), builtAgo: NetMap.builtAt ? Math.round((Date.now() - NetMap.builtAt) / 1000) : -1 }, counts: { reqs: (db.requisitions || []).length, scanlog: Object.keys(db.scanlog || {}).length, outbound: Object.keys(db.outbound || {}).length, queue: (db.agvQueue || []).filter((q) => q.state === '排队').length, sessions: Object.keys(db.sessions || {}).length }, invariant: db.lastInvariantCheck ? Object.assign({ ageSec: Math.round((Date.now() - db.lastInvariantCheck.at) / 1000) }, db.lastInvariantCheck) : null, boot: bootInfo() }); // ㉖v172 哨兵在岗可观测：最近一次账实自检的时刻/距今/命中数（null=启动未满14秒尚未首跑）；㉖v283 boot=启动就绪状态机（只增字段，ok/uptime/netmap/counts/invariant 原样保留，不破坏 PDA 失联检测与网页健康分）
     }
     // ---- ㉖v108 看门狗探测端点：无鉴权轻量应答，返回循环心跳年龄（外部计划任务据此判"进程活着但假死"并自动重启服务） ----
     if (req.method === 'GET' && p === '/api/health-ping') {
@@ -5443,6 +5554,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
       if (!ACTS[act]) return send(res, 400, { ok: false, msg: 'act 需 hb_stale/restart_ok/restart_fail/restart_limit/no_http' });
       const det = String(b.detail || '').replace(/[\uFFFD\u0000-\u0008]/g, '').slice(0, 300);
       const line = '看门狗[' + act + ']' + (det ? '：' + det : '');
+      try { _boot.rescue = { lastAct: act, at: Date.now(), limited: act === 'restart_limit', detail: det }; } catch (_) {} // ㉖v283 锁页据此显示"救援进行中/已限速需人工"，限速时永不自动解锁
       logErr('看门狗', { message: line });
       pushEvent(act === 'restart_ok' ? '恢复' : '告警', '看门狗', line, Date.now());
       save();
@@ -5473,7 +5585,7 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
 
       // 心跳/取当前身份+功能开关（App 前台恢复与定时轮询调用；停用即时生效靠它）
       if (req.method === 'GET' && p === '/api/me') {
-        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, outWhKeys: String(P().outWhKeys || '线边仓'), pdaAgvRefSec: P().pdaAgvRefSec, serverTime: new Date().toISOString(), minBuild: Number(P().minBuild) || 0 }); // ㉖v100 出库去向关键词下发：PDA 直调提交后按去向提示"出库单/移仓单"；㉖v209 PDA领料AGV刷新秒数下发；㉖v243 最低可用版本下发（强制升级闸门）
+        return send(res, 200, { ok: true, user: safeUser(u), features: db.features[u.role] || {}, prefs: prefsFor(u.id), uiRefreshSec: P().uiRefreshSec, outWhKeys: String(P().outWhKeys || '线边仓'), pdaAgvRefSec: P().pdaAgvRefSec, serverTime: new Date().toISOString(), minBuild: Number(P().minBuild) || 0, pushCfg: pushCfgOf() }); // ㉖v100 出库去向关键词下发：PDA 直调提交后按去向提示"出库单/移仓单"；㉖v209 PDA领料AGV刷新秒数下发；㉖v243 最低可用版本下发（强制升级闸门）；㉖v291 推送中心配置下发（on/url/key，仅登录态接口给，供两端连 SSE）
       }
 
       // ㉖v59 个人中心：我的登录设备/会话（本人可见可踢，不含 admin 拉黑等管理动作）
@@ -6669,12 +6781,26 @@ return send(res, 200, {
         // 采集流水按框码索引（有效采集=有入库佐证）
         const scannedCodes = {}; for (const st of Object.values(db.scanlog || {})) { if (!st.cx) scannedCodes[String(st.code || '').toUpperCase()] = st; }
         const ledgerByCode = {}; for (const x of db.ledger || []) ledgerByCode[String(x.c || '').toUpperCase()] = x;
-        // — ① 错发：出库单框码无任何采集/账本佐证（来源不明，疑似发错）
+        // ㉖v285 错发体检口径修正（用户截图实锤：网页防呆页 4998 条高危几乎全是误报）。
+        // 两个叠加根因，都已在此修复：
+        //  ① 键取错：出库单 item 的 code=零件号（MES 数字码），真框码在 barcode（N+9位标签码）；
+        //     而 scanlog.code / ledger.c / seenOut 键全是 N 框码——用零件号查框码索引必然 100% 落空。
+        //     实测：按 code 查 5124 行全部"无佐证"，按 barcode 查只剩 521 行，且这 521 行全部命中 seenOut。
+        //  ② 证据源不全：已发走的框账本行被 v151"落库即消账本"删除，ledger 必落空；但 seenOut（曾出库留痕）
+        //     与 ledgerTomb（消账墓碑）正是"确实发过货"的权威佐证，旧版两个都不查 → 正常出库被误判来源不明。
+        // 修正后证据链：采集流水 ∪ 账本 ∪ 曾出库留痕 ∪ 消账墓碑，任一命中=来源可溯，不报。
+        const seenOutMap = db.seenOut || {};
+        const tombSet = new Set((db.ledgerTomb || []).map((x) => String((x && x.c) || '').toUpperCase()));
+        // — ① 错发：出库单框码无任何采集/账本/出库留痕佐证（来源不明，疑似发错）
         for (const o of Object.values(db.outbound || {})) {
           if (Number(o.status) === 1) continue; // 已完成不再体检
           for (const it of o.items || []) {
-            const c = String(it.code || it.barcode || '').toUpperCase(); if (!c) continue;
-            if (!scannedCodes[c] && !ledgerByCode[c]) add('错发', c, it.fromLoc || '', '出库单 ' + o.orderNo + ' 中该框无采集流水也无账本记录，来源不明', 'high');
+            // barcode=真框码（证据索引键）；code=零件号，仅在 barcode 缺失时兜底（现网未完成单 0 行缺 barcode，兜底防未来数据形态变化）
+            const bc = String(it.barcode || '').toUpperCase();
+            const c = bc || String(it.code || '').toUpperCase();
+            if (!c) continue;
+            if (scannedCodes[c] || ledgerByCode[c] || seenOutMap[c] || tombSet.has(c)) continue; // 任一证据源命中=来源可溯
+            add('错发', c, it.fromLoc || '', '出库单 ' + o.orderNo + ' 中该框 ' + c + '（零件 ' + (String(it.code || '').toUpperCase() || '?') + '）无采集流水/账本/出库留痕，来源不明', 'high');
           }
         }
         // — ② 漏扫：领料单已备齐(ready)但有行短装未闭环（实发<需求且未跳过说明）
@@ -6726,10 +6852,11 @@ return send(res, 200, {
         if (!c) return send(res, 400, { ok: false, msg: '缺少框码 c' });
         const st = labelStatus(c);
         if (!st) return send(res, 200, { ok: true, code: c, level: 'block', reason: '空框码', advice: '重新扫码' });
-        // 来源佐证：采集流水或账本记录（无佐证=来源不明，最高危错发信号）
-        const scanned = Object.values(db.scanlog || {}).some((x) => !x.cx && String(x.code || '').toUpperCase() === c);
-        const onLedger = (db.ledger || []).some((x) => String(x.c || '').toUpperCase() === c);
-        if (!scanned && !onLedger) return send(res, 200, { ok: true, code: c, level: 'block', reason: '该框无采集流水也无账本记录，来源不明', advice: '疑似发错货，请先核对来源' });
+        // ㉖v285 来源佐证链与体检①同源修正：采集流水 ∪ 账本 ∪ 曾出库留痕(seenOut) ∪ 历史录入(seenIn)。
+        // 旧版只查前两者，已发走的框账本行被 v151 消账 → 正常出库核对被误拦"来源不明"。
+        // 复用上面 labelStatus(c) 的结果（everOut=seenOut 留痕、everIn=曾录入、inScanlog/inLedger），不重复扫库。
+        const hasSource = !!(st.inScanlog.length || st.inLedger.length || st.everOut || st.everIn);
+        if (!hasSource) return send(res, 200, { ok: true, code: c, level: 'block', reason: '该框无采集流水/账本/出库留痕，来源不明', advice: '疑似发错货，请先核对来源' });
         // 已发料到领料单：会被重复出库，硬拦（出库核对阶段该框不该再随出库单走）
         if (st.inIssued.length) return send(res, 200, { ok: true, code: c, level: 'block', reason: '该标签已发料到领料单 ' + st.inIssued.slice(0, 3).join('、') + '，禁止重复出库', advice: '该框已走领料发料，勿再随出库单发出' });
         // 检验中（非退货放行态）：硬拦
@@ -8987,18 +9114,27 @@ return send(res, 200, {
         // 改为 [今天-6, 今天]：winStart 为 7 天前零点，桶序 0..6 与标签同步左移，历史数据正常入桶。
         const winStart = todayStart - 6 * dayMs;
         // ㉖v150b 三指标互不重叠（用户点破旧口径重叠）：来料登记=今日一楼扫过数（含已转二楼）；入库=今日二楼上架扫过数（剔除仅一楼扫）；待入库=当前账本仍停 NB04（积压口径含跨日）
+        // ㉖v286 口径回归修复（用户实锤：注释写"含已转二楼"，数字却只有12=未转的）：
+        //   v253 起转入二楼会把入账前 NB04 旧流水"系统自动取代"标作废，本循环一刀切 skip 作废行
+        //   → 转入二楼的框（今日实测27个）从到货量里消失，v150b 承诺的"含已转二楼"名存实亡。
+        //   修正：到货计数 = 未作废 ∪ 自动取代作废（cxB 前缀"系统自动取代"=转入二楼的凭证，到货事实成立）；
+        //   人工作废（改错重扫/纯取消）仍不算——改错重扫的框由重扫的有效行覆盖，不会漏。
+        //   v265 链路追溯已按"作废≠没登记过"修过，此处是同一原则在 KPI 的补课。
+        const _recvCountable = (s) => !s.cx || String(s.cxB || '').startsWith('系统自动取代');
         const recvSet = new Set(), upSet = new Set();
         const inToday = new Map();
         const trendIn = Array(7).fill(0), trendOut = Array(7).fill(0);
         for (const s of Object.values(db.scanlog || {})) {
-          if (s.cx || !s.t || !s.code) continue;
+          if (!s.t || !s.code) continue;
+          const isRecvRow = /^NB04-/.test(String((s.st || s.gl) || '').toUpperCase());
+          if (s.cx && !(isRecvRow && _recvCountable(s))) continue; // NB04 到货行按修正口径放行自动取代作废；其余（含二楼/人工作废）维持原口径
           if (s.t >= todayStart) {
-            if (/^NB04-/.test(String((s.st || s.gl) || '').toUpperCase())) recvSet.add(s.code); else upSet.add(s.code);
+            if (isRecvRow) recvSet.add(s.code); else upSet.add(s.code);
             if (!inToday.has(s.code) || (inToday.get(s.code).t || 0) < s.t) inToday.set(s.code, s);
           }
         }
         const inBoxes = upSet.size; // 今日入库(标签)=二楼上架口径（对齐用户理解：入库标签只认二楼扫码）
-        const recvToday = recvSet.size; // 一楼来料登记(标签)=今日到货量（含已转二楼，与入库/待入库不重叠计数维度）
+        const recvToday = recvSet.size; // 一楼来料登记(标签)=今日到货量（含已转二楼/已出库，与入库/待入库不重叠计数维度）；㉖v286 修复后名副其实
         const inQty = [...inToday.values()].filter((x) => upSet.has(x.code)).reduce((s, x) => s + (Number(x.q) || 0), 0); // 入库件数同口径=已上架标签件数
         const recvTodayQty = [...inToday.values()].filter((x) => recvSet.has(x.code)).reduce((s, x) => s + (Number(x.q) || 0), 0); // ㉖v270 今日来料件数=与 recvToday 标签同口径（每标签取今日最新有效行件数；"来了多少"车间语义=件数，只给标签数答不了到货进度）
         const _pendRows = (db.ledger || []).filter((x) => /^NB04-/.test(String(x.l || '').toUpperCase()));
@@ -9040,7 +9176,15 @@ return send(res, 200, {
         // （入库=二楼上架剔NB04按标签去重、出库=墓碑行数、AGV=fin落窗任务数）——公平比较，防"早上10点比昨天全天"的假暴跌
         const _yBase = todayStart - dayMs, _yEnd = _yBase + (Date.now() - todayStart);
         const _yIn = new Set(), _yQ = new Map(), _yRv = new Set();
-        for (const s of Object.values(db.scanlog || {})) { if (s.cx || !s.t || !s.code || s.t < _yBase || s.t > _yEnd) continue; if (/^NB04-/.test(String((s.st || s.gl) || '').toUpperCase())) { _yRv.add(s.code); } else { _yIn.add(s.code); } if (!_yQ.has(s.code) || (_yQ.get(s.code).t || 0) < s.t) _yQ.set(s.code, s); } // ㉖v270 昨日窗同时收来料(NB04)与上架，_yQ 每码最新行供两口径件数
+        // ㉖v286 昨日窗同口径：NB04 行计入"未作废 ∪ 系统自动取代作废"（与今日卡 _recvCountable 同源），
+        // 否则昨日转入二楼的框被吞、今日修复后环比出现假暴涨（口径必须同时修，否则比较失真）
+        for (const s of Object.values(db.scanlog || {})) {
+          if (!s.t || !s.code || s.t < _yBase || s.t > _yEnd) continue;
+          const _isNb04 = /^NB04-/.test(String((s.st || s.gl) || '').toUpperCase());
+          if (s.cx && !(_isNb04 && _recvCountable(s))) continue;
+          if (_isNb04) { _yRv.add(s.code); } else { _yIn.add(s.code); }
+          if (!_yQ.has(s.code) || (_yQ.get(s.code).t || 0) < s.t) _yQ.set(s.code, s);
+        } // ㉖v270 昨日窗同时收来料(NB04)与上架，_yQ 每码最新行供两口径件数
         const yPrev = { inBoxes: _yIn.size, inQty: [..._yQ.values()].filter((x) => _yIn.has(x.code)).reduce((s, x) => s + (Number(x.q) || 0), 0), recvToday: _yRv.size, recvTodayQty: [..._yQ.values()].filter((x) => _yRv.has(x.code)).reduce((s, x) => s + (Number(x.q) || 0), 0), outToday: (db.ledgerTomb || []).filter((x) => x.t >= _yBase && x.t <= _yEnd).length, agvToday: Object.values(db.agvTasks || {}).filter((t) => (t.fin || 0) >= _yBase && (t.fin || 0) <= _yEnd).length };
         return send(res, 200, { ok: true, at: new Date().toISOString(),
           kpi: { inBoxes, inQty, recvToday, recvTodayQty, pendRecv, pendRecvQty, outToday: (db.ledgerTomb || []).filter((x) => x.t >= todayStart).length, agvToday: agvDoneToday, agvQueue: queueNow, yPrev, // ㉖v252 yPrev=昨日同期（同口径同时刻），前端算增减；㉖v270 来料件数两口径（"来了多少"=件数闭环）
@@ -12530,8 +12674,35 @@ async function gracefulExit(sig) {
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) { process.on(sig, () => { gracefulExit(sig); }); }
 process.on('beforeExit', () => { try { if (P().asyncSave) { if (!_exiting) { _exiting = true; flushSaveNow().catch(() => {}); } } else flushSave(); } catch (_) {} }); // 自然退出兜底（事件循环排空时）；㉖v111 异步模式自排空后再静
 
+// ===== ㉖v283 进程内假死 fail-fast（把看门狗最长 15 分钟盲区压到分钟级）=====
+// 与外部看门狗互补：看门狗 5 分钟一轮 × 连续 3 次才重启，进程假死时现场最长干等 15 分钟且不知原因。
+// 本自检在进程内每 30 秒查一次 RCS 轮询心跳，停跳超阈值即 gracefulExit 落盘自退，nssm 2 秒拉起，
+// 终端全程见"自愈中"锁页。默认关（ffHbStaleSec=0），由管理员开到 180~300。
+// 三重防误杀（任一不满足就不自退）：① 开关 >0；② uptime>300 秒（避开启动期）；③ _dep.rcs.okAt>0
+//   （RCS 地址配了且至少成功通信过一次——纯人工仓/测试库/配置错误时恒不触发，不会自杀循环）。
+// 安全阀：退出走 gracefulExit（asyncSave 模式先排空在途写再退），确保自退前脏数据必落盘，不丢数据。
+(function ffLoop() {
+  setTimeout(() => {
+    try {
+      if (!_exiting) {
+        const thr = Number(P().ffHbStaleSec) || 0;
+        if (thr > 0 && process.uptime() > 300 && _dep.rcs.okAt > 0 && _hb.rcs > 0) {
+          const ageS = Math.round((Date.now() - _hb.rcs) / 1000);
+          if (ageS > Math.max(thr, (Number(P().pollSec) || 20) * 3)) {
+            console.log('[fail-fast] RCS 轮询心跳停跳 ' + ageS + ' 秒（阈值 ' + thr + '），判假死，落盘后自退交 nssm 拉起');
+            try { logErr('fail-fast', { message: 'RCS轮询心跳停跳' + ageS + '秒，进程内自退重启（看门狗盲区压缩）' }); } catch (_) {}
+            gracefulExit('fail-fast-rcs-hb-lost');
+            return; // 已进入退出流程，停止后续自检
+          }
+        }
+      }
+    } catch (_) {}
+    ffLoop();
+  }, 30000).unref();
+})();
+
 server.keepAliveTimeout = 65000; // ㉖v57 间歇登录网络错误：Node默认keep-alive 5s短于浏览器连接池复用窗口，POST落在服务端已关连接上被reset且不自动重试；抬到65s(长于常见代理60s)
 server.headersTimeout = 66000; // 需略大于keepAliveTimeout
 server.requestTimeout = 300000; // 单请求上限5分钟（SSE长挂走独立路径不受影响：SSE在handler内自持res）
 server.on('error', (e) => { if (e && e.code === 'EADDRINUSE') { console.log('[exit] 端口已被占用：本实例为多余副本，立即退出不落盘（防旧快照回写覆盖）'); process.exit(0); } }); // ㉖v69 幻影进程根治：抢不到端口的副本绝不带旧内存继续跑（process.exit 同时跳过 beforeExit 的 flushSave）
-server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); latePunishMigrateV279(); } catch (_) {} backupDb(); archiveOld(); setTimeout(() => { try { const n = outboundLedgerFix(); try { selfHealCount('outboundLedgerFix', n) } catch (_hc) {} if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} try { lostCallSweep(); } catch (_) {} try { dictFfdCleanV158(); } catch (_) {} try { scanKeyUpperV242(); } catch (_) {} /* ㉖v242 小写键归一+三要素回填：同放 8 秒链=当日备份已落盘，改前原件可回滚 */ /* ㉖v158 字典乱码键清理：放 8 秒链内=当日备份(backupDb)必已落盘，清理前原件在备份里可回滚 */ }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目；㉖v152 启动跑一轮丢单巡检（去重映射持久库内，重启不重复轰炸）
+server.listen(PORT, HOST, () => { console.log(`[auth-server] http://${HOST}:${PORT} 已启动（数据文件 ${DB_FILE}）`); try { opsMigrateToFiles(); eventsMigrateFromAlarms(); seenInBackfill(); seenInPatchV100(); opFixV101(); gsCleanV101(); ledgerQtyFixV103(); reqRaceFixV103(); ledgerByFixV103(); seenOutMoveFixV108(); outboundMitemFixV109(); opsDigestTick(); cleanOrphanTmp(); latePunishMigrateV279(); } catch (_) {} backupDb(); archiveOld(); bootDone('backup'); setTimeout(() => { try { const n = outboundLedgerFix(); try { selfHealCount('outboundLedgerFix', n) } catch (_hc) {} if (n) console.log('[ob-fix] 启动补建出库台账 ' + n + ' 行'); } catch (_) {} try { lostCallSweep(); } catch (_) {} try { dictFfdCleanV158(); } catch (_) {} try { scanKeyUpperV242(); } catch (_) {} bootDone('fix8s'); /* ㉖v283 8秒链末打勾：出库台账补建+键名归一完成=可放行（此前原件已在 backupDb 落盘，可回滚） */ /* ㉖v242 小写键归一+三要素回填：同放 8 秒链=当日备份已落盘，改前原件可回滚 */ /* ㉖v158 字典乱码键清理：放 8 秒链内=当日备份(backupDb)必已落盘，清理前原件在备份里可回滚 */ }, 8000); }); // ㉖v94r 启动后补建缺失出库台账（已转MES但PDA推送丢失的行），延迟8秒待服务就绪；㉖v100 seenIn 补丁纠正老回填带病条目；㉖v152 启动跑一轮丢单巡检（去重映射持久库内，重启不重复轰炸）

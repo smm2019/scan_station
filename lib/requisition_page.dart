@@ -106,6 +106,27 @@ class _RequisitionPageState extends State<RequisitionPage>
         const Duration(seconds: 30), (_) => _loadSilent()); // ⑪自动刷新
     kReqJump.addListener(_onJump); // ㉖通知点击直达详情
     kReqAgain.addListener(_onAgain); // ㉖v76 领料账本一键续领
+    kReqFilter.addListener(_onReqFilter); // ㉖v289 数据驾驶舱下钻：带状态筛选跳本页
+    // ㉖v289 懒加载双保险：本页首次被构建时（驾驶舱可能先写了 kReqFilter 才切到本 tab），
+    // 监听尚未注册会漏掉那条——initState 直接消费一次待处理筛选。
+    if (kReqFilter.value.isNotEmpty) {
+      final st = kReqFilter.value.split("@").first;
+      kReqFilter.value = "";
+      _fltSt = st;
+    }
+  }
+
+  /// ㉖v289 驾驶舱点击 KPI 下钻：外部写 kReqFilter(筛选码@时间戳) → 设置 _fltSt 状态筛选。
+  /// 筛选是纯前端（基于内存 _reqs 的 _shown getter），setState 即刷新 chip 高亮与列表，无需重新拉取。
+  void _onReqFilter() {
+    final v = kReqFilter.value;
+    if (v.isEmpty || !mounted) return;
+    kReqFilter.value = "";
+    final st = v.split("@").first;
+    setState(() {
+      _fltSt = st;
+      _search = ""; // 清搜索词，避免与状态筛选叠加造成"跳过来是空的"困惑
+    });
   }
 
   bool _jumping = false;
@@ -151,6 +172,7 @@ class _RequisitionPageState extends State<RequisitionPage>
     _listTimer?.cancel();
     kReqJump.removeListener(_onJump);
     kReqAgain.removeListener(_onAgain);
+    kReqFilter.removeListener(_onReqFilter); // ㉖v289 驾驶舱下钻筛选监听释放
     super.dispose();
   }
 
@@ -2429,7 +2451,7 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                                       style:
                                           const TextStyle(fontSize: 13.5))),
                             ]),
-                      ]))));
+                      ])))));
         }));
   }
 
@@ -4336,6 +4358,7 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
     widget.toast(
         "${em != null ? "⚠️应急已发" : "已发"} $code（$boxQty 件）累计 ${_fmtInvNum(tGot)}/${_fmtInvNum(tNeed)}${fromLoc.isNotEmpty ? " · 原$fromLoc 已拣下" : ""}",
         err: false);
+    scanSuccessBuzz(); // ㉖v288 发料成功震动（遵守设置开关；此前领料发料成功无震动，仅扫重异常有长震）
     if (fromLoc.isNotEmpty)
       ledgerRemoveAndPush(
           [code.toUpperCase()]); //㉖v59 方案B：逐码发料→单码拣下（同托兄弟码各自扫各自消，不再整框连坐）
@@ -4409,7 +4432,9 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
                     child: Text(
                         route.isEmpty
                             ? "🗺 本单地面框已扫完"
-                            : "🗺 按排取货路线（${route.rows.length}排 ${route.totalBoxes}框${route.skippedAgv > 0 ? "｜${route.skippedAgv}框走AGV见队列条" : ""}）",
+                            : "🗺 按排取货路线（${route.rows.length}排 ${route.totalBoxes}框${route.totalCodes > route.totalBoxes ? "·${route.totalCodes}码待扫" : ""}${route.skippedAgv > 0 ? "｜${route.skippedAgv}框走AGV见队列条" : ""}）",
+                        // ㉖v286 框数=物理框（按货位归并，一筐两标签=1框）；同托多码时另标待扫码数，
+                        // 现场不再误读"要搬N筐"（用户截图实锤：A16排一筐两标签旧版显示"2框"）
                         style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
@@ -4460,7 +4485,8 @@ class _ReqDetailSheetState extends State<_ReqDetailSheet> {
               const SizedBox(width: 6),
               Expanded(
                   child: Text(
-                      "${r.boxCount}框·${_fmtInvNum(r.qtySum)}件·${r.parts.length}种零件",
+                      "${r.boxCount}框${r.codeCount > r.boxCount ? "·${r.codeCount}码" : ""}·${_fmtInvNum(r.qtySum)}件·${r.parts.length}种零件",
+                      // ㉖v286 框=物理框（同货位归并），同托多码另标码数：一筐两标签显示"1框·2码"而非"2框"
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
                           fontSize: 10.5, color: Colors.blueGrey))),
@@ -6504,6 +6530,7 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
     final trend = List<Map>.from(ab["trend"] ?? []);
     final dir = (ab["trendDir"] ?? "").toString();
     final delta = (ab["trendDeltaMin"] as num?)?.toInt() ?? 0;
+    final liveMin = (ab["liveMin"] as num?)?.toInt() ?? 0; // ㉖v290 当前正在被挡的实时分钟合计
     final cp = (ab["carPool"] as Map?) ?? const {};
     final act = List<Map>.from(cp["act"] ?? []);
     final rec = List<Map>.from(cp["rec"] ?? []);
@@ -6652,11 +6679,10 @@ class _QueueBoardSheetState extends State<_QueueBoardSheet> {
                               const SizedBox(width: 5),
                               Expanded(
                                   child: Text(
-                                      dir == 'improving'
-                                          ? '↓ 在好转（比上小时少 ${delta.abs()} 分）'
-                                          : dir == 'worsening'
-                                              ? '↑ 在变堵（比上小时多 $delta 分）'
-                                              : '→ 平稳',
+                                      // ㉖v290 口径修正（现场截图实锤"比上小时少179分"误导）：
+                                      // 方向=上一完整小时 vs 上上完整小时（服务端同口径改）；
+                                      // "当前正在被挡X分"是实时未消化量，与小时趋势分开说，不再用不完整小时猜好坏。
+                                      '${dir == 'improving' ? '↓ 上一小时比上上小时少 ${delta.abs()} 分' : dir == 'worsening' ? '↑ 上一小时比上上小时多 $delta 分' : '→ 小时环比平稳'}${liveMin > 0 ? ' · 当前正被挡 $liveMin 分' : ''}',
                                       style: TextStyle(
                                           fontSize: 11,
                                           fontWeight: FontWeight.w600,

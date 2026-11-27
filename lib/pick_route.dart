@@ -17,10 +17,12 @@ class PickItem {
   final String code; // 标签号
   final String partNo; // 所属零件行
   final String itemName;
-  final double qty; // 该框件数（建议值）
+  final double qty; // 该标签件数（建议值）
   final int slot; // 排内位号（NB03-区-排-位 的第4段，无=0）
   final bool called; // 已叫车（正常不纳，字段留全）
-  PickItem(this.code, this.partNo, this.itemName, this.qty, this.slot, this.called);
+  final String loc; // ㉖v286 完整货位（物理框归并键：地面一格=一筐，同托多码共用同一 loc）
+  PickItem(this.code, this.partNo, this.itemName, this.qty, this.slot,
+      this.called, this.loc);
 }
 
 class PickRow {
@@ -29,7 +31,11 @@ class PickRow {
   final String key; // "A-11"
   final List<PickItem> items; // 按位号升序
   PickRow(this.zone, this.row, this.key, this.items);
-  int get boxCount => items.length;
+  // ㉖v286 框数口径修正（用户截图实锤：A16排一筐两标签被显示成"2框"，现场以为要搬两筐）：
+  // items 是【标签级】清单（逐码发料要扫几次码就有几条），物理框数必须按货位归并——
+  // 地面 NB03 一格只放一筐，同托多码共用同一 loc，与服务端 boxKeyOf（pid优先→loc|零件号）同口径。
+  int get boxCount => items.map((x) => '${x.loc}|${x.partNo}').toSet().length;
+  int get codeCount => items.length; // 待扫标签数（同托多码>框数时界面明示"N框M码"）
   double get qtySum => items.fold<double>(0, (s, x) => s + x.qty);
   List<String> get parts => items.map((x) => x.partNo).toSet().toList();
 }
@@ -38,7 +44,8 @@ class PickRoute {
   final List<PickRow> rows; // 排间有序
   final int skippedAgv; // 剔除的货架/在途框数（透明，防"框少了"困惑）
   PickRoute(this.rows, this.skippedAgv);
-  int get totalBoxes => rows.fold<int>(0, (s, r) => s + r.boxCount);
+  int get totalBoxes => rows.fold<int>(0, (s, r) => s + r.boxCount); // 物理框数（按货位归并）
+  int get totalCodes => rows.fold<int>(0, (s, r) => s + r.codeCount); // 待扫标签总数
   bool get isEmpty => rows.isEmpty;
 }
 
@@ -97,7 +104,7 @@ PickRoute buildPickRoute(List items) {
       }
       seen.add(code);
       final key = '${gz.zone}-${gz.row}';
-      (rowItems[key] ??= []).add(PickItem(code, partNo, itemName, (b['q'] as num?)?.toDouble() ?? 0, gz.slot, false));
+      (rowItems[key] ??= []).add(PickItem(code, partNo, itemName, (b['q'] as num?)?.toDouble() ?? 0, gz.slot, false, loc));
     }
   }
   final keys = rowItems.keys.toList()

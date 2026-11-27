@@ -42,23 +42,63 @@ class _DashPageState extends State<DashPage> with AutomaticKeepAliveClientMixin 
     return "${lo.month.toString().padLeft(2, "0")}-${lo.day.toString().padLeft(2, "0")} ${lo.hour.toString().padLeft(2, "0")}:${lo.minute.toString().padLeft(2, "0")}:${lo.second.toString().padLeft(2, "0")}";
   }
 
+  /// ㉖v289 点击 KPI 下钻（对齐网页概览）：驾驶舱是 push 的独立路由，需先 pop 回主页再切页签。
+  /// tab=目标页签键（stock/req/agv/insp…）；reqFilter=领料页状态筛选码（仅跳领料页时带）。
+  /// 时序：先写通道值（主页/领料页监听器或 initState 会消费），再 pop——防 pop 后监听器尚未触发就丢事件。
+  void _nav(String tab, {String reqFilter = ""}) {
+    if (reqFilter.isNotEmpty) {
+      kReqFilter.value = "$reqFilter@${DateTime.now().millisecondsSinceEpoch}";
+    }
+    kDashNav.value = "$tab@${DateTime.now().millisecondsSinceEpoch}";
+    if (mounted) Navigator.of(context).pop(); // 回主页，主页 _onDashNav 切到目标页签
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
     final k = (_data?["kpi"] as Map?) ?? const {};
+    final yp = (k["yPrev"] as Map?) ?? const {}; // ㉖v289 昨日同期（服务端算好，同口径同时刻）
     final trend = List<Map>.from(_data?["trend"] ?? const []);
-    Widget tile(String label, String value, Color color, IconData icon) => Expanded(
-      child: Container(margin: const EdgeInsets.all(4), padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6, offset: const Offset(0, 2))]),
-        child: Column(children: [
-          Icon(icon, size: 18, color: color),
-          const SizedBox(height: 4),
-          Text(value, style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: color)),
-          const SizedBox(height: 1),
-          Text(label, style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
-        ])),
-    );
     int iv(String s) => (k[s] as num?)?.toInt() ?? 0;
+    int? ypv(String s) => (yp[s] as num?)?.toInt(); // 昨日同期值（无对照数据的卡返回 null=不显示涨跌）
+    // ㉖v289 KPI 磁贴（对齐网页概览 stat tile）：昨日同期涨跌▲▼ + 零值淡化(没活的卡变灰一眼扫出哪里有活) + 点击下钻 + 件数副标
+    Widget tile(String label, String value, Color color, IconData icon,
+        {VoidCallback? onTap, int? num0, int? yPrev, String? sub}) {
+      final zero = num0 != null && num0 == 0; // 零值淡化：仅对纯数字卡（站台"x/y"等不淡化）
+      final fg = zero ? Colors.blueGrey.shade300 : color;
+      Widget? delta;
+      if (yPrev != null && num0 != null && num0 != yPrev) {
+        final d = num0 - yPrev;
+        delta = Text("${d > 0 ? '▲' : '▼'}${d.abs()}",
+            style: TextStyle(fontSize: 9, color: Colors.blueGrey.shade400));
+      }
+      return Expanded(
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            margin: const EdgeInsets.all(4),
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+            decoration: BoxDecoration(
+              color: zero ? const Color(0xFFFAFBFC) : Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: onTap != null ? Border.all(color: const Color(0xFFE8EBF2)) : null,
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6, offset: const Offset(0, 2))]),
+            child: Column(children: [
+              Icon(icon, size: 18, color: fg),
+              const SizedBox(height: 4),
+              Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Flexible(child: Text(value, overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: fg))),
+                if (delta != null) ...[const SizedBox(width: 3), delta],
+              ]),
+              const SizedBox(height: 1),
+              Text(label, style: const TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
+              if (sub != null)
+                Text(sub, style: TextStyle(fontSize: 9, color: zero ? Colors.blueGrey.shade200 : Colors.blueGrey.shade400)),
+            ])),
+        ),
+      );
+    }
     return Scaffold(
       backgroundColor: const Color(0xFFF2F4F8),
       appBar: AppBar(backgroundColor: const Color(0xFF3949AB), title: const Text("数据驾驶舱", style: TextStyle(fontSize: 16)),
@@ -71,18 +111,49 @@ class _DashPageState extends State<DashPage> with AutomaticKeepAliveClientMixin 
       body: _err.isNotEmpty && _data == null
         ? Center(child: Text(_err, style: const TextStyle(color: Colors.red)))
         : RefreshIndicator(onRefresh: _load, child: ListView(padding: const EdgeInsets.all(8), children: [
-            Row(children: [tile("今日入库(框)", "${iv('inBoxes')}", const Color(0xFF2E7D32), Icons.login), tile("今日出库(框)", "${iv('outToday')}", const Color(0xFFE65100), Icons.logout), tile("今日AGV搬运", "${iv('agvToday')}", const Color(0xFF1565C0), Icons.local_shipping), tile("AGV队列中", "${iv('agvQueue')}", const Color(0xFF6A1B9A), Icons.quiz_outlined)]),
-            Row(children: [tile("在库(框)", "${iv('stockBoxes')}", const Color(0xFF00838F), Icons.inventory_2), tile("占用货位", "${iv('stockLocs')}", const Color(0xFF4E342E), Icons.grid_view), tile("待接单", "${iv('pending')}", Colors.orange, Icons.mark_email_unread_outlined), tile("备料中", "${iv('accepted')}", const Color(0xFF3949AB), Icons.pending)]),
-            Row(children: [tile("站台在用", "${iv('stnBusy')}/${iv('stnTotal')}", iv('stnBusy') >= 7 ? Colors.red : Colors.teal, Icons.pin_drop_outlined),
-              Expanded(child: Container(margin: const EdgeInsets.all(4), padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6, offset: const Offset(0, 2))]),
-                child: Column(children: [
-                  Icon(Icons.done_all, size: 18, color: Colors.green[700]),
-                  const SizedBox(height: 4),
-                  Text("${iv('ready')}", style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: Colors.green[700])),
-                  const SizedBox(height: 1),
-                  const Text("待签收", style: TextStyle(fontSize: 10.5, color: Colors.blueGrey)),
-                ])))]),
+            // ㉖v289 KPI 网格（对齐网页概览：昨日同期涨跌▲▼ + 零值淡化 + 点击下钻 + 件数副标）
+            // 第1行 今日作业量
+            Row(children: [
+              tile("今日入库(框)", "${iv('inBoxes')}", const Color(0xFF2E7D32), Icons.login,
+                  num0: iv('inBoxes'), yPrev: ypv('inBoxes'), sub: "${(k['inQty'] as num?)?.toInt() ?? 0} 件", onTap: () => _nav('stock')),
+              tile("一楼来料(标签)", "${iv('recvToday')}", const Color(0xFF00897B), Icons.move_to_inbox,
+                  num0: iv('recvToday'), yPrev: ypv('recvToday'), sub: "${(k['recvTodayQty'] as num?)?.toInt() ?? 0} 件", onTap: () => _nav('stock')),
+              tile("今日出库(框)", "${iv('outToday')}", const Color(0xFFE65100), Icons.logout,
+                  num0: iv('outToday'), yPrev: ypv('outToday'), onTap: () => _nav('stock')),
+              tile("今日AGV搬运", "${iv('agvToday')}", const Color(0xFF1565C0), Icons.local_shipping,
+                  num0: iv('agvToday'), yPrev: ypv('agvToday'), onTap: () => _nav('agv')),
+            ]),
+            // 第2行 库存与来料积压
+            Row(children: [
+              tile("在库(框)", "${iv('stockBoxes')}", const Color(0xFF00838F), Icons.inventory_2,
+                  num0: iv('stockBoxes'), onTap: () => _nav('stock')),
+              tile("占用货位", "${iv('stockLocs')}", const Color(0xFF4E342E), Icons.grid_view,
+                  num0: iv('stockLocs'), onTap: () => _nav('stock')),
+              tile("待入库(来料区)", "${iv('pendRecv')}", const Color(0xFFEF6C00), Icons.inbox,
+                  num0: iv('pendRecv'), sub: "${(k['pendRecvQty'] as num?)?.toInt() ?? 0} 件", onTap: () => _nav('stock')),
+              tile("AGV队列中", "${iv('agvQueue')}", const Color(0xFF6A1B9A), Icons.quiz_outlined,
+                  num0: iv('agvQueue'), onTap: () => _nav('agv')),
+            ]),
+            // 第3行 领料流转（点击直达领料页对应状态筛选）
+            Row(children: [
+              tile("待接单", "${iv('pending')}", Colors.orange, Icons.mark_email_unread_outlined,
+                  num0: iv('pending'), onTap: () => _nav('req', reqFilter: 'pending')),
+              tile("备料中", "${iv('accepted')}", const Color(0xFF3949AB), Icons.pending,
+                  num0: iv('accepted'), onTap: () => _nav('req', reqFilter: 'accepted')),
+              tile("待签收", "${iv('ready')}", Colors.green[700]!, Icons.done_all,
+                  num0: iv('ready'), onTap: () => _nav('req', reqFilter: 'ready')),
+              tile("逾期签收", "${iv('overReady')}", Colors.red[700]!, Icons.report_problem,
+                  num0: iv('overReady'), onTap: () => _nav('req', reqFilter: 'ready')),
+            ]),
+            // 第4行 站台与检验
+            Row(children: [
+              tile("站台在用", "${iv('stnBusy')}/${iv('stnTotal')}", iv('stnBusy') >= 7 ? Colors.red : Colors.teal, Icons.pin_drop_outlined,
+                  onTap: () => _nav('agv')),
+              tile("检验待处理", "${iv('inspWait')}", const Color(0xFF00838F), Icons.fact_check_outlined,
+                  num0: iv('inspWait'), onTap: () => _nav('insp')),
+              const Expanded(child: SizedBox()),
+              const Expanded(child: SizedBox()),
+            ]),
             const SizedBox(height: 6),
             Container(padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
               decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 6, offset: const Offset(0, 2))]),

@@ -183,6 +183,10 @@ class AuthApi {
           serverOverride: server);
   static Future<Map> me() async =>
       _req("GET", "/api/me", token: await AuthStore.token());
+  // ㉖v283 自愈探测：读 /api/health 的 boot 就绪状态机（无鉴权端点，自愈期 503 闸门也放行 health）
+  // 返回契约同 _req：net=true 表示连不上（服务器没起/断网）；ok=true 且 j['boot'] 非空=拿到就绪状态。
+  static Future<Map> health() async =>
+      _req("GET", "/api/health", timeoutSec: 6);
   // ㉖v101 项目字典（零件号→项目码多值，网页「项目」页维护）：登录可读，库存页/缺料页筛选数据源
   static Future<Map> projGet() async =>
       _req("GET", "/api/proj", token: await AuthStore.token());
@@ -918,8 +922,11 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
         Auth.features = await AuthStore.features();
         setState(() => _stage = 2);
         _startBeat();
+        // ㉖v283 断网冷启动：离线宽限只为【保持会话、不强制重登】，进 MainPage 后由 SelfHealGate 全屏锁定
+        // 一切录入/提交（离线分不了格、MES 交不上、跨设备查重降级，扫了必白干或产脏数据）。
+        // 故不再提示"暂可用"——那会与自愈锁页矛盾、误导用户以为能干活。真实状态以锁页为准。
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text("离线模式：连不上鉴权服务器，24小时内暂可用"),
+            content: Text("连不上服务器：已暂停录入与提交，等待服务恢复后自动放开（会话已保留，无需重新登录）"),
             backgroundColor: Colors.orange));
       } else {
         if (mounted) setState(() => _stage = 1);
@@ -950,6 +957,17 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       kPdaAgvRefSec = (r["pdaAgvRefSec"] as num).toInt().clamp(3, 300);
     UpgradeGate.check((r["minBuild"] as num?)?.toInt() ??
         0); // ㉖v243 强制升级闸门：低于线锁升级页，达标刷宽限凭证（旧服务器无字段=0=关闸）
+    // ㉖v291 消息推送中心配置（服务端 pushCfg 下发）：存全局 + 变化时通知 MainPage 重连 SSE。
+    // 旧服务器无字段=kPushCfg 保持 {}（=推送关，回退 30 秒轮询，行为同旧版）。
+    if (r["pushCfg"] is Map) {
+      final nc = Map<String, dynamic>.from(r["pushCfg"] as Map);
+      final oldSig = "${kPushCfg["on"]}|${kPushCfg["url"]}|${kPushCfg["key"]}";
+      final newSig = "${nc["on"]}|${nc["url"]}|${nc["key"]}";
+      kPushCfg = nc;
+      if (oldSig != newSig) {
+        kPushCfgChanged.value = DateTime.now().millisecondsSinceEpoch;
+      }
+    }
     Auth.user = AuthUser.fromJson(Map<String, dynamic>.from(r["user"]));
     Auth.features = Map<String, bool>.from(r["features"] ?? {});
     AuthStore.markVerified();
