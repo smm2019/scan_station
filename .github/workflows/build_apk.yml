@@ -12,7 +12,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30 # ㉖v143 15→30：裸装模式(关缓存现场下Flutter/SDK/gradle)正常14~15分贴线，runner偶发慢即超时掐断(11-10 #402 实测15m18s被cancel)
+    timeout-minutes: 50 # ㉖v294 30→50：#507 门禁首次全绿后进入构建段，裸装+慢 runner 实测 30m18s 被 30 分硬限掐断（Cancelled 非测试失败）。裸装正常 14~15 分（v143 注），50 分留 3 倍余量；后续可评估 gradle/pub 缓存缩短基线（flutter-action 自带缓存因历史坑保持关闭，勿擅开）
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
