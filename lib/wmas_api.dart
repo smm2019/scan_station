@@ -246,8 +246,28 @@ class WmasApi {
   }
 
   /// WMAS 请求：自动带 token，失效静默重登一次。返回 {ok:true,data} / {ok:false,msg}
+  /// ㉖v290 掉线根治：GET 只读查询（主档/任务列表）一律走服务器 /api/wmas/proxy 单会话代理，
+  /// PDA 不再自登录——WMAS 同账号后登录踢前者，服务器+N台PDA各自登录=N+1会话互挤死循环
+  /// （11-28 17:30-17:44 告警风暴实锤：每台PDA主档1h刷新/叫车窗查在途都会触发取票→挤掉服务器→
+  /// 服务器重登又挤掉全部PDA）。代理失败不回退直连（回退=重新引入互挤），如实报错等下轮。
+  /// 直连老路仅保留给【未升级服务器无代理端点】的兼容窗与写操作（写操作主路径已是 /api/agv/carry）。
   static Future<Map<String, dynamic>> req(String method, String path,
       {Map? body}) async {
+    if (method == "GET" &&
+        (path.startsWith("/api/basicdata/wmsLocation/listAll") ||
+            path.startsWith("/api/logistics/container/list") ||
+            path.startsWith("/api/logistics/agv-task/list"))) {
+      try {
+        final pr = await AuthApi.wmasProxy(path);
+        if (pr["ok"] == true) return {"ok": true, "data": pr["data"]};
+        // 404=旧服务器无此端点、net=服务器不可达 → 回退直连（仅剩通道）；
+        // 其余失败（WMAS侧错误/让位期）如实报，不回退直连——回退=重新登录=重新互挤
+        if (pr["_status"] != 404 && pr["net"] != true)
+          return {"ok": false, "msg": (pr["msg"] ?? "WMAS查询失败").toString()};
+      } catch (_) {
+        // 意外异常→回退直连兜底
+      }
+    }
     final sp = await SharedPreferences.getInstance();
     var token = sp.getString(WmasConfig.keyToken) ?? "";
     final exp = sp.getInt(WmasConfig.keyTokenExp) ?? 0;

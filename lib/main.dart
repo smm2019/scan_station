@@ -3464,6 +3464,10 @@ class _MainPageState extends State<MainPage>
         foreign = _calcForeign(prior);
       }
       if (foreign.isNotEmpty) {
+        // ㉖v291 拦截必上报（用户问"为什么不上报服务器"：旧版只本地弹条，服务端全盲）：
+        // 写"拦截"类审计（uploadErrs 白名单含拦截）+本地留痕，随下轮上报进 errLogs 网页可查
+        LocalLog.op('拦截',
+            '合放拦截 $loc 已有框${foreign.first.goodsCode} 本筐${codes.join("/")} 非同托不可合放（自动分格撞账本推送盲窗时也会走到这里，v291服务端分格已补流水证据层）');
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text(

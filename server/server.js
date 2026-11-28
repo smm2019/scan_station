@@ -2823,6 +2823,7 @@ function nb02AssignFree(partNo) {
   const used = new Set();
   for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (/^NB02-/.test(l) && !/-CK-/.test(l)) used.add(l); }
   for (const l of Object.keys(R)) used.add(l);
+  { const cut = Date.now() - 120000; for (const v of Object.values(db.scanlog || {})) { if (v.cx || (v.t || 0) < cut) continue; const l = String(v.gl || '').toUpperCase(); if (/^NB02-/.test(l) && !/-CK-/.test(l)) used.add(l); } } // ㉖v291 流水证据层：账本30秒防抖盲窗内"流水已到=格已占"（11-28 E-09-29 撞格实锤），保守避让
   const free0 = nb02MasterSeq().filter((l) => !used.has(l));
   if (!free0.length) return '';
   // ㉖v80 常用层硬约束（网页参数lowTier，修"前三层优先"被同架集中规则击穿上到4层）：
@@ -2876,13 +2877,15 @@ function nb04AssignFree(code, by) {
   // 幂等：该标签已有未过期 NB04 预占且格仍空 → 续期复用（重扫/重试不跳格）
   for (const l of Object.keys(R)) {
     if (String(R[l].code || '').toUpperCase() !== code || !/^NB04-/.test(l)) continue;
-    const taken = (db.ledger || []).some((x) => String(x.l || '').toUpperCase() === l && String(x.c || '').toUpperCase() !== code);
+    const taken = (db.ledger || []).some((x) => String(x.l || '').toUpperCase() === l && String(x.c || '').toUpperCase() !== code)
+      || Object.values(db.scanlog || []).some((v) => !v.cx && (v.t || 0) > Date.now() - 120000 && String(v.gl || '').toUpperCase() === l && String(v.code || '').toUpperCase() !== code); // ㉖v291 流水证据层（盲窗防撞格）
     if (!taken) { R[l].at = Date.now(); R[l].by = R[l].by || String(by || ''); return l; } // ㉖v168 补填操作人（旧预占无 by 时盲窗提示会显示"另一台设备"）
     delete R[l];
   }
   const used = new Set();
   for (const x of db.ledger || []) { const l = String(x.l || '').toUpperCase(); if (/^NB04-/.test(l)) used.add(l); }
   for (const l of Object.keys(R)) if (/^NB04-/.test(l)) used.add(l); // 别的标签已占的格（含未推送预占）一并避让
+  { const cut = Date.now() - 120000; for (const v of Object.values(db.scanlog || {})) { if (v.cx || (v.t || 0) < cut) continue; const l = String(v.gl || '').toUpperCase(); if (/^NB04-/.test(l)) used.add(l); } } // ㉖v291 流水证据层
   const rows = Math.max(1, Math.min(40, Number(rp.recvRows) || 1)), cols = Math.max(1, Math.min(999, Number(rp.recvCols) || 720));
   for (let rr = 1; rr <= rows; rr++) for (let cc = 1; cc <= cols; cc++) {
     const loc = 'NB04-A-' + String(rr).padStart(2, '0') + '-' + String(cc).padStart(3, '0');
@@ -2927,6 +2930,12 @@ function nb03AssignFree(code, zone, partNo, by, codePid) { // ㉖v234 增 codePi
       const _xp = String(x.pid || '').trim().toUpperCase();
       if (codePidU && _xp && _xp === codePidU) return false; // 共同托号=同框双码，可共格
     }
+    return true;
+  }) || Object.values(db.scanlog || []).some((v) => { // ㉖v291 流水证据层：账本30秒防抖盲窗内"流水已到=格已占"（11-28 18:12 E-09-29 撞格实锤：297账本18:11:31登记、推送未达，301分格仍见空）
+    if (v.cx || (v.t || 0) < Date.now() - 120000) return false;
+    if (String(v.gl || '').toUpperCase() !== l) return false;
+    if (String(v.code || '').toUpperCase() === codeU) return false; // 自身流水不算占用
+    if (partNoU && String(v.pn || '').toUpperCase() === partNoU) { const _vp = String(v.pid || '').trim().toUpperCase(); if (codePidU && _vp && _vp === codePidU) return false; } // 同托双码可共格（与账本同口径）
     return true;
   });
   const R = db.locReserve = db.locReserve || {};
@@ -6205,6 +6214,25 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
         console.log(`[scanlog] ${u.name} 删批次 ${batch}：${n} 条 → 共 ${db.scanlogCount} 条`);
         return send(res, 200, { ok: true, deleted: n, count: db.scanlogCount });
       }
+      // ---- ㉖v290 WMAS 只读代理：PDA 主档/在途查询收口到服务器单会话（掉线根治第一层）----
+      // 根因（11-28 17:30-17:44 告警风暴实锤）：WMAS 同账号后登录踢前者；服务器与每台 PDA 各自登录
+      // = N+1 个会话互挤死循环。v160 冷却只防"登录失败风暴"、v161 让位只管人工退出，都管不住
+      // "PDA 缓存 token 被服务器重登踢掉→PDA 自动重登又踢服务器"的正常业务互挤。
+      // 根治=PDA 业务查询一律走本代理（服务器 wmasToken 单会话+统一冷却/让位/告警），PDA 不再自登录。
+      // 白名单只放只读 GET 主档/任务列表——写操作(建任务/下发)已有 /api/agv/carry 统一入口，绝不在此放开。
+      if (req.method === 'POST' && p === '/api/wmas/proxy') {
+        const b = await readBody(req);
+        const wp = String(b.path || '');
+        const ALLOW = [/^\/api\/basicdata\/wmsLocation\/listAll$/, /^\/api\/logistics\/container\/list\?/, /^\/api\/logistics\/agv-task\/list\?/];
+        if (!ALLOW.some((re) => re.test(wp))) return send(res, 403, { ok: false, msg: '代理仅限主档/任务列表只读查询' });
+        if (authYieldOn()) return send(res, 200, { ok: false, msg: authYieldMsg() });
+        let tk = await wmasToken();
+        if (!tk) return send(res, 200, { ok: false, msg: 'WMAS未配置/登录失败（服务器统一会话，稍候自动重试）' });
+        let r = await wmasHttp('GET', wp, tk);
+        if (wmasAuthErr(r)) { tk = await wmasTokenFresh(); if (tk) r = await wmasHttp('GET', wp, tk); } // 401自愈一次（与叫车同口径）
+        if (wmasOk(r)) return send(res, 200, { ok: true, data: r.data });
+        return send(res, 200, { ok: false, msg: String((r && (r.msg || r.message)) || 'WMAS无响应').slice(0, 120) });
+      }
       // ---- ㉖⑰ 统一搬运任务端点：PDA 入库/出库叫车全部经服务器入队再下发 ----
       // 根治：PDA 直连 WMAS 建任务时服务器队列/流水线/taskOf 三处全盲（②③问题）；入队后对账循环按 WMAS 状态推进，全链路可见
       if (req.method === 'POST' && p === '/api/agv/carry') {
@@ -7515,8 +7543,8 @@ return send(res, 200, {
         // ㉖v128 每框均值下发：网页建单按【框数】填（对齐 PDA v71b 口径，杜绝"填10框提交变10件"）——
         //   perBoxQty=该零件在架件数÷在架框数，框按 boxKeyOf 去重（同托多码=1框），与 PDA 库存页/发料同口径；无在架不下发该字段（前端兜底按原值当件数）
         { const _bx = {};
-          for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); if (!pn) continue; const b = _bx[pn] = _bx[pn] || { s: new Set(), q: 0, rs: new Set() }; b.s.add(boxKeyOf(x)); b.q += Number(x.q) || 0; if (/^NB04-/.test(String(x.l || '').toUpperCase())) b.rs.add(boxKeyOf(x)); } // ㉖v275 +rs=来料区框（同托去重），供"仅一楼有料"标注
-          for (const it of list) { const b = _bx[it.pn]; if (b && b.s.size) { it.boxes = b.s.size; it.perBoxQty = Math.round(b.q / b.s.size * 10) / 10; if (b.rs.size) it.recvBoxes = b.rs.size; } }
+          for (const x of db.ledger || []) { const pn = String(x.p || '').toUpperCase(); if (!pn) continue; const b = _bx[pn] = _bx[pn] || { s: new Set(), q: 0, rs: new Set(), ls: new Map() }; b.s.add(boxKeyOf(x)); b.q += Number(x.q) || 0; const L = String(x.l || '').toUpperCase(); if (/^NB04-/.test(L)) b.rs.add(boxKeyOf(x)); const _zone = L.replace(/-([1-4]F|\d{1,3})$/, ''); b.ls.set(_zone, (b.ls.get(_zone) || 0) + 1); } // ㉖v275 +rs=来料区框；㉖v290 +ls=货位排分布（只去末段层/格号：NB02-A-15-3F→NB02-A-15）
+          for (const it of list) { const b = _bx[it.pn]; if (b && b.s.size) { it.boxes = b.s.size; it.perBoxQty = Math.round(b.q / b.s.size * 10) / 10; if (b.rs.size) it.recvBoxes = b.rs.size; it.locs = [...b.ls.entries()].sort((a, c) => c[1] - a[1]).slice(0, 4).map(([l, n]) => ({ l, n })); } } // ㉖v290 locs=按框数降序前4区（行内一眼看清货分布）
         }
         if (q) list = list.filter((x) => x.pn.includes(q) || x.nm.toUpperCase().includes(q) || String(x.mc || '').includes(q)); // ㉖v98c 可按物料号搜
         list.sort((a, b) => a.pn.localeCompare(b.pn));
@@ -9419,6 +9447,9 @@ return send(res, 200, {
         save();
         const nErr = clean.filter((x) => String(x.e).includes('异常')).length;
         if (nErr) { db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'sys_err', '🛠 PDA异常上报：' + u.name + '（' + (b.dev || '?') + ' v' + (b.app || '?') + '）新增 ' + nErr + ' 条异常', '')); pushOps(u, 'PDA异常上报', String(b.dev || ''), nErr + ' 条异常 ｜ ' + clean.map((x) => String(x.d || x.e || '')).join(' ; ').replace(/[\uFFFD\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '').slice(0, 560)); } // ㉖v173f 类型 car_alarm→sys_err：诊断上报不是车辆告警，此前借道 car_alarm 被网页"未处理车辆告警"红框置顶（11-13 用户截图实证分类错位），现归"其他与系统"组；㉖v173g 详情带上异常内容摘要（原只记条数，"流水里看不到消息内容"）
+        // ㉖v291 拦截类上报也通知管理员+留痕（用户11-28问"拦截为什么不上报"：合放撞格等现场拦截此前服务端全盲）
+        const nBlk = clean.filter((x) => String(x.e).includes('拦截')).length;
+        if (nBlk) { const _bl = clean.filter((x) => String(x.e).includes('拦截')).map((x) => String(x.d || '')).join(' ; '); db.users.filter((x) => x.enabled && x.role === 'admin').forEach((x) => notify(x.id, 'sys_err', '🚧 PDA拦截上报：' + u.name + '（' + (b.dev || '?') + '）' + nBlk + ' 条 ｜ ' + _bl.slice(0, 200), '')); pushOps(u, 'PDA拦截上报', String(b.dev || ''), _bl.slice(0, 560)); }
         return send(res, 200, { ok: true, count: clean.length });
       }
       if (p === '/api/requisitions' || p.startsWith('/api/requisitions/') || p === '/api/req-templates' || p.startsWith('/api/req-templates/') || p === '/api/notifications' || p.startsWith('/api/notifications/') || p === '/api/req/preview' || p === '/api/shortages' || p.startsWith('/api/shortages/') || p === '/api/req/last') { // ㉖v62 模板路由并入领料块（此前落入管理员闸门）；㉖v175 预占预览并入本块（不列则落 requireAdmin，物料员无法预览）；㉖v178 缺料反馈同（物料员要能提交）；㉖v179 末次领料同（物料员预约/缺料分享要用）

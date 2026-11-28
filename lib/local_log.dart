@@ -126,7 +126,8 @@ class LocalLog {
           try {
             final m = jsonDecode(line) as Map;
             final t = m['t'].toString();
-            if (!m['e'].toString().contains('异常')) continue;
+            if (!m['e'].toString().contains('异常') &&
+                !m['e'].toString().contains('拦截')) continue; // ㉖v291 拦截类（合放撞格等）也上报：旧版只传"异常"，现场拦截服务端全盲（用户11-28问"为什么不上报"）
             if (since.isNotEmpty && t.compareTo(since) <= 0)
               continue; // 水位之前已传过
             items.add({

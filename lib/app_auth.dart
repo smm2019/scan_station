@@ -297,6 +297,11 @@ class AuthApi {
   static Future<void> tplUse(String id) async =>
       _req("POST", "/api/req-templates/$id/use",
           token: await AuthStore.token());
+  // ㉖v290 WMAS只读代理：PDA主档/在途查询收口服务器单会话（掉线根治，见wmas_api.req头注释）
+  // 超时30s：服务器侧可能 登录8s+查询8s+401自愈重登再查≈32s，默认10s会把正常自愈误判超时
+  static Future<Map> wmasProxy(String path) async =>
+      _req("POST", "/api/wmas/proxy",
+          token: await AuthStore.token(), body: {"path": path}, timeoutSec: 30);
   // ㉖v178 缺料反馈闭环（二期）：列表/提交（认领与核销在网页端，仓管场景）
   static Future<Map> shortList({String status = "open"}) async =>
       _req("GET", "/api/shortages?status=$status",
