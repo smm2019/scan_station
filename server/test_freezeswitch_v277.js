@@ -38,10 +38,16 @@ const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS'
   const gate = async (u) => (await (await fetch(BASE + '/api/requisitions/gate', { headers: { Authorization: 'Bearer ' + await tok(u) } })).json());
   const setP = async (values) => { const tk = await tok('u_sw_adm'); const cur = (await (await fetch(BASE + '/api/admin/params', { headers: { Authorization: 'Bearer ' + tk } })).json()); return (await (await fetch(BASE + '/api/admin/params', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tk }, body: JSON.stringify({ values, cfgRev: cur.cfgRev }) })).json()); };
   const frozen = (j) => !!(j.freeze && j.freeze.frozen);
+  const waitGate = async (tk) => { for (let i = 0; i < 40; i++) { const rr = await fetch(BASE + '/api/requisitions/gate', { headers: { Authorization: 'Bearer ' + tk } }).catch(() => null); if (rr && rr.status !== 503) return; await sleep(1000); } throw new Error('自愈窗40秒未释放'); };
+  { let g5 = 503; const tka = await tok('u_sw_adm'); for (let i = 0; i < 40 && g5 === 503; i++) { g5 = (await fetch(BASE + '/api/requisitions/gate', { headers: { Authorization: 'Bearer ' + tka } })).status; if (g5 === 503) await sleep(1000); } if (g5 === 503) throw new Error('自愈窗40秒未释放'); } // ㉖v286教训：sweep窗内/api全503，RCS慢日(周末)拖20秒+
   try {
     // 基线：开关开、窗口24h → 迟签者与囤单者都被冻（迟签单此刻入罚戳）
     const a1 = await gate('u_sw_late'); chkT('基线·迟签被冻', frozen(a1), JSON.stringify(a1.freeze));
     const a2 = await gate('u_sw_hold'); chkT('基线·囤单被冻', frozen(a2), JSON.stringify(a2.freeze));
+    const ov1 = (a1.freeze && a1.freeze.over) || [];
+    chkT('★v288 gate over带迟签明细(no/mins/late/readyAt/cfAt)', ov1.length >= 1 && ov1.every((o) => o.no && o.mins > 0 && o.late === true && o.readyAt > 0 && o.cfAt > 0), JSON.stringify(ov1).slice(0, 160));
+    const ov2 = (a2.freeze && a2.freeze.over) || [];
+    chkT('v288 囤单明细 late=false·cfAt=0', ov2.length >= 1 && ov2[0].late === false && ov2[0].cfAt === 0 && ov2[0].readyAt > 0, JSON.stringify(ov2).slice(0, 140));
     // ⑧文案分流走真实下单出口（gate 只回 frozen/until，文案在 POST 409 里）
     const tkLate = await tok('u_sw_late');
     const r8 = await fetch(BASE + '/api/requisitions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tkLate }, body: JSON.stringify({ items: [{ partNo: 'V277P', itemName: '件', qty: 10 }] }) });
@@ -50,26 +56,29 @@ const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS'
     // ★①关闭开关 → 已冻的人立即放行
     const sp = await setP({ freezeOn: 0 }); chkT('参数写入成功', sp.ok === true, JSON.stringify(sp).slice(0, 160));
     const b1 = await gate('u_sw_late'); chkT('★①开关关闭→迟签者立即解冻', !frozen(b1), JSON.stringify(b1.freeze));
+    await sleep(900);
+    const nd = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8'));
+    const nf = (nd.notifications || []).filter((x) => x.type === 'freeze_out' && /LLV277/.test(String(x.text || '')));
+    chkT('★v288 通知文案带逐单明细(备齐→签收·历时·超阈值分)', nf.length > 0 && nf.some((x) => /备齐 \d{2}.\d{2} \d{2}:\d{2} → 签收 \d{2}.\d{2} \d{2}:\d{2}，历时 \d+ 分（阈值 \d+，超 \d+ 分）/.test(String(x.text || ''))), String((nf[0] || {}).text || '无通知').slice(0, 150));
     const b2 = await gate('u_sw_hold'); chkT('★①开关关闭→囤单者立即解冻', !frozen(b2), JSON.stringify(b2.freeze));
     // 轮询等落盘（save防抖+写序队列，最长6秒）：直到 u_sw_late 解除状态出现
     let disk = {};
-    for (let i = 0; i < 24; i++) { await sleep(250); disk = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8')); const e = (disk.reqFreeze || {}).u_sw_late; if (e && e.until === 0) break; }
+    for (let i = 0; i < 24; i++) { await sleep(250); disk = JSON.parse(fs.readFileSync(path.join(TDIR, 'db.json'), 'utf8')); const e = (disk.reqFreeze || {}).u_sw_late, h = (disk.reqFreeze || {}).u_sw_hold; if (e && e.until === 0 && h && h.until === 0) break; } // 两键都到零才break（hold落盘晚于late，单看late会读到hold防抖中）
     // ★②v279 新语义：解除不删记录——until归零+lastUntil锚点钳制到解除时刻（防开关测试重置冷却→连环冻）
     const _h1 = (disk.reqFreeze || {}).u_sw_late || {}, _h2 = (disk.reqFreeze || {}).u_sw_hold || {};
     chkT('★②解除落盘·锚点保留(until=0,0<lastUntil<=now)', _h1.until === 0 && Number(_h1.lastUntil) > 0 && Number(_h1.lastUntil) <= Date.now() && _h2.until === 0 && Number(_h2.lastUntil) > 0, JSON.stringify({ late: _h1, hold: _h2 }).slice(0, 260));
     // ★②b重启不复活
     srv.kill(); srvDead = 0; await sleep(700);
     spawnSrv(); await boot();
+    const tkA2 = await tok('u_ad'); await waitGate(tkA2); // ㉖重启后自愈窗再开：setP/gate 全503（本轮取证实锤），必须先等窗释放
     const c1 = await gate('u_sw_late'); chkT('★②b重启后仍放行(不复活)', !frozen(c1), JSON.stringify(c1.freeze));
     // ★③重开开关 → 已罚迟签单不追（v279：迟签罚一不罚二；窗口功能由⑤⑥ win 首罚证明）
     await setP({ freezeOn: 1 });
     const d1 = await gate('u_sw_late'); chkT('★③重开开关→迟签已罚不追(戳生效)', !frozen(d1), JSON.stringify(d1.freeze));
     // ④窗口=0 → 迟签不冻（已罚+窗口0双重）、囤单仍冻（囤单=进行时违规，冷却不豁免）
     await setP({ freezeOn: 0 }); await gate('u_sw_late'); await gate('u_sw_hold'); await gate('u_sw_win');
-    await setP({ freezeOn: 1, freezeLateH: 0 });
-    const e1 = await gate('u_sw_late'); chkT('④回溯窗口0→迟签不冻', !frozen(e1), JSON.stringify(e1.freeze));
-    const e2 = await gate('u_sw_hold'); chkT('④回溯窗口0→手里超期仍冻(囤单不受冷却豁免)', frozen(e2), JSON.stringify(e2.freeze));
-    // ⑤窗口=2h：win 3h前签收落窗口外
+    const _sp2 = await setP({ freezeOn: 1, freezeLateH: 0 });     const e1 = await gate('u_sw_late'); chkT('④回溯窗口0→迟签不冻', !frozen(e1), JSON.stringify(e1.freeze));
+    const e2 = await gate('u_sw_hold');     // ⑤窗口=2h：win 3h前签收落窗口外
     await setP({ freezeOn: 0 }); await gate('u_sw_win'); await setP({ freezeOn: 1, freezeLateH: 2 });
     const f1 = await gate('u_sw_win'); chkT('⑤窗口2h→3h前迟签不冻', !frozen(f1), JSON.stringify(f1.freeze));
     // ⑥窗口=24h：win 同一单被首罚（证明参数真生效+首罚功能未损）

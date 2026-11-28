@@ -335,15 +335,56 @@ class _RequisitionPageState extends State<RequisitionPage>
         if (fz["frozen"] == true) {
           final uAt = (fz["until"] as num?)?.toInt() ?? 0;
           final uD = uAt > 0 ? DateTime.fromMillisecondsSinceEpoch(uAt) : null;
+          // ㉖v288 逐单明细（用户拍板：哪张单、备齐/签收几点、超多久要写清让领料员看见）：
+          // gate 下发 fz.over=[{no,mins,late,readyAt,cfAt}]；旧服务器无 over 字段→回退旧单句文案
+          final ov = (fz["over"] as List?)?.whereType<Map>().toList() ?? const [];
+          final thr = (j["freezeOverMin"] as num?)?.toInt() ?? 120; // 阈值取 gate 顶层下发（与网页/服务端同源）
+          String fm(dynamic t) {
+            final v = (t as num?)?.toInt() ?? 0;
+            if (v <= 0) return "?";
+            final d = DateTime.fromMillisecondsSinceEpoch(v);
+            return "${d.month.toString().padLeft(2, "0")}-${d.day.toString().padLeft(2, "0")} ${d.hour.toString().padLeft(2, "0")}:${d.minute.toString().padLeft(2, "0")}";
+          }
           await showDialog(
               context: context,
               builder: (dc) => AlertDialog(
                       icon: const Icon(Icons.block,
                           color: Colors.deepOrange, size: 32),
                       title: const Text("🧊 下单冻结中"),
-                      content: Text(
-                          "您有领料单备齐后超时限未签收，${uD == null ? "" : "至 ${uD.month}月${uD.day}日 ${uD.hour.toString().padLeft(2, "0")}:${uD.minute.toString().padLeft(2, "0")} "}前暂停下单（到期自动解除）。\n\n请先到领料列表完成签收。",
-                          style: const TextStyle(fontSize: 13)),
+                      content: SingleChildScrollView(
+                          child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            Text(
+                                ov.isEmpty
+                                    ? "您有领料单备齐后超时限未签收或签收超期，${uD == null ? "" : "至 ${uD.month}月${uD.day}日 ${uD.hour.toString().padLeft(2, "0")}:${uD.minute.toString().padLeft(2, "0")} "}前暂停下单（到期自动解除）。\n\n请先到领料列表完成签收。"
+                                    : "您有 ${ov.length} 张单逾期，${uD == null ? "" : "至 ${uD.month}月${uD.day}日 ${uD.hour.toString().padLeft(2, "0")}:${uD.minute.toString().padLeft(2, "0")} 前暂停下单"}（到期自动解除）：",
+                                style: const TextStyle(fontSize: 13)),
+                            for (final o in ov.take(5))
+                              Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(
+                                      o["late"] == true
+                                          ? "· ${o["no"]}：备齐 ${fm(o["readyAt"])} → 签收 ${fm(o["cfAt"])}，历时 ${o["mins"]} 分（超 ${((o["mins"] as num?)?.toInt() ?? 0) - thr} 分）"
+                                          : "· ${o["no"]}：备齐 ${fm(o["readyAt"])} 起 ${o["mins"]} 分仍未签收（超 ${((o["mins"] as num?)?.toInt() ?? 0) - thr} 分）",
+                                      style: const TextStyle(
+                                          fontSize: 12,
+                                          height: 1.45,
+                                          fontFamily: "monospace",
+                                          color: Color(0xFF455A64)))),
+                            if (ov.length > 5)
+                              Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text("…等共 ${ov.length} 张",
+                                      style: const TextStyle(
+                                          fontSize: 11.5,
+                                          color: Color(0xFF90A4AE)))),
+                            const SizedBox(height: 8),
+                            const Text("请先到领料列表完成在手的单签收；超时未到会自动解除冻结。",
+                                style: TextStyle(
+                                    fontSize: 12, color: Color(0xFF6B7A8D))),
+                          ])),
                       actions: [
                         FilledButton(
                             onPressed: () => Navigator.pop(dc),

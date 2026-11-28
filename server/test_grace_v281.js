@@ -38,6 +38,7 @@ const chkT = (n, c, why) => { total++; if (!c) fail++; console.log(`${c ? 'PASS'
   let logs = ''; srv.stdout.on('data', (b) => { logs += b; });
   let up = false; for (let i = 0; i < 60 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
   if (!up) { console.log('FAIL! 服务未就绪'); srv.kill(); fs.rmSync(TDIR, { recursive: true, force: true }); process.exit(1); }
+  for (let i = 0; i < 60; i++) { const _gr = await fetch(BASE + '/api/requisitions/gate').catch(() => null); if (_gr && _gr.status !== 503) break; await sleep(1000); } // ㉖自愈窗等待：sweep自检在RCS慢日拖20秒+（11-28实锤），不等窗后续断言全空跑
   await sleep(14000); // 首诊13秒巡检（预烤快照此时 at≈14秒前=新鲜、甲滞留3.5min在宽限窗内）
   const tok = async (u) => (await (await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: 'E2e#G1!' + u.slice(-1) }) })).json()).token;
   const tkA = await tok('u_gb'), tkAdm = await tok('u_ga');

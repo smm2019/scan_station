@@ -1510,10 +1510,14 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
     }
     Color cOf(String st) => st == "有货"
         ? const Color(0xFFE65100)
-        : (st == "占用中" ? const Color(0xFF1565C0) : Colors.green);
+        : ((st == "占用中" || st == "待核实")
+            ? const Color(0xFF1565C0)
+            : Colors.green); // ㉖v286 待核实=到站框号未确认，占派车窗→同占用蓝，防误显绿色可叫车
     IconData iOf(String st) => st == "有货"
         ? Icons.inventory_2
-        : (st == "占用中" ? Icons.local_shipping : Icons.check_circle_outline);
+        : ((st == "占用中" || st == "待核实")
+            ? Icons.local_shipping
+            : Icons.check_circle_outline);
     // ㉖v202 横条列表（用户点名：方块卡一屏只放 4 台、大片空壳）：每行一台、一屏 8~10 台，
     // 左状态色条快扫定位，行内补齐以前只有网页看板才有的信息：站台角色/今出·今回/均清台时长。
     const roleCn = {"any": "通用", "out": "出库专用", "in": "入库专用", "insp": "检验专用"};
@@ -1549,9 +1553,11 @@ class _AgvMonitorPageState extends State<AgvMonitorPage>
               ? "货位 ${s?["label"] ?? "-"}${(s?["goods"] ?? "").toString().isNotEmpty ? " · ${s?["goods"]}" : ""} · 到站 ${AgvApi.fmtT(s?["since"])}${hAvg > 0 ? " · 预计约 ${hAvg} 分钟清台" : ""}"
               : (st == "占用中"
                   ? "${s?["dir"] == "in" ? "入库取走中" : "出库在途"}${(s?["via"] ?? "").toString().isNotEmpty ? " ${s?["via"]}" : ""}${tl.isNotEmpty ? " · $tl" : (AgvApi.asNum(s?["putAt"]) ?? 0) == 0 ? " · 进行中" : ""}"
-                  : (off
-                      ? "已停用 · 叫车选台自动排除"
-                      : "可正常叫车/入库${tl.isNotEmpty ? " · $tl" : ""}"));
+                  : (st == "待核实" // ㉖v286 到站框号未确认：占派车窗30分钟内自动复核
+                      ? "到站待核实 · 框号未确认，暂不派新单"
+                      : (off
+                          ? "已停用 · 叫车选台自动排除"
+                          : "可正常叫车/入库${tl.isNotEmpty ? " · $tl" : ""}")));
           return GestureDetector(
               onTap: () => _stDetail(code), // ㉖⑯ 点横条弹站台详情（吞吐/占用明细/身份编辑）
               child: Container(

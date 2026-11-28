@@ -34,6 +34,8 @@ const spawnSrv = () => cp.spawn(process.execPath, [path.join(__dirname, 'server.
   let srv = spawnSrv();
   if (!(await boot(srv))) { console.log('FAIL! 服务未就绪'); srv.kill(); fs.rmSync(TDIR, { recursive: true, force: true }); process.exit(1); }
   const tok = async (u) => (await (await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: 'E2e#F9!' + u.slice(-1) }) })).json()).token;
+  const waitGate = async () => { for (let i = 0; i < 60; i++) { const rr = await fetch(BASE + '/api/requisitions/gate').catch(() => null); if (rr && rr.status !== 503) return; await sleep(1000); } throw new Error('自愈窗60秒未释放'); }; // 探针无token：窗内连登录也503，带token探测会401≠503立即break=等待无效（本轮实锤）
+  await waitGate(); // ㉖自愈窗等待必须【先于登录】：窗内tok拿到的token是undefined，后续全401
   const tkZ = await tok('u_zj'), tkA = await tok('u_ad');
   const gate = async () => (await (await fetch(BASE + '/api/requisitions/gate', { headers: { Authorization: 'Bearer ' + tkZ } })).json());
   const setP = async (values) => { const cur = await (await fetch(BASE + '/api/admin/params', { headers: { Authorization: 'Bearer ' + tkA } })).json(); return (await (await fetch(BASE + '/api/admin/params', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tkA }, body: JSON.stringify({ values, cfgRev: cur.cfgRev }) })).json()); };
@@ -69,11 +71,11 @@ const spawnSrv = () => cp.spawn(process.execPath, [path.join(__dirname, 'server.
     fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(d4));
     srv = spawnSrv();
     chkT('阶段2重启就绪', await boot(srv), '');
+    await waitGate(); // 阶段2重启后自愈窗再开
     const g4 = await gate();
     const mins = g4.freeze && g4.freeze.until ? (g4.freeze.until - Date.now()) / MIN : -1;
     chkT('★⑤新迟签C+囤单D计罚(15×3=45分)且A/B不追罚', g4.freeze && g4.freeze.frozen === true && Math.abs(mins - 45) < 2, 'mins=' + mins.toFixed(1) + '（若A/B被追罚则75）');
-    await sleep(900);
-    const d5 = readDisk();
+    let d5 = {}; for (let i = 0; i < 24; i++) { await sleep(250); d5 = readDisk(); if ((d5.latePunished || {}).LLV279C) break; } // C戳落盘轮询（save防抖慢日900ms越界）
     chkT('⑤b戳不丢且C入戳D不入(囤单给改正机会)', !!d5.latePunished.LLV279A && !!d5.latePunished.LLV279C && !d5.latePunished.LLV279D, JSON.stringify(d5.latePunished));
     console.log(`\n===== v279 迟签只罚一次取证：${total - fail}/${total} PASS =====`);
     process.exitCode = fail ? 1 : 0;

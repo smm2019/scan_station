@@ -1209,6 +1209,7 @@ bool get ledgerPushPending => _ledgerPushPending;
 // 若重试也打戳会把卡死洗成健康误降噪。
 final List<String> _lpTrace = [];
 bool _lpInflight = false; // 账本 sync 在途标志（单线程安全；守门犬不叠加在途请求）
+bool _autoAlignBusy = false; // ㉖v287 旧缓存自动对齐防重入：并发推送轮次不叠加 force 拉取
 void _lpMark(String m) {
   final dt = DateTime.now();
   final s = "${dt.hour.toString().padLeft(2, "0")}:${dt.minute.toString().padLeft(2, "0")}:${dt.second.toString().padLeft(2, "0")}|$m";
@@ -1440,7 +1441,38 @@ Future<Map> ledgerPushNow() async {
         rejLoc is List ? rejLoc.whereType<String>().toList() : <String>[];
     if (rejL.isNotEmpty || rejLocL.isNotEmpty) {
       debugPrint('[ledger] 拒回: 压回${rejL.length} 格式不符${rejLocL.length}');
-      final ctx = _globalNavigatorKey.currentContext;
+      // ㉖v287 旧缓存拒回自动对齐（用户 11-28 两台 PDA 反复弹"货位登记冲突"实锤：弹窗只提示不处置，
+      // 不点拉取就每轮推送重弹）。判据=拒回条目【全部】带"拉取自动清掉/拉取对齐"签名（服务端 5787/5799/5818
+      // 三类旧缓存文案）；混入任一条真冲突（占格/回流挡/格式不符/裸键旧规则）→原弹窗照旧，绝不吞需人处置的。
+      // 数据安全边界（已核合并规则）：ledgerPullMerge 只读服务器+合并本地缓存，不写服务器不触发推送；
+      // 合并裁决"本机行 assignedAt ≥ 服务器行 → 保留本机"，故本机刚登记未推送的行不会被对齐冲掉。
+      final allOldCache = rejectAllOldCache(rejL, rejLocL);
+      var aligned = false;
+      if (allOldCache && !_autoAlignBusy) {
+        _autoAlignBusy = true;
+        _lpMark('自动对齐起(${rejL.length}条)');
+        try {
+          final pr = await ledgerPullMerge(force: true);
+          aligned = pr['ok'] == true;
+          if (!aligned)
+            _lpMark('自动对齐败:${(pr['msg'] ?? '').toString().length > 20 ? (pr['msg'] ?? '').toString().substring(0, 20) : (pr['msg'] ?? '')}');
+        } catch (e) {
+          aligned = false;
+          _lpMark('自动对齐异常:${'$e'.length > 20 ? '$e'.substring(0, 20) : '$e'}');
+        }
+        _autoAlignBusy = false;
+        if (aligned) {
+          final rc = _globalNavigatorKey.currentContext;
+          if (rc != null && rc.mounted)
+            ScaffoldMessenger.of(rc).showSnackBar(SnackBar(
+                backgroundColor: const Color(0xFF2E7D32),
+                duration: const Duration(seconds: 5),
+                content: Text(
+                    "✅ ${rejL.length} 条旧缓存货位已自动对齐服务器最新登记，无需重新登记",
+                    style: const TextStyle(fontSize: 13))));
+        }
+      }
+      final ctx = aligned ? null : _globalNavigatorKey.currentContext;
       if (ctx != null) {
         // ㉖v97b 拒回条目自带原因长文案，多条可超屏——content 包滚动容器；旧文案"请重新登记"
         // 对"已出库旧缓存回推"类是误导（重登会复活幽灵行），改为按条目内原因处置

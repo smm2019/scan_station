@@ -31,6 +31,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart'; // ⑭系统通知
 import 'package:flutter_tts/flutter_tts.dart'; // ⑭系统TTS
 import 'pick_route.dart'; // ㉖v217 地面排取货路线（独立库文件=可 dart run 脱 App 单测）
+import 'ledger_reject_class.dart'; // ㉖v287 拒回分类纯函数（独立库=单测锁安全线：真冲突绝不自动对齐）
 
 part 'main.g.dart';
 part 'web_service.dart'; // WiFi网页门户：批次列表/任意批次下载/基准CSV上传
@@ -2092,7 +2093,8 @@ class _MainPageState extends State<MainPage>
     _notifBusy = true;
     try {
       await _pollNotifications();
-    } catch (_) {} finally {
+    } catch (_) {
+    } finally {
       _notifBusy = false;
     }
   }
@@ -2104,7 +2106,8 @@ class _MainPageState extends State<MainPage>
     if (!on || url.isEmpty || Auth.user == null) return; // 推送关：30 秒轮询兜底（既有行为）
     final key = (kPushCfg["key"] ?? "").toString();
     final uid = Uri.encodeComponent(Auth.user!.id);
-    final u = Uri.parse("$url/sse?user=$uid&since=$_pushSeq${key.isNotEmpty ? "&key=${Uri.encodeComponent(key)}" : ""}");
+    final u = Uri.parse(
+        "$url/sse?user=$uid&since=$_pushSeq${key.isNotEmpty ? "&key=${Uri.encodeComponent(key)}" : ""}");
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
     _pushClient = client;
     try {
@@ -2138,7 +2141,8 @@ class _MainPageState extends State<MainPage>
                 _pushSeq = math.max(_pushSeq, (d["seq"] as num?)?.toInt() ?? 0);
                 final m = d["msg"];
                 final to = m is Map ? (m["to"] ?? "").toString() : "";
-                if (to.isNotEmpty && to != "all" && to != Auth.user!.id) continue;
+                if (to.isNotEmpty && to != "all" && to != Auth.user!.id)
+                  continue;
                 unawaited(_pollNotificationsGuarded()); // 只触发，不解析正文
               }
             } catch (_) {}
@@ -2147,7 +2151,7 @@ class _MainPageState extends State<MainPage>
         buf
           ..clear()
           ..write(s);
-        }
+      }
     } catch (_) {}
     _pushAlive = false;
     if (mounted && _pushClient == client) _pushScheduleReconnect();
@@ -3048,7 +3052,8 @@ class _MainPageState extends State<MainPage>
           // 宁可现场重扫一框，不让一框无名数据进账本。（found==false 的"查无此码"上面已专门拦截，不在此列）
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text("⛔ MES 不可达，本框未录入：${mesResult["msg"]}——请检查网络/MES 登录后重扫"),
+                content: Text(
+                    "⛔ MES 不可达，本框未录入：${mesResult["msg"]}——请检查网络/MES 登录后重扫"),
                 backgroundColor: Colors.redAccent,
                 duration: const Duration(seconds: 5)));
             _goodsInputCtrl.clear();
@@ -3302,7 +3307,7 @@ class _MainPageState extends State<MainPage>
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
               content: Text(
-                  "ℹ️ 货位是 NB04 来料区格——本筐按【一楼来料库存】入账（不是二楼入库）。若目的是转入二楼，请改选/输入二楼目标货位后重存"),
+                  "ℹ️ 货位是 NB04 来料区格——本筐按【一楼来料库存】入账（不是二楼入库）。若目的是转入二楼：采集里把货位改成二楼实际位置（地面模式直接输入 NB02-…，或 AGV 模式输 AUTO 分架位）后重存"),
               backgroundColor: Color(0xFF00897B),
               duration: Duration(seconds: 5)));
       }
@@ -3313,6 +3318,20 @@ class _MainPageState extends State<MainPage>
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text(
                   "AGV站台模式不能登记地面货位 $loc（AGV只到NB02高架）\n请点「选位」重选高架格或输 AUTO 自动分配"),
+              backgroundColor: Colors.orange,
+              duration: const Duration(seconds: 5)));
+          _ledgerLocCtrl.clear();
+        }
+        return;
+      }
+      // ㉖v289 模式↔货位族绑定补全（用户口径：来料登记=NB04、地面=NB03、AGV=NB02 各归各族）：
+      // AGV 站台模式也不收 NB04——AGV 到不了一楼来料区，旧版只拦了 NB03 漏了 NB04（v69c 半张表）。
+      // 残留/手填的 NB04 在 AGV 模式提交=叫车必败+账本错挂，源头拦下并指路。
+      if (wtSnap == 0 && loc.startsWith('NB04-')) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(
+                  "AGV站台模式不能登记来料区货位 $loc（AGV 只到二楼 NB02 高架，NB04 是一楼来料区）\n请输 AUTO 自动分架位，或点「选位」重选高架格"),
               backgroundColor: Colors.orange,
               duration: const Duration(seconds: 5)));
           _ledgerLocCtrl.clear();
@@ -3403,6 +3422,31 @@ class _MainPageState extends State<MainPage>
       }
       final _pids = _pidMap.values.where((s) => s.isNotEmpty).toSet();
       final _samePid = _pids.length == 1 && _pids.length == _pidMap.length;
+      // ㉖v289 地面模式 NB04 硬闸（11-28 N26K280184 实锤：刘向轩想转入二楼却在地面模式提交了
+      // NB04 格位→服务器 v120d 兼容路径静默按来料区入账、货"没离开一楼"，全链路还把它渲染成
+      // "二楼转入成功"假象）。地面=人工摆放，NB04 是一楼来料区不是摆放目的地：保存前拦下并指路，
+      // 比事后看橙条猜谜人性化。recv 分支(来料登记)与本闸无关——它在上面已 return。
+      if (wtSnap == 1 && loc.startsWith('NB04-')) {
+        final dc2 = context;
+        if (dc2.mounted)
+          await showDialog(
+              context: dc2,
+              builder: (dc) => AlertDialog(
+                      icon: const Icon(Icons.place_outlined,
+                          color: Color(0xFFE65100), size: 34),
+                      title: const Text("这个位置是一楼来料区"),
+                      content: Text(
+                          "「人工地面摆放」的货位填的是 $loc——来料区格位是一楼登记产生的，不是摆放目的地，保存不会把货转上二楼。\n\n· 货已搬上二楼：仍在采集里办转入——地面模式把货位改成二楼实际位置（NB02-… 直接输入，选位面板只开地面格）后重存；或切 AGV 站台模式输 AUTO 自动分架位\n· 货还在一楼：无需操作，等搬上楼后再采集转入",
+                          style: const TextStyle(fontSize: 13)),
+                      actions: [
+                        FilledButton(
+                            onPressed: () => Navigator.pop(dc),
+                            child: const Text("知道了，回去改"))
+                      ]));
+        _ledgerLocCtrl.clear(); // ㉖v289 拦下即清框：防误填的 NB04 经"整托多码复用同位"（登记成功不清框的
+        // 特性）流到同托下一个标签——错值一次都不许复用
+        return; // 不写账本不写流水：脏数据源头掐断
+      }
       List<ShelfPlacement> _calcForeign(List<ShelfPlacement> _prior) => _prior
               .where((p) => !codes.contains(p.goodsCode.toUpperCase()))
               .where((p) {
@@ -5548,6 +5592,8 @@ class _MainPageState extends State<MainPage>
               : 0; // ㉖v120 三档+权限降级
           _lastScanStation = null;
           _lastScanContainer = null;
+          _ledgerLocCtrl.clear(); // ㉖v289 补漏：手动切模式会清货位框，这条服务器偏好回写路径漏清——
+          // 残留 NB04 会随地面模式提交（11-28 误提交同源），切模式即视为换意图，旧货位一律作废
           if (_workType != 0) _selectedStation = null;
           if (_workType != 1) _selectedGroundLoc = null;
         });

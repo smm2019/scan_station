@@ -3483,7 +3483,7 @@ function freezeOf(userId) {
     if (r.by !== userId || r.status !== 'ready') continue;
     const readyAt = Number(r.readyAt) || Date.parse(((r.history || []).slice(-1)[0] || {}).time || r.createdAt || 0) || 0;
     if (readyAt && nowMs - readyAt < overMin) continue;
-    seenNo.add(r.no); out.over.push({ no: r.no, mins: readyAt ? Math.round((nowMs - readyAt) / 60000) : 0 });
+    seenNo.add(r.no); out.over.push({ no: r.no, mins: readyAt ? Math.round((nowMs - readyAt) / 60000) : 0, readyAt, cfAt: 0, thr: overMin }); // ㉖v288 明细字段齐：通知/两端弹窗写明哪张单、备齐几点、超阈值多久
   }
   // ㉖v274 回溯迟签也冻（用户拍板堵"先签收超期单再下新单"绕过，陈明11-25实锤）：
   // 窗口内已签收但「签收时长>阈值」的单=迟签，同样计入冻结。只罚"签收晚"，不罚"签收快"。
@@ -3493,7 +3493,7 @@ function freezeOf(userId) {
     if (r.by !== userId || !r.confirmedAt || !r.readyAt || seenNo.has(r.no) || _lp[r.no]) continue; // ㉖v279 罚过的迟签单不再追罚
     const cf = Date.parse(r.confirmedAt); if (!cf || nowMs - cf > lateWin) continue;
     const durMin = Math.round((cf - Number(r.readyAt)) / 60000);
-    if (durMin > P0.freezeOverMin) { seenNo.add(r.no); out.over.push({ no: r.no, mins: durMin, late: true }); }
+    if (durMin > P0.freezeOverMin) { seenNo.add(r.no); out.over.push({ no: r.no, mins: durMin, late: true, readyAt: Number(r.readyAt), cfAt: cf, thr: P0.freezeOverMin * 60000 }); } // ㉖v288 迟签明细：备齐/签收时刻+阈值
   }
   if (!out.over.length) return out;
   // 冷却防螺旋（㉖v279 语义收窄）：只对"纯迟签追罚"生效（戳丢失时的双保险）；
@@ -3514,10 +3514,18 @@ function freezeOf(userId) {
 // 冻结触发通知（懒触发时刻一次性；ghost_out 同款必达：不入 NTYPE 退订表、URGENT 夜间不静默）
 function notifyFreeze(u, until, overs) {
   const _late = (overs || []).some((o) => o.late);
-  const txt = '🧊 领料下单已冻结：你有 ' + (overs || []).length + ' 张单' + (_late ? '签收超期（备齐后超 ' + (P().freezeOverMin || 120) + ' 分钟才签收，近24h迟签记录计入）' : '备齐后超 ' + (P().freezeOverMin || 120) + ' 分钟未签收') + '（' + (overs || []).slice(0, 3).map((o) => o.no).join('、') + ((overs || []).length > 3 ? '…' : '') + '），' + '至 ' + new Date(until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) + ' 前暂停下单（到期自动解除）。请按时签收在手的单；确有特殊原因可请管理员在「控制后台·领料闸门」调整时限';
+  const _thr = P().freezeOverMin || 120;
+  // ㉖v288 逐单明细行（用户拍板：哪张单、备齐几点、签收几点、超多久必须写清，领料员与仓管都要看到）：
+  // 迟签=备齐→签收历时X分(阈值Y,超Z分)；未签收=备齐后已X分仍未签(阈值Y,超Z分)
+  const _f = (t) => t ? new Date(t).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) : '?';
+  const _line = (o) => o.late
+    ? `${o.no}：备齐 ${_f(o.readyAt)} → 签收 ${_f(o.cfAt)}，历时 ${o.mins} 分（阈值 ${_thr}，超 ${Math.max(0, o.mins - _thr)} 分）`
+    : `${o.no}：备齐 ${_f(o.readyAt)} 起 ${o.mins} 分仍未签收（阈值 ${_thr}，超 ${Math.max(0, o.mins - _thr)} 分）`;
+  const _det = (overs || []).slice(0, 4).map(_line).join('；') + ((overs || []).length > 4 ? '…等' + (overs || []).length + '张' : '');
+  const txt = '🧊 领料下单已冻结：你有 ' + (overs || []).length + ' 张单' + (_late ? '签收超期（备齐后超 ' + _thr + ' 分钟才签收，迟签回溯窗口内计入）' : '备齐后超 ' + _thr + ' 分钟未签收') + '。明细：' + _det + '。至 ' + new Date(until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) + ' 前暂停下单（到期自动解除）。请按时签收在手的单；确有特殊原因可请管理员在「控制后台·领料闸门」调整时限';
   try { notify(u.id, 'freeze_out', txt, '', { solo: true }); } catch (_) {}
-  try { (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'freeze_out', '🧊 ' + u.name + ' 触发逾期签收冻结（至 ' + new Date(until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) + '），其 ' + (overs || []).length + (_late ? ' 张单签收严重超期，请现场提醒按时签收' : ' 张待签收单滞留，请现场提醒') + '', '', { solo: true })); } catch (_) {} // ㉖v277 迟签单其实已签收，旧文案"待签收单滞留"让仓管催签收扑空
-  try { pushOps(u, '逾期签收冻结', u.name, '冻结至 ' + new Date(until).toISOString() + ' 逾期单：' + (overs || []).map((o) => o.no).join('/')); save(); } catch (_) {} // ㉖v264 自查修：留痕带操作者（null 会写 by='-' 审计无痕）；补 save——reqFreeze 懒写入必须落盘，防重启丢冻结
+  try { (db.users || []).filter((x) => x.enabled && x.role === 'warehouse').forEach((x) => notify(x.id, 'freeze_out', '🧊 ' + u.name + ' 触发逾期签收冻结（至 ' + new Date(until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) + '）。' + _det + (_late ? '。请现场提醒按时签收' : '。请现场提醒签收') + '', '', { solo: true })); } catch (_) {} // ㉖v288 仓管广播同款带明细（旧版只说"N张单滞留"，仓管无从催起）
+  try { pushOps(u, '逾期签收冻结', u.name, '冻结至 ' + new Date(until).toISOString() + ' 逾期单：' + (overs || []).map((o) => o.no + '(' + o.mins + '分' + (o.late ? '迟签' : '未签') + ')').join('/')); save(); } catch (_) {} // ㉖v264 留痕带操作者；㉖v288 留痕同步带分钟数与成因
 }
 // ㉖v279 启动迁移：存量冻结记录里已签收的追罚单补"已罚"戳（v279 前的冻结没有此戳，不补→解冻瞬间
 // 同一批迟签单会被第四次追罚——张金飞14:34到期在即，本迁移必须赶在其下次下单前生效）
@@ -4103,6 +4111,42 @@ function stnReleaseByLedger(code, oldLoc) {
     if (hit) { save(); pushOps({ name: '系统', role: 'system' }, '站台自动清台', c, '账本已离开 ' + ol + '（位置登记收账），台面判空释放'); }
     return hit ? 1 : 0;
   } catch (_) { return 0; } // 收账清台是旁路增强，任何异常都不得影响账本同步主流程
+}
+// ---- ㉖v286 站台框号/到站判定三修（N26K250180 发料早于到站 + N26K280057 被错挂 CK-09 两案合并根治）----
+// 站台 codes 三级来源（纯函数可测）：①本任务队列项 code（索引项最准：0011 项里存的就是 N26K250180）
+// ②领料单 issued 已发料记录（框发料即从账本消失，但 issued 永久留存全字段 l=起点货架位）
+// ③货架位账本反查（旧行为兜底）。全空=调用方写"待核实"（无证据不写"有货"，杜绝永久虚占）。
+function stnCodesFor(d, dn, sp) {
+  const SP = String(sp || '').toUpperCase();
+  // ①本任务队列项（filter 收全：同任务多框同台的现场常态，find 只取一个会漏框）
+  const qs = [...new Set((d.agvQueue || []).filter((x) => String(x.wmsTask || x.taskNo || '').slice(-6) === dn && String(x.fromLoc || x.from || '').toUpperCase() === SP && !['inbound', 'inspback', 'countback'].includes(x.type)).map((x) => String(x.code || '').toUpperCase()).filter(Boolean))];
+  if (qs.length) return qs;
+  for (const r of d.requisitions || []) {
+    for (const it of r.items || []) {
+      const hit = (it.issued || []).filter((e) => String((typeof e === 'string' ? e : e.l) || '').toUpperCase() === SP).map((e) => String((typeof e === 'string' ? e : e.c) || '').toUpperCase()).filter(Boolean);
+      if (hit.length) return [...new Set(hit)];
+    }
+  }
+  return [...new Set((d.ledger || []).filter((x) => String(x.l || '').toUpperCase() === SP).map((x) => String(x.c || '').toUpperCase()).filter(Boolean))];
+}
+// 发料即清台（把"发料早于到站"正规化）：框发料/转MES成功后从站台"有货"记录里摘除该框
+// ——摘空才删记录（同台其他未发料框的在架记录必须保住，N框同台只发1框的现场常态）；
+// 不等下轮轮询自愈，防假占用多压一个派车周期。不再看队列在途态：发料=货已离台手，
+// 该框后续任何 AGV 任务只可能是入库/归位腿（写"占用中"不写"有货"），与本摘除不冲突。
+function stnReleaseByShip(d, code) {
+  try {
+    const C = String(code || '').toUpperCase(); if (!C) return 0;
+    let n = 0;
+    for (const stn of Object.keys(d.rcsStations || {})) {
+      const s = d.rcsStations[stn];
+      if (s.state !== '有货' || !(s.codes || []).some((c) => String(c).toUpperCase() === C)) continue;
+      s.codes = (s.codes || []).filter((c) => String(c).toUpperCase() !== C);
+      if (s.codes.length) continue; // 同台账上还有未发料框，保住记录
+      delete d.rcsStations[stn]; (d.rcsDone = d.rcsDone || {})[stn + '|' + (s.via || '')] = Date.now(); n++;
+      console.log('[stn-fix] 发料即清台 ' + C + ' @ ' + stn);
+    }
+    return n;
+  } catch (_) { return 0; }
 }
 function groupLedgerBoxes(list) {
   const g = new Map();
@@ -6041,9 +6085,11 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
           if (_fsSamp.length < 5) _fsSamp.push(String(v.code || '?') + (Number(v.wt) === 0 ? '·AGV st=' : '·地面 gl=') + String(Number(v.wt) === 0 ? v.st : v.gl));
         }
         if (_flowSick) { console.log(`[flow-loc] ⚠ ${u.name} 本批流水 ${_flowSick} 条跨模式货位错配：${_fsSamp.join(' ; ')}`); try { pushOps(u, '货位格式体检', _flowSick + ' 条错配', _fsSamp.join(' ; ')); } catch (_) {} }
-        // ㉖v260 地面模式登记 NB04（v120d 合法兼容路径）计数留痕：11-25 N26K250023 泄漏排查钩子——
-        // 该路径会产生 wt=1+gl=NB04 形似记录（PDA 已加显性提示），日志计数便于观察使用频率与串值是否复发
-        { const _w1n = Object.values(snap).filter((v) => Number(v.wt) === 1 && /^NB04-/.test(String(v.gl || '').toUpperCase())).length; if (_w1n) console.log(`[flow-w1nb04] ${u.name} 本批 ${_w1n} 条地面模式NB04登记（v120d 兼容路径·账本按来料区入账）：${Object.values(snap).filter((v) => Number(v.wt) === 1 && /^NB04-/.test(String(v.gl || '').toUpperCase())).slice(0, 5).map((v) => v.code + '@' + v.gl).join(' ; ')}`); }
+        // ㉖v260 地面模式登记 NB04（v120d 兼容路径）计数留痕；㉖v289 升级为通知本人+管理员
+        // （11-28 N26K280184 实锤：旧版只 console.log，现场只能看橙条猜谜。人以为"转入了"货还在一楼，
+        // 通知把"你这条地面登记的货位是来料区=转入没生效+两条正路"直接送到他手机上；
+        // 旧版PDA无硬闸仍可能提交→兼容入账保数据不丢+通知兜底可见性，新版PDA源头已掐）
+        { const _w1 = Object.values(snap).filter((v) => Number(v.wt) === 1 && /^NB04-/.test(String(v.gl || '').toUpperCase())); if (_w1.length) { console.log(`[flow-w1nb04] ${u.name} 本批 ${_w1.length} 条地面模式NB04登记（v120d 兼容路径·账本按来料区入账）：${_w1.slice(0, 5).map((v) => v.code + '@' + v.gl).join(' ; ')}`); try { const _lst = _w1.slice(0, 5).map((v) => String(v.code || '')).join('、'); const _msg = `你在「人工地面摆放」提交了来料区货位（${_w1[0].gl}）：该操作不会把货转上二楼，货仍按一楼来料区在账。·货已在二楼：在采集里把货位改成二楼实际位置（地面模式直接输入 NB02-…，或 AGV 模式输 AUTO 分架位）后重存 ·货还在一楼：无需处理，搬上楼后再采集转入。涉及标签：${_lst}`; notify(u.id, 'ghost_out', '⚠️ 地面登记的货位是一楼来料区（转入未生效）：' + _msg, '', { solo: false }); (db.users || []).filter((x) => x.enabled && x.role === 'admin').slice(0, 3).forEach((x) => notify(x.id, 'ghost_out', `⚠️ ${u.name} 地面模式提交了NB04货位（${_w1.length} 条，转入未生效）：${_lst}`, '')); pushOps(u, '地面登记NB04', _w1.length + ' 条', _w1.slice(0, 5).map((v) => v.code + '@' + v.gl).join(' ; ')); } catch (_) {} } }
         // ㉖v120b 来料区停用期误扫体检（流水层·只留痕不回改）：receivingOn=0 时 gl=NB04-* 的采集流水照常入库
         // （流水=现场原始证据铁律），但账本源头闸已拒其上账——留痕点名设备与操作人，供追查"开关关了怎么还扫上"的幽灵流水；
         // PDA 侧已同步从入口闸住（locs?recv=1 下发开关+未启用即中止保存），本条为旧版 PDA/竞态窗口的兜底可见性。
@@ -6895,6 +6941,11 @@ return send(res, 200, {
         //   且被排到时间线最前）：小正数（1e9~1e11=秒级）×1000 归毫秒；早于 2020 或晚于当前+1天的
         //   一律视为坏值——有真实内容的节点挂到"现在"兜底不再穿越到 1970，纯坏值(0/NaN)照旧丢弃。
         const push = (t, k, title, detail, actor) => {
+          // ㉖v286 零时刻=里程碑未发生，直接丢弃（N26K280057 全链路截图实锤：未执行任务的
+          // "开始执行/叉取/放置"三条霸占时间线显示"时刻未知"）。旧式 Number(t)||Date.parse(t) 在 t=0 时
+          // 落到 Date.parse(0)——数字0被转字符串"0"解析成2000-01-01(实测946656000000)→被坏时刻判定
+          // 捞成"时刻未知"假节点。0 是"未发生"哨兵值不是时刻，先判掉，语义=原注释"完全无时刻=丢弃"。
+          if (t === 0 || t === null || t === undefined || t === '' || t === false) return;
           let tt = Number(t) || Date.parse(t) || 0;
           if (tt > 1e9 && tt < 1e11) tt *= 1000; // 秒级→毫秒
           if (!tt) return; // 完全无时刻=丢弃（原语义）
@@ -6931,8 +6982,11 @@ return send(res, 200, {
         for (const st of scans.slice(0, 60)) {
           const _c = codeOf(st.code), _t = Number(st.t) || 0, _w = Number(st.wt);
           const _isRecv = _w === 2; // ㉖v265 含作废：一楼登记是历史事实，不因转入取代而消失
-          const _isTin = !_isRecv && !st.cx && _recvFirst[_c] && _t >= _recvFirst[_c];
           const _loc = _w === 0 ? st.st : st.gl;
+          // ㉖v289 转入节点判据加"落位已离开来料区"（11-28 N26K280184 实锤：wt=1+gl=NB04 的
+          // 地面误提交被旧判据(只看时间序)渲染成"⬆二楼转入成功"，人以为转完了货其实还在一楼）。
+          // 落位仍 NB04=转入未发生，按普通采集入库节点显示，不再假报成功。
+          const _isTin = !_isRecv && !st.cx && _recvFirst[_c] && _t >= _recvFirst[_c] && _loc && !/^NB04-/i.test(_loc);
           // ㉖v265 措辞人性化：一楼登记被转入取代 → 中性"已转入二楼"（原"❌已撤销采集"读作有人撤单/货出问题，
           // 实际是正常流转留痕）；其余作废（人工作废/网页撤扫）保留❌原义。
           const _movedOn = st.cx && _isRecv && /取代|转入/.test(String(st.cxB || ''));
@@ -7189,9 +7243,12 @@ return send(res, 200, {
           if (['完成', '取消', '失败'].includes(q.state)) continue;
           const code = String(q.code || '').toUpperCase();
           const rr = runBy[String(q.wmsTask || q.taskNo || '')] || null; // ㉖v94k 与 agvStage 同修：旧版拿容器号比RCS调度号永不命中→流水线全卡"AGV已接单"
+          // ㉖v286 与 agvStage 同口径收紧（N26K280057 案）：站台5态只作佐证，须有卸放/到站证据；无证据降4交 rr 分支精判
+          const arrivedEv = q.state === '到站' || !!(rr && (rr.putAt || 0) > 0);
           let stage;
           if (q.state === '排队') stage = 1;
-          else if (stageOfCode[code]) stage = stageOfCode[code];
+          else if (stageOfCode[code] === 5 && arrivedEv) stage = 5;
+          else if (stageOfCode[code]) stage = 4;
           else if (rr && rr.pickAt) stage = 4;                          // RCS已叉出货架、还没落进站台状态
           else if (q.state === '下发中' || q.state === '已下发') stage = rr ? 3 : 2; // 任务在RCS=叉取中；未同步到=AGV已接单
           else stage = 2;
@@ -9287,7 +9344,7 @@ return send(res, 200, {
         const no = String(b.orderNo || '').trim();
         if (!no) return send(res, 400, { ok: false, msg: '缺少 orderNo' });
         const _mv = isMoveOrder(b); // ㉖v108 移仓单（去向非线边仓关键词，如冷冲件仓/热压单件仓/代发仓）不盖"已出库"戳——标签随货移仓后可能回流，误盖会拦死合法再采集（11/5 现场 N26K040083/74 冷冲件仓移仓被盖戳致采集"历史上架并已出库"误拦）
-        for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.barcode || '').toUpperCase(); if (!_mv && c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; } // ㉖② 历史出库登记（标签生命周期防复用）；㉖v68 修复：键只取标签号 barcode（旧版误取 code=零件号，按标签查曾出库永远落空）
+        for (const itx of (Array.isArray(b.items) ? b.items : [])) { const c1 = String(itx.barcode || '').toUpperCase(); if (!_mv && c1 && !db.seenOut[c1]) { db.seenOut[c1] = { at: Number(b.createdAt) || Date.now(), no }; stnReleaseByShip(db, c1); } } // ㉖② 历史出库登记（标签生命周期防复用）；㉖v68 修复：键只取标签号 barcode；㉖v286 发料即清台：该框若仍被站台错挂"有货"立即释放（发料早于到站的正常时序正规化）
         // ㉖v151 重复推送判定：同单号已落库且明细标签集合不变 = 同步失败后的自动重试（旧版每次重试都重跑一遍
         // 消账，第二次起整单标签都"不在账本"→幽灵误报刷屏），重试一律跳过消账，只更新单据字段
         const _obOld = db.outbound[no];
@@ -9666,10 +9723,14 @@ return send(res, 200, {
             if (fz.frozen) {
               if (fz.over && fz.over.length) notifyFreeze(u, fz.until, fz.over); // 首次懒触发才通知（冷却/已冻结不重复）
               // ㉖v277 文案按真实成因分流：迟签(已签收但太慢)不再谎称"未签收"——现场照着去催签收会扑空
+              // ㉖v288 附逐单明细（旧版APP弹窗只显示这一句msg）：单号+备齐/签收时刻+超阈值分钟
               const _late = fz.reason === 'late';
-              return send(res, 409, { ok: false, code: 'freeze', until: fz.until, msg: _late
-                ? `您有领料单签收超期（备齐后超 ${P().freezeOverMin} 分钟才签收），已触发下单冻结，至 ${new Date(fz.until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16)} 前暂停下单（到期自动解除）。后续请备齐后及时签收`
-                : `您有领料单备齐后超 ${P().freezeOverMin} 分钟未签收，已触发下单冻结，至 ${new Date(fz.until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16)} 前暂停下单（到期自动解除）。请尽快签收在手的单` });
+              const _thr2 = P().freezeOverMin;
+              const _f2 = (t) => t ? new Date(t).toLocaleString('zh-CN', { hour12: false }).slice(5, 16) : '?';
+              const _det2 = (fz.over || []).slice(0, 3).map((o) => o.late ? `${o.no}(备齐${_f2(o.readyAt)}→签收${_f2(o.cfAt)}，超${Math.max(0, o.mins - _thr2)}分)` : `${o.no}(备齐${_f2(o.readyAt)}起${o.mins}分未签，超${Math.max(0, o.mins - _thr2)}分)`).join('；') + ((fz.over || []).length > 3 ? '…' : '');
+              return send(res, 409, { ok: false, code: 'freeze', until: fz.until, over: fz.over, msg: _late
+                ? `您有领料单签收超期（备齐后超 ${_thr2} 分钟才签收），已触发下单冻结。明细：${_det2}。至 ${new Date(fz.until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16)} 前暂停下单（到期自动解除）。后续请备齐后及时签收`
+                : `您有领料单备齐后超 ${_thr2} 分钟未签收，已触发下单冻结。明细：${_det2}。至 ${new Date(fz.until).toLocaleString('zh-CN', { hour12: false }).slice(5, 16)} 前暂停下单（到期自动解除）。请尽快签收在手的单` });
             }
             if (b.confirmThrottle !== 1 && b.confirmThrottle !== true && b.confirmDup !== 1 && b.confirmDup !== true) {
               // ㉖v264 闸协同（v235 回归实锤）：带 confirmDup=用户已就"刚提交过相同需求"当面确认过=合法补料意图已表达，
@@ -9798,7 +9859,7 @@ return send(res, 200, {
           // ㉖v264 捎带逾期签收冻结与连开限流预检（同 freezeOf/throttleOf 单源，POST 兜底口径永不漂移；只物料员）
           let fz = { frozen: false }, th = { hit: false };
           if (u.role === 'material') { try { fz = freezeOf(u.id); if (fz.frozen && fz.over && fz.over.length) notifyFreeze(u, fz.until, fz.over); th = throttleOf(u.id); } catch (_) {} }
-          return send(res, 200, { ok: true, mode: g.mode, pend: g.pend.map(wrap), block: g.block.map(wrap), hours: reqHoursGate(), freeze: { frozen: fz.frozen, until: fz.until || 0 }, throttle: { hit: !!th.hit, n: th.n || 0, releaseAt: th.releaseAt || 0 }, freezeOverMin: P().freezeOverMin, throttleN: P().throttleN, throttleWinMin: P().throttleWinMin }); // ㉖v108 捎带领料时段判定：PDA建单前先拦，防填完整单才被拒返工
+          return send(res, 200, { ok: true, mode: g.mode, pend: g.pend.map(wrap), block: g.block.map(wrap), hours: reqHoursGate(), freeze: { frozen: fz.frozen, until: fz.until || 0, reason: fz.reason || '', over: (fz.over || []).map((o) => ({ no: o.no, mins: o.mins, late: !!o.late, readyAt: o.readyAt || 0, cfAt: o.cfAt || 0 })) }, throttle: { hit: !!th.hit, n: th.n || 0, releaseAt: th.releaseAt || 0 }, freezeOverMin: P().freezeOverMin, throttleN: P().throttleN, throttleWinMin: P().throttleWinMin }); // ㉖v288 freeze.over 带逐单明细（单号/历时/迟签标志/备齐签收时刻），PDA 弹窗可写明哪张单超多久
         }
         if (req.method === 'GET' && p === '/api/requisitions') {
           sweepAssignOpen();
@@ -10306,7 +10367,7 @@ return send(res, 200, {
             if (got <= 0) return send(res, 400, { ok: false, msg: '该行还没有扫入任何标签，不能转单' });
             target.transferred = true;
             target.transferQty = got;
-            for (const e of target.issued) { const c1 = String((typeof e === 'string' ? e : e.c) || '').toUpperCase(); if (c1 && !db.seenOut[c1]) db.seenOut[c1] = { at: Date.now(), no: r.no, by: u.name }; } // ㉖② 转MES=出库承诺，登记历史防标签复用
+            for (const e of target.issued) { const c1 = String((typeof e === 'string' ? e : e.c) || '').toUpperCase(); if (c1 && !db.seenOut[c1]) { db.seenOut[c1] = { at: Date.now(), no: r.no, by: u.name }; stnReleaseByShip(db, c1); } } // ㉖② 转MES=出库承诺，登记历史防标签复用；㉖v286 发料即清台第二挂钩点
             target.mesNo = String(b.mesNo || '').trim(); // App 侧出库单号，便于对账
             target.transferAt = Date.now(); target.transferBy = u.name; // ㉖v94r 转单时刻/人：出库台账兜底补建需要（PDA推送是fire-and-forget，失败即永久缺失）
             hpush(`转MES ${target.partNo} 实发${got}件${got < (Number(target.qty) || 0) ? '（短装' + ((Number(target.qty) || 0) - got) + '件）' : ''}（${u.name}）`); // ㉖v105 对账框留痕：此前MES已转、本地回写中断的框按已转单入账，不再重复调拨
@@ -11496,10 +11557,13 @@ async function _rcsPollInner() {
     if (!isCK(sp) && isCK(ep)) {
       if ((db.rcsCleared[ep] || 0) >= finTs || db.rcsDone[ep + '|' + dn] || (db.rcsManual[ep] && nowMs - db.rcsManual[ep] < 30 * 60 * 1000)) continue; // 人工清台/人工占用/已完结任务：跳过
       const old = db.rcsStations[ep];
+      // ㉖v286 框号三级来源（队列项→issued→账本反查）：旧版只有"首次快照/账本反查"两路，
+      // 发料早于到站时反查拿空→后续轮询把"后来的货架框"错挂站台（N26K280057 案实锤）。
       const codes = (old && old.via === dn && (old.codes || []).length) ? old.codes // 同一任务沿用首次快照，不被货架位新框干扰
-        : (db.ledger || []).filter(x => String(x.l).toUpperCase() === sp).map(x => String(x.c || '').toUpperCase()).filter(Boolean);
+        : stnCodesFor(db, dn, sp);
       const nt2 = nodeTimes(t);
-      db.rcsStations[ep] = { station: ep, state: '有货', dir: 'out', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn, pickAt: nt2.pickAt, startAt: nt2.startAt, buildAt: nt2.buildAt };
+      // ㉖v286 无证据不写"有货"：codes 全空写"待核实"（30分钟过期），杜绝空快照永久虚占站台。
+      db.rcsStations[ep] = { station: ep, state: codes.length ? '有货' : '待核实', dir: 'out', label: sp, codes, goods: (t.palletType || ''), since: t.finishTime || '', ts: finTs, via: dn, pickAt: nt2.pickAt, startAt: nt2.startAt, buildAt: nt2.buildAt };
       // ㉖v79c RCS改派纠正：任务实际送达 ep ≠ 我们请求的站台（WMAS/RCS 会自行换台，实测 CK-03→CK-12、CK-02→CK-11）
       // → 队列项目的地改为实际台并留痕，PDA"到站"提示/催扫/领料详情全部跟着对，物料员不再按请求台跑空
       // ㉖v107 方向守卫（11/4 现场 N26J300181 实锤）：旧版只按标签码找在途项——同框的【入库归位腿】
@@ -11519,6 +11583,8 @@ async function _rcsPollInner() {
     }
   }
   for (const [stn, s] of Object.entries(db.rcsStations)) {
+    // ㉖v286 待核实（到站无框号证据）30分钟过期：纯自愈窗口，不进清台统计、不写 rcsDone
+    if (s.state === '待核实') { if (nowMs - (s.ts || 0) > 30 * 60000) delete db.rcsStations[stn]; continue; }
     if (s.state !== '有货') continue;
     const codes = (s.codes || []).filter(Boolean);
     const cleared = codes.length ? (codes.some(c => issuedAll.has(c)) || !codes.some(c => ledgerCodes.has(c))) : (nowMs - (s.ts || 0) > 2 * 3600 * 1000);
@@ -11632,15 +11698,15 @@ function agvStage(q) {
   if (st === '失败') return -1;
   if (st === '取消') return -2;
   const code = String(q.code || '').toUpperCase();
-  let stc = 0;
-  for (const v of Object.values(db.rcsStations || {})) { if ((v.codes || []).some((c) => String(c).toUpperCase() === code)) { stc = v.state === '有货' ? 5 : 4; break; } }
-  if (st === '到站') return stc === 4 ? 4 : 5;
-  if (st === '排队') return stc || 1;
-  if (stc) return stc;
-  // ㉖v94k 修匹配键：旧版拿 q.taskNo(容器号 NB-B1800*1200_2-00001) 去比 RCS调度号(AGV-20261024-XXXX)，
-  // 永不相等 → 车都叉完到货了状态还卡"AGV已接单"（10/24 15:40 现场）。改按 WMAS任务号 双键匹配（调度号+透传号）。
+  // ㉖v286 到站证据前置：队列 state=到站 或 RCS putAt>0（确已卸放）才算到站证据
   const _tn = String(q.wmsTask || q.taskNo || '');
   const rr = _tn ? (db.rcsRun || []).find((r) => String(r.no) === _tn || String(r.wms || '') === _tn) : null;
+  const arrivedEv = st === '到站' || !!(rr && (rr.putAt || 0) > 0);
+  let stc = 0;
+  for (const v of Object.values(db.rcsStations || {})) { if (v.state === '有货' && (v.codes || []).some((c) => String(c).toUpperCase() === code)) { stc = arrivedEv ? 5 : 4; break; } } // ㉖v286 站台仅作佐证：有货+卸放证据=5，无证据=交后续 rr 分支精判（旧版无条件信站台记录，CK-09假占用把未执行任务强判到站）
+  if (st === '到站') return 5;
+  if (st === '排队') return stc || 1;
+  if (stc === 5) return 5;
   if (rr && (rr.pickAt || 0) > 0) return 4;
   if (st === '下发中' || st === '已下发') return rr ? 3 : 2;
   return 2;
