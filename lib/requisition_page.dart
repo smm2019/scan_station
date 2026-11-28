@@ -2084,23 +2084,31 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
   }
 
   /// ㉖v62 把他人共享模板载入当前清单并提示另存为自己的（可改行改量后存）
+  /// ㉖v293 修漏路（用户实锤"点载入之后能分享缺料吗"）：建单弹窗模板卡「载入」走本函数，
+  /// 旧版缺料行只 toast"已跳过"不弹分享面板（v283 只接了管理页 onTap 那条路）。
+  /// 现与 v283 同口径：盘点 miss/recv 后直接弹分享面板（面板自带根 context 铁律）。
   void _forkTpl(Map t) {
     final items = List<Map>.from(t["items"] ?? []);
-    final miss = <String>[];
+    final miss = <Map>[], recv = <Map>[];
     for (final it in items) {
       final pn = it["partNo"].toString();
-      if (!widget.parts.any((p) => p.partNo == pn)) {
-        miss.add(pn);
+      final q = (it["qty"] as num?)?.toInt() ?? 1;
+      final rows = widget.parts.where((p) => p.partNo == pn).toList();
+      final pr = rows.isEmpty ? null : rows.first;
+      if (pr == null) {
+        miss.add({"pn": pn, "nm": it["itemName"]?.toString() ?? "", "q": q});
         continue;
       }
+      if (pr.readyBoxes <= 0 && pr.recvBoxes > 0)
+        recv.add({"pn": pn, "nm": (it["itemName"]?.toString().isNotEmpty ?? false) ? it["itemName"].toString() : pr.itemName, "rb": pr.recvBoxes});
       if (_order.contains(pn)) continue;
-      final q = (it["qty"] as num?)?.toInt() ?? 1;
       _qtyCtrl[pn] = TextEditingController(text: "$q");
       _syncChosen(pn);
     }
     setState(() {});
     _toast("已载入「${t["name"]}」，调整后可点下方「存为产线模板」存成自己的", err: false);
-    if (miss.isNotEmpty) _toast("其中 ${miss.join("、")} 当前无在架，已跳过", err: false);
+    if (miss.isNotEmpty || recv.isNotEmpty)
+      _showShortShareSheet(t["name"].toString(), miss, recv);
   }
 
   /// ㉖v62 产线模板弹层：点模板整单载入（无在架行自动跳过并提示），左滑删除
