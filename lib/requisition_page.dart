@@ -321,12 +321,14 @@ class _RequisitionPageState extends State<RequisitionPage>
       while (mounted) {
         List<Map> block = [];
         Map fz = const {}, th = const {};
+        var thrOverMin = 120; // ㉖v289修CI门禁：j是try块内局部变量，块外引用=undefined_identifier（#510/#511唯一error）；阈值随响应在此取出
         try {
           final j = await AuthApi.reqGate();
           if (j["ok"] != true) break; // 查询失败不拦（POST 兜底闸门仍在），网络抖动不误伤下单
           block = List<Map>.from(j["block"] ?? []);
           fz = (j["freeze"] as Map?) ?? const {}; // ㉖v264
           th = (j["throttle"] as Map?) ?? const {};
+          thrOverMin = (j["freezeOverMin"] as num?)?.toInt() ?? 120;
         } catch (_) {
           break;
         }
@@ -338,7 +340,7 @@ class _RequisitionPageState extends State<RequisitionPage>
           // ㉖v288 逐单明细（用户拍板：哪张单、备齐/签收几点、超多久要写清让领料员看见）：
           // gate 下发 fz.over=[{no,mins,late,readyAt,cfAt}]；旧服务器无 over 字段→回退旧单句文案
           final ov = (fz["over"] as List?)?.whereType<Map>().toList() ?? const [];
-          final thr = (j["freezeOverMin"] as num?)?.toInt() ?? 120; // 阈值取 gate 顶层下发（与网页/服务端同源）
+          final thr = thrOverMin; // ㉖v289修CI门禁：原写 (j["freezeOverMin"])，j 是上方 try 块内局部变量、此处不可见（undefined_identifier）；改用块内已取出的 thrOverMin
           String fm(dynamic t) {
             final v = (t as num?)?.toInt() ?? 0;
             if (v <= 0) return "?";
