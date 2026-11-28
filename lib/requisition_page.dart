@@ -2206,6 +2206,34 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
             ])));
   }
 
+  /// ㉖v292 建单清单缺料检测→分享面板（网页「缺料分享」按钮的 App 镜像）：
+  /// 已选行中二楼可发0框的进缺料清单（不在库存列表=全厂零在架；在但仅一楼=催转入桶），
+  /// 复用 v283 面板（多选/复制/提交同一后端闭环）。无缺料行时如实提示不弹空面板。
+  void _shareShortFromOrder() {
+    final byPn = {for (final p in widget.parts) p.partNo: p};
+    final miss = <Map>[], recv = <Map>[];
+    for (final e in _qtyCtrl.entries) {
+      final q = int.tryParse(e.value.text.trim()) ?? 0;
+      if (q <= 0) continue;
+      final pn = e.key;
+      final p = byPn[pn];
+      if (p == null) {
+        miss.add({"pn": pn, "nm": "", "q": q});
+        continue;
+      }
+      if (p.readyBoxes <= 0 && p.recvBoxes > 0) {
+        recv.add({"pn": pn, "nm": p.itemName, "rb": p.recvBoxes});
+        continue;
+      }
+      if (p.readyBoxes <= 0) miss.add({"pn": pn, "nm": p.itemName, "q": q});
+    }
+    if (miss.isEmpty && recv.isEmpty) {
+      _toast("当前清单各行二楼都有在架，无需缺料分享", err: false);
+      return;
+    }
+    _showShortShareSheet("领料单草稿", miss, recv);
+  }
+
   /// ㉖v283 缺料分享面板（对齐网页版 tplShort 浮层，观感按 PDA 既有弹窗习惯）：
   /// 载入模板后盘点出「全厂零在架」行默认全勾可多选，实时预览=复制所见；
   /// 「货全在一楼来料区」类目单独橙色列示催转入（不算缺料，v275 口径）；
@@ -2993,6 +3021,19 @@ class _ReqCreateSheetState extends State<_ReqCreateSheet> {
                     label: const Text("存为产线模板",
                         style:
                             TextStyle(fontSize: 12, color: Color(0xFF3949AB)))),
+              // ㉖v292 App建单补「缺料分享」入口（用户实锤：模板载入后无在架行只有橙≈件数、
+              // 没有分享按钮，网页有App没有不人性化）。检测当前清单无在架行→复用v283分享面板。
+              if (chosen.isNotEmpty)
+                TextButton.icon(
+                    onPressed: _shareShortFromOrder,
+                    style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        visualDensity: VisualDensity.compact),
+                    icon: const Icon(Icons.local_fire_department_outlined,
+                        size: 16, color: Color(0xFFE65100)),
+                    label: const Text("缺料分享",
+                        style:
+                            TextStyle(fontSize: 12, color: Color(0xFFE65100)))),
             ]),
             Row(children: [
               Expanded(
