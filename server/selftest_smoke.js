@@ -29,7 +29,7 @@ function runSmoke() {
     fs.mkdirSync(TDIR, { recursive: true }); // 空库 → server 自动 defaultDb + seed admin/admin123（loadDb 290 行）
     let srvOut = '';
     const child = cp.spawn(process.execPath, [path.join(HERE, 'server.js')], {
-      cwd: HERE, env: { ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR },
+      cwd: HERE, env: { ...process.env, SELFTEST_NO_SHGATE: '0', PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, // ㉖v295 显式取消闸豁免：runner 会给 CI 注入 NO_SHGATE=1（门禁套件用），冒烟要真测闸的拦+放，子进程覆盖回 0
       stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32',
     });
     child.stdout.on('data', (d) => { srvOut += d; if (srvOut.length > 2e6) srvOut = srvOut.slice(-1e6); });
@@ -57,9 +57,34 @@ function runSmoke() {
       C('✅ v171 部署自检旗正常态=false（刚起未改码，不该误报）', h.code && h.code.codeMismatch === false, h.code && h.code.codeMismatch);
       C('✅ v172 哨兵快照字段存在（invariant，null=启动未满14秒属正常）', h.invariant === null || typeof h.invariant === 'object', JSON.stringify(h.invariant));
 
-      // ③ seed 账号能登录（空库自动建的 admin/admin123）→ 鉴权栈健康
+      // ③ ㉖v295 就绪契约（v283 自愈闸上线后的正确冒烟姿势）：health 200 ≠ 可登录——
+      //   health 在闸白名单里，sweep 窗(~17秒)内也 200；旧写法探到即登录，login 撞 503 自愈闸
+      //   （CI #508 实锤：send admin/admin123 {ok:false} 门禁红）。
+      //   新姿势分三段：a) 读 boot；若未就绪→发一发 login 断言【被 503 selfheal 拦】（闸有效的正面证据）；
+      //   b) 等 boot.ready=true（≤40s；旧版服务器无 boot 字段=fail-open 视为就绪，同 v283fix 语义）；
+      //   c) 就绪后 login 断言【放行拿 token】（闸能开、不误锁）。
+      const h0 = await (await fetch(BASE + '/api/health')).json();
+      const hasBoot = !!(h0 && h0.boot);
+      let gateSeen = false;
+      if (hasBoot && h0.boot.ready === false) {
+        const gl = await (await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin123', dev: 'SMOKE', kind: 'pda' }) })).json();
+        gateSeen = true;
+        C('✅ 自愈窗内 login 被 503 闸拦（code=selfheal，闸有效）', gl.ok === false && gl.code === 'selfheal', 'code=' + gl.code);
+        let ready = false;
+        for (let i = 0; i < 80 && !ready; i++) {
+          await sleep(500);
+          try { const hh = await (await fetch(BASE + '/api/health')).json(); ready = !!(hh.boot && hh.boot.ready); } catch (_) {}
+        }
+        C('✅ boot.ready 在 40s 内转 true（自愈链不卡死）', ready);
+        if (!ready) { C('（未就绪，后续鉴权用例跳过）', false); done(); return; }
+      } else if (hasBoot) {
+        C('◽ 探活时已过自愈窗（boot.ready=true），跳过闸拦截断言', true);
+      } else {
+        C('◽ 服务端无 boot 字段（旧版），fail-open 直接登录', true);
+      }
+      // seed 账号能登录（空库自动建的 admin/admin123）→ 鉴权栈健康
       const lg = await (await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'admin', password: 'admin123', dev: 'SMOKE', kind: 'pda' }) })).json();
-      C('✅ seed admin/admin123 可登录拿到 token（鉴权链健康）', lg.ok === true && !!lg.token, 'ok=' + lg.ok + ' role=' + (lg.user || {}).role);
+      C('✅ seed admin/admin123 就绪后可登录拿到 token（鉴权链健康' + (gateSeen ? '·闸已验证拦+放' : '') + '）', lg.ok === true && !!lg.token, 'ok=' + lg.ok + ' role=' + (lg.user || {}).role);
       if (!lg.token) { C('（后续鉴权用例跳过：登录未拿 token）', false); done(); return; }
       const H = { Authorization: 'Bearer ' + lg.token };
 
