@@ -26,7 +26,7 @@ const postj = async (p2, tk, body) => { const r = await fetch(BASE + p2, { metho
     if (probe === 'busy') throw new Error('端口 ' + PORT + ' 被占用，换 HS_PORT 重跑');
 
     // 空数据目录：服务启动走 defaultDb() 创建初始库，最干净、零生产数据风险
-    srv = cp.spawn(process.execPath, ['server.js'], { cwd: __dirname, env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] });
+    srv = cp.spawn(process.execPath, ['server.js'], { cwd: __dirname, env: Object.assign({}, process.env, { SELFTEST_NO_LIVE: '1', SELFTEST_NO_SHGATE: '0', PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }), stdio: ['ignore', 'pipe', 'pipe'] }); // ㉖v292 NO_SHGATE=0 显式取消闸豁免：本套件真测 503 自愈闸（runner 在 CI 会注入豁免，子进程显式覆盖回来）
     let bootLog = '';
     srv.stdout.on('data', d => { bootLog += d.toString(); });
     srv.stderr.on('data', d => { bootLog += d.toString(); });

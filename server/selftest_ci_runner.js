@@ -38,6 +38,12 @@ const BASELINE = path.join(HERE, 'selftest-baseline.json');
 const DB_FILE = path.join(HERE, 'data', 'db.json');
 const PER_TIMEOUT_MS = Number(process.env.SELFTEST_TIMEOUT_MS || 180000);
 
+// ㉖v292 自愈闸豁免统一注入：CI/自测全环境带 SELFTEST_NO_SHGATE=1（跳过 v283 自愈 503 闸）。
+// 根因：v225 发版门禁红 20 套件——套件探活 /api/health（闸白名单放行）→探到即登录发业务，撞 sweep 窗被 503 挡死。
+// 只注入闸豁免，不动 SELFTEST_NO_LIVE（原义"禁建真实WMAS任务"，由各套件/kit 自管，统一注入会翻转未设套件语义）。
+// 生产进程不经 runner 启动，不受影响；test_selfheal_v283 显式置 0 取消豁免真测闸门。
+if (process.env.SELFTEST_NO_SHGATE !== '1') process.env.SELFTEST_NO_SHGATE = '1';
+
 const args = process.argv.slice(2);
 const MODE_BASELINE = args.includes('--update-baseline');
 const MODE_LIST = args.includes('--list');

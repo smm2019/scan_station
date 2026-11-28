@@ -5361,7 +5361,12 @@ async function handleReq(req, res) { // ㉖v97d 原请求回调体原样搬入�
     //   返回 code:'selfheal' 文案，同时客户端探活已弹自愈锁页覆盖，用户看到的是锁页而非登录失败。
     // 未 ready 时其余 /api/ 一律 503 code:'selfheal'——旧版 APK/缓存网页/直连接口物理上写不进业务数据。
     // 静态页(/console /agvmap /board 等)不以 /api/ 开头，不受影响，自愈期仍可加载页面显示遮罩。
-    if (p.startsWith('/api/')) {
+    // ㉖v292 测试保险丝豁免：SELFTEST_NO_SHGATE=1（CI/自测环境标志）时跳过本闸。
+    //   根因（v225 发版 CI 门禁红 20 套件实锤）：套件探活用 /api/health（白名单放行）→探到即登录/发业务，
+    //   撞 sweep 窗（~17秒）被 503 挡死，断言批量失败。用【独立变量】而非复用 SELFTEST_NO_LIVE：
+    //   NO_LIVE 原义"禁建真实WMAS任务"保持不变；v283 专用套件（test_selfheal_v283）显式置本变量为 0
+    //   取消豁免、真测闸门，语义互不污染。生产进程不带该 env，防护不削弱。
+    if (p.startsWith('/api/') && process.env.SELFTEST_NO_SHGATE !== '1') {
       const _SH_ALLOW = { '/api/health': 1, '/api/health-ping': 1, '/api/watchdog/report': 1, '/api/app/version': 1, '/api/app/download': 1, '/api/me': 1, '/api/logout': 1, '/api/sse': 1 };
       if (!_SH_ALLOW[p]) {
         const _bi = bootInfo();
