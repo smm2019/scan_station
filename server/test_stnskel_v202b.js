@@ -40,6 +40,10 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
   };
   const salt = crypto.randomBytes(16).toString('hex');
   const now = Date.now(), D = 864e5;
+  // ㉖v293 T4 时区/跨零点免疫（CI 偶发"断言失败1处"实锤根因）：吞吐按【服务端本地零点】划分今日，
+  //   旧夹具 fin=now-1h/2h 在 CI 机器本地 00:00~02:00 运行时 T2 落"昨日"→todayIn=0→T4 红（本地白天跑恒绿=难复现）。
+  //   改"今零点+固定偏移"：端点只剔 fin<零点、不剔未来 → 任意时刻运行 T1/T2 恒计入今日；T3 仍 now-12D 恒昨日。
+  const _d = new Date(now); const today0 = new Date(_d.getFullYear(), _d.getMonth(), _d.getDate()).getTime();
   const d0 = {
     users: [{ id: 'u_a', username: 'st_u', name: '站台测试', role: 'admin', enabled: true, createdAt: new Date().toISOString(), mustChangePw: false, salt, passHash: crypto.scryptSync('St#202', salt, 32).toString('hex') }],
     features: {}, sessions: {}, devices: {}, ops: [], exports: [], requisitions: [], outbound: {}, ledger: [], scanlog: {}, inventories: [], notifications: [],
@@ -51,7 +55,7 @@ const C = (n, c, i) => { total++; if (!c) fail++; console.log(`${c ? '✅' : '�
       'NB02-CK-05': { alias: '', role: 'any', off: true, by: 'x', at: now },
     },
     rcsHoldStat: { 'NB02-CK-01': { sum: 50 * 36, n: 36 } }, // sum/n=50（分钟口径；此前误写 50*86400 致期望 120000）
-    agvTasks: { T1: { ck: 'out', ep: 'NB02-CK-03', fin: now - 36e5 }, T2: { ck: 'in', sp: 'NB02-CK-03', fin: now - 72e5 }, T3: { ck: 'out', ep: 'NB02-CK-03', fin: now - 12 * D } }, // 03台今出1(T3昨日剔)
+    agvTasks: { T1: { ck: 'out', ep: 'NB02-CK-03', fin: today0 + 9 * 36e5 }, T2: { ck: 'in', sp: 'NB02-CK-03', fin: today0 + 10 * 36e5 }, T3: { ck: 'out', ep: 'NB02-CK-03', fin: now - 12 * D } }, // 03台今出1(T3昨日剔)；㉖v293 T1/T2=今零点+9h/10h，任意运行时刻恒"今日"（含跨零点CI窗口）
     agvQueue: [], inspects: [],
   };
   fs.writeFileSync(path.join(TDIR, 'db.json'), JSON.stringify(d0));
