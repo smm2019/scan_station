@@ -92,7 +92,13 @@ jobs:
         run: flutter pub run build_runner build --delete-conflicting-outputs
 
       - name: Static analysis gate
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: |
+          echo "CI_HEAD=$(git rev-parse HEAD)"
+          echo "---- requisition_page.dart 3445-3460 (cat -A 显不可见字符) ----"
+          sed -n '3445,3460p' lib/requisition_page.dart | cat -A
+          echo "---- grep 裸t标识符 ----"
+          grep -nE "(^|[^a-zA-Z0-9_'\"])t([^a-zA-Z0-9_'\"]|$)" lib/requisition_page.dart | head -20 || true
+          flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: disable analytics
         run: flutter config --no-analytics
