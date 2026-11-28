@@ -17,13 +17,16 @@ console.log('== A组 nrowHint 三分支（真实源码执行） ==');
   const hintSrc = grab('function nrowHint(inp){', '\nfunction nrowFocus');
   // ㉖v175 起 nrowHint 会调 _pvSchedule（内部 setTimeout 防抖拉预占预览）。本用例只测提示
   // 三分支文案，预览行为由 test_req_preview_v175 单独覆盖 → 注入空桩即可，沙箱无需定时器。
-  const ctx = vm.createContext({ window: {}, Math, Number, String, setTimeout: () => 0, _pvSchedule: () => {} });
+  // ㉖v291修CI：grab 段自 v290 起含 _nrowInfo/_pvPaint 全链 → 沙箱补齐 api/_esc/document/_pvMap 桩，
+  // 行 mock 补 dataset（真实 DOM 恒有）；api 桩回空 map（无上次领料），locs 由 dict 带入走真实渲染路径。
+  const ctx = vm.createContext({ window: {}, Math, Number, String, Array, JSON, Date, setTimeout: () => 0, _pvSchedule: () => {}, _esc: (s) => String(s), api: async () => ({ map: {} }), document: { querySelectorAll: () => [] } });
   vm.runInContext(hintSrc + ';this.hint=nrowHint;', ctx);
   const mkRow = (pn, q, dict) => {
     const h = { textContent: '', innerHTML: '' };
     const inp = { value: String(q), closest: () => row };
-    const row = { querySelector: (s) => (s === '.npn' ? { value: pn } : s === '.nqty' ? inp : s === '.nhint' ? h : null) };
+    const row = { dataset: {}, querySelector: (s) => (s === '.npn' ? { value: pn } : s === '.nqty' ? inp : s === '.nhint' ? h : null) };
     ctx.window._dictCache = dict;
+    ctx.window._pvMap = {};
     return { h, inp };
   };
   const { h: h1, inp: i1 } = mkRow('PN001', 3, [{ pn: 'PN001', perBoxQty: 175, boxes: 5 }]);

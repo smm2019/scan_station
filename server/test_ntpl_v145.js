@@ -48,6 +48,7 @@ function mkDoc(rows, box, selVal, sharedChecked) {
   const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   const log = []; srv.stdout.on('data', (b) => log.push(String(b))); srv.stderr.on('data', (b) => log.push(String(b)));
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
+  for (let i = 0; i < 60; i++) { const rr = await fetch(BASE + '/api/requisitions/gate').catch(() => null); if (rr && rr.status !== 503) break; await sleep(1000); } // ㉖v291修CI：自愈窗内连登录也503，不等窗后续全空跑（v134 CRASH同源）
   if (!up) { console.log('FAIL! 服务未就绪'); srv.kill('SIGKILL'); process.exit(1); }
   console.log('隔离实例已就绪 (PORT ' + PORT + ') —— v145 网页模板证明');
   const req = async (method, p, tk, body) => { const r = await fetch(BASE + p, { method, headers: { 'Content-Type': 'application/json', ...(tk ? { Authorization: 'Bearer ' + tk } : {}) }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, json: await r.json().catch(() => ({})) }; };

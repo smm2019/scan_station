@@ -171,15 +171,17 @@ function nrowHint(inp){const row=inp.closest('.nrow'),h=row.querySelector('.nhin
  if(!pn){h.textContent='';return}
  _nrowInfo(row,pn); // ㉖v290 货在哪+上次领料（对齐PDA建单行）：与框数无关，零件号一有就显示
  if(!q)return;
- if(per>0){let s='≈'+(Math.round(q*per*10)/10)+'件（'+q+'框×'+per+'件/框）'+(boxes?' · 在架'+boxes+'框':'');if(boxes&&q>boxes)s+=' <b style="color:var(--warn)">⚠超在架框数</b>';h.innerHTML=(row.dataset.info||'')+s}
- else if(d&&!boxes)h.innerHTML=(row.dataset.info||'')+'<span style="color:var(--warn)">⚠ 在架 0 框 · 无货可发（物料在途可继续提交）</span>'; // ㉖v134 字典有号但零在架：点破"无均值"的因由
- else h.innerHTML=(row.dataset.info||'')+(pn.length>=4?'<span style="color:var(--sub)">无每框均值 · 按 '+q+' 件提交</span>':'');
+ const _di=(row.dataset&&row.dataset.info)||''; // ㉖v291修CI：防御读（vm旧mock无dataset不崩；真实DOM恒有）
+ if(per>0){let s='≈'+(Math.round(q*per*10)/10)+'件（'+q+'框×'+per+'件/框）'+(boxes?' · 在架'+boxes+'框':'');if(boxes&&q>boxes)s+=' <b style="color:var(--warn)">⚠超在架框数</b>';h.innerHTML=_di+s}
+ else if(d&&!boxes)h.innerHTML=_di+'<span style="color:var(--warn)">⚠ 在架 0 框 · 无货可发（物料在途可继续提交）</span>'; // ㉖v134 字典有号但零在架：点破"无均值"的因由
+ else h.innerHTML=_di+(pn.length>=4?'<span style="color:var(--sub)">无每框均值 · 按 '+q+' 件提交</span>':'');
 }
 // ㉖v290 网页建单行"货在哪+上次领料"（用户拍板对齐App）：货位排分布取 dict.locs（服务端账本聚合，同托去重），
 // 一楼来料区单独橙字提示"待转入"；上次领料走 /api/req/last 同源端点（发料日口径，全厂可见非仅本人单）。
 // 缓存按零件号去重防连输重复请求；结果写 row.dataset.info，nrowHint 拼接时始终带上（预占预览覆盖也不丢）。
 window._nInfoCache={};
 async function _nrowInfo(row,pn){
+ if(!row||!row.dataset)return; // ㉖v291修CI：防御（vm旧mock无dataset直接跳过，不崩不写）
  if(row.dataset.infoPn===pn)return; row.dataset.infoPn=pn; row.dataset.info='';
  const d=(window._dictCache||[]).find(x=>x.pn===pn);
  let s='';
@@ -213,9 +215,9 @@ async function _pvRun(){
 function _pvPaint(){
  document.querySelectorAll('.nrow').forEach(r=>{const h=r.querySelector('.nhint');if(!h)return;const pn=(r.querySelector('.npn').value||'').trim().toUpperCase(),q=Number(r.querySelector('.nqty').value)||0;const pv=window._pvMap[pn];
   if(!pv||pv.boxesReq!==q)return; // 无预览/框数已改未回：保留 nrowHint 的均值提示
-  const bs=((pv.boxes)||[]);
-  if(pv.mode==='real'&&bs.length){const lots=[...new Set(bs.map(b=>{const s=(b.b||'').toString();return s.length>=10?s.slice(5,10):s}))].slice(0,2).join('、');const shortN=pv.shortN||0;h.innerHTML=(r.dataset.info||'')+'<span style="color:#2E7D32;font-weight:600">实发 '+(Math.round((pv.estQty||0)*10)/10)+'件（'+bs.length+'筐'+(lots?'·批次'+lots:'')+(shortN>0?' · 在架缺'+shortN+'筐':'')+'）</span>'+(bs.length<=4?' <span style="color:var(--sub);font-size:10px">'+bs.map(b=>_esc(b.c)+' '+_esc((b.q||0))+'件').join('、')+'</span>':'');h.title=bs.map(b=>b.c+' '+b.l+' '+(b.q||0)+'件 批次'+(b.b||'无')).join('\n');} // ㉖v290 预占覆盖也带货位/上次领料前缀
-  else if(pv.mode==='fallback'){h.innerHTML=(r.dataset.info||'')+'<span style="color:var(--warn)">⚠ '+(pv.note||'暂无在架可预占，按均值折算')+'</span>';}
+  const bs=((pv.boxes)||[]);const _di=(r.dataset&&r.dataset.info)||''; // ㉖v291修CI防御读
+  if(pv.mode==='real'&&bs.length){const lots=[...new Set(bs.map(b=>{const s=(b.b||'').toString();return s.length>=10?s.slice(5,10):s}))].slice(0,2).join('、');const shortN=pv.shortN||0;h.innerHTML=_di+'<span style="color:#2E7D32;font-weight:600">实发 '+(Math.round((pv.estQty||0)*10)/10)+'件（'+bs.length+'筐'+(lots?'·批次'+lots:'')+(shortN>0?' · 在架缺'+shortN+'筐':'')+'）</span>'+(bs.length<=4?' <span style="color:var(--sub);font-size:10px">'+bs.map(b=>_esc(b.c)+' '+_esc((b.q||0))+'件').join('、')+'</span>':'');h.title=bs.map(b=>b.c+' '+b.l+' '+(b.q||0)+'件 批次'+(b.b||'无')).join('\n');} // ㉖v290 预占覆盖也带货位/上次领料前缀
+  else if(pv.mode==='fallback'){h.innerHTML=_di+'<span style="color:var(--warn)">⚠ '+(pv.note||'暂无在架可预占，按均值折算')+'</span>';}
  })}
 function nrowFocus(el){setTimeout(()=>{try{const b=document.getElementById('nreqbtn');if(b&&b.scrollIntoView)b.scrollIntoView({block:'nearest',behavior:'smooth'})}catch(_){}},420)} // iPhone 键盘弹出时把提交按钮滚到可见
 function nrowPn(inp){const row=inp.closest('.nrow'),pop=row.querySelector('.npop'),v=inp.value.trim().toUpperCase();const nm=row.querySelector('.nnm');_pvSchedule(); // ㉖v175 零件号变化也调度预占（命中下拉外手动输入同样要问）

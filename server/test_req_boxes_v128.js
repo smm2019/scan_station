@@ -42,6 +42,7 @@ const chkT = (n, c) => { total++; if (!c) fail++; console.log(`${c ? 'PASS' : 'F
 (async () => {
   const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
+  for (let i = 0; i < 60; i++) { const rr = await fetch(BASE + '/api/requisitions/gate').catch(() => null); if (rr && rr.status !== 503) break; await sleep(1000); } // ㉖v291修CI：自愈窗内连登录也503，不等窗后续全空跑（v134 CRASH同源）
   if (!up) { console.log('FAIL! 服务未就绪'); srv.kill(); process.exit(1); }
   console.log('隔离实例已就绪 (PORT ' + PORT + ') —— v128 网页建单框数口径证明');
   try {

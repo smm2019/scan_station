@@ -97,6 +97,7 @@ console.log('== E组 端点真实调用 ==');
   const srv = cp.spawn(process.execPath, [path.join(__dirname, 'server.js')], { env: { SELFTEST_NO_LIVE: '1', ...process.env, PORT: String(PORT), HOST: '127.0.0.1', DATA_DIR: TDIR }, stdio: ['ignore', 'pipe', 'pipe'] });
   const log = []; srv.stdout.on('data', (b) => log.push(String(b))); srv.stderr.on('data', (b) => log.push(String(b)));
   let up = false; for (let i = 0; i < 40 && !up; i++) { await sleep(250); try { up = (await fetch(BASE + '/api/health')).ok; } catch (_) {} }
+  for (let i = 0; i < 60; i++) { const rr = await fetch(BASE + '/api/requisitions/gate').catch(() => null); if (rr && rr.status !== 503) break; await sleep(1000); } // ㉖v291修CI：自愈窗内连登录也503，不等窗后续全空跑（v134 CRASH同源）
   if (!up) { console.log('FAIL! 服务未就绪'); srv.kill('SIGKILL'); process.exit(1); }
   try {
     const tk = (await (await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'nq_mt', password: 'E2e#Nq!148' }) })).json()).token;
